@@ -1,195 +1,156 @@
-"""HYPERION prompt line — spec §9.
+"""HYPERION prompt bar. Spec §9 (prompt) + §8.2 (cursor).
 
-Persistent bottom prompt: ◈ hyperion@orchestrator ~ ❯ █
-Block cursor with blink (1000ms step-end).
+    ◈ hyperion@orchestrator ~ ❯ █
+
+- ◈ session glyph (violet), hyperion (cyan), @ (dim), agent context (violet),
+  ~ scope (dim), ❯ caret (magenta), then a CYAN BLOCK cursor.
+- Cursor is a solid block █ (never underscore/bar). Blinks 500 ms on / 500 ms
+  off, step-end (no fade). During active generation it stops blinking and
+  shows a steady, faintly-glowing block; blink resumes when idle (§8.2).
+- Enter submits; ↑/↓ history (instant, no animation); Ctrl+C cancel,
+  Ctrl+L clear, Ctrl+D exit, F1 help.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-from textual.reactive import reactive
-from textual.widget import Widget
-from textual.message import Message
 from rich.text import Text
+from textual import events
+from textual.message import Message
+from textual.widget import Widget
 
+from hyperion.tui.motion.color import mix
 from hyperion.tui.theme import (
+    BG_CANVAS,
     BRAND_CYAN,
-    BRAND_VIOLET,
     BRAND_MAGENTA,
+    BRAND_VIOLET,
     TEXT_DIM,
     TEXT_PRIMARY,
 )
 
-
-def _h(hex_color: str) -> str:
-    """Convert #RRGGBB to 'RRR;GGG;BBB' for ANSI escape."""
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    return f"{r};{g};{b}"
-
-
-class PromptBar(Widget):
-    """Persistent bottom prompt with block cursor."""
-
-    DEFAULT_CSS = ""
-    can_focus = True
-
-    cursor_visible: reactive[bool] = reactive(True)
-    is_streaming: reactive[bool] = reactive(False)
-
-    def __init__(self, *, context: str = "orchestrator", scope: str = "~", **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._agent_context = context
-        self._scope = scope
-        self._value = ""
-        self._history: list[str] = []
-        self._history_idx = -1
-        self._cursor_pos = 0
-
-    def render(self) -> Any:
-        cyan = _h(BRAND_CYAN)
-        violet = _h(BRAND_VIOLET)
-        magenta = _h(BRAND_MAGENTA)
-        dim = _h(TEXT_DIM)
-        primary = _h(TEXT_PRIMARY)
-
-        # Build prompt prefix
-        prefix = (
-            f"\x1b[38;2;{violet}m\u25c8\x1b[0m "  # ◈ violet
-            f"\x1b[38;2;{cyan}mhyperion\x1b[0m"     # hyperion cyan
-            f"\x1b[38;2;{dim}m@\x1b[0m"             # @ dim
-            f"\x1b[38;2;{violet}m{self._agent_context}\x1b[0m "  # orchestrator violet
-            f"\x1b[38;2;{dim}m{self._scope}\x1b[0m "       # ~ dim
-            f"\x1b[38;2;{magenta}m\u276f\x1b[0m "          # ❯ magenta
-        )
-
-        # Input value with cursor
-        val = self._value
-        if self.cursor_visible and not self.is_streaming:
-            # Block cursor at cursor_pos
-            before = val[: self._cursor_pos]
-            at = val[self._cursor_pos : self._cursor_pos + 1] if self._cursor_pos < len(val) else " "
-            after = val[self._cursor_pos + 1 :]
-            input_part = (
-                f"\x1b[38;2;{primary}m{before}\x1b[0m"
-                f"\x1b[48;2;{cyan}m\x1b[38;2;0;14;26m{at}\x1b[0m"
-                f"\x1b[38;2;{primary}m{after}\x1b[0m"
-            )
-        else:
-            input_part = f"\x1b[38;2;{primary}m{val}\x1b[0m"
-
-        line = f"{prefix}{input_part}"
-        return Text.from_ansi(line)
-
-    def on_mount(self) -> None:
-        self.set_interval(0.5, self._blink)
-
-    def _blink(self) -> None:
-        if not self.is_streaming:
-            self.cursor_visible = not self.cursor_visible
-            self.refresh()
-
-    def on_key(self, event: Any) -> None:
-        if event.key == "enter":
-            if self._value.strip():
-                self._history.append(self._value)
-                self._history_idx = len(self._history)
-                # Emit submit
-                self.post_message(PromptSubmitted(self._value))
-            self._value = ""
-            self._cursor_pos = 0
-            event.prevent_default()
-            event.stop()
-        elif event.key == "backspace":
-            if self._cursor_pos > 0:
-                self._value = self._value[: self._cursor_pos - 1] + self._value[self._cursor_pos :]
-                self._cursor_pos -= 1
-            event.prevent_default()
-            event.stop()
-        elif event.key == "delete":
-            if self._cursor_pos < len(self._value):
-                self._value = self._value[: self._cursor_pos] + self._value[self._cursor_pos + 1 :]
-            event.prevent_default()
-            event.stop()
-        elif event.key == "left":
-            if self._cursor_pos > 0:
-                self._cursor_pos -= 1
-            event.prevent_default()
-            event.stop()
-        elif event.key == "right":
-            if self._cursor_pos < len(self._value):
-                self._cursor_pos += 1
-            event.prevent_default()
-            event.stop()
-        elif event.key == "home" or event.key == "ctrl+a":
-            self._cursor_pos = 0
-            event.prevent_default()
-            event.stop()
-        elif event.key == "end" or event.key == "ctrl+e":
-            self._cursor_pos = len(self._value)
-            event.prevent_default()
-            event.stop()
-        elif event.key == "up":
-            if self._history_idx > 0:
-                self._history_idx -= 1
-                self._value = self._history[self._history_idx]
-                self._cursor_pos = len(self._value)
-            event.prevent_default()
-            event.stop()
-        elif event.key == "down":
-            if self._history_idx < len(self._history) - 1:
-                self._history_idx += 1
-                self._value = self._history[self._history_idx]
-                self._cursor_pos = len(self._value)
-            else:
-                self._history_idx = len(self._history)
-                self._value = ""
-                self._cursor_pos = 0
-            event.prevent_default()
-            event.stop()
-        elif event.key == "ctrl+l":
-            self.post_message(ClearScrollback())
-            event.prevent_default()
-            event.stop()
-        elif event.key == "ctrl+c":
-            self.post_message(CancelTurn())
-            event.prevent_default()
-            event.stop()
-        elif event.key == "ctrl+d":
-            self.app.exit()
-            event.prevent_default()
-            event.stop()
-        elif event.character and event.key not in ("tab", "escape", "ctrl+c", "ctrl+d", "ctrl+l", "ctrl+a", "ctrl+e", "ctrl+r", "ctrl+p"):
-            # Insert character
-            self._value = self._value[: self._cursor_pos] + event.character + self._value[self._cursor_pos :]
-            self._cursor_pos += 1
-            event.prevent_default()
-            event.stop()
-
-        self.cursor_visible = True
-        self.refresh()
-
-    @property
-    def value(self) -> str:
-        return self._value
-
-    def set_context(self, ctx: str) -> None:
-        self._agent_context = ctx
-        self.refresh()
+_BLINK_MS = 500
 
 
 class PromptSubmitted(Message):
-    """Posted when user submits the prompt."""
-
     def __init__(self, value: str) -> None:
-        super().__init__()
         self.value = value
+        super().__init__()
 
 
 class ClearScrollback(Message):
-    """Posted when user presses Ctrl+L."""
+    pass
 
 
 class CancelTurn(Message):
-    """Posted when user presses Ctrl+C."""
+    pass
+
+
+class PromptBar(Widget, can_focus=True):
+    """Persistent bottom prompt with a blinking cyan block cursor."""
+
+    DEFAULT_CSS = """
+    PromptBar {
+        height: 1;
+        width: 100%;
+    }
+    """
+
+    def __init__(self, agent_context: str = "orchestrator", scope: str = "~", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._buffer = ""
+        self._agent = agent_context
+        self._scope = scope
+        self._cursor_on = True
+        self._busy = False  # steady glow while an engagement runs
+        self._history: list[str] = []
+        self._hidx = 0
+        self._blink_timer = None
+
+    def on_mount(self) -> None:
+        self._blink_timer = self.set_interval(_BLINK_MS / 1000, self._blink)
+
+    def _blink(self) -> None:
+        if self._busy:
+            # steady during generation — no toggle, keep it visible
+            if not self._cursor_on:
+                self._cursor_on = True
+                self.refresh()
+            return
+        self._cursor_on = not self._cursor_on
+        self.refresh()
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self._cursor_on = True
+        self.refresh()
+
+    def set_agent_context(self, agent: str) -> None:
+        self._agent = agent
+        self.refresh()
+
+    # ── input handling ─────────────────────────────────────────────────────────
+
+    def on_key(self, event: events.Key) -> None:
+        key = event.key
+        if key == "enter":
+            value = self._buffer.strip()
+            if value:
+                self._history.append(value)
+                self._hidx = len(self._history)
+                self._buffer = ""
+                self.refresh()
+                self.post_message(PromptSubmitted(value))
+            event.stop()
+        elif key == "backspace":
+            self._buffer = self._buffer[:-1]
+            self.refresh()
+            event.stop()
+        elif key == "up":
+            if self._history:
+                self._hidx = max(0, self._hidx - 1)
+                self._buffer = self._history[self._hidx]
+                self.refresh()
+            event.stop()
+        elif key == "down":
+            if self._history:
+                self._hidx = min(len(self._history), self._hidx + 1)
+                self._buffer = self._history[self._hidx] if self._hidx < len(self._history) else ""
+                self.refresh()
+            event.stop()
+        elif key == "ctrl+l":
+            self.post_message(ClearScrollback())
+            event.stop()
+        elif key == "ctrl+c":
+            self.post_message(CancelTurn())
+            event.stop()
+        elif key == "ctrl+d":
+            self.app.exit()
+            event.stop()
+        elif event.is_printable and event.character:
+            self._buffer += event.character
+            self.refresh()
+            event.stop()
+
+    # ── render ──────────────────────────────────────────────────────────────────
+
+    def render(self) -> Text:
+        out = Text()
+        out.append("  ◈ ", style=BRAND_VIOLET)
+        out.append("hyperion", style=f"bold {BRAND_CYAN}")
+        out.append("@", style=TEXT_DIM)
+        out.append(self._agent, style=BRAND_VIOLET)
+        out.append(f" {self._scope} ", style=TEXT_DIM)
+        out.append("❯ ", style=f"bold {BRAND_MAGENTA}")
+        out.append(self._buffer, style=TEXT_PRIMARY)
+
+        # Block cursor — solid █, teleports (no easing). §8.2
+        if self._busy:
+            glow = mix(BG_CANVAS, BRAND_CYAN, 0.8)
+            out.append("█", style=glow)
+        elif self._cursor_on:
+            out.append("█", style=BRAND_CYAN)
+        else:
+            out.append(" ")
+        return out

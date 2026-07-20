@@ -1,0 +1,26 @@
+# HYPERION — "graphite" reference theme (cooler, lower-chroma). Spec §13.
+[appearance]
+theme = "graphite"
+show_intro_animation = true
+collapse_logo_after_first_turn = true
+idle_breathing = false
+
+[palette]
+bg_canvas    = "#0C0F16"
+bg_surface   = "#141821"
+border_subtle = "#2C3140"
+text_primary  = "#DCE1EA"
+text_secondary = "#A2AAB8"
+text_dim      = "#6A7382"
+text_ghost    = "#464E5C"
+brand_cyan    = "#5FD3E8"
+brand_violet  = "#9A8CE0"
+brand_magenta = "#D9AEE6"
+sig_success   = "#3FC7A0"
+sig_warn      = "#E8B25A"
+sig_error     = "#E86A82"
+sig_info      = "#8FD4E8"
+
+[motion]
+target_fps = 60
+reduced_motion = false

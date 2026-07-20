@@ -1,0 +1,26 @@
+# HYPERION — "midnight" reference theme. Spec §4.1 / §13.
+[appearance]
+theme = "midnight"
+show_intro_animation = true
+collapse_logo_after_first_turn = true
+idle_breathing = false
+
+[palette]
+bg_canvas    = "#0A0E1A"
+bg_surface   = "#111629"
+border_subtle = "#2A3350"
+text_primary  = "#E4E9F2"
+text_secondary = "#A8B3CF"
+text_dim      = "#6B7A99"
+text_ghost    = "#4A5878"
+brand_cyan    = "#00D9FF"
+brand_violet  = "#8B5CF6"
+brand_magenta = "#F0ABFC"
+sig_success   = "#10D9A0"
+sig_warn      = "#FFB627"
+sig_error     = "#FF5C7A"
+sig_info      = "#7EE5FF"
+
+[motion]
+target_fps = 60
+reduced_motion = false

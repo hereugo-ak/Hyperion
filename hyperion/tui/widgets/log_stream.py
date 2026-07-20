@@ -1,124 +1,227 @@
-"""HYPERION log stream — spec §6 + §7.
+"""HYPERION log stream. Spec §6 (log stream) + §7 (badges) + §8 (motion).
 
-Badge-tagged scrollable log rows with timestamps.
-Each row: [HH:MM:SS]  BADGE   content
-Nested details with ├─ and └─ tree glyphs.
+Each event is one row:  [HH:MM:SS]  BADGE   content ......
+Rows support:
+  - 220 ms fade-in (§8, expo-out) on arrival
+  - a live braille spinner in the badge column while a row is "active" (§8.1)
+  - a determinate gradient progress bar (§8.1 Tier 2)
+  - an indeterminate aurora bar (§8.1 Tier 3)
+  - nested tree detail lines (├─ / └─) in text.ghost (§10)
+
+Rendering is a single Rich Text rebuilt each animation frame, but we ONLY run
+the frame timer while at least one row is animating (fade / spinner / bar) —
+idle cost is zero repaints (§12 performance budget).
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
 
-from textual.widget import Widget
 from rich.text import Text
+from textual.scroll_view import ScrollView
+from textual.geometry import Size
 
+from hyperion.tui.motion.easing import expo_out
+from hyperion.tui.motion.indicators import aurora_bar, progress_line, spinner_frame
 from hyperion.tui.theme import (
     TEXT_DIM,
-    TEXT_PRIMARY,
     TEXT_GHOST,
-    BADGE_COLORS,
+    TEXT_PRIMARY,
+    badge_color,
 )
+
+_FADE_MS = 220.0
+_SPIN_MS = 90.0
+_AURORA_FPS = 30
+_BADGE_CELL = 10  # fixed-width badge column (§7.3)
 
 
 @dataclass
-class LogEntry:
-    timestamp: str
+class LogRow:
     badge: str
     content: str
-    nested: list[str] = field(default_factory=list)
+    detail: list[str] = field(default_factory=list)
+    ts: float = field(default_factory=time.time)
+    born: float = field(default_factory=time.monotonic)
+    # live indicators
+    spinner: bool = False
+    progress: tuple[int, int] | None = None  # (done, total)
+    aurora: bool = False
+    icon: str = ""  # optional leading glyph in content (✓ ✗ ▸ …)
+
+    def animating(self) -> bool:
+        faded = (time.monotonic() - self.born) * 1000.0 >= _FADE_MS
+        return (not faded) or self.spinner or self.progress is not None or self.aurora
 
 
-class LogStream(Widget):
-    """Scrollable badge-tagged log stream."""
+class LogStream(ScrollView):
+    """Scrollable badge-tagged event log."""
 
-    DEFAULT_CSS = ""
-    can_focus = True
+    DEFAULT_CSS = """
+    LogStream {
+        scrollbar-size: 1 1;
+        scrollbar-color: #2A3350;
+        scrollbar-background: #0A0E1A;
+    }
+    """
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._entries: list[LogEntry] = []
-        self._scroll = 0
-        self._max_visible = 20
+        self._rows: list[LogRow] = []
+        self._tick = 0
+        self._timer = None
 
-    def add_entry(self, badge: str, content: str, nested: list[str] | None = None) -> None:
-        ts = datetime.now().strftime("%H:%M:%S")
-        entry = LogEntry(
-            timestamp=ts,
-            badge=badge.upper(),
-            content=content,
-            nested=nested or [],
+    def on_mount(self) -> None:
+        self._ensure_timer()
+
+    # ── public API ───────────────────────────────────────────────────────────
+
+    def add_row(self, row: LogRow) -> LogRow:
+        self._rows.append(row)
+        self._recompute_size()
+        self._ensure_timer()
+        self.scroll_end(animate=False)
+        self.refresh()
+        return row
+
+    def add_entry(
+        self,
+        badge: str,
+        content: str,
+        detail: list[str] | None = None,
+        *,
+        spinner: bool = False,
+        progress: tuple[int, int] | None = None,
+        aurora: bool = False,
+        icon: str = "",
+    ) -> LogRow:
+        return self.add_row(
+            LogRow(
+                badge=badge,
+                content=content,
+                detail=detail or [],
+                spinner=spinner,
+                progress=progress,
+                aurora=aurora,
+                icon=icon,
+            )
         )
-        self._entries.append(entry)
-        # Auto-scroll to bottom
-        total_lines = sum(1 + len(e.nested) for e in self._entries)
-        self._scroll = max(0, total_lines - self._max_visible)
+
+    def update_row(
+        self,
+        row: LogRow,
+        *,
+        badge: str | None = None,
+        content: str | None = None,
+        spinner: bool | None = None,
+        progress: tuple[int, int] | None = -1,  # sentinel; None means clear
+        aurora: bool | None = None,
+        icon: str | None = None,
+    ) -> None:
+        if badge is not None:
+            row.badge = badge
+        if content is not None:
+            row.content = content
+        if spinner is not None:
+            row.spinner = spinner
+        if progress != -1:
+            row.progress = progress
+        if aurora is not None:
+            row.aurora = aurora
+        if icon is not None:
+            row.icon = icon
+        self._ensure_timer()
         self.refresh()
 
     def clear(self) -> None:
-        self._entries.clear()
-        self._scroll = 0
+        self._rows.clear()
+        self._recompute_size()
         self.refresh()
 
-    def render(self) -> Any:
-        if not self._entries:
-            return Text("", style=TEXT_DIM)
+    # ── animation loop (only runs while something is animating) ───────────────
 
-        # Flatten entries into lines
-        all_lines: list[tuple[str, str, str, int]] = []
-        for entry in self._entries:
-            all_lines.append((entry.timestamp, entry.badge, entry.content, 0))
-            for i, detail in enumerate(entry.nested):
-                glyph = "\u2514\u2500" if i == len(entry.nested) - 1 else "\u251c\u2500"
-                all_lines.append((entry.timestamp, entry.badge, f"{glyph} {detail}", 1))
+    def _ensure_timer(self) -> None:
+        if self._timer is None:
+            self._timer = self.set_interval(1 / _AURORA_FPS, self._frame)
 
-        # Apply scroll
-        visible = all_lines[self._scroll : self._scroll + self._max_visible]
-
-        raw_lines: list[str] = []
-        for ts, badge, content, indent in visible:
-            badge_color = BADGE_COLORS.get(badge, TEXT_PRIMARY)
-            ts_hex = _h(TEXT_DIM)
-            badge_hex = _h(badge_color)
-            content_hex = _h(TEXT_PRIMARY)
-            ghost_hex = _h(TEXT_GHOST)
-
-            if indent > 0:
-                line = f"\x1b[38;2;{ts_hex}m      \x1b[0m  \x1b[38;2;{ghost_hex}m{content}\x1b[0m"
-            else:
-                badge_padded = badge.ljust(10)
-                line = (
-                    f"\x1b[38;2;{ts_hex}m[{ts}]\x1b[0m  "
-                    f"\x1b[38;2;{badge_hex}m{badge_padded}\x1b[0m "
-                    f"\x1b[38;2;{content_hex}m{content}\x1b[0m"
-                )
-            raw_lines.append(line)
-
-        full = "\n".join(raw_lines)
-        return Text.from_ansi(full)
-
-    def on_key(self, event: Any) -> None:
-        total_lines = sum(1 + len(e.nested) for e in self._entries)
-        if event.key == "up":
-            self._scroll = max(0, self._scroll - 1)
+    def _frame(self) -> None:
+        self._tick += 1
+        if any(r.animating() for r in self._rows):
             self.refresh()
-            event.prevent_default()
-        elif event.key == "down":
-            self._scroll = min(max(0, total_lines - self._max_visible), self._scroll + 1)
-            self.refresh()
-            event.prevent_default()
-        elif event.key == "page_up":
-            self._scroll = max(0, self._scroll - self._max_visible)
-            self.refresh()
-            event.prevent_default()
-        elif event.key == "page_down":
-            self._scroll = min(max(0, total_lines - self._max_visible), self._scroll + self._max_visible)
-            self.refresh()
-            event.prevent_default()
+        else:
+            # go idle — no repaints until next event (§12)
+            if self._timer is not None:
+                self._timer.stop()
+                self._timer = None
 
+    # ── size / rendering ──────────────────────────────────────────────────────
 
-def _h(hex_color: str) -> str:
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    return f"{r};{g};{b}"
+    def _recompute_size(self) -> None:
+        lines = sum(1 + len(r.detail) for r in self._rows)
+        width = self.size.width or 72
+        self.virtual_size = Size(width, max(lines, 1))
+
+    def _render_row(self, row: LogRow, out: Text) -> None:
+        now_ms = (time.monotonic() - row.born) * 1000.0
+        alpha = expo_out(min(1.0, now_ms / _FADE_MS)) if now_ms < _FADE_MS else 1.0
+
+        # Timestamp (10 chars, text.dim). §7.3
+        ts = time.strftime("[%H:%M:%S]", time.localtime(row.ts))
+        out.append(ts + "  ", style=self._fade(TEXT_DIM, alpha))
+
+        # Badge column — spinner replaces the label glyph position (§8.1/§9.7).
+        bcolor = badge_color(row.badge)
+        if row.spinner:
+            spin = spinner_frame(self._tick // 1)
+            out.append_text(spin)
+            label = row.badge.upper()[: _BADGE_CELL - 2]
+            out.append(" " + label, style=f"bold {self._fade(bcolor, alpha)}")
+            pad = _BADGE_CELL - (1 + 1 + len(label))
+        else:
+            label = row.badge.upper()[:_BADGE_CELL]
+            out.append(label, style=f"bold {self._fade(bcolor, alpha)}")
+            pad = _BADGE_CELL - len(label)
+        if pad > 0:
+            out.append(" " * pad)
+        out.append("  ")
+
+        # Content
+        if row.progress is not None:
+            done, total = row.progress
+            out.append_text(progress_line(row.content, done, total))
+        elif row.aurora:
+            out.append_text(aurora_bar(self._tick))
+            out.append("  " + row.content, style=self._fade(TEXT_PRIMARY, alpha))
+        else:
+            if row.icon:
+                out.append(row.icon + " ", style=f"bold {self._fade(bcolor, alpha)}")
+            out.append(row.content, style=self._fade(TEXT_PRIMARY, alpha))
+        out.append("\n")
+
+        # Nested tree detail (§10)
+        for i, d in enumerate(row.detail):
+            glyph = "└─" if i == len(row.detail) - 1 else "├─"
+            out.append("              " + glyph + " ", style=self._fade(TEXT_GHOST, alpha))
+            out.append(d, style=self._fade(TEXT_DIM, alpha))
+            out.append("\n")
+
+    @staticmethod
+    def _fade(hex_color: str, alpha: float):
+        """Blend a colour toward the canvas bg to emulate fade-in opacity."""
+        if alpha >= 1.0:
+            return hex_color
+        from hyperion.tui.motion.color import mix
+        from hyperion.tui.theme import BG_CANVAS
+
+        return mix(BG_CANVAS, hex_color, max(0.0, min(1.0, alpha)))
+
+    def render_lines(self, crop):  # type: ignore[override]
+        self._recompute_size()
+        return super().render_lines(crop)
+
+    def render(self) -> Text:
+        out = Text()
+        for row in self._rows:
+            self._render_row(row, out)
+        return out
