@@ -27,9 +27,9 @@ from hyperion.tui.screens.session import SessionScreen
 from hyperion.tui.theme import (
     BG_CANVAS,
     BG_SURFACE,
-    BRAND_CYAN,
-    BRAND_MAGENTA,
-    BRAND_VIOLET,
+    CLAY,
+    CLAY_DEEP,
+    CLAY_SOFT,
     SIG_ERROR,
     SIG_SUCCESS,
     SIG_WARN,
@@ -62,12 +62,17 @@ class HyperionApp(App):
     }}
     * {{
         scrollbar-background: {BG_CANVAS};
-        scrollbar-color: {BG_SURFACE};
-        scrollbar-color-hover: {BRAND_VIOLET};
+        scrollbar-color: #4A4640;
+        scrollbar-color-hover: {CLAY};
     }}
-    /* Selection highlight: brand violet wash, readable text. */
+    /* Selection highlight: clay wash so highlighted text is obvious. */
     Screen {{
-        link-color: {BRAND_CYAN};
+        link-color: {CLAY};
+    }}
+    /* Textual paints drag-selection with the 'text-selection' theme colour
+       (set in on_mount) — make it a clay wash with cream text. */
+    RichLog {{
+        text-wrap: wrap;
     }}
     """
 
@@ -88,9 +93,9 @@ class HyperionApp(App):
         try:
             self.theme_variables.update(
                 {
-                    "primary": BRAND_VIOLET,
-                    "secondary": BRAND_CYAN,
-                    "accent": BRAND_MAGENTA,
+                    "primary": CLAY,
+                    "secondary": CLAY_SOFT,
+                    "accent": CLAY_DEEP,
                     "success": SIG_SUCCESS,
                     "warning": SIG_WARN,
                     "error": SIG_ERROR,

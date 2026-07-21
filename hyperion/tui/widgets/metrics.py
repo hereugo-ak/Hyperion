@@ -80,7 +80,14 @@ class Telemetry:
 
 
 class MetricsRail(Static):
-    """Live, always-on engagement telemetry."""
+    """Live, always-on engagement telemetry.
+
+    Two render modes:
+      * rail (default) — a tall right-hand column (legacy).
+      * bar (``compact=True``) — a single horizontal status line that docks
+        just above the prompt, so the whole body above it is ONE full-width
+        scrollable + selectable transcript.
+    """
 
     DEFAULT_CSS = """
     MetricsRail {
@@ -90,13 +97,23 @@ class MetricsRail(Static):
         background: #1A1918;
         border-left: solid #2A2926;
     }
+    MetricsRail.bar {
+        width: 100%;
+        height: 1;
+        padding: 0 2;
+        background: #1F1E1D;
+        border-left: none;
+    }
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, compact: bool = False, **kwargs) -> None:
         self.tel = Telemetry()
         self._frame = 0
         self._timer = None
-        super().__init__(self._build(), **kwargs)
+        self._compact = compact
+        super().__init__(self._render_content(), **kwargs)
+        if compact:
+            self.add_class("bar")
 
     # ── state mutation ─────────────────────────────────────────────────────────
 
@@ -162,9 +179,41 @@ class MetricsRail(Static):
 
     def _repaint(self) -> None:
         try:
-            self.update(self._build())
+            self.update(self._render_content())
         except Exception:
             pass
+
+    def _render_content(self):
+        return self._build_bar() if self._compact else self._build()
+
+    def _build_bar(self):
+        """Single-line status strip: status · elapsed · phase · agents · tools · tokens · providers."""
+        t = self.tel
+        status_style = {
+            "idle": TEXT_DIM,
+            "running": CLAY,
+            "done": SIG_SUCCESS,
+            "error": SIG_ERROR,
+        }.get(t.status, TEXT_PRIMARY)
+        el = int(t.elapsed())
+        active = sum(1 for a in t.agents.values() if a.state == "working")
+        total = len(t.agents)
+        tok = f"{t.tokens/1000:.1f}k" if t.tokens >= 1000 else str(t.tokens)
+        provs = " · ".join(sorted(t.providers)) if t.providers else "—"
+
+        sep = span("  ·  ", TEXT_GHOST)
+        spans: list = []
+        if t.status == "running" or active:
+            spans.append(span(*spinner_span(self._frame)))
+            spans.append(span(" ", ""))
+        spans += [span("status ", TEXT_DIM), span(t.status, status_style), sep]
+        spans += [span("elapsed ", TEXT_DIM), span(f"{el//60:02d}:{el%60:02d}", TEXT_PRIMARY), sep]
+        spans += [span("phase ", TEXT_DIM), span(t.phase, CLAY_DEEP), sep]
+        spans += [span("agents ", TEXT_DIM), span(f"{active}/{total}", CLAY), sep]
+        spans += [span("tools ", TEXT_DIM), span(str(t.tool_calls), SIG_WARN), sep]
+        spans += [span("tokens ", TEXT_DIM), span(tok, TEXT_PRIMARY), sep]
+        spans += [span("providers ", TEXT_DIM), span(provs, CLAY)]
+        return build([spans])
 
     # ── build ─────────────────────────────────────────────────────────────────
 

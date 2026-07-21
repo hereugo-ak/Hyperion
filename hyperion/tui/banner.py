@@ -68,6 +68,35 @@ def logo_content() -> Content:
     return build(lines)
 
 
+def roster_summary(online: int | None = None) -> Content:
+    """A COMPACT roster: one line per group listing the badges, so the event
+    log stays visible without scrolling. Use ``/agents`` for the full detail.
+    """
+    groups = by_group()
+    total = sum(len(v) for v in groups.values())
+    head = f"  ROSTER · {total} specialist agents"
+    if online is not None:
+        head += f" · {online} online"
+
+    lines: list[list] = [line(span(head, f"bold {TEXT_PRIMARY}")), line("")]
+    for grp in GROUP_ORDER:
+        members = groups.get(grp) or []
+        if not members:
+            continue
+        row = [span("  " + grp.ljust(15), f"bold {TEXT_DIM}")]
+        for i, a in enumerate(members):
+            if i:
+                row.append(span("  ", ""))  # 2-space gutter between badges
+            row.append(span(a.badge, f"bold {badge_color(a.badge)}"))
+        lines.append(row)
+    lines.append(line(""))
+    lines.append(
+        [span("  type ", TEXT_DIM), span("/agents", CLAY),
+         span(" for what each specialist can do", TEXT_DIM)]
+    )
+    return build(lines)
+
+
 def roster_content(online: int | None = None) -> Content:
     """The full agent roster grouped by function, with each agent's ability.
 

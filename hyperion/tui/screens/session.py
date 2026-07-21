@@ -36,11 +36,16 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Static
 
-from hyperion.tui.banner import hint_content, logo_content, roster_content
+from hyperion.tui.banner import (
+    hint_content,
+    logo_content,
+    roster_content,
+    roster_summary,
+)
 from hyperion.tui.roster import ROSTER
 from hyperion.tui.widgets.header import HeaderBar
 from hyperion.tui.widgets.metrics import MetricsRail
@@ -73,15 +78,22 @@ class SessionScreen(Screen):
         background: #141413;
         color: #F4F3EE;
     }
-    #hdr { height: 1; dock: top; }
-    #hdr-rule { height: 1; dock: top; }
-    /* the body fills everything between the header and the prompt — the
-       transcript itself owns the scroll, so there is never a dead region. */
-    #body { height: 1fr; }
-    #log-stream { width: 1fr; height: 1fr; }
-    #metrics { height: 1fr; }
-    #pre-prompt-rule { height: 1; dock: bottom; }
-    #prompt { height: 1; dock: bottom; }
+    #topbar { dock: top; height: 2; width: 100%; }
+    #topbar > #hdr { height: 1; }
+    #topbar > #hdr-rule { height: 1; }
+    /* ONE full-width scroll surface. Everything — logo, roster, event log —
+       lives inside this single selectable RichLog, so the whole screen scrolls
+       together and every character is copyable. It fills the space between the
+       top header and the bottom footer group. */
+    #log-stream { width: 100%; height: 1fr; }
+    /* Bottom footer group: a single Vertical dock so its children stack
+       correctly (status rule, live telemetry strip, prompt rule, prompt)
+       instead of all colliding on one docked row. */
+    #footer { dock: bottom; height: 4; width: 100%; }
+    #footer > #status-rule { height: 1; }
+    #footer > #status-bar { height: 1; }
+    #footer > #prompt { height: 1; }
+    #footer > #pre-prompt-rule { height: 1; }
     """
 
     BINDINGS = [
@@ -104,13 +116,17 @@ class SessionScreen(Screen):
     # ── compose ────────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        yield HeaderBar(version="v1.0.0", session_id=self._session_id, id="hdr")
-        yield Static(hr(), id="hdr-rule")
-        with Horizontal(id="body"):
-            yield Transcript(id="log-stream")
-            yield MetricsRail(id="metrics")
-        yield Static(hr(), id="pre-prompt-rule")
-        yield PromptBar(id="prompt")
+        with Vertical(id="topbar"):
+            yield HeaderBar(version="v1.0.0", session_id=self._session_id, id="hdr")
+            yield Static(hr(), id="hdr-rule")
+        # single full-width scroll surface
+        yield Transcript(id="log-stream")
+        # bottom footer group (docked as one Vertical so children stack)
+        with Vertical(id="footer"):
+            yield Static(hr(), id="status-rule")
+            yield MetricsRail(compact=True, id="status-bar")
+            yield Static(hr(), id="pre-prompt-rule")
+            yield PromptBar(id="prompt")
 
     def on_mount(self) -> None:
         self.query_one("#prompt", PromptBar).focus()
@@ -121,10 +137,14 @@ class SessionScreen(Screen):
             self.set_timer(delay + 0.4, self._start_demo)
 
     def _render_intro(self) -> None:
-        """Write the wordmark + roster as the opening of the scroll document."""
+        """Write the wordmark + compact roster as the opening of the scroll doc.
+
+        The roster here is the COMPACT summary so the event log below stays on
+        screen; `/agents` prints the full roster with each agent's ability.
+        """
         log = self._log()
         log.write_block(logo_content(), blank_after=1)
-        log.write_block(roster_content(online=len(ROSTER)), blank_after=1)
+        log.write_block(roster_summary(online=len(ROSTER)), blank_after=1)
         log.write_block(hint_content(), blank_after=1)
         log.write_block(hr(), blank_after=1)
         # keep the top (logo) in view on first paint
@@ -137,7 +157,7 @@ class SessionScreen(Screen):
         return self.query_one("#log-stream", Transcript)
 
     def _metrics(self) -> MetricsRail:
-        return self.query_one("#metrics", MetricsRail)
+        return self.query_one("#status-bar", MetricsRail)
 
     def _show_ready(self) -> None:
         self._log().add_entry(
@@ -433,6 +453,7 @@ class SessionScreen(Screen):
 
     def _show_roster(self) -> None:
         self._log().write_block(roster_content(online=len(ROSTER)), blank_after=1)
+        self._log().scroll_end(animate=True)
 
     def _run_providers(self) -> None:
         log = self._log()
