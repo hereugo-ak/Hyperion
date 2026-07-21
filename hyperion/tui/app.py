@@ -1,8 +1,19 @@
-"""HYPERION TUI application. Spec §6 / §11 (Textual stack) / §19 (first-run).
+"""HYPERION TUI application.
 
-A single-screen command bridge. No splash detour, no box-in-box nesting
-(max 2 levels, §16). The premium feel comes from the motion layer
+A single-screen command bridge. The premium feel comes from the motion layer
 (`hyperion.tui.motion`) and the animated logo — not from decoration.
+
+Copy support
+------------
+Every visible surface is built on *selectable* Textual widgets (`Static`,
+`RichLog`), and `App.ALLOW_SELECT` is on, so a mouse click-drag highlights
+text and ``ctrl+shift+c`` copies the current selection to the system clipboard
+via OSC-52 (works in Windows Terminal, iTerm2, kitty, WezTerm, …).
+
+For terminals where Textual's mouse capture prevents the *terminal's own*
+click-drag selection (classic conhost / some PowerShell setups), launch with
+``hyperion shell --no-mouse``: Textual then never grabs the mouse, so the
+terminal handles selection & copy natively.
 """
 
 from __future__ import annotations
@@ -10,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from textual.app import App
+from textual.binding import Binding
 
 from hyperion.tui.screens.session import SessionScreen
 from hyperion.tui.theme import (
@@ -31,6 +43,18 @@ class HyperionApp(App):
     TITLE = "HYPERION"
     SUB_TITLE = "multi-agent consulting system"
 
+    # Native drag-to-select is on everywhere. Custom widgets that paint their
+    # own cells are avoided in favour of Static/RichLog so selection works.
+    ALLOW_SELECT = True
+
+    # Global copy bindings. ctrl+shift+c never collides with the prompt's
+    # printable input, and works while the prompt has focus.
+    BINDINGS = [
+        Binding("ctrl+shift+c", "copy_selection", "Copy", show=True),
+        Binding("ctrl+shift+a", "select_all", "Select all", show=True),
+        Binding("ctrl+q", "quit", "Quit", show=True),
+    ]
+
     CSS = f"""
     Screen {{
         background: {BG_CANVAS};
@@ -41,11 +65,23 @@ class HyperionApp(App):
         scrollbar-color: {BG_SURFACE};
         scrollbar-color-hover: {BRAND_VIOLET};
     }}
+    /* Selection highlight: brand violet wash, readable text. */
+    Screen {{
+        link-color: {BRAND_CYAN};
+    }}
     """
 
-    def __init__(self, reduced_motion: bool = False, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        reduced_motion: bool = False,
+        demo: bool = False,
+        mouse: bool = True,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self._reduced_motion = reduced_motion
+        self._demo = demo
+        self._want_mouse = mouse
 
     def on_mount(self) -> None:
         # Apply brand accents to Textual's theme variables where possible.
@@ -62,9 +98,62 @@ class HyperionApp(App):
             )
         except Exception:
             pass
-        self.push_screen(SessionScreen(reduced_motion=self._reduced_motion))
+        self.push_screen(
+            SessionScreen(reduced_motion=self._reduced_motion, demo=self._demo)
+        )
+
+    # ── copy actions ─────────────────────────────────────────────────────────
+
+    def action_copy_selection(self) -> None:
+        """Copy the current text selection to the clipboard (OSC-52)."""
+        text = self._gather_selection()
+        if not text:
+            self._toast("nothing selected — drag to highlight, then Ctrl+Shift+C")
+            return
+        try:
+            self.copy_to_clipboard(text)
+            n = len(text.splitlines()) or 1
+            self._toast(f"copied {len(text)} chars · {n} line(s)")
+        except Exception as exc:  # pragma: no cover - clipboard is best-effort
+            self._toast(f"copy failed: {exc}")
+
+    def action_select_all(self) -> None:
+        """Select the whole transcript so it can be copied at once."""
+        try:
+            screen = self.screen
+            if isinstance(screen, SessionScreen):
+                screen.select_all_transcript()
+                self._toast("transcript selected — Ctrl+Shift+C to copy")
+        except Exception:
+            pass
+
+    def _gather_selection(self) -> str:
+        """Return the currently selected text, if the Textual version exposes it."""
+        # Textual >= 3 keeps selections per-screen; try the documented helper.
+        try:
+            get_sel = getattr(self.screen, "get_selected_text", None)
+            if callable(get_sel):
+                sel = get_sel()
+                if sel:
+                    return sel
+        except Exception:
+            pass
+        # Fallback: ask the session screen for its transcript selection.
+        try:
+            screen = self.screen
+            if isinstance(screen, SessionScreen):
+                return screen.selected_transcript_text()
+        except Exception:
+            pass
+        return ""
+
+    def _toast(self, msg: str) -> None:
+        try:
+            self.notify(msg, timeout=3)
+        except Exception:
+            pass
 
 
-def run(reduced_motion: bool = False) -> None:
+def run(reduced_motion: bool = False, demo: bool = False, mouse: bool = True) -> None:
     """Entry point used by the CLI `shell` command."""
-    HyperionApp(reduced_motion=reduced_motion).run()
+    HyperionApp(reduced_motion=reduced_motion, demo=demo, mouse=mouse).run(mouse=mouse)

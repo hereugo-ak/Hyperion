@@ -1,23 +1,26 @@
-"""HYPERION prompt bar. Spec §9 (prompt) + §8.2 (cursor).
+"""HYPERION prompt bar — the command line (Content-native, premium cursor).
 
     ◈ hyperion@orchestrator ~ ❯ █
 
 - ◈ session glyph (violet), hyperion (cyan), @ (dim), agent context (violet),
   ~ scope (dim), ❯ caret (magenta), then a CYAN BLOCK cursor.
-- Cursor is a solid block █ (never underscore/bar). Blinks 500 ms on / 500 ms
-  off, step-end (no fade). During active generation it stops blinking and
-  shows a steady, faintly-glowing block; blink resumes when idle (§8.2).
-- Enter submits; ↑/↓ history (instant, no animation); Ctrl+C cancel,
-  Ctrl+L clear, Ctrl+D exit, F1 help.
+- Cursor is a solid block █ that blinks 530 ms on / 530 ms off (step-end, no
+  fade). During active generation it stops blinking and shows a steady,
+  faintly-glowing block; blink resumes when idle.
+- Enter submits; ↑/↓ history; Ctrl+C cancel, Ctrl+L clear, F1 help.
+
+Typed text is transient (it moves into the transcript on submit), so the
+prompt is a light custom widget — the copyable surfaces are the transcript
+and the metrics rail.
 """
 
 from __future__ import annotations
 
-from rich.text import Text
 from textual import events
 from textual.message import Message
 from textual.widget import Widget
 
+from hyperion.tui.content import build_line, span
 from hyperion.tui.motion.color import mix
 from hyperion.tui.theme import (
     BG_CANVAS,
@@ -28,7 +31,7 @@ from hyperion.tui.theme import (
     TEXT_PRIMARY,
 )
 
-_BLINK_MS = 500
+_BLINK_MS = 530
 
 
 class PromptSubmitted(Message):
@@ -61,7 +64,7 @@ class PromptBar(Widget, can_focus=True):
         self._agent = agent_context
         self._scope = scope
         self._cursor_on = True
-        self._busy = False  # steady glow while an engagement runs
+        self._busy = False
         self._history: list[str] = []
         self._hidx = 0
         self._blink_timer = None
@@ -71,7 +74,6 @@ class PromptBar(Widget, can_focus=True):
 
     def _blink(self) -> None:
         if self._busy:
-            # steady during generation — no toggle, keep it visible
             if not self._cursor_on:
                 self._cursor_on = True
                 self.refresh()
@@ -125,9 +127,6 @@ class PromptBar(Widget, can_focus=True):
         elif key == "ctrl+c":
             self.post_message(CancelTurn())
             event.stop()
-        elif key == "ctrl+d":
-            self.app.exit()
-            event.stop()
         elif event.is_printable and event.character:
             self._buffer += event.character
             self.refresh()
@@ -135,22 +134,20 @@ class PromptBar(Widget, can_focus=True):
 
     # ── render ──────────────────────────────────────────────────────────────────
 
-    def render(self) -> Text:
-        out = Text()
-        out.append("  ◈ ", style=BRAND_VIOLET)
-        out.append("hyperion", style=f"bold {BRAND_CYAN}")
-        out.append("@", style=TEXT_DIM)
-        out.append(self._agent, style=BRAND_VIOLET)
-        out.append(f" {self._scope} ", style=TEXT_DIM)
-        out.append("❯ ", style=f"bold {BRAND_MAGENTA}")
-        out.append(self._buffer, style=TEXT_PRIMARY)
-
-        # Block cursor — solid █, teleports (no easing). §8.2
+    def render(self):
+        spans = [
+            span("  ◈ ", BRAND_VIOLET),
+            span("hyperion", f"bold {BRAND_CYAN}"),
+            span("@", TEXT_DIM),
+            span(self._agent, BRAND_VIOLET),
+            span(f" {self._scope} ", TEXT_DIM),
+            span("❯ ", f"bold {BRAND_MAGENTA}"),
+            span(self._buffer, TEXT_PRIMARY),
+        ]
         if self._busy:
-            glow = mix(BG_CANVAS, BRAND_CYAN, 0.8)
-            out.append("█", style=glow)
+            spans.append(span("█", mix(BG_CANVAS, BRAND_CYAN, 0.8)))
         elif self._cursor_on:
-            out.append("█", style=BRAND_CYAN)
+            spans.append(span("█", BRAND_CYAN))
         else:
-            out.append(" ")
-        return out
+            spans.append(span(" ", ""))
+        return build_line(*spans)

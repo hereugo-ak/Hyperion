@@ -60,23 +60,45 @@ def _banner() -> None:
 @app.command()
 def shell(
     reduced_motion: bool = typer.Option(
-        False, "--reduced-motion", help="Disable shimmer/sweep/spinners (§13 accessibility)."
+        False, "--reduced-motion", help="Disable shimmer/sweep/spinners (accessibility)."
+    ),
+    demo: bool = typer.Option(
+        False, "--demo", help="Start in demo mode — preview the interface with no API keys."
+    ),
+    no_mouse: bool = typer.Option(
+        False,
+        "--no-mouse",
+        help=(
+            "Do not capture the mouse, so your terminal's own click-drag "
+            "text selection & copy keep working (classic conhost / PowerShell)."
+        ),
     ),
 ) -> None:
-    """Launch the HYPERION TUI — the interactive command bridge."""
+    """Launch the HYPERION TUI — the interactive command bridge.
+
+    Copy text with drag-to-highlight + Ctrl+Shift+C (works in Windows Terminal,
+    iTerm2, kitty, WezTerm). On terminals where that is blocked, relaunch with
+    ``--no-mouse`` and use your terminal's native selection instead.
+    """
     try:
         from hyperion.tui.app import HyperionApp
 
-        HyperionApp(reduced_motion=reduced_motion).run()
+        HyperionApp(reduced_motion=reduced_motion, demo=demo, mouse=not no_mouse).run(
+            mouse=not no_mouse
+        )
     except ImportError:
         console.print(f"[{ERROR}]Textual not installed. Run: pip install textual rich[/{ERROR}]")
         raise typer.Exit(code=1)
 
 
 @app.command()
-def boot(reduced_motion: bool = typer.Option(False, "--reduced-motion")) -> None:
+def boot(
+    reduced_motion: bool = typer.Option(False, "--reduced-motion"),
+    demo: bool = typer.Option(False, "--demo"),
+    no_mouse: bool = typer.Option(False, "--no-mouse"),
+) -> None:
     """Alias for `shell`."""
-    shell(reduced_motion=reduced_motion)
+    shell(reduced_motion=reduced_motion, demo=demo, no_mouse=no_mouse)
 
 
 # ── consult ─────────────────────────────────────────────────────────────────────
