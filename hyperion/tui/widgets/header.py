@@ -10,14 +10,14 @@ from textual.widgets import Static
 
 from hyperion.tui.content import build, span
 from hyperion.tui.theme import (
-    BRAND_CYAN,
-    BRAND_VIOLET,
+    CLAY,
+    SAGE,
     TEXT_DIM,
     TEXT_GHOST,
     TEXT_SECONDARY,
 )
 
-_DOT = "#3A4670"
+_DOT = SAGE
 
 
 class HeaderBar(Static):
@@ -27,7 +27,7 @@ class HeaderBar(Static):
     HeaderBar {
         height: 1;
         width: 100%;
-        background: #0C1120;
+        background: #1F1E1D;
     }
     """
 
@@ -46,10 +46,12 @@ class HeaderBar(Static):
     def _build(self, width: int):
         left_spans = [
             span("  ", ""),
-            span("● ● ● ", _DOT),
+            span("● ", _DOT),
+            span("HYPERION", f"bold {CLAY}"),
+            span("  ·  ", TEXT_DIM),
             span("copy: drag + Ctrl+Shift+C", TEXT_GHOST),
         ]
-        left_len = 2 + 6 + len("copy: drag + Ctrl+Shift+C")
+        left_len = 2 + 2 + len("HYPERION") + 5 + len("copy: drag + Ctrl+Shift+C")
 
         right_text = f"HYPERION · {self._version} · SESSION {self._session_id}  "
         right_len = len(right_text)
@@ -58,10 +60,8 @@ class HeaderBar(Static):
 
         spans = list(left_spans)
         spans.append(span(" " * pad, ""))
-        spans.append(span("HYPERION", f"bold {BRAND_CYAN}"))
-        spans.append(span(" · ", TEXT_DIM))
         spans.append(span(self._version, TEXT_SECONDARY))
         spans.append(span(" · ", TEXT_DIM))
-        spans.append(span(f"SESSION {self._session_id}", BRAND_VIOLET))
+        spans.append(span(f"session {self._session_id}", TEXT_DIM))
         spans.append(span("  ", ""))
         return build([spans])

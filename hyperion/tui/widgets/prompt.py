@@ -24,11 +24,11 @@ from hyperion.tui.content import build_line, span
 from hyperion.tui.motion.color import mix
 from hyperion.tui.theme import (
     BG_CANVAS,
-    BRAND_CYAN,
-    BRAND_MAGENTA,
-    BRAND_VIOLET,
+    CLAY,
+    CLAY_DEEP,
     TEXT_DIM,
     TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
 
 _BLINK_MS = 530
@@ -49,7 +49,7 @@ class CancelTurn(Message):
 
 
 class PromptBar(Widget, can_focus=True):
-    """Persistent bottom prompt with a blinking cyan block cursor."""
+    """Persistent bottom prompt with a blinking clay block cursor."""
 
     DEFAULT_CSS = """
     PromptBar {
@@ -136,18 +136,18 @@ class PromptBar(Widget, can_focus=True):
 
     def render(self):
         spans = [
-            span("  ◈ ", BRAND_VIOLET),
-            span("hyperion", f"bold {BRAND_CYAN}"),
+            span("  ", ""),
+            span("hyperion", f"bold {CLAY}"),
             span("@", TEXT_DIM),
-            span(self._agent, BRAND_VIOLET),
+            span(self._agent, TEXT_SECONDARY),
             span(f" {self._scope} ", TEXT_DIM),
-            span("❯ ", f"bold {BRAND_MAGENTA}"),
+            span("❯ ", f"bold {CLAY}"),
             span(self._buffer, TEXT_PRIMARY),
         ]
         if self._busy:
-            spans.append(span("█", mix(BG_CANVAS, BRAND_CYAN, 0.8)))
+            spans.append(span("▊", mix(BG_CANVAS, CLAY, 0.7)))
         elif self._cursor_on:
-            spans.append(span("█", BRAND_CYAN))
+            spans.append(span("▊", CLAY))
         else:
             spans.append(span(" ", ""))
         return build_line(*spans)

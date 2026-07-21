@@ -1,76 +1,103 @@
-"""HYPERION TUI theme — spec §4 colour system.
+"""HYPERION TUI theme — Claude / Anthropic brand palette.
 
-24-bit truecolor. No pure white (#FFFFFF), no pure black (#000000) — both read
-as cheap on truecolor terminals (§4.2). Every colour that appears on screen is
-declared here; nothing else is allowed (§16 acceptance checklist).
+Warm, editorial, calm. Clay-orange accent on a soft ink canvas with cream text.
+No neon. No pure white / pure black. This mirrors the Claude product surface
+(dark: #141413 canvas, #faf9f5 text, #d97757 clay accent).
+
+Reference palette (Anthropic brand):
+    Dark      #141413        Light/cream   #faf9f5
+    Surface   #1F1E1D        Mid gray      #b0aea5
+    Hairline  #2A2926        Light gray    #e8e6dc
+    Clay      #d97757  ← signature accent   Crail #c15f3c (deep clay)
+    Blue      #6a9bcc        Green         #7d9367        Gold #ca9a5a
 """
 
 from __future__ import annotations
 
-# NOTE: theme.py deliberately does NOT import hyperion.schemas / hyperion.config.
-# Rendering colours must never drag in pydantic / the settings stack. Agent names
-# are referenced as plain strings (matching AgentName.value) so the motion + theme
-# layer stays dependency-light and importable in isolation.
+# ── Canvas & surfaces ───────────────────────────────────────────────────────
 
-# ── §4.1 Palette ────────────────────────────────────────────────────────────
+BG_CANVAS = "#141413"      # Anthropic Dark — the whole terminal canvas
+BG_SURFACE = "#1F1E1D"     # slightly raised panels (roster / metrics)
+BG_SUNKEN = "#100F0E"      # code / quote wells
+BORDER_SUBTLE = "#2A2926"  # hairline dividers
+BORDER_BRAND = "#d97757"   # clay border when we want to draw the eye
 
-BG_CANVAS = "#0A0E1A"
-BG_SURFACE = "#111629"
-BORDER_SUBTLE = "#2A3350"
-BORDER_BRAND = "#8B5CF6"  # used at 30% via blending
+# ── Text ramp (warm neutrals) ────────────────────────────────────────────────
 
-TEXT_PRIMARY = "#E4E9F2"
-TEXT_SECONDARY = "#A8B3CF"
-TEXT_DIM = "#6B7A99"
-TEXT_GHOST = "#4A5878"
+TEXT_PRIMARY = "#F4F3EE"   # Pampas — primary reading text
+TEXT_SECONDARY = "#C9C6BC"  # secondary
+TEXT_DIM = "#B1ADA1"       # Cloudy — labels / meta
+TEXT_GHOST = "#6E6B63"     # faint scaffolding
 
-BRAND_CYAN = "#00D9FF"
-BRAND_VIOLET = "#8B5CF6"
-BRAND_MAGENTA = "#F0ABFC"
+# ── Accents (Claude signature clay + a small supporting set) ─────────────────
 
-SIG_SUCCESS = "#10D9A0"
-SIG_WARN = "#FFB627"
-SIG_ERROR = "#FF5C7A"
-SIG_INFO = "#7EE5FF"
+CLAY = "#d97757"           # THE accent — Claude orange
+CLAY_DEEP = "#c15f3c"      # Crail — deeper clay for gradient tail
+CLAY_SOFT = "#e0a08a"      # light clay for gradient head
+SKY = "#6a9bcc"            # calm blue (info / links)
+SAGE = "#7d9367"           # muted green (success)
+GOLD = "#ca9a5a"           # muted gold (warn / tools)
+ROSE = "#c96a6a"           # muted rose (error)
 
-# ── Logo gradient stops (§3.1): cyan → violet → soft magenta ────────────────
+# Back-compat aliases (old code referenced BRAND_* / SIG_*). All warm now.
+BRAND_CYAN = CLAY
+BRAND_VIOLET = CLAY_DEEP
+BRAND_MAGENTA = CLAY_SOFT
+SIG_SUCCESS = SAGE
+SIG_WARN = GOLD
+SIG_ERROR = ROSE
+SIG_INFO = SKY
 
-LOGO_STOPS = [BRAND_CYAN, BRAND_VIOLET, BRAND_MAGENTA]
-LOGO_DIM = "#3A4670"  # dim monochrome pre-sweep state (§3.2)
+# ── Logo gradient: soft clay → clay → deep clay (monochromatic, premium) ─────
 
-# ── Badge vocabulary (§7.1) + agent-specific tags (§7.2) ────────────────────
+LOGO_STOPS = [CLAY_SOFT, CLAY, CLAY_DEEP]
+LOGO_DIM = "#4A4640"       # pre-sweep dim state
+
+# ── Badge vocabulary + agent-specific tags ───────────────────────────────────
+# Restrained: clay for agent/thinking, sage/gold/rose/sky for signals, cloudy
+# for system. We intentionally do NOT rainbow every agent — calm > carnival.
 
 BADGE_COLORS: dict[str, str] = {
-    # Status vocabulary
-    "READY": SIG_SUCCESS,
-    "THINKING": BRAND_VIOLET,
-    "PLAN": BRAND_VIOLET,
-    "AGENT": BRAND_CYAN,
-    "TOOL": SIG_WARN,
-    "STREAM": SIG_INFO,
-    "DONE": SIG_SUCCESS,
-    "WARN": SIG_WARN,
-    "ERROR": SIG_ERROR,
-    "HANDOFF": BRAND_MAGENTA,
+    "READY": SAGE,
+    "THINKING": CLAY,
+    "PLAN": CLAY,
+    "AGENT": CLAY,
+    "TOOL": GOLD,
+    "STREAM": SKY,
+    "DONE": SAGE,
+    "WARN": GOLD,
+    "ERROR": ROSE,
+    "HANDOFF": SKY,
     "SYSTEM": TEXT_DIM,
-    "USER": BRAND_MAGENTA,
-    # Roster (deterministic colours from the accent ramp)
-    "ORCHESTRATOR": BRAND_VIOLET,
-    "DIRECTOR": BRAND_VIOLET,
-    "ANALYST": BRAND_CYAN,
-    "RESEARCHER": SIG_INFO,
-    "STRATEGIST": BRAND_VIOLET,
-    "CRITIC": SIG_ERROR,
-    "SYNTHESIZER": BRAND_MAGENTA,
-    "SYNTHESIS": BRAND_MAGENTA,
-    "QUALITY": SIG_WARN,
-    "FACTCHECK": SIG_INFO,
-    "DESIGNER": BRAND_MAGENTA,
-    "VISUAL": BRAND_CYAN,
+    "USER": CLAY,
+    "ORCHESTRATOR": CLAY,
+    "DIRECTOR": CLAY,
+    "ANALYST": CLAY,
+    "RESEARCHER": SKY,
+    "STRATEGIST": CLAY,
+    "CRITIC": ROSE,
+    "SYNTHESIZER": CLAY_DEEP,
+    "SYNTHESIS": CLAY_DEEP,
+    "QUALITY": GOLD,
+    "FACTCHECK": SKY,
+    "DESIGNER": CLAY_SOFT,
+    "VISUAL": SKY,
     "RENDER": TEXT_SECONDARY,
+    "MARKET": CLAY,
+    "COMPETE": SKY,
+    "FINANCE": SAGE,
+    "RISK": ROSE,
+    "REGULATORY": GOLD,
+    "TECH": SKY,
+    "OPS": TEXT_SECONDARY,
+    "ESG": SAGE,
+    "CONSUMER": CLAY_SOFT,
+    "M&A": GOLD,
+    "INNOVATE": CLAY,
+    "STRATEGY": CLAY,
+    "LIBRARY": SKY,
 }
 
-# Map internal agent name (AgentName.value strings) → short badge label (§7.2).
 AGENT_BADGE: dict[str, str] = {
     "engagement_director": "DIRECTOR",
     "synthesis_lead": "SYNTHESIS",
@@ -94,9 +121,7 @@ AGENT_BADGE: dict[str, str] = {
     "render_engine": "RENDER",
 }
 
-# Deterministic accent per specialist from the 3-accent ramp (§7.2 / §4.2:
-# never more than 3 accents visible — we cycle the brand trio + info).
-_ACCENT_RAMP = [BRAND_CYAN, BRAND_VIOLET, BRAND_MAGENTA, SIG_INFO]
+_ACCENT_RAMP = [CLAY, SKY, SAGE, GOLD]
 
 
 def badge_color(label: str) -> str:
@@ -104,7 +129,6 @@ def badge_color(label: str) -> str:
     up = label.upper()
     if up in BADGE_COLORS:
         return BADGE_COLORS[up]
-    # deterministic hash into the accent ramp
     idx = sum(ord(c) for c in up) % len(_ACCENT_RAMP)
     return _ACCENT_RAMP[idx]
 

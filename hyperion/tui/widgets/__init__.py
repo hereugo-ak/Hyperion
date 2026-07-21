@@ -4,13 +4,8 @@ All widgets are built on Textual ``Content`` and native selectable widgets
 (``Static`` / ``RichLog``), so every surface is copyable.
 """
 
+from hyperion.tui.banner import WORDMARK, hint_content, logo_content, roster_content
 from hyperion.tui.widgets.header import HeaderBar
-from hyperion.tui.widgets.logo import (
-    BANNER_LINE,
-    SUBBANNER_LINE,
-    WORDMARK,
-    HyperionLogo,
-)
 from hyperion.tui.widgets.metrics import AgentState, MetricsRail, Telemetry
 from hyperion.tui.widgets.prompt import (
     CancelTurn,
@@ -27,10 +22,10 @@ LogStream = Transcript
 
 __all__ = [
     "HeaderBar",
-    "HyperionLogo",
     "WORDMARK",
-    "BANNER_LINE",
-    "SUBBANNER_LINE",
+    "logo_content",
+    "roster_content",
+    "hint_content",
     "Transcript",
     "LogStream",
     "LogRow",

@@ -1,27 +1,31 @@
-"""HYPERION session screen — the command bridge (single screen, never blanks).
+"""HYPERION session screen — one single scrolling document.
 
-Layout — everything stays on ONE screen; nothing ever jumps to a blank page:
+The whole interface is ONE scroll surface. The wordmark, tagline and full agent
+roster are the first things written into it; every event the agents emit is
+appended below. Ask a question and the conversation simply grows downward —
+scroll back up at any moment and the logo and roster are still right there.
+Nothing is docked away, nothing collapses, and there is no empty middle band
+that reads as a "blank screen".
 
-    ┌ HEADER  ● ● ●  copy hint            HYPERION · v1.0 · SESSION 0x… ┐
-    ├──────────────────────────────────────────────────────────────────┤
-    │            [ ANIMATED HYPERION WORDMARK ]  ◆ banner ◆             │  ← collapses
-    │            (once you ask, it shrinks to a 1-line pinned strip)     │     to 1 line
-    ├───────────────────────────────────────────┬──────────────────────┤
-    │  [HH:MM:SS] BADGE  scrolling event log …   │  ◆ ENGAGEMENT         │
-    │  (RichLog — selectable + copyable)         │  ◆ AGENTS  3/5        │
-    │                                            │  ◆ RESOURCES          │
-    ├───────────────────────────────────────────┴──────────────────────┤
-    │  ◈ hyperion@orchestrator ~ ❯ █                                     │
-    └──────────────────────────────────────────────────────────────────┘
+    ┌ HYPERION · session · providers ─────────────────────┬ TELEMETRY ┐
+    │  ██╗  ██╗██╗   ██╗ … (wordmark, gradient)            │ status    │
+    │  Multi-Agent Consulting Intelligence                 │ elapsed   │
+    │                                                      │ phase     │
+    │  ROSTER · 20 specialist agents                       │           │
+    │    DIRECTOR   Engagement Director   decomposes …     │ AGENTS    │
+    │    MARKET     Market Analyst        TAM/SAM/SOM …     │  live …   │
+    │    …                                                 │           │
+    │  ──────────────────────────────────────────────     │ RESOURCES │
+    │  [12:00:03] READY   20 specialist agents online      │  tools    │
+    │  ❯ should India enter the EV market?                 │  tokens   │
+    │  [12:00:05] MARKET  sizing the addressable market ⠋  │           │
+    │  …                                                   │           │
+    ├──────────────────────────────────────────────────────┴───────────┤
+    │  ❯ ▊                                                              │
+    └────────────────────────────────────────────────────────────────────┘
 
-The logo strip stays pinned, the metrics rail is always visible, and the log
-scrolls independently — so you always see the identity, the live metrics, and
-step-by-step agent activity at the same time.
-
-Submitting a question launches the real ``WorkflowEngine.run_engagement()`` in
-a background task and streams ``AgentBus`` events into the log + metrics rail.
-If the orchestrator raises (e.g. a planner bug), the error is surfaced *inline*
-as an ERROR row — the screen never dead-ends or blanks.
+The transcript is a selectable RichLog, so drag-to-highlight + Ctrl+Shift+C
+copies anything on screen — logo, roster and events alike.
 """
 
 from __future__ import annotations
@@ -32,12 +36,13 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Static
 
+from hyperion.tui.banner import hint_content, logo_content, roster_content
+from hyperion.tui.roster import ROSTER
 from hyperion.tui.widgets.header import HeaderBar
-from hyperion.tui.widgets.logo import HyperionLogo
 from hyperion.tui.widgets.metrics import MetricsRail
 from hyperion.tui.widgets.prompt import (
     CancelTurn,
@@ -49,34 +54,31 @@ from hyperion.tui.widgets.rule import hr
 from hyperion.tui.widgets.transcript import LogRow, Transcript
 
 _HELP_LINES = [
-    "consult a question  →  just type it, e.g.  should india enter the EV market?",
-    "slash commands      →  /consult  /providers  /vault  /export  /demo  /clear  /help",
-    "copy text           →  drag to highlight, then Ctrl+Shift+C  (Ctrl+Shift+A selects all)",
-    "keys                →  Enter submit · ↑/↓ history · Ctrl+L clear · Ctrl+C cancel · Ctrl+Q quit",
+    "consult          →  just type a question, e.g.  should India enter the EV market?",
+    "/agents          →  show the full roster and what each specialist can do",
+    "/providers       →  check which model providers are online",
+    "/demo            →  run a simulated engagement (no API keys needed)",
+    "/clear  /help    →  reset the session · show this help",
+    "copy             →  drag to highlight, then Ctrl+Shift+C  (Ctrl+Shift+A = all)",
+    "keys             →  Enter submit · ↑/↓ history · Ctrl+L clear · Ctrl+C cancel · Ctrl+Q quit",
 ]
 
 
 class SessionScreen(Screen):
-    """Main HYPERION session — command bridge, not a chatbot."""
+    """Main HYPERION session — a single, always-scrollable command surface."""
 
     DEFAULT_CSS = """
     SessionScreen {
         layout: vertical;
-        background: #0A0E1A;
-        color: #E4E9F2;
+        background: #141413;
+        color: #F4F3EE;
     }
     #hdr { height: 1; dock: top; }
     #hdr-rule { height: 1; dock: top; }
-    #identity-block {
-        height: auto;
-        dock: top;
-        padding: 1 0;
-        align: center middle;
-    }
-    #identity-block.compact { padding: 0; height: 1; }
-    #pre-log-rule { height: 1; dock: top; }
+    /* the body fills everything between the header and the prompt — the
+       transcript itself owns the scroll, so there is never a dead region. */
     #body { height: 1fr; }
-    #log-stream { width: 1fr; height: 1fr; min-height: 3; }
+    #log-stream { width: 1fr; height: 1fr; }
     #metrics { height: 1fr; }
     #pre-prompt-rule { height: 1; dock: bottom; }
     #prompt { height: 1; dock: bottom; }
@@ -85,6 +87,8 @@ class SessionScreen(Screen):
     BINDINGS = [
         Binding("ctrl+c", "cancel", "Cancel", show=False),
         Binding("ctrl+l", "clear", "Clear", show=False),
+        Binding("ctrl+home", "scroll_top", "Top", show=False),
+        Binding("ctrl+end", "scroll_bottom", "Bottom", show=False),
         Binding("f1", "help", "Help", show=False),
     ]
 
@@ -92,7 +96,6 @@ class SessionScreen(Screen):
         super().__init__(**kwargs)
         self._reduced = reduced_motion
         self._demo = demo
-        self._collapsed = False
         self._session_id = "0x" + f"{random.randint(0, 0xFFFFFF):06X}"
         self._engagement_task: asyncio.Task | None = None
         self._bus_sub_id = "tui_session"
@@ -103,14 +106,6 @@ class SessionScreen(Screen):
     def compose(self) -> ComposeResult:
         yield HeaderBar(version="v1.0.0", session_id=self._session_id, id="hdr")
         yield Static(hr(), id="hdr-rule")
-        with Vertical(id="identity-block"):
-            yield HyperionLogo(
-                id="logo",
-                animated=not self._reduced,
-                reduced_motion=self._reduced,
-                show_intro=not self._reduced,
-            )
-        yield Static(hr(), id="pre-log-rule")
         with Horizontal(id="body"):
             yield Transcript(id="log-stream")
             yield MetricsRail(id="metrics")
@@ -119,10 +114,24 @@ class SessionScreen(Screen):
 
     def on_mount(self) -> None:
         self.query_one("#prompt", PromptBar).focus()
-        delay = 0.05 if self._reduced else 1.35
+        self._render_intro()
+        delay = 0.05 if self._reduced else 0.6
         self.set_timer(delay, self._show_ready)
         if self._demo:
             self.set_timer(delay + 0.4, self._start_demo)
+
+    def _render_intro(self) -> None:
+        """Write the wordmark + roster as the opening of the scroll document."""
+        log = self._log()
+        log.write_block(logo_content(), blank_after=1)
+        log.write_block(roster_content(online=len(ROSTER)), blank_after=1)
+        log.write_block(hint_content(), blank_after=1)
+        log.write_block(hr(), blank_after=1)
+        # keep the top (logo) in view on first paint
+        try:
+            log.scroll_home(animate=False)
+        except Exception:
+            pass
 
     def _log(self) -> Transcript:
         return self.query_one("#log-stream", Transcript)
@@ -131,7 +140,9 @@ class SessionScreen(Screen):
         return self.query_one("#metrics", MetricsRail)
 
     def _show_ready(self) -> None:
-        self._log().add_entry("READY", "7 specialist agents online · context primed")
+        self._log().add_entry(
+            "READY", f"{len(ROSTER)} specialist agents online · context primed"
+        )
 
     # ── selection / copy helpers used by the App ───────────────────────────────
 
@@ -151,9 +162,6 @@ class SessionScreen(Screen):
 
     def on_prompt_submitted(self, event: PromptSubmitted) -> None:
         value = event.value.strip()
-        if not self._collapsed:
-            self._collapse_identity()
-
         log = self._log()
         log.add_row(LogRow(badge="❯", content=value))
 
@@ -166,6 +174,8 @@ class SessionScreen(Screen):
             self.action_clear()
         elif cmd == "demo":
             self._start_demo()
+        elif cmd in ("agents", "roster"):
+            self._show_roster()
         elif cmd in ("providers", "provider"):
             self._run_providers()
         elif cmd.startswith("vault"):
@@ -343,8 +353,6 @@ class SessionScreen(Screen):
         if self._engagement_task and not self._engagement_task.done():
             self._log().add_entry("WARN", "already running — cancel first (Ctrl+C)", icon="▸")
             return
-        if not self._collapsed:
-            self._collapse_identity()
         self.query_one("#prompt", PromptBar).set_busy(True)
         self._active_rows.clear()
         self._metrics().start(phase="decompose")
@@ -423,6 +431,9 @@ class SessionScreen(Screen):
 
     # ── lightweight commands ────────────────────────────────────────────────────
 
+    def _show_roster(self) -> None:
+        self._log().write_block(roster_content(online=len(ROSTER)), blank_after=1)
+
     def _run_providers(self) -> None:
         log = self._log()
         try:
@@ -454,16 +465,6 @@ class SessionScreen(Screen):
         for line_text in _HELP_LINES:
             log.add_entry("SYSTEM", line_text)
 
-    # ── identity collapse ────────────────────────────────────────────────────────
-
-    def _collapse_identity(self) -> None:
-        self._collapsed = True
-        try:
-            self.query_one("#identity-block").add_class("compact")
-            self.query_one("#logo", HyperionLogo).set_compact(True)
-        except Exception:
-            pass
-
     # ── actions ──────────────────────────────────────────────────────────────────
 
     def on_clear_scrollback(self, event: ClearScrollback) -> None:
@@ -475,13 +476,8 @@ class SessionScreen(Screen):
     def action_clear(self) -> None:
         self._log().clear()
         self._active_rows.clear()
-        self._collapsed = False
         self._metrics().reset()
-        try:
-            self.query_one("#identity-block").remove_class("compact")
-            self.query_one("#logo", HyperionLogo).set_compact(False)
-        except Exception:
-            pass
+        self._render_intro()
         self.set_timer(0.1, self._show_ready)
 
     def action_cancel(self) -> None:
@@ -489,6 +485,12 @@ class SessionScreen(Screen):
             self._engagement_task.cancel()
             self._log().add_entry("WARN", "agent turn cancelled", icon="▸")
         self.query_one("#prompt", PromptBar).set_busy(False)
+
+    def action_scroll_top(self) -> None:
+        self._log().scroll_home(animate=True)
+
+    def action_scroll_bottom(self) -> None:
+        self._log().scroll_end(animate=True)
 
     def action_help(self) -> None:
         self._show_help()

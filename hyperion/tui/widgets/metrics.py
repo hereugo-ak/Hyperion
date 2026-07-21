@@ -31,8 +31,8 @@ from textual.widgets import Static
 from hyperion.tui.content import build, line, span
 from hyperion.tui.motion.indicators import spinner_span
 from hyperion.tui.theme import (
-    BRAND_CYAN,
-    BRAND_VIOLET,
+    CLAY,
+    CLAY_DEEP,
     SIG_ERROR,
     SIG_SUCCESS,
     SIG_WARN,
@@ -44,7 +44,7 @@ from hyperion.tui.theme import (
 )
 
 _STATE_STYLE = {
-    "working": (BRAND_CYAN, "working"),
+    "working": (CLAY, "working"),
     "waiting": (SIG_WARN, "waiting"),
     "done": (SIG_SUCCESS, "done"),
     "blocked": (SIG_ERROR, "blocked"),
@@ -87,8 +87,8 @@ class MetricsRail(Static):
         width: 36;
         min-width: 30;
         padding: 1 2;
-        background: #0C1120;
-        border-left: solid #1C2540;
+        background: #1A1918;
+        border-left: solid #2A2926;
     }
     """
 
@@ -169,7 +169,7 @@ class MetricsRail(Static):
     # ── build ─────────────────────────────────────────────────────────────────
 
     def _section(self, title: str, right: str = "") -> list:
-        spans = [span("◆ ", BRAND_VIOLET), span(title, f"bold {TEXT_SECONDARY}")]
+        spans = [span("▍ ", CLAY), span(title, f"bold {TEXT_SECONDARY}")]
         if right:
             spans.append(span("   ", ""))
             spans.append(span(right, TEXT_DIM))
@@ -184,7 +184,7 @@ class MetricsRail(Static):
 
         status_style = {
             "idle": TEXT_DIM,
-            "running": BRAND_CYAN,
+            "running": CLAY,
             "done": SIG_SUCCESS,
             "error": SIG_ERROR,
         }.get(t.status, TEXT_PRIMARY)
@@ -193,7 +193,7 @@ class MetricsRail(Static):
         lines.append(self._kv("status", t.status, status_style))
         el = int(t.elapsed())
         lines.append(self._kv("elapsed", f"{el//60:02d}:{el%60:02d}"))
-        lines.append(self._kv("phase", t.phase, BRAND_VIOLET))
+        lines.append(self._kv("phase", t.phase, CLAY_DEEP))
         lines.append(line(""))
 
         active = sum(1 for a in t.agents.values() if a.state == "working")
@@ -224,17 +224,17 @@ class MetricsRail(Static):
         lines.append(self._kv("tokens", tok))
         provs = sorted(t.providers)
         if not provs:
-            lines.append(self._kv("providers", "—", BRAND_CYAN))
+            lines.append(self._kv("providers", "—", CLAY))
         else:
             joined = " · ".join(provs)
             # ~19 usable cols for the value column in a width-36 rail; if the
             # joined list fits, keep it inline — otherwise stack one per line
             # so it never wraps mid-token ("· groq" orphaned on the next line).
             if len(joined) <= 19:
-                lines.append(self._kv("providers", joined, BRAND_CYAN))
+                lines.append(self._kv("providers", joined, CLAY))
             else:
-                lines.append(self._kv("providers", f"{len(provs)} active", BRAND_CYAN))
+                lines.append(self._kv("providers", f"{len(provs)} active", CLAY))
                 for name in provs:
-                    lines.append([span("    · ", TEXT_DIM), span(name, BRAND_CYAN)])
+                    lines.append([span("    · ", TEXT_DIM), span(name, CLAY)])
 
         return build(lines)

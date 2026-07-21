@@ -64,10 +64,11 @@ class Transcript(RichLog):
     DEFAULT_CSS = """
     Transcript {
         scrollbar-size: 1 1;
-        scrollbar-color: #2A3350;
-        scrollbar-background: #0A0E1A;
-        background: #0A0E1A;
-        padding: 0 1;
+        scrollbar-color: #4A4640;
+        scrollbar-color-hover: #d97757;
+        scrollbar-background: #141413;
+        background: #141413;
+        padding: 0 2;
     }
     """
 
@@ -79,6 +80,9 @@ class Transcript(RichLog):
             auto_scroll=True,
             **kwargs,
         )
+        # _blocks preserves document order for copy: each item is either a
+        # LogRow or a ("content", Content) tuple (logo / roster / raw block).
+        self._blocks: list = []
         self._rows: list[LogRow] = []
         self._live: list[LogRow] = []
         self._frame = 0
@@ -86,8 +90,21 @@ class Transcript(RichLog):
 
     # ── public API ──────────────────────────────────────────────────────────
 
+    def write_block(self, content: Content, *, blank_after: int = 0) -> None:
+        """Write a raw Content block (logo, roster, separators) into the scroll.
+
+        Kept in the copy surface via ``_blocks`` so select-all still captures it.
+        """
+        self._blocks.append(("content", content))
+        self.write(content, scroll_end=True)
+        for _ in range(blank_after):
+            blank = Content("")
+            self._blocks.append(("content", blank))
+            self.write(blank, scroll_end=True)
+
     def add_row(self, row: LogRow) -> LogRow:
         self._rows.append(row)
+        self._blocks.append(row)
         self._write_row(row)
         if row.animating():
             self._live.append(row)
@@ -151,6 +168,7 @@ class Transcript(RichLog):
 
     def clear(self) -> "Transcript":  # type: ignore[override]
         self._rows.clear()
+        self._blocks.clear()
         self._live.clear()
         super().clear()
         return self
@@ -171,9 +189,12 @@ class Transcript(RichLog):
         plain text here so drag-select / select-all / copy all work.
         """
         out: list[str] = []
-        for row in self._rows:
-            content = self._row_content(row)
-            out.extend(str(content).split("\n"))
+        for block in self._blocks:
+            if isinstance(block, tuple) and block and block[0] == "content":
+                out.extend(str(block[1]).split("\n"))
+            else:  # LogRow
+                content = self._row_content(block)
+                out.extend(str(content).split("\n"))
         return out
 
     def get_selection(self, selection):  # type: ignore[override]

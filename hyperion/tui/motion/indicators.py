@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 
 from hyperion.tui.motion.color import ramp
-from hyperion.tui.theme import BORDER_SUBTLE, BRAND_CYAN, BRAND_VIOLET, SIG_WARN, TEXT_DIM
+from hyperion.tui.theme import BORDER_SUBTLE, CLAY, CLAY_DEEP, CLAY_SOFT, SIG_WARN, TEXT_DIM
 
 Span = tuple[str, str]
 
@@ -26,15 +26,15 @@ BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 REDUCED_FRAMES = ["●", "○"]
 
 # Gradient used by both bars.
-_BAR_STOPS = [BRAND_CYAN, BRAND_VIOLET]
+_BAR_STOPS = [CLAY_SOFT, CLAY, CLAY_DEEP]
 
 
 def spinner_span(tick: int, reduced: bool = False) -> Span:
     """Return a single (glyph, style) span for the spinner at ``tick``."""
     if reduced:
-        return (REDUCED_FRAMES[tick % len(REDUCED_FRAMES)], BRAND_CYAN)
+        return (REDUCED_FRAMES[tick % len(REDUCED_FRAMES)], CLAY)
     glyph = BRAILLE_FRAMES[tick % len(BRAILLE_FRAMES)]
-    return (glyph, f"bold {BRAND_CYAN}")
+    return (glyph, f"bold {CLAY}")
 
 
 def progress_bar_spans(fraction: float, width: int = 20) -> list[Span]:
