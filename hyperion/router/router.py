@@ -51,7 +51,11 @@ from hyperion.router.providers.google import GoogleProvider
 from hyperion.router.providers.groq import GroqProvider
 from hyperion.router.providers.mistral import MistralProvider
 from hyperion.router.providers.nvidia import NvidiaProvider
+from hyperion.router.semantic_cache import ResponseCache
+from hyperion.router.speculative_racer import SpeculativeRacer
+from hyperion.router.structured_validator import StructuredValidator
 from hyperion.router.wait_gate import ProviderCandidate, SlidingWindowTracker, WaitGate
+from hyperion.obs import trace
 
 
 # Tier adjacency for fallback (§3.3: "> 30s wait: try adjacent tier")
@@ -136,6 +140,11 @@ class LLMRouter:
             reserve_fraction=self.settings.wait_gate.budget_reserve,
         )
         self.estimator = TokenEstimator()
+
+        # P13: Response cache + speculative racer + structured validator
+        self._response_cache = ResponseCache(ttl_seconds=3600)
+        self._speculative_racer = SpeculativeRacer(router=self)
+        self._structured_validator = StructuredValidator(router=self)
 
         # Model lookup: tier → list of (provider_type, model_spec)
         self._tier_models: dict[ModelTier, list[tuple[ProviderType, ModelSpec]]] = {}
@@ -263,6 +272,39 @@ class LLMRouter:
             agent_name=agent_name,
         )
 
+        # P13: Check response cache before hitting any provider
+        cached = self._response_cache.get(
+            tier=tier,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            use_semantic=(urgency != TaskUrgency.CRITICAL),
+        )
+        if cached is not None:
+            trace("cache", tier=tier.value, agent=agent_name, status="hit")
+            return cached
+
+        # P13: Speculative racing for DEEP tier (critical-path latency reduction)
+        if tier == ModelTier.DEEP and urgency == TaskUrgency.CRITICAL:
+            response = await self._speculative_racer.race(
+                tier=tier,
+                messages=messages,
+                agent_name=agent_name,
+                urgency=urgency,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
+            if response.success:
+                self._response_cache.set(
+                    tier=tier,
+                    messages=messages,
+                    response=response,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            return response
+
         # Try the requested tier first
         response = await self._try_tier(
             tier=tier,
@@ -276,6 +318,7 @@ class LLMRouter:
         )
 
         if response is not None and response.success:
+            self._response_cache.set(tier, messages, response, temperature, max_tokens)
             return response
 
         # If the requested tier failed, try adjacent tiers (§3.3)
@@ -300,6 +343,7 @@ class LLMRouter:
             )
 
             if response is not None and response.success:
+                self._response_cache.set(tier, messages, response, temperature, max_tokens)
                 return response
 
         # D9: If all adjacent tiers exhausted, try explicit downgrade
@@ -322,6 +366,7 @@ class LLMRouter:
                 response_format=response_format,
             )
             if response is not None and response.success:
+                self._response_cache.set(tier, messages, response, temperature, max_tokens)
                 return response
 
         # All tiers exhausted — return the last error response
