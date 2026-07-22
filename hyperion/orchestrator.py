@@ -37,6 +37,7 @@ from typing import Any
 from hyperion.agents.bus import Channel, MessageType, get_bus, reset_bus
 from hyperion.agents.engagement_director import EngagementDirector
 from hyperion.agents.synthesis_lead import SynthesisLead
+from hyperion.obs import ArtifactStore, RunJournal, RunManifest, trace
 from hyperion.schemas.agents import AgentName, AgentState
 from hyperion.schemas.models import (
     FactCheckReport,
@@ -238,6 +239,10 @@ class WorkflowEngine:
         self._all_findings: list[Any] = []  # collected from bus
         self._start_time: float = 0.0
         self._engagement_id: str = ""
+        # P10: Durable execution — journal, artifact store, manifest
+        self._journal: RunJournal | None = None
+        self._artifacts: ArtifactStore | None = None
+        self._manifest: RunManifest | None = None
 
     def _log(self, message: str) -> None:
         """Publish a log message to the TUI via Channel.TUI."""
@@ -352,7 +357,32 @@ class WorkflowEngine:
         - Render Engine receives: question, engagement_id, layout_plan
 
         The task is marked RUNNING before execution and COMPLETED/FAILED after.
+
+        P10: Before executing, check the RunJournal for a cached result.
+        If the step already succeeded with the same inputs, load the
+        cached artifact and skip execution entirely.
         """
+        # P10: Check journal for cached result (durable execution replay)
+        inputs_hash = self._compute_step_hash(task, dag)
+        if self._journal:
+            cached = self._journal.get_cached(task.id, inputs_hash)
+            if cached and cached.output_ref and self._artifacts:
+                cached_data = self._artifacts.load(task.id)
+                if cached_data is not None:
+                    trace("journal", step_id=task.id, status="cache_hit",
+                          agent=task.agent.value, run_id=self._engagement_id)
+                    task.status = TaskStatus.COMPLETED
+                    task.completed_at = time.time()
+                    # Reconstruct the output from cached data
+                    cached_obj = self._reconstruct_output(task.agent, cached_data)
+                    if cached_obj is not None:
+                        self._task_outputs[task.id] = cached_obj
+                        self._publish_task_update(task)
+                        # Re-collect findings from cached specialist outputs
+                        if hasattr(cached_obj, "_findings"):
+                            self._all_findings.extend(cached_obj._findings)
+                        return cached_obj
+
         agent = self._get_agent(task.agent)
         task.status = TaskStatus.RUNNING
         task.started_at = time.time()
@@ -528,6 +558,15 @@ class WorkflowEngine:
             self._task_outputs[task.id] = result
             self._publish_task_update(task)
 
+            # P10: Record success in journal + save artifact
+            if self._journal:
+                output_ref = ""
+                if self._artifacts:
+                    output_ref = self._artifacts.save(task.id, result)
+                self._journal.record_success(task.id, inputs_hash, output_ref)
+                trace("journal", step_id=task.id, status="success",
+                      agent=task.agent.value, run_id=self._engagement_id)
+
             # Collect findings for Fact Checker and Synthesis Lead
             if hasattr(agent, "_findings"):
                 findings_count = len(agent._findings)
@@ -557,6 +596,8 @@ class WorkflowEngine:
             task.status = TaskStatus.FAILED
             task.error = f"Task timed out after {timeout_used}s"
             self._publish_task_update(task)
+            if self._journal:
+                self._journal.record_failure(task.id, inputs_hash, f"timeout:{timeout_used}s")
             await self.bus.publish_status(
                 task.agent, AgentState.BLOCKED,
                 detail=f"timed out after {timeout_used}s",
@@ -566,6 +607,8 @@ class WorkflowEngine:
             task.status = TaskStatus.FAILED
             task.error = str(e)
             self._publish_task_update(task)
+            if self._journal:
+                self._journal.record_failure(task.id, inputs_hash, str(e)[:500])
             await self.bus.publish_status(
                 task.agent, AgentState.BLOCKED,
                 detail=str(e)[:200],
@@ -578,6 +621,58 @@ class WorkflowEngine:
             if task.agent == agent_name and task.id in self._task_outputs:
                 return self._task_outputs[task.id]
         return None
+
+    def _compute_step_hash(self, task: TaskNode, dag: WorkflowDAG) -> str:
+        """P10: Compute a deterministic hash of a step's inputs.
+
+        The inputs hash includes the task description, agent, dependencies'
+        outputs, and the engagement question — so any change in inputs
+        invalidates the cache and forces re-execution.
+        """
+        if self._journal is None:
+            return ""
+        inputs: dict[str, Any] = {
+            "agent": task.agent.value,
+            "description": task.description,
+            "question": dag.question,
+        }
+        for dep_id in task.dependencies:
+            if dep_id in self._task_outputs:
+                dep_output = self._task_outputs[dep_id]
+                if hasattr(dep_output, "model_dump"):
+                    inputs[dep_id] = dep_output.model_dump()
+                else:
+                    inputs[dep_id] = str(dep_output)[:500]
+        return self._journal.compute_inputs_hash(inputs)
+
+    def _reconstruct_output(self, agent_name: AgentName, cached_data: Any) -> Any:
+        """P10: Reconstruct a typed output object from cached JSON data.
+
+        Maps each agent to its expected output type so we can rebuild
+        the Pydantic model from the stored JSON artifact.
+        """
+        try:
+            if agent_name == AgentName.SYNTHESIS_LEAD:
+                return FinalReport.model_validate(cached_data)
+            elif agent_name == AgentName.QUALITY_GATE:
+                return QualityScore.model_validate(cached_data)
+            elif agent_name == AgentName.PRESENTATION_DESIGNER:
+                return LayoutPlan.model_validate(cached_data)
+            elif agent_name == AgentName.RENDER_ENGINE:
+                return RenderOutput.model_validate(cached_data)
+            elif agent_name == AgentName.DATA_VISUALIZER:
+                return VisualizationOutput.model_validate(cached_data)
+            elif agent_name == AgentName.FACT_CHECKER:
+                return FactCheckReport.model_validate(cached_data)
+            else:
+                # For specialists and others, return the raw dict —
+                # downstream consumers handle both typed and dict outputs
+                if isinstance(cached_data, dict):
+                    return cached_data
+                return cached_data
+        except Exception:
+            # If reconstruction fails, return raw data — better than crashing
+            return cached_data
 
     async def _execute_wave(self, tasks: list[TaskNode], dag: WorkflowDAG) -> list[Any]:
         """Execute a wave of independent tasks in parallel via asyncio.gather.
@@ -992,6 +1087,18 @@ class WorkflowEngine:
         self._start_time = time.time()
         self._engagement_id = f"eng_{uuid.uuid4().hex[:12]}"
 
+        # P10: Durable execution — open journal, artifact store, manifest
+        self._journal = RunJournal(self._engagement_id)
+        self._journal.open()
+        self._artifacts = ArtifactStore(self._engagement_id)
+        self._manifest = RunManifest(
+            run_id=self._engagement_id,
+            question=question,
+            conversation_context=conversation_context,
+        )
+        self._manifest.save()
+        trace("durable", run_id=self._engagement_id, status="journal_opened")
+
         # Use the existing bus if it's already running (TUI scenario),
         # otherwise create a fresh one for headless mode
         existing_bus = get_bus()
@@ -1188,6 +1295,20 @@ class WorkflowEngine:
                 f"PDF={'YES' if result.pdf_path else 'NO'}"
             )
 
+            # P10: Save final manifest metrics
+            if self._manifest:
+                self._manifest.record_final_metrics(
+                    duration_seconds=result.duration_seconds,
+                    quality_score=quality_score.total_score if quality_score else None,
+                    pdf_path=result.pdf_path,
+                    success=result.success,
+                    llm_calls=result.metadata.llm_calls_made if result.metadata else 0,
+                    tokens_consumed=result.metadata.tokens_consumed if result.metadata else 0,
+                )
+                self._manifest.save()
+                trace("durable", run_id=self._engagement_id, status="manifest_saved",
+                      success=result.success, duration=result.duration_seconds)
+
             # ─────────────────────────────────────────────────────────────
             # Save to Second Brain for future learning (§12.8)
             # ─────────────────────────────────────────────────────────────
@@ -1199,7 +1320,20 @@ class WorkflowEngine:
             result.error = str(e)
             result.duration_seconds = time.time() - self._start_time
             self._log(f"ENGAGEMENT FAILED: {type(e).__name__}: {e}")
+            # P10: Record failure in manifest
+            if self._manifest:
+                self._manifest.record_final_metrics(
+                    duration_seconds=result.duration_seconds,
+                    quality_score=None,
+                    pdf_path="",
+                    success=False,
+                )
+                self._manifest.save()
             return result
+        finally:
+            # P10: Close journal
+            if self._journal:
+                self._journal.close()
 
     async def close(self) -> None:
         """Clean up resources — close all agents and their tool clients."""
