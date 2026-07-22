@@ -53,10 +53,14 @@ Methodology (§4.5, Agent 16):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import re
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
@@ -276,6 +280,11 @@ class FactChecker(BaseAgent):
     # Suspicious round number thresholds
     ROUND_NUMBER_SUSPECTS = {10_000_000_000, 1_000_000_000, 100_000_000, 10_000_000}
     IMPLAUSIBLE_GROWTH_THRESHOLD = 300  # % YoY
+
+    # Concurrency limit for web verification searches
+    VERIFY_CONCURRENCY = 3
+    # Max claims to verify via web search (reduced from 50 to save search budget)
+    MAX_WEB_VERIFIED_CLAIMS = 30
 
     def __init__(
         self,
@@ -530,18 +539,65 @@ class FactChecker(BaseAgent):
         return all_claims
 
     # ─────────────────────────────────────────────────────────────────────
-    # Step 3: Search for verification (SearxNG + Jina + Obscura)
+    # Step 3: Search for verification (local corpus → SearXNG → Jina)
     # ─────────────────────────────────────────────────────────────────────
+
+    def _check_local_corpus(self, claim: Claim) -> list[Source]:
+        """Check if the claim is already supported by sources in the local findings.
+
+        Before hitting the web, scan all collected findings' sources for
+        content that already supports this claim. This avoids redundant
+        web searches for claims that are well-sourced by specialists.
+
+        Returns a list of Source objects from the local corpus that support
+        the claim, or an empty list if no local support is found.
+        """
+        local_sources: list[Source] = []
+        claim_lower = claim.claim.lower()
+        claim_words = set(w for w in claim_lower.split() if len(w) > 4)
+
+        for finding in self._all_findings:
+            # Check finding content for the claim
+            content_lower = (finding.content or "").lower()
+            if claim_lower in content_lower or claim_words & set(content_lower.split()):
+                # This finding's content references the claim — use its sources
+                for src_url in finding.sources[:3]:
+                    if not src_url:
+                        continue
+                    credibility = self._score_domain_credibility(src_url)
+                    local_sources.append(Source(
+                        id=f"local_{hashlib.md5(src_url.encode()).hexdigest()[:8]}",
+                        title=finding.title[:100],
+                        url=src_url,
+                        credibility=credibility,
+                        accessed_at=datetime.now(),
+                        key_data=finding.content[:500],
+                    ))
+
+        return local_sources
 
     async def _search_for_verification(self, claim: Claim) -> list[Source]:
         """Search for independent sources to verify a claim.
 
-        Uses SearxNG for search, Jina for content extraction, and Obscura
-        for JS-rendered pages. Returns a list of sources that may contain
-        verification data.
-        """
-        verification_sources: list[Source] = []
+        First checks the local corpus (specialist findings' sources) for
+        existing support. If the local corpus provides 2+ independent sources,
+        no web search is needed. Otherwise, falls back to SearXNG JSON API
+        + Jina for content extraction.
 
+        Obscura is NOT used — it's a Windows-only binary and fact-checking
+        should not spawn browsers per claim.
+        """
+        # Step 1: Check local corpus first (no web search needed)
+        local_sources = self._check_local_corpus(claim)
+        if len(local_sources) >= 2 and self._check_independence(local_sources):
+            logger.debug("Claim '%s' verified via local corpus — skipping web search",
+                         claim.claim[:50])
+            return local_sources
+
+        # Merge local sources with web results
+        verification_sources: list[Source] = list(local_sources)
+
+        # Step 2: Web search via SearXNG JSON API
         try:
             searxng = self.get_tool(ToolName.SEARXNG)
 
@@ -559,6 +615,10 @@ class FactChecker(BaseAgent):
                     if not url:
                         continue
 
+                    # Skip if already in local sources
+                    if any(s.url == url for s in verification_sources):
+                        continue
+
                     # Determine credibility from domain
                     credibility = self._score_domain_credibility(url)
 
@@ -573,27 +633,16 @@ class FactChecker(BaseAgent):
                     verification_sources.append(source)
 
         except (ValueError, AttributeError, RuntimeError) as e:
-            # Log the error — don't silently swallow it
-            try:
-                await self.bus.publish(
-                    channel=Channel.TUI,
-                    msg_type=MessageType.STATUS,
-                    sender=self.name,
-                    payload={
-                        "agent": self.name.value,
-                        "tool": "searxng",
-                        "action": "search_error",
-                        "detail": f"Fact checker SearxNG search failed: {e!s:.120}",
-                    },
-                )
-            except Exception:
-                pass
+            logger.warning("Fact checker SearXNG search failed: %s", e)
 
-        # Use Jina to extract content from top results for evidence chain validation
+        # Step 3: Use Jina to extract content from top results for evidence chain validation
         if verification_sources:
             try:
                 jina = self.get_tool(ToolName.JINA)
                 for source in verification_sources[:3]:
+                    # Skip local sources — they already have key_data
+                    if source.id.startswith("local_"):
+                        continue
                     try:
                         read_result = await jina.read(source.url)
                         if read_result and (read_result.markdown or read_result.content):
@@ -603,21 +652,6 @@ class FactChecker(BaseAgent):
                         continue
             except (ValueError, AttributeError, RuntimeError) as e:
                 await self._log_tool_use("jina", "call", f"FAIL · {e}", success=False)
-
-        # Use Obscura for JS-rendered pages if Jina didn't get content
-        if verification_sources and not any(s.key_data and len(s.key_data) > 100 for s in verification_sources):
-            try:
-                obscura = self.get_tool(ToolName.OBSCURA)
-                for source in verification_sources[:2]:
-                    try:
-                        fetch_result = await obscura.fetch(source.url)
-                        if fetch_result and (fetch_result.markdown or fetch_result.content):
-                            extracted = fetch_result.markdown or fetch_result.content
-                            source.key_data = (source.key_data or "") + " | " + extracted[:500]
-                    except (ValueError, AttributeError, RuntimeError):
-                        continue
-            except (ValueError, AttributeError, RuntimeError) as e:
-                await self._log_tool_use("obscura", "call", f"FAIL · {e}", success=False)
 
         return verification_sources
 
@@ -751,6 +785,8 @@ class FactChecker(BaseAgent):
 
         Prioritizes by claim type: NUMBER and DATE claims are most critical
         (they're the most checkable and the most damaging if wrong).
+        Uses bounded concurrency (VERIFY_CONCURRENCY) to avoid flooding
+        SearXNG with simultaneous requests.
         """
         # Sort by priority: NUMBER > DATE > EVENT > NAME > RELATIONSHIP > QUOTE
         priority_order = {
@@ -763,17 +799,25 @@ class FactChecker(BaseAgent):
         }
         sorted_claims = sorted(claims, key=lambda c: priority_order.get(c.claim_type, 99))
 
-        verified: list[Claim] = []
-        for claim in sorted_claims[:50]:  # Limit to top 50 claims for speed
-            verified_claim = await self._verify_claim(claim)
-            verified.append(verified_claim)
+        # Limit to top claims for web verification
+        claims_to_verify = sorted_claims[:self.MAX_WEB_VERIFIED_CLAIMS]
+
+        # Verify with bounded concurrency
+        semaphore = asyncio.Semaphore(self.VERIFY_CONCURRENCY)
+
+        async def _bounded_verify(claim: Claim) -> Claim:
+            async with semaphore:
+                return await self._verify_claim(claim)
+
+        verified = await asyncio.gather(*[_bounded_verify(c) for c in claims_to_verify])
+        verified_list = list(verified)
 
         # Add remaining claims as UNVERIFIED (not checked due to limit)
-        for claim in sorted_claims[50:]:
+        for claim in sorted_claims[self.MAX_WEB_VERIFIED_CLAIMS:]:
             claim.verification_notes = "Not checked (priority limit reached)"
-            verified.append(claim)
+            verified_list.append(claim)
 
-        return verified
+        return verified_list
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 5: Flag contradictions to Synthesis Lead
