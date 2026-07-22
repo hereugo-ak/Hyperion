@@ -32,7 +32,8 @@ dependencies = [
     "jinja2>=3.1.0",
     "markupsafe>=2.1.0",
     "plotly>=5.22.0",
-    "kaleido>=0.2.1",
+    "kaleido>=0.2.1,<1.0",  # D26: pin to static engine (v1.x needs Chrome)
+    "matplotlib>=3.8.0",  # D26: chart fallback when kaleido fails
     "pillow>=10.4.0",
 
     # TUI — Textual + Rich + Typer

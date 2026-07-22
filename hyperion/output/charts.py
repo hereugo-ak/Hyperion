@@ -196,7 +196,7 @@ class ChartGenerator:
             paper_bgcolor=CHART_PAPER_COLOR,
             plot_bgcolor=CHART_BG_COLOR,
             font=dict(
-                family="JetBrains Mono, monospace",
+                family="Source Sans 3, sans-serif",  # D24: body font
                 size=12,
                 color=CHART_TEXT_COLOR,
             ),
@@ -214,16 +214,16 @@ class ChartGenerator:
                 title=spec.x_label,
                 gridcolor=CHART_GRID_COLOR,
                 zerolinecolor=CHART_GRID_COLOR,
-                tickfont=dict(family="JetBrains Mono, monospace", size=10),
+                tickfont=dict(family="JetBrains Mono, monospace", size=10),  # D24: mono for numbers
             ),
             yaxis=dict(
                 title=spec.y_label,
                 gridcolor=CHART_GRID_COLOR,
                 zerolinecolor=CHART_GRID_COLOR,
-                tickfont=dict(family="JetBrains Mono, monospace", size=10),
+                tickfont=dict(family="JetBrains Mono, monospace", size=10),  # D24: mono for numbers
             ),
             legend=dict(
-                font=dict(family="JetBrains Mono, monospace", size=10),
+                font=dict(family="Source Sans 3, sans-serif", size=10),
                 bgcolor=CHART_BG_COLOR,
                 bordercolor=CHART_GRID_COLOR,
                 borderwidth=1,
@@ -252,7 +252,7 @@ class ChartGenerator:
                 x=0.5,
                 y=-0.15,
                 showarrow=False,
-                font=dict(family="JetBrains Mono, monospace", size=8, color="#8B8680"),
+                font=dict(family="Source Sans 3, sans-serif", size=8, color="#8B8680"),
             )
 
         # Add custom annotations
@@ -477,14 +477,149 @@ class ChartGenerator:
         }
         return creators.get(chart_type, self._create_bar)
 
+    def _generate_matplotlib(self, spec: ChartSpec) -> ChartResult:
+        """D26: Generate a chart using matplotlib as a fallback when kaleido/Plotly fails.
+
+        Uses the same brand colors and Tufte principles as the Plotly path.
+        Exports at 300 DPI via matplotlib's savefig.
+        """
+        result = ChartResult(spec=spec)
+
+        try:
+            import matplotlib
+            matplotlib.use("Agg")  # Headless backend
+            import matplotlib.pyplot as plt
+
+            colors = self._get_colors(spec)
+            bg_color = "#F5F4EE"
+            text_color = "#1A1A1A"
+            grid_color = "#E8E6DD"
+
+            fig, ax = plt.subplots(figsize=(8, 5), facecolor=bg_color)
+            ax.set_facecolor(bg_color)
+
+            chart_type = spec.chart_type
+
+            if chart_type == "bar":
+                x = spec.x_data
+                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+                    ax.bar(x, y_values, color=colors[i % len(colors)], label=name, alpha=0.95)
+                if spec.orientation == "h":
+                    ax.invert_yaxis()
+            elif chart_type == "line":
+                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+                    ax.plot(spec.x_data, y_values, color=colors[i % len(colors)], marker="o", markersize=4, linewidth=2, label=name)
+            elif chart_type == "scatter":
+                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+                    ax.scatter(spec.x_data, y_values, color=colors[i % len(colors)], alpha=0.7, s=40, label=name)
+            elif chart_type == "stacked_bar":
+                bottom = [0] * len(spec.x_data)
+                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+                    ax.bar(spec.x_data, y_values, bottom=bottom, color=colors[i % len(colors)], label=name)
+                    bottom = [b + v for b, v in zip(bottom, y_values)]
+            else:
+                # Default to bar for unsupported types in matplotlib fallback
+                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+                    ax.bar(spec.x_data, y_values, color=colors[i % len(colors)], label=name)
+
+            # Brand styling
+            ax.set_title(spec.title, fontsize=16, color=text_color, fontweight="normal", pad=15)
+            ax.set_xlabel(spec.x_label, fontsize=11, color=text_color)
+            ax.set_ylabel(spec.y_label, fontsize=11, color=text_color)
+            ax.tick_params(colors=text_color, labelsize=9)
+            ax.grid(True, color=grid_color, linewidth=0.5, alpha=0.7)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.spines["left"].set_color(grid_color)
+            ax.spines["bottom"].set_color(grid_color)
+
+            if len(spec.series_names) > 1:
+                ax.legend(fontsize=9, facecolor=bg_color, edgecolor=grid_color)
+
+            if spec.source:
+                fig.text(0.5, 0.01, f"Source: {spec.source}", ha="center", fontsize=7, color="#8B8680")
+
+            fig.tight_layout()
+
+            safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in spec.title.lower())[:50]
+            output_path = str(self._output_dir / f"{safe_title}_mpl.png")
+            fig.savefig(output_path, dpi=300, facecolor=bg_color, bbox_inches="tight")
+            plt.close(fig)
+
+            result.image_path = output_path
+            result.success = True
+            result.width = spec.width or self.DEFAULT_WIDTH
+            result.height = spec.height or self.DEFAULT_HEIGHT
+            result.dpi = 300
+            return result
+
+        except (ImportError, ValueError, RuntimeError, OSError) as e:
+            result.error = f"matplotlib fallback failed: {e}"
+            return result
+
+    def _generate_data_table(self, spec: ChartSpec) -> ChartResult:
+        """D26: Generate a styled HTML data table as the final fallback.
+
+        When both Plotly/kaleido and matplotlib fail, render the chart data
+        as a clean HTML table with brand styling. Never blank.
+        """
+        result = ChartResult(spec=spec)
+
+        try:
+            safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in spec.title.lower())[:50]
+            output_path = str(self._output_dir / f"{safe_title}_table.html")
+
+            # Build HTML table with brand styling
+            html_parts = [
+                '<div class="chart-data-table" style="font-family: Source Sans 3, sans-serif; background: #F5F4EE; padding: 1cm; border: 1px solid #E8E6DD;">',
+                f'<h3 style="font-family: Instrument Serif, serif; color: #1A1A1A; margin: 0 0 0.5cm 0;">{spec.title}</h3>',
+                '<table style="width: 100%; border-collapse: collapse; font-family: JetBrains Mono, monospace; font-size: 9pt;">',
+            ]
+
+            # Header row
+            header_cells = [f'<th style="background: #3D3530; color: #F5F4EE; padding: 6px 10px; text-align: left;">{spec.x_label or "Category"}</th>']
+            for name in spec.series_names:
+                header_cells.append(f'<th style="background: #3D3530; color: #F5F4EE; padding: 6px 10px; text-align: right;">{name}</th>')
+            html_parts.append("<tr>" + "".join(header_cells) + "</tr>")
+
+            # Data rows
+            for row_idx, x_val in enumerate(spec.x_data):
+                row_cells = [f'<td style="padding: 6px 10px; border-bottom: 1px solid #E8E6DD; color: #1A1A1A;">{x_val}</td>']
+                for series_idx in range(len(spec.series_names)):
+                    y_values = spec.y_data[series_idx] if series_idx < len(spec.y_data) else []
+                    val = y_values[row_idx] if row_idx < len(y_values) else ""
+                    row_cells.append(f'<td style="padding: 6px 10px; border-bottom: 1px solid #E8E6DD; text-align: right; color: #1A1A1A;">{val}</td>')
+                bg = ' style="background: #F5F4EE;"' if row_idx % 2 == 0 else ""
+                html_parts.append(f"<tr{bg}>" + "".join(row_cells) + "</tr>")
+
+            html_parts.append("</table>")
+
+            if spec.source:
+                html_parts.append(f'<p style="font-family: Source Sans 3, sans-serif; font-size: 8pt; color: #8B8680; margin-top: 0.3cm;">Source: {spec.source}</p>')
+
+            html_parts.append("</div>")
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(html_parts))
+
+            result.image_path = output_path
+            result.success = True
+            result.width = spec.width or self.DEFAULT_WIDTH
+            result.height = spec.height or self.DEFAULT_HEIGHT
+            result.dpi = 300
+            return result
+
+        except (OSError, ValueError, RuntimeError) as e:
+            result.error = f"Data table fallback failed: {e}"
+            return result
+
     def generate(self, spec: ChartSpec) -> ChartResult:
         """Generate a chart from a specification.
 
-        Implements the full methodology from §4.5:
-        1. Select chart type based on data shape (already in spec)
-        2. Generate chart with Plotly using brand colors
-        3. Export at scale=3 for 300 DPI
-        4. Return chart image path
+        D26: Three-tier fallback strategy:
+        1. Plotly + kaleido (preferred — interactive quality, scale=3 for 300 DPI)
+        2. matplotlib (headless fallback — same brand colors, Agg backend)
+        3. Styled HTML data table (final fallback — never blank)
 
         Args:
             spec: Chart specification with data, labels, and styling info.
@@ -492,26 +627,19 @@ class ChartGenerator:
         Returns:
             ChartResult with the generated chart image path.
         """
-        go, pio = self._import_plotly()
-
-        result = ChartResult(spec=spec)
-
+        # Tier 1: Plotly + kaleido
         try:
-            # Step 2: Generate chart with Plotly using brand colors
+            go, pio = self._import_plotly()
+            result = ChartResult(spec=spec)
+
             creator = self._get_chart_creator(spec.chart_type)
             fig = creator(spec, go)
-
-            # Apply brand styling
             fig = self._apply_brand_styling(fig, spec)
-
-            # Set figure size
             fig.update_layout(
                 width=spec.width or self.DEFAULT_WIDTH,
                 height=spec.height or self.DEFAULT_HEIGHT,
             )
 
-            # Step 3: Export at scale=3 for 300 DPI
-            # Generate filename from title
             safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in spec.title.lower())[:50]
             output_path = str(self._output_dir / f"{safe_title}.png")
 
@@ -529,12 +657,24 @@ class ChartGenerator:
             result.width = spec.width or self.DEFAULT_WIDTH
             result.height = spec.height or self.DEFAULT_HEIGHT
             result.dpi = 300
-
             return result
 
-        except (ValueError, RuntimeError, OSError, ImportError) as e:
-            result.error = str(e)
-            return result
+        except (ValueError, RuntimeError, OSError, ImportError) as plotly_err:
+            # Tier 2: matplotlib fallback
+            mpl_result = self._generate_matplotlib(spec)
+            if mpl_result.success:
+                return mpl_result
+
+            # Tier 3: styled HTML data table — never blank
+            table_result = self._generate_data_table(spec)
+            if table_result.success:
+                return table_result
+
+            # All tiers failed — return error result
+            return ChartResult(
+                spec=spec,
+                error=f"All chart tiers failed. Plotly: {plotly_err}. matplotlib: {mpl_result.error}. Table: {table_result.error}",
+            )
 
     def generate_batch(self, specs: list[ChartSpec]) -> list[ChartResult]:
         """Generate multiple charts.
