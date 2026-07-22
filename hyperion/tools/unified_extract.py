@@ -32,7 +32,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from hyperion.tools.crawl4ai import Crawl4AIClient, CrawlResult
+from hyperion.tools.camoufox_client import CamoufoxClient, CamoufoxResult
+from hyperion.tools.curl_cffi_client import CurlCffiClient, CurlCffiResult
 from hyperion.tools.jina import JinaClient, JinaReadResult
+from hyperion.tools.nodriver_client import NodriverClient, NodriverResult
 from hyperion.tools.obscura import ObscuraClient, ObscuraFetchResult
 from hyperion.tools.wayback import WaybackClient, WaybackContentResult
 
@@ -74,12 +77,20 @@ class UnifiedExtractResult:
 
 
 class UnifiedExtract:
-    """Unified extraction with fallback chain: Jina → Obscura → Crawl4AI → Wayback.
+    """Unified extraction with tiered cheap-first fallback chain.
 
-    Implements the tool selection logic from §5.2 and the extraction
-    fallback chain from §5.3. Tries Jina Reader first (fastest),
-    falls back to Obscura (JS rendering), then Crawl4AI (heavy extraction),
-    and finally Wayback Machine (archived pages).
+    P12: Implements the tiered cheap-first extraction ladder from IV.1.4:
+
+      Tier 0: curl_cffi (TLS fingerprint spoof — cheapest, no browser)
+      Tier 1: Jina Reader (fast, clean markdown extraction)
+      Tier 2: Obscura (JS rendering — local binary)
+      Tier 3: nodriver (undetected Chrome — for JS-heavy anti-bot sites)
+      Tier 4: Crawl4AI (heavy extraction, PDFs)
+      Tier 5: Camoufox (stealth Firefox — nuclear option for anti-bot)
+      Tier 6: Wayback (archived version — last resort)
+
+    Each tier is tried in order. If a tier succeeds with quality content,
+    we return immediately — no need to try more expensive tiers.
 
     Usage:
         extractor = UnifiedExtract(settings=settings)
@@ -93,6 +104,9 @@ class UnifiedExtract:
     OBSCURA_TIMEOUT = 60
     CRAWL4AI_TIMEOUT = 120
     WAYBACK_TIMEOUT = 30
+    CURL_CFFI_TIMEOUT = 20
+    NODRIVER_TIMEOUT = 30
+    CAMOUFOX_TIMEOUT = 30
 
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
@@ -100,6 +114,10 @@ class UnifiedExtract:
         self._obscura: ObscuraClient | None = None
         self._crawl4ai: Crawl4AIClient | None = None
         self._wayback: WaybackClient | None = None
+        # P12: New stealth extraction tiers
+        self._curl_cffi: CurlCffiClient | None = None
+        self._nodriver: NodriverClient | None = None
+        self._camoufox: CamoufoxClient | None = None
 
     async def _get_jina(self) -> JinaClient:
         if self._jina is None:
@@ -120,6 +138,21 @@ class UnifiedExtract:
         if self._wayback is None:
             self._wayback = WaybackClient(settings=self.settings)
         return self._wayback
+
+    async def _get_curl_cffi(self) -> CurlCffiClient:
+        if self._curl_cffi is None:
+            self._curl_cffi = CurlCffiClient(settings=self.settings)
+        return self._curl_cffi
+
+    async def _get_nodriver(self) -> NodriverClient:
+        if self._nodriver is None:
+            self._nodriver = NodriverClient(settings=self.settings)
+        return self._nodriver
+
+    async def _get_camoufox(self) -> CamoufoxClient:
+        if self._camoufox is None:
+            self._camoufox = CamoufoxClient(settings=self.settings)
+        return self._camoufox
 
     def _is_quality_content(self, content: str) -> bool:
         """Check if extracted content meets quality thresholds."""
@@ -154,6 +187,28 @@ class UnifiedExtract:
         """
         tools_tried: list[str] = []
         errors: list[str] = []
+
+        # P12: Tier 0 — curl_cffi (TLS fingerprint spoof — cheapest)
+        if not force_js_render:
+            tools_tried.append("curl_cffi")
+            try:
+                cffi = await self._get_curl_cffi()
+                cffi_result = await cffi.fetch(url, timeout=self.CURL_CFFI_TIMEOUT)
+
+                if cffi_result.success and self._is_quality_content(cffi_result.markdown):
+                    return UnifiedExtractResult(
+                        url=url,
+                        content=cffi_result.markdown,
+                        markdown=cffi_result.markdown,
+                        tool_used="curl_cffi",
+                        tools_tried=tools_tried,
+                        success=True,
+                    )
+                elif cffi_result.error:
+                    errors.append(f"curl_cffi: {cffi_result.error}")
+
+            except (ConnectionError, RuntimeError, OSError) as e:
+                errors.append(f"curl_cffi: {e}")
 
         # Step 1: Jina Reader (fastest — try first unless JS rendering is required)
         if not force_js_render:
@@ -200,7 +255,30 @@ class UnifiedExtract:
         except (ConnectionError, RuntimeError, OSError) as e:
             errors.append(f"Obscura: {e}")
 
-        # Step 3: Crawl4AI (heavy extraction — for complex pages, PDFs)
+        # P12: Tier 3 — nodriver (undetected Chrome — for JS-heavy anti-bot sites)
+        tools_tried.append("nodriver")
+        try:
+            nodriver = await self._get_nodriver()
+            nodriver_result = await nodriver.extract(url, timeout=self.NODRIVER_TIMEOUT)
+
+            if nodriver_result.success and self._is_quality_content(nodriver_result.content):
+                return UnifiedExtractResult(
+                    url=url,
+                    title=nodriver_result.title,
+                    content=nodriver_result.content,
+                    markdown=nodriver_result.markdown,
+                    html=nodriver_result.html,
+                    tool_used="nodriver",
+                    tools_tried=tools_tried,
+                    success=True,
+                )
+            elif nodriver_result.error:
+                errors.append(f"nodriver: {nodriver_result.error}")
+
+        except (ConnectionError, RuntimeError, OSError) as e:
+            errors.append(f"nodriver: {e}")
+
+        # Step 4: Crawl4AI (heavy extraction — for complex pages, PDFs)
         tools_tried.append("crawl4ai")
         try:
             crawl4ai = await self._get_crawl4ai()
@@ -250,6 +328,29 @@ class UnifiedExtract:
 
         except (ConnectionError, RuntimeError, OSError) as e:
             errors.append(f"Wayback: {e}")
+
+        # P12: Tier 5 — Camoufox (stealth Firefox — nuclear option)
+        tools_tried.append("camoufox")
+        try:
+            camoufox = await self._get_camoufox()
+            camoufox_result = await camoufox.extract(url, timeout=self.CAMOUFOX_TIMEOUT)
+
+            if camoufox_result.success and self._is_quality_content(camoufox_result.content):
+                return UnifiedExtractResult(
+                    url=url,
+                    title=camoufox_result.title,
+                    content=camoufox_result.content,
+                    markdown=camoufox_result.markdown,
+                    html=camoufox_result.html,
+                    tool_used="camoufox",
+                    tools_tried=tools_tried,
+                    success=True,
+                )
+            elif camoufox_result.error:
+                errors.append(f"Camoufox: {camoufox_result.error}")
+
+        except (ConnectionError, RuntimeError, OSError) as e:
+            errors.append(f"Camoufox: {e}")
 
         # All tools failed
         return UnifiedExtractResult(
@@ -338,6 +439,12 @@ class UnifiedExtract:
             await self._crawl4ai.close()
         if self._wayback:
             await self._wayback.close()
+        if self._curl_cffi:
+            await self._curl_cffi.close()
+        if self._nodriver:
+            await self._nodriver.close()
+        if self._camoufox:
+            await self._camoufox.close()
 
     async def __aenter__(self) -> UnifiedExtract:
         return self

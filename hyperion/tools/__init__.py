@@ -8,6 +8,8 @@ it does need. This is deliberate — tool assignment is a design decision.
 
 from hyperion.tools.alpha_vantage import AlphaVantageClient, FundamentalData, StockQuote, TimeSeriesData
 from hyperion.tools.crawl4ai import Crawl4AIClient, CrawlResult
+from hyperion.tools.camoufox_client import CamoufoxClient, CamoufoxResult
+from hyperion.tools.curl_cffi_client import CurlCffiClient, CurlCffiResult
 from hyperion.tools.deep_search import DeepSearchClient, DeepSearchResult, ExtractedContent
 from hyperion.tools.evidence_scorer import EvidenceScorer, EvidenceSummary, ScoredResult
 from hyperion.tools.flaresolverr import FlareBreaker, FlareSolverrClient, FlareSolverrResult
@@ -16,6 +18,7 @@ from hyperion.tools.search_budget import SearchBudget
 from hyperion.tools.fred import FredClient, FREDSeries, FREDSearchResult
 from hyperion.tools.http_extract import HttpExtractClient, HttpExtractResult
 from hyperion.tools.jina import JinaClient, JinaReadResult, JinaSearchResponse, JinaSearchResult
+from hyperion.tools.nodriver_client import NodriverClient, NodriverResult
 from hyperion.tools.obscura import ObscuraClient, ObscuraFetchResult, ObscuraScrapeResult
 from hyperion.tools.scrapling import ScraplingBatchResult, ScraplingClient, ScraplingResult
 from hyperion.tools.searxng import SearxNGClient, SearchResponse, SearchResult
@@ -63,6 +66,13 @@ __all__ = [
     "FlareSolverrClient",
     "FlareSolverrResult",
     "FlareBreaker",
+    # P12: Stealth Extraction
+    "CurlCffiClient",
+    "CurlCffiResult",
+    "NodriverClient",
+    "NodriverResult",
+    "CamoufoxClient",
+    "CamoufoxResult",
     # Search Budget + Query Hygiene
     "SearchBudget",
     "normalize_query",
