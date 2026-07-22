@@ -399,6 +399,116 @@ class PDFRenderer:
         except Exception:
             return False
 
+    def _embed_images_as_data_uris(self, html: str) -> str:
+        """Convert img src file paths to base64 data URIs (D17 fix).
+
+        WeasyPrint and Playwright can't reliably load images from absolute
+        Windows paths (C:\\...) or relative paths. Embedding as data URIs
+        makes the HTML self-contained — no external file dependencies.
+
+        Handles:
+        - <img src="C:\\path\\to\\image.png">  → <img src="data:image/png;base64,...">
+        - <img src="path/to/image.png">       → resolved relative to cwd
+        - <img src="data:image/...">          → already embedded, skip
+        - <img src="https://...">             → remote URL, skip
+        """
+        import re
+        import base64
+
+        # Match img src attributes
+        img_pattern = re.compile(r'<img\s+[^>]*src="([^"]+)"', re.IGNORECASE)
+
+        def replace_src(match: re.Match[str]) -> str:
+            src = match.group(1)
+
+            # Skip already-embedded data URIs
+            if src.startswith("data:"):
+                return match.group(0)
+
+            # Skip remote URLs
+            if src.startswith("http://") or src.startswith("https://"):
+                return match.group(0)
+
+            # Resolve to absolute path
+            img_path = Path(src)
+            if not img_path.is_absolute():
+                img_path = Path.cwd() / img_path
+
+            if not img_path.exists():
+                return match.group(0)  # Leave as-is if file doesn't exist
+
+            # Determine MIME type
+            ext = img_path.suffix.lower()
+            mime_map = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".svg": "image/svg+xml",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+            }
+            mime_type = mime_map.get(ext, "application/octet-stream")
+
+            # Read and encode
+            try:
+                img_data = img_path.read_bytes()
+                b64 = base64.b64encode(img_data).decode("ascii")
+                new_src = f"data:{mime_type};base64,{b64}"
+                return match.group(0).replace(src, new_src)
+            except (OSError, ValueError):
+                return match.group(0)
+
+        return img_pattern.sub(replace_src, html)
+
+    def _embed_fonts_in_css(self, css_content: str) -> str:
+        """Convert @font-face src url() to base64 data URIs in CSS (D17 fix).
+
+        Ensures fonts are embedded when using the Playwright fallback,
+        which doesn't resolve relative url() references in CSS.
+        """
+        import re
+        import base64
+
+        # Match url("...") inside @font-face src declarations
+        url_pattern = re.compile(r'url\("([^"]+)"\)', re.IGNORECASE)
+
+        def replace_url(match: re.Match[str]) -> str:
+            url = match.group(1)
+
+            # Skip data URIs and remote URLs
+            if url.startswith("data:") or url.startswith("http"):
+                return match.group(0)
+
+            # Resolve relative to the CSS file location
+            font_path = self.CSS_PATH.parent / url
+            if not font_path.exists():
+                # Try relative to cwd
+                font_path = Path(url)
+                if not font_path.is_absolute():
+                    font_path = Path.cwd() / font_path
+
+            if not font_path.exists():
+                return match.group(0)
+
+            ext = font_path.suffix.lower()
+            mime_map = {
+                ".ttf": "font/ttf",
+                ".otf": "font/otf",
+                ".woff": "font/woff",
+                ".woff2": "font/woff2",
+            }
+            mime_type = mime_map.get(ext, "application/octet-stream")
+
+            try:
+                font_data = font_path.read_bytes()
+                b64 = base64.b64encode(font_data).decode("ascii")
+                return f'url("data:{mime_type};base64,{b64}")'
+            except (OSError, ValueError):
+                return match.group(0)
+
+        return url_pattern.sub(replace_url, css_content)
+
     def render_pdf(
         self,
         html: str,
@@ -435,10 +545,16 @@ class PDFRenderer:
         if additional_css:
             css_content += "\n" + additional_css
 
+        # D17: Embed fonts as data URIs for Playwright fallback compatibility
+        css_embedded = self._embed_fonts_in_css(css_content)
+
         # Combine cover + body if cover is provided
         full_html = html
         if cover_html:
             full_html = cover_html + '<div class="page-break"></div>' + html
+
+        # D17: Embed images as base64 data URIs so HTML is self-contained
+        full_html = self._embed_images_as_data_uris(full_html)
 
         # Save HTML for debugging
         html_path = output_path.replace(".pdf", ".html")
@@ -492,7 +608,7 @@ class PDFRenderer:
             result.warnings.append(f"WeasyPrint failed: {weasy_error!s:.120}")
 
         # ── Attempt 2: Playwright Chromium fallback ──
-        if self._render_pdf_playwright(full_html, output_path, css_content):
+        if self._render_pdf_playwright(full_html, output_path, css_embedded):
             result.pdf_path = output_path
             result.success = True
             result.file_size_bytes = os.path.getsize(output_path)
