@@ -1364,3 +1364,469 @@ TUI `tui_sink` renders a compact rolling view + a status strip (stage, per-agent
 - [ ] Quality floor: below-floor → `DRAFT — INSUFFICIENT DATA` watermark + gap list; above-floor → clean final.
 - [ ] `trace.jsonl` + TUI dashboard make every failure self-explaining.
 - [ ] T1/T2/T3 acceptance tests pass.
+
+---
+---
+
+# PART III — DEEP PER-LEVEL FORENSIC AUDIT (upgrade)
+
+> **Why this part exists.** Part I/II proved *that* the pipeline breaks and gave the rebuild blueprint. Part III goes one level lower and audits **every layer independently** — each LLM tier, each tool, each agent, each sub-agent, and every wire that connects them — against the **actual runtime environment** (verified by running the interpreter and inspecting the installed binaries/packages, not by reading docstrings). It also answers the specific questions raised: *what is the MAIN problem, why are designer agents never used, why do reports look like trash, is extraction broken, is Obscura used properly, how do we make the architecture stealthy, and what else should we add.*
+>
+> **General-purpose framing (non-negotiable).** HYPERION is a **proprietary engine that must serve many question types and workflows** (go/no-go, comparison, forecast, diagnostic, optimization, M&A, regulatory, sustainability, generic research). Every finding and fix below is written to be **query-agnostic**. The India-AI example is used only as a reproduction case; nothing in the fix set may hard-code a domain, geography, ticker, or sector. Where the current code leaks a specific assumption, that leak is itself flagged as a defect.
+>
+> **Scope reminder:** Reddit and the academic/semantic-scholar path stay **deliberately excluded**. They are not part of any fix here. OpenAlex is treated as an *optional* keyless structured source, not an academic-search dependency.
+
+---
+
+## III.0 — The MAIN problem, stated once, precisely
+
+You asked whether the main problem is *"not enough context, not enough content, or the search stack not working."* The honest answer, from the evidence:
+
+**It is primarily a CONTENT problem caused by a SEARCH-AND-EXTRACTION-STACK problem, which then cascades into a CONTEXT problem and finally a DELIVERY problem. It is not one bug; it is one *fault line* running through four layers, and every layer fails silently instead of loudly.**
+
+The single causal chain, top to bottom:
+
+```
+(1) SEARCH mis-wired        searxng.py ignores SearXNG, routes to FlareSolverr→Google/DDG
+        │                    → CAPTCHA/soft-blocks, throttling, a shared Chrome that OOM-crashes
+        ▼
+(2) EXTRACTION dead on host  Obscura is a *Windows .exe* on a *Linux* host → cannot execute;
+        │                    every fetch returns "binary not found", swallowed at debug level
+        │                    → sub-agents receive ~0 usable characters
+        ▼
+(3) CONTENT starvation       specialists analyze near-empty raw_data → emit "gap" findings
+        │                    → few real KeyFindings, tiny source counts ("1 unique source")
+        ▼
+(4) CONTEXT collapse         thin findings + bus-timing loss → Synthesis has almost nothing to
+        │                    reconcile; DEEP tier (RPD 500 / RPD 20) starves; 300s deep-dives
+        │                    → Synthesis times out → returns None → "did not produce a FinalReport"
+        ▼
+(5) DELIVERY never runs      orchestrator returns *before Stage 5* when final_report is None
+        │                    → Presentation Designer / Data Visualizer / Render Engine NEVER execute
+        ▼
+(6) EVEN IF it ran           WeasyPrint not installed + no system Chrome → both PDF paths fail;
+                             jinja2.Markup import is dead → HTML double-escaped; abs Windows paths
+                             → the only artifact is a broken .html with escaped tags and C:\ images
+```
+
+So, in one sentence: **the search stack is mis-wired AND the primary extractor physically cannot run on the host, which starves every downstream layer of content; the system then hides each failure, so the symptom you see (garbage report after 15–25 min, "did not produce a FinalReport") is the *last* domino, not the first.**
+
+Everything in Part III is organized to attack this fault line at each level so that (a) content actually arrives, (b) failures are loud, and (c) partial success still produces an honest deliverable.
+
+
+---
+
+## III.1 — Per-LLM forensic audit (5 providers × 5 tiers)
+
+> **Framing (general-purpose, not example-specific):** HYPERION is a *proprietary orchestration engine*, not a wrapper around one model. The LLM layer is a **5-provider, 5-tier substitution fabric**: any tier request must be satisfiable from *more than one provider* so that a single provider's rate-limit floor never becomes the system's ceiling. Below, each tier is audited against the **config-verified** limits in `hyperion/config.py`. The verdict for each is written as a *routing invariant*, so it holds for any query type or workflow — not for one report.
+
+### III.1.0 How the tiers are supposed to behave
+
+| Tier | Intended role in the DAG | Output budget (`TIER_OUTPUT_BUDGET`) | Who calls it |
+|------|--------------------------|--------------------------------------|--------------|
+| MICRO | Sub-agent scouting, extraction summarization, cheap classification | 500 | juniors spawned by specialists |
+| FAST | Fact-checker, light specialist reasoning, sub-agent analysis | 2 000 | fact_checker, sub_agents |
+| STANDARD | Specialist main reasoning, data visualizer, render engine | 4 000 | market/tech/etc. specialists, delivery |
+| STRONG | Quality gate, presentation designer, contradiction-heavy specialists | 8 000 | quality_gate, presentation_designer |
+| DEEP | Synthesis Lead (whole-report reasoning) | 16 000 | synthesis_lead |
+
+The invariant that must hold: **every tier is reachable from ≥2 providers, and the router's adjacency ladder must let a starved tier borrow a neighbouring tier on a *different* provider.** Today it does not. That is the LLM-layer root cause.
+
+### III.1.1 GOOGLE — the DEEP-tier starvation source
+
+Config-verified models:
+
+| Model | Tier | rpm | tpm | rpd | tpd | Verdict |
+|-------|------|-----|-----|-----|-----|---------|
+| gemma-4-31b | MICRO | 30 | 16k | 14 400 | — | Healthy for scouting. Fine. |
+| gemma-4-26b | MICRO | 30 | 16k | 14 400 | — | Redundant MICRO, fine as backup. |
+| gemini-3.1-flash-lite | DEEP | 15 | 250k | **500** | — | **RPD 500 is the softest DEEP floor.** Survivable *only* if DEEP is called ≤ a few times/run. |
+| gemini-3.5-flash | DEEP | 15 | 250k | **20** | — | **RPD 20 = effectively unusable** as a workhorse. One heavy run can exhaust it. |
+| gemini-3-flash | DEEP | 15 | 250k | **20** | — | Same RPD-20 trap. |
+
+**Problem P-G1 (DEEP daily-cap starvation):** Google supplies most of the DEEP capacity, but two of its three DEEP models are capped at **RPD 20**, and the "good" one at **RPD 500**. Synthesis Lead makes *multiple* DEEP calls per run (`_identify_critical_path` 681, `_draft_recommendation` 764, one `_build_one_section` per section ~920, plus contradiction deep-dives). A single multi-section report can burn 8–15 DEEP calls. Across a day of testing the RPD-20 models die almost immediately, leaving only flash-lite (RPD 500), and when *it* throttles, **the DEEP tier has no non-Google fallback that is genuinely DEEP-class** except NVIDIA ultra-550b (slow, see III.1.2).
+**Problem P-G2 (no STANDARD Google model):** Google contributes **nothing** to STANDARD. Every STANDARD request must land on Groq or NVIDIA or Mistral — see III.1.4 for why that's fragile.
+**Fix invariant:** DEEP requests must round-robin across `{gemini-3.1-flash-lite, mistral devstral-DEEP, nvidia ultra-550b}` with per-model RPD accounting, and Synthesis must be *capped* at ≤3 DEEP calls/run (see P7). Never let DEEP depend on an RPD-20 model as anything but a last-resort candidate.
+
+### III.1.2 NVIDIA — strong capacity, but the DEEP option is slow
+
+| Model | Tier | rpm | tpm | Verdict |
+|-------|------|-----|-----|---------|
+| nemotron-3-super-120b | STRONG | 40 | 262k | **Best STRONG workhorse.** High TPM, healthy RPM. |
+| llama-3.3-super-49b | STANDARD | ~40 | high | Solid STANDARD backbone. |
+| nano-30b | STANDARD | ~40 | high | Good STANDARD backup. |
+| ultra-550b | DEEP | 40 | 1M | **Huge TPM but SLOW.** Acceptable as DEEP *fallback*, dangerous as DEEP *primary* under a 300s timeout. |
+
+**Problem P-N1 (DEEP-by-latency timeout):** ultra-550b's 1M TPM makes it look like the ideal DEEP escape hatch, but its wall-clock latency on long synthesis prompts routinely approaches the Synthesis deep-dive timeout (`timeout_seconds=300`, synthesis_lead:620). So the "fallback" that should *save* a starved DEEP request instead *times out* and returns None — feeding the exact "did not produce a FinalReport" symptom.
+**Fix invariant:** When DEEP falls back to ultra-550b, the caller must (a) raise the per-call timeout for that candidate specifically, or (b) shard the synthesis prompt so each DEEP call is small enough to finish. NVIDIA STRONG (nemotron) is healthy — lean on it as the *adjacency* target for a starved DEEP (DEEP→STRONG ladder), which the router already permits but under-uses.
+
+### III.1.3 CEREBRAS — the FAST-tier bottleneck
+
+| Model | Tier | rpm | tpm | tpd | Verdict |
+|-------|------|-----|-----|-----|---------|
+| gpt-oss-120b | FAST | **5** | 30k | 1M | **RPM 5 is the single tightest RPM in the whole fabric.** |
+| gemma-4-31b | FAST | **5** | 30k | — | Same RPM-5 wall. |
+
+**Problem P-C1 (FAST RPM-5 convoy):** The fact-checker and every sub-agent lean on FAST. With Cerebras at **RPM 5**, more than 5 FAST calls in any 60s window queue behind the WaitGate. During Wave-0 specialist fan-out (multiple specialists × up to 3 juniors each, all issuing FAST/MICRO calls) the FAST tier is instantly over-subscribed, so the WaitGate inserts long sleeps → this is a major contributor to the "15–25 min then nothing" wall-clock.
+**Fix invariant:** FAST must *not* be Cerebras-primary. Route FAST first to Mistral `mistral-small` (FAST, rpm60) and Groq `llama-3.1-8b`-class, and treat Cerebras as an overflow lane only. The router's FAST candidate list must be ordered by *effective throughput* (rpm×concurrency), not by provider name.
+
+### III.1.4 GROQ — high RPM, but a TPM trap on the STANDARD workhorse
+
+| Model | Tier | rpm | tpm | rpd | Verdict |
+|-------|------|-----|-----|-----|---------|
+| gpt-oss-120b | STANDARD | 30 | **8k** | 1000 | **TPM 8k is too small for STANDARD's 4 000-token outputs + prompt.** |
+| llama-3.3-70b | STANDARD | 30 | 12k | — | Slightly better TPM; still tight for long specialist context. |
+| llama-3.1-8b | MICRO | high | high | — | Excellent MICRO scout. |
+
+**Problem P-Gq1 (STANDARD TPM undersizing):** A STANDARD specialist call sends a large context (enriched question + gathered findings) and asks for up to 4 000 output tokens. On Groq gpt-oss-120b (**TPM 8k**) a *single* such call can exceed the per-minute token budget, forcing the WaitGate to serialize STANDARD calls one-per-minute. With several specialists running STANDARD, this alone can add many minutes.
+**Fix invariant:** STANDARD's primary should be a high-TPM provider (NVIDIA llama-3.3-super-49b / nano-30b, or Mistral mistral-medium). Groq STANDARD is a *burst* lane for short calls, not the backbone. Also: cap specialist output to what the section actually needs (P7) so a STANDARD call rarely approaches 4k tokens.
+
+### III.1.5 MISTRAL — the most balanced provider, currently under-used
+
+| Model | Tier | rpm | tpm | Verdict |
+|-------|------|-----|-----|---------|
+| mistral-large | STRONG | 60 | 500k | Excellent STRONG alternative to NVIDIA nemotron. |
+| magistral-medium | STRONG | ~60 | high | Good STRONG backup. |
+| mistral-medium | STANDARD | ~60 | high | **Should be a STANDARD primary** — high RPM+TPM. |
+| mistral-small | FAST | 60 | high | **Should be the FAST primary** (fixes the Cerebras RPM-5 convoy). |
+| devstral | DEEP | ~ | high | **Non-Google DEEP option** — critical for breaking Google's DEEP monopoly. |
+| ministral-3b | MICRO | high | high | Great MICRO scout. |
+
+**Problem P-M1 (idle capacity):** Mistral is the only provider with a *genuine model at every tier* (MICRO→DEEP) at healthy RPM/TPM, yet the current candidate ordering does not prioritize it. It is the natural "shock absorber" for FAST (small), STANDARD (medium), STRONG (large), and — crucially — a **second DEEP source (devstral)** so Synthesis is not hostage to Google's RPD-20/500 caps.
+**Fix invariant:** Rebuild every tier's candidate list so Mistral is a *first-class* primary/secondary at FAST/STANDARD/STRONG and a co-primary at DEEP alongside Google flash-lite.
+
+### III.1.6 Cross-tier verdict — the LLM layer's real failure
+
+The models are individually fine. The **fabric wiring** is the defect:
+
+1. **DEEP is a Google monopoly** with RPD-20/500 floors and only a slow NVIDIA escape hatch → Synthesis starves → returns None → designer never runs.
+2. **FAST is a Cerebras monopoly** at RPM 5 → Wave-0 convoy → the multi-minute wall.
+3. **STANDARD is undersized on Groq TPM** and has **no Google contributor** → specialist serialization.
+4. **Mistral, the one balanced provider, is not prioritized** → the fabric's best shock absorber sits idle.
+
+> **LLM-layer invariant to enforce everywhere (P8):** *Every tier must have ≥2 providers in its candidate list ordered by effective throughput; no tier may depend on a single provider whose RPM<10 or RPD<100 as its primary; DEEP must have ≥2 non-Google candidates; and the router's adjacency ladder must allow a starved tier to borrow the neighbouring tier on a different provider before it ever returns None.* This is written as an invariant precisely because HYPERION is proprietary and must hold across **all** query types and workflows, not the one example.
+
+
+---
+
+## III.2 — Per-tool forensic audit ("are we using each tool PROPERLY?")
+
+> **Scope reminder:** these tools are the VIGIL search/extraction stack plus the data/render tools. HYPERION deliberately **excludes reddit and semantic/academic (semantic_scholar)** — that exclusion is intentional and is NOT a defect; do not "fix" it by re-adding them. The audit below covers every *included* tool, states whether it is wired correctly, and gives a per-tool verdict + fix. Verdicts are general-purpose: they hold for any query/workflow.
+
+### III.2.1 Discovery layer
+
+**SearXNG (`hyperion/tools/*`, called from `sub_agent.py:597`, `fact_checker.py:554`)**
+- *Wired?* Yes — it is the primary discovery engine, `num_results=15` for sub-agents, `num_results=5` per fact-check claim.
+- *Used properly?* **Partially.** Two defects: (a) fact-checker fans out `sorted_claims[:50] × num_results=5` → up to **250 searches** per run (D3) — abusive and slow; (b) no result-dedup/host-cap → the same domains get hammered.
+- *Verdict/fix:* Keep as primary discovery, but (1) budget total searches per run, (2) dedup by registrable domain, (3) fact-checker should verify against the **already-collected corpus first** and only search for the top-N unverified claims.
+
+**Jina discovery (`hyperion/tools/jina.py`, `s.jina.ai`; reader `r.jina.ai`)**
+- *Wired?* Yes, and **keyless** — `SEARCH_URL=https://s.jina.ai`, `READER_URL=https://r.jina.ai`. Called at `sub_agent.py:613` (`num_results=10`).
+- *Used properly?* **Yes, and under-leveraged.** Jina Reader (`r.jina.ai/<url>`) is a *server-side* clean-text extractor that needs **no browser** — it is the single most valuable tool on a headless Linux host because it sidesteps the entire Chrome dependency. Today it is only a secondary discovery source, not promoted as the primary *extraction* fallback.
+- *Verdict/fix:* **Promote Jina Reader to the first extraction fallback** whenever a browser-based extractor is unavailable (which, on the current host, is always — see III.2.2). This one change restores content flow even before Obscura is fixed.
+
+### III.2.2 Extraction layer — the dead center of the system
+
+**Obscura (`hyperion/tools/obscura.py`, `_find_obscura` line 185)**
+- *Wired?* Nominally yes — it is the **primary** extractor, invoked with `--stealth` for `fetch`/`scrape`, and it exposes a full CDP-WebSocket client + 12 MCP tools when `obscura serve` is running.
+- *Used properly?* **NO — this is the extraction root cause.** `_find_obscura()` checks a configured path, PATH, `obscura.exe` (win32 branch), then `obscura-bin/obscura.exe|obscura`, and **if nothing is found it still returns the string `"obscura"`** and lets the subprocess fail. The repo ships `obscura-bin/obscura.exe` + `obscura-worker.exe` — **Windows binaries** — but the host is **Linux**. So:
+  - There is **no platform guard**: on Linux it either tries a non-existent `obscura` on PATH or tries to exec a `.exe`, both fail.
+  - The failure returns "binary not found" and is **swallowed at debug level**, so every sub-agent silently gets ~0 characters.
+  - The CDP/MCP path requires a long-running `obscura serve` that **nothing starts**.
+- *Verdict/fix (P6):* (1) Add a hard **platform guard**: on non-win32, only use Obscura if a genuine native ELF binary is present and executable; otherwise mark the tool `unavailable` and **fail loudly** (WARNING, not debug). (2) When unavailable, the extraction chain must **fall through to Jina Reader → Scrapling(httpx) → Crawl4AI(httpx)** automatically. (3) If the CDP/stealth features are wanted on Linux, either ship a Linux Obscura build or run it via `obscura serve` in a managed process and connect over CDP — never assume the `.exe`.
+
+**Scrapling (`hyperion/tools/scrapling.py`, `MAX_CONTENT_CHARS=15000`)**
+- *Wired?* Yes, with an **httpx fallback** if the `scrapling` package is not installed.
+- *Used properly?* **Mostly.** The httpx fallback means it *works headless*, which is exactly what the host needs. But it sits *below* Obscura in priority, so when Obscura silently fails the chain does not reliably reach Scrapling.
+- *Verdict/fix:* Elevate Scrapling(httpx) in the fallback order (after Jina Reader). Keep `MAX_CONTENT_CHARS` but make it configurable per tier.
+
+**Crawl4AI (`hyperion/tools/crawl4ai.py`)**
+- *Wired?* Yes, with an httpx fallback if the package/its Playwright browser is absent.
+- *Used properly?* **Only in httpx mode on this host.** Its full power (Playwright rendering) is unavailable because there is no system Chrome. That's acceptable *if* the chain treats it as a text-mode fallback, not a JS-rendering primary.
+- *Verdict/fix:* Use Crawl4AI(httpx) as a tertiary text fallback. Do not rely on its browser mode unless a Chromium is actually installed (see III.4 stealth section).
+
+**FlareSolverr (Cloudflare bypass)**
+- *Wired?* Referenced as the anti-bot escalation for Cloudflare-protected targets.
+- *Used properly?* **No — it requires a running FlareSolverr service** (a separate proxy container/process) that nothing in the sandbox starts, and it itself needs a browser. On the current host it is effectively a no-op.
+- *Verdict/fix:* Treat FlareSolverr as **optional and health-checked**: probe its endpoint at startup; if absent, mark unavailable and skip cleanly (never block a fetch waiting on a service that isn't there).
+
+**stealth_search (Playwright-based)**
+- *Wired?* Yes, as a stealth discovery/extraction path.
+- *Used properly?* **No on this host** — Playwright needs a Chromium that isn't installed. Same class of failure as Crawl4AI browser mode.
+- *Verdict/fix:* Gate all Playwright-based tools behind a **one-time browser-availability probe** (III.4). If no Chromium, disable them and rely on the server-side text extractors (Jina Reader / httpx) — do not let them throw mid-run.
+
+### III.2.3 Structured-data tools (the "hard numbers" that make reports credible)
+
+These are keyless/low-friction APIs that return **structured facts** — they are the antidote to "thin content," and they work perfectly on a headless host because they're plain HTTP+JSON.
+
+| Tool | Wired? | Proper use verdict |
+|------|--------|--------------------|
+| **FRED** (macro/econ series) | Yes | Under-used. Should be a *first-class* evidence source for any economic/market question — deterministic numbers, no scraping. Needs API key handling + graceful skip if key absent. |
+| **World Bank** | Yes | Keyless, reliable. Promote for country/development indicators. |
+| **SEC / EDGAR** | Yes | Keyless. Excellent for company/financial questions. Ensure UA header + rate etiquette. |
+| **OpenAlex** | Yes | Keyless scholarly metadata. **NOTE:** this is *not* the excluded "semantic_scholar" path — OpenAlex is a distinct, allowed metadata source; keep it, it does not violate the reddit/semantic exclusion. |
+| **Hacker News (Algolia)** | Yes | Keyless. Good for tech-trend/signal questions. Fine as-is. |
+- *Cross-cutting verdict/fix:* These structured tools are the **cheapest, most reliable content source on a headless host** and are currently secondary to fragile scraping. Elevate them: for any query, the specialist should pull the relevant structured sources *first*, then use web extraction to add color. This directly attacks "not enough content."
+
+### III.2.4 Media + render tools
+
+**Unsplash (`hyperion/tools/unsplash.py`, needs access key)**
+- *Wired?* Yes; `BASE_URL=https://api.unsplash.com`.
+- *Used properly?* **Fragile** — requires an access key; if absent, image lookups fail. The presentation designer then references images that don't exist.
+- *Verdict/fix:* Make imagery **optional**: if no key, the designer must omit image slots gracefully (never emit a broken `<img>` or a `C:\...` path). Prefer generated/So charts over stock photos for a data report anyway.
+
+**kaleido (chart export, `charts.py:518`, `pio.write_image(scale=3)`)**
+- *Wired?* Yes; `EXPORT_SCALE=3`.
+- *Used properly?* **Partially** — kaleido imports OK on the host, but Plotly static export can still pull a Chromium in some configs. `scale=3` at 300 DPI is heavy.
+- *Verdict/fix:* Pin kaleido's static engine (no browser), verify export with a startup smoke-test, and drop to `scale=2` if export latency is high. If chart export fails, the designer must **embed a data table instead of a missing image** (never a broken reference).
+
+**WeasyPrint (primary PDF, `render.py:448`) + Playwright Chromium (fallback, `render.py:364`)**
+- *Wired?* Yes — WeasyPrint first, Chromium `file://` fallback.
+- *Used properly?* **NO on this host — both paths are dead:** `weasyprint` is **not installed** (`ModuleNotFoundError`), and there is **no system Chrome** for the Playwright fallback. So even if a FinalReport existed, PDF rendering would fail and only a broken `.html` could be produced.
+- *Verdict/fix (P6):* (1) **Install weasyprint** + its native deps (pango/cairo/gdk-pixbuf) as a hard requirement, and add a startup smoke-test that renders a 1-line PDF. (2) Keep Chromium fallback but only enable it when a browser probe passes. (3) The renderer must never emit an escaped-HTML artifact — see the Jinja2 `Markup` fix in III.6/D-render.
+
+### III.2.5 Tool-layer verdict
+
+- The **only reliably-working extraction path on the current host is server-side text** (Jina Reader + httpx-mode Scrapling/Crawl4AI) and **structured JSON APIs** (FRED/WorldBank/SEC/OpenAlex/HN). Everything browser-based (Obscura.exe, FlareSolverr, stealth_search, Playwright) is **dead** until a real Linux browser stack is provisioned.
+- The chain is ordered **browser-first**, so it leads with the dead tools and only *maybe* reaches the working ones — this is the tool-layer expression of the content-starvation root cause.
+- **Fix invariant (P6):** Re-order the extraction chain to **[structured APIs] → [Jina Reader] → [httpx Scrapling/Crawl4AI] → [browser tools *only if* a browser probe passes]**, with every tool health-checked at startup and failures logged at WARNING. This makes HYPERION produce real content on a headless host *today*, and automatically upgrades to stealth-browser extraction the moment a Linux browser + native Obscura is installed.
+
+
+---
+
+## III.3 — Per-agent, per-subagent & connection/wiring audit
+
+> This section walks the DAG **node by node and edge by edge**. For each agent: its tier, what it consumes, what it emits, how it connects to the bus, and its specific defect. The connection audit at the end is the part most systems get wrong — HYPERION's bugs are as much in the *edges* (who hears whom, and when) as in the *nodes*.
+
+### III.3.1 Engagement Director (orchestration root)
+- *Tier:* STRONG for planning. *Consumes:* the user question. *Emits:* the DAG + question-type→agent mapping (`QUESTION_TYPE_AGENTS`), waves wired in `_build_dag`.
+- *Wiring (verified):* specialists (Wave 0/1) → synthesis (DEEP, deps=all specialists, ~line 832) → fact_checker (FAST) + quality_gate (STRONG, deps synthesis+factcheck) → **presentation_designer (STRONG, deps quality_gate, ~871)** → data_visualizer (STANDARD, deps designer) → render_engine (STANDARD, deps viz+designer).
+- *Defect A-ED1:* The DAG makes **delivery strictly downstream of a single point of failure** (synthesis). If synthesis yields None, the entire delivery subtree is unreachable. The director builds a correct *happy-path* DAG but no *degraded-path* — there is no "floor report" node that runs when synthesis fails.
+- *Fix:* Director must add a **fallback synthesis contract**: if the DEEP synthesis fails/times out, a STANDARD-tier "floor synthesizer" assembles a minimal FinalReport from whatever findings exist, so the delivery subtree always has an input (ties to P7 + orchestrator fix P6).
+
+### III.3.2 Specialists (Wave 0/1 — market/tech/etc.)
+- *Tier:* STANDARD main reasoning (e.g. `market_analyst.py:78`); spawn sub-agents at MICRO/MICRO/FAST (`1065–1086`), gathered in parallel (`1097`).
+- *Consumes:* enriched question (`base._enrich_context:151` regex-extracts geography/industry/tech/company). *Emits:* `KeyFinding`s onto the FINDINGS channel.
+- *Defect A-SP1 (content):* Because extraction is dead (III.2.2), specialists' sub-agents return near-empty `raw_data`, so specialists emit **"gap" findings** ("insufficient data on X") instead of substance. This is *not* a reasoning bug — it's starvation propagating upward.
+- *Defect A-SP2 (context enrichment is regex-only):* `_enrich_context` uses regex to pull entities from the question. For an arbitrary proprietary query this is brittle — it can mis-tag or miss the domain, sending sub-agents to search the wrong things. General-purpose fix: replace/augment regex enrichment with a single **MICRO-tier classification call** that returns structured `{geographies, industries, entities, timeframe, intent}` for *any* query type.
+- *Fix:* (1) fix extraction (P6) so `raw_data` is non-empty; (2) upgrade enrichment (P7); (3) require each specialist to pull the relevant **structured-data tools first** (III.2.3) so it always has *some* hard numbers even if scraping is thin.
+
+### III.3.3 Sub-agents (juniors)
+- *Wiring (verified):* `sub_agent._gather_raw_data` calls `searxng.search(num_results=15)` (`597`) + `jina.search(num_results=10)` (`613`); `_analyze_and_produce_findings` runs at `self.spec.model_tier` (`650`).
+- *Defect A-SU1 (isolation OK, input empty):* Context isolation is correct (juniors are MICRO/FAST, capped ≤3 per specialist — good design). But the junior's whole value is extracting text from discovered URLs, and extraction is dead → the junior LLM call summarizes nothing.
+- *Defect A-SU2 (no extraction step wired to the working tools):* The junior discovers URLs but the *fetch* of each URL goes through the browser-first chain (dead), not Jina Reader. So discovery succeeds and extraction fails silently.
+- *Fix:* Point the junior's per-URL extraction at the **re-ordered chain from III.2.5** (Jina Reader first). This is the single highest-leverage content fix — it turns thousands of discovered URLs into actual text.
+
+### III.3.4 Synthesis Lead (DEEP — the report author)
+- *Tier:* DEEP (`synthesis_lead.py:93`), `max_sub_agents=1` (`185`). *Consumes:* `self._collected_findings` injected by orchestrator (`orchestrator.py:409`). *Emits:* `FinalReport`.
+- *LLM calls:* `_identify_critical_path` (681), `_draft_recommendation` (764), one `_build_one_section` per section (920; parallel-gathered 946), contradiction `_deep_dive_contradiction` timeout 300s (620).
+- *Defect A-SY1 (too many DEEP calls on a starved tier):* multiple DEEP calls × Google RPD-20/500 (III.1.1) + slow NVIDIA fallback (III.1.2) → WaitGate stalls or timeouts → returns None.
+- *Defect A-SY2 (all-or-nothing):* if any critical DEEP call fails, the whole method returns None instead of a partial report. There is no "assemble what we have" path.
+- *Fix (P7):* (1) cap Synthesis at **≤3 DEEP calls/run**; batch sections into one call where possible; (2) shard long prompts so ultra-550b can finish inside timeout; (3) **never return None** — on partial failure, emit a FinalReport marked `degraded=True` with the sections that succeeded. This alone guarantees the delivery subtree gets an input.
+
+### III.3.5 Fact Checker (FAST)
+- *Wiring (verified):* `_verify_claims` sorts and takes `sorted_claims[:50]` (`767`); each claim → `searxng.search(num_results=5)` (`554`) ⇒ up to **250 searches** (D3).
+- *Defect A-FC1:* the search storm (a) is slow, (b) hammers SearXNG, (c) needs extraction (dead) to actually verify. So it spends minutes and verifies little.
+- *Fix:* verify against the **already-collected corpus** first; only search the top-N (e.g. 10) highest-impact unverified claims; share the global search budget with discovery.
+
+### III.3.6 Quality Gate (STRONG — iteration loop)
+- *Tier:* STRONG, deps = synthesis + fact_checker. *Emits:* `QualityScore`; may loop back for another synthesis pass.
+- *Defect A-QG1 (loop amplifies starvation):* each iteration re-invokes DEEP synthesis → multiplies the RPD burn in III.1.1. A gate that keeps failing quality (because content is thin) can loop until DEEP is exhausted.
+- *Fix:* cap iterations (e.g. ≤2); make the gate **content-aware** — if source counts are below a floor, it should *stop looping and flag degraded* rather than demanding a rewrite the content can't support.
+
+### III.3.7 Delivery trio (Presentation Designer STRONG → Data Visualizer STANDARD → Render Engine STANDARD)
+- *Wiring (verified):* excluded from `_execute_dag` (`orchestrator.py:596`) and run in a separate **Stage 5 delivery loop** (`945–968`) — but only if `final_report` is truthy (see III.5).
+- *Defect A-DL1 (never reached):* covered fully in III.5.
+- *Defect A-DL2 (designer emits machine paths):* `presentation_designer._render_html_template` (`1136`) converts image paths to `os.path.abspath()` (`1159–1191`) → `C:\Users\...` absolute paths that break in any PDF/HTML; unsanitized `<title>` (`334`); relies on `md_to_html` (`378`) which is double-escaping (III.6/D-render).
+- *Fix:* base64-inline or use relative asset paths; sanitize title; fix the Markdown filter; degrade image slots gracefully when imagery is unavailable.
+
+### III.3.8 Connection / wiring audit (the edges)
+
+This is where the *silent* failures live. Each edge below is a place where a message can be produced but never consumed, or consumed before produced.
+
+1. **Bus subscription gap (DELIVERY hears too little):** `base.subscribe_to_bus` has the **DELIVERY** role subscribe to `{FINDINGS}` only. But the designer needs the *FinalReport* (a HANDOFF), and the visualizer needs chart specs. If those arrive on channels DELIVERY doesn't subscribe to, they're missed. **Fix:** DELIVERY must subscribe to `{FINDINGS, HANDOFF}` at minimum.
+2. **Findings-injection race (Synthesis):** orchestrator injects `agent._collected_findings = list(self._all_findings)` (`409`) at spawn time. Any finding published *after* injection but *before* synthesis reads is lost. **Fix:** synthesis should read findings at *execution* time (pull from bus/store), not rely solely on a snapshot injected at construction.
+3. **HANDOFF timing (Synthesis→QualityGate→Designer):** because delivery is a separate Stage 5 loop rather than DAG edges, the HANDOFF of the FinalReport is implicit (via `final_report` variable), not a bus message. That's why a None synthesis silently strands delivery. **Fix:** make the FinalReport an explicit HANDOFF *and* a guaranteed variable (floor report), so both the bus path and the direct path always carry an input.
+4. **Sub-agent → specialist gather:** parallel gather (`market_analyst:1097`, `synthesis:946`) is correct, but a single sub-agent exception can reject the whole `gather` if not wrapped. **Fix:** gather with `return_exceptions=True` and treat a failed junior as an empty-finding, never as a run-killer.
+5. **ESCALATION channel underused:** when a tool is unavailable (Obscura dead), nothing escalates; the failure is swallowed at debug. **Fix:** unavailable-tool and starved-tier conditions must publish to ESCALATION so the director/quality-gate can adapt (e.g. widen the extraction fallback, lower the quality floor) instead of silently degrading.
+
+> **Wiring invariant (P9):** every producer→consumer edge must be **either** an explicit bus message on a channel the consumer subscribes to, **or** a guaranteed variable with a floor value — never an implicit "hope it's there" that turns into a silent stall. And every parallel gather must isolate child failures.
+
+
+---
+
+## III.4 — How to make the WHOLE architecture stealthy (dedicated section)
+
+> The user explicitly asked: *"how to make the whole architecture stealthy?"* Stealth here means **HYPERION's outbound web activity is indistinguishable from ordinary human browsing**, so free/keyless sources don't rate-limit, CAPTCHA, or block it — which directly protects the content pipeline. Stealth is a *pipeline-wide* property, not a single tool flag. This section is general-purpose: it applies to any query/workflow.
+
+### III.4.0 The stealth threat model (what actually blocks a zero-cost scraper)
+1. **TLS/HTTP fingerprint** — plain `httpx`/`requests` have a JA3/JA4 signature and header order that scream "bot."
+2. **Missing browser signals** — no JS execution, no `navigator.*`, no canvas/WebGL, no realistic timing.
+3. **IP reputation & rate** — too many requests from one IP in a short window → throttle/block.
+4. **Behavioural** — identical intervals, no jitter, hitting the same host in a tight loop.
+5. **Cloudflare/Turnstile/PerimeterX** — active challenges that need a real browser (this is what FlareSolverr/Obscura are *for*).
+
+HYPERION's current posture fails 1–5 simultaneously: on the host the only working path is bare httpx (fingerprintable), the stealth tools (Obscura/FlareSolverr/stealth_search) are all dead, and there is no jitter/host-cap/rotation layer.
+
+### III.4.1 Layer 1 — Transport stealth (works today, headless)
+- **Impersonate a real browser's TLS+HTTP fingerprint** for all httpx-mode fetches: use `curl_cffi` (JA3/JA4 impersonation of Chrome/Safari) or an equivalent, instead of bare httpx. This alone defeats a large class of naïve bot filters with **zero browser dependency**.
+- **Realistic header sets**: full, ordered Chrome header profiles (Accept, Accept-Language, Sec-CH-UA, Sec-Fetch-*, Referer), rotated per session, matched to the impersonated browser.
+- **Prefer server-side clean-text endpoints** that are *designed* to be hit programmatically: **Jina Reader (`r.jina.ai`)** and the structured JSON APIs (III.2.3). These are the stealthiest of all because they expect automated access — no fingerprint problem exists.
+
+### III.4.2 Layer 2 — Behavioural stealth (works today)
+- **Per-host concurrency cap + politeness delay** with **randomized jitter** (e.g. 1–4s, non-uniform) between requests to the same registrable domain.
+- **Global + per-host token buckets** so a single site never sees a burst. This also fixes the SearXNG hammering in III.2.1/III.3.5.
+- **Request-order randomization**: shuffle the URL fetch order so the traffic pattern isn't a predictable crawl.
+- **Honour robots and back-off on 429/403** with exponential backoff + rotation, instead of retrying blindly.
+
+### III.4.3 Layer 3 — Identity/route stealth (optional, config-gated)
+- **Proxy rotation** (residential/datacenter pool) behind a single config switch; disabled by default (zero-cost), enabled when the user supplies a pool. Rotate per-session or per-N-requests.
+- **User-Agent + viewport + locale rotation** consistent *within* a session (don't change UA mid-session — that itself is a tell).
+- **Cookie/session persistence** per host so repeat visits look like a returning user, not a fresh bot each time.
+
+### III.4.4 Layer 4 — Browser stealth (only once a Linux browser exists)
+- Provision a **real Linux Chromium** (Playwright/`playwright install chromium` + system deps), then:
+  - Enable **Obscura's `--stealth`** path *with a native Linux binary* (fixes III.2.2) for fingerprint randomization (canvas/WebGL/navigator patching).
+  - Bring up **FlareSolverr as a managed service** (health-checked, III.2.2) for Cloudflare/Turnstile challenges only — not for every fetch.
+  - Use **stealth_search** for the handful of targets that truly require JS rendering.
+- **Escalation ladder (cheap→expensive):** structured API → Jina Reader → curl_cffi httpx → Scrapling/Crawl4AI httpx → *(browser)* stealth Chromium → FlareSolverr. Only climb when the current rung is blocked. Most requests should resolve at the cheap rungs.
+
+### III.4.5 Stealth invariants (P8/P6)
+1. **No bare-fingerprint HTTP:** every outbound fetch uses an impersonated TLS+header profile.
+2. **No bursts:** per-host token bucket + jitter on every path, discovery *and* extraction *and* fact-check.
+3. **Cheap-first escalation:** never open a browser when Jina Reader or a JSON API would answer.
+4. **Loud health, quiet traffic:** stealth *failures* (blocked, challenged) escalate on the ESCALATION channel; stealth *traffic* stays low-and-slow.
+5. **Config-gated identity:** proxy/UA rotation is a switch, off by default (preserves zero-cost), on when credentials exist.
+
+> **Net effect:** even *before* a browser is installed, Layers 1–2 make HYPERION's headless traffic look like a polite human using clean-text endpoints — which is enough to unblock the free sources it depends on. Layers 3–4 are the upgrade path for hard targets, gated so they never break the zero-cost, headless default.
+
+
+---
+
+## III.5 — Definitive answer: why the designer agents are NEVER used
+
+> The user's sharpest question. Here is the exact, code-verified causal chain, with the single line that kills delivery.
+
+### III.5.1 The DAG says delivery *should* run
+The Engagement Director wires the delivery trio strictly downstream of synthesis:
+```
+… specialists → synthesis_lead (DEEP)
+                     │
+        ┌────────────┴───────────┐
+   fact_checker (FAST)      quality_gate (STRONG)
+                     │
+          presentation_designer (STRONG)   ← delivery starts here
+                     │
+             data_visualizer (STANDARD)
+                     │
+              render_engine (STANDARD)  → PDF
+```
+So *by design* the designer is reachable. The bug is in **execution**, not the plan.
+
+### III.5.2 Delivery is executed in a SEPARATE stage — behind a guard
+The orchestrator **excludes** the three delivery agents from the normal DAG executor:
+```python
+# orchestrator.py:596  (conceptual)
+_DELIVERY_AGENTS = {PRESENTATION_DESIGNER, DATA_VISUALIZER, RENDER_ENGINE}
+# these are skipped inside _execute_dag …
+```
+…and runs them later in a dedicated **Stage 5 delivery loop** (`orchestrator.py:945–968`, the `delivery_tasks` loop). That loop is what actually instantiates and runs the Presentation Designer, Data Visualizer, and Render Engine.
+
+### III.5.3 The exact killer: an early `return` before Stage 5
+Immediately **before** the Stage 5 delivery block, the orchestrator does:
+```python
+# orchestrator.py:919–922
+if not final_report:
+    result.error = "Synthesis Lead did not produce a FinalReport"
+    result.duration_seconds = time.time() - self._start_time
+    return result          # ← RETURNS HERE — Stage 5 (lines 945–985) is never reached
+```
+**That is the whole answer.** Because Synthesis Lead returns `None` on this host (DEEP-tier starvation + 300s deep-dive timeouts + all-or-nothing assembly — III.1.1/III.1.2/III.3.4), `final_report` is falsy, the orchestrator returns at line ~919, and **control never reaches the delivery loop at line ~945.** The Presentation Designer, Data Visualizer, and Render Engine are therefore *never constructed and never called* — not because they're broken, but because the function exits one stage too early.
+
+### III.5.4 Why it *looks* like the designer is "broken"
+The user sees: long run → "did not produce a FinalReport" → at best a stray broken `.html`. That broken HTML is not from the designer at all — it's from earlier/other render attempts (with the double-escape + `C:\` path bugs of III.6). So the designer's *absence* and the render layer's *escaping bug* compound into "the designer produces trash," when in reality the designer **never executed**.
+
+### III.5.5 The fix (P6 + P7), stated precisely
+1. **Never let synthesis return None** (III.3.4 / P7): on partial/timeout, emit a `FinalReport(degraded=True)` from whatever findings exist. This makes `final_report` truthy in the normal case.
+2. **Remove the hard early-return as a dead end** (P6): replace the `if not final_report: return` with a **floor-report fallback** — synthesize a minimal FinalReport from `self._all_findings` (even if it's thin) so Stage 5 *always* runs. Only truly catastrophic failures (zero findings *and* zero fallback) should short-circuit, and even then it should emit a diagnostic stub PDF, not silently return.
+3. **Guarantee Stage 5 executes** (P6/P9): move delivery so it runs on *any* terminal state that has a report object (full or degraded), and make the FinalReport an explicit HANDOFF (III.3.8 edge #3) so delivery is driven by a message, not a fragile local variable.
+4. **Make delivery itself robust** (P6): once it runs, fix the designer's `os.path.abspath`/title/`md_to_html` issues (III.3.7 / III.6) and the missing WeasyPrint/browser (III.2.4) so the artifact is a real PDF, not escaped HTML.
+
+> **One-line verdict:** *The designer never runs because `orchestrator.py:~919` returns the moment Synthesis yields None, one stage before the delivery loop at `~945`. Fix Synthesis to always yield a (possibly degraded) report and convert the early-return into a floor-report fallback, and the designer runs every time.*
+
+
+---
+
+## III.6 — New defects discovered in this deep audit (D13–D22)
+
+These extend the D1–D12 catalogue from Part I with the runtime-verified findings of Part III. Each has a severity, the evidence, and the owning phase.
+
+| ID | Severity | Defect | Evidence (verified) | Owning phase |
+|----|----------|--------|---------------------|--------------|
+| **D13** | 🔴 Blocker | **Designer never runs**: orchestrator early-returns before Stage 5 when synthesis is None | `orchestrator.py:919–922` return vs delivery loop `945–968` | P6 |
+| **D14** | 🔴 Blocker | **Obscura is a Windows `.exe` on a Linux host, no platform guard** → primary extractor 100% dead, failure swallowed at debug | `obscura.py:_find_obscura:185`; `obscura-bin/obscura.exe`,`obscura-worker.exe` present; host is Linux | P6 |
+| **D15** | 🔴 Blocker | **PDF impossible on host**: `weasyprint` not installed AND no system Chrome for Playwright fallback | `ModuleNotFoundError: weasyprint`; "NO system chrome" | P6 |
+| **D16** | 🔴 Blocker | **HTML double-escape**: `from jinja2 import Markup` is dead in Jinja2 3.x → `Markup=str` → `select_autoescape` escapes the HTML → `&lt;p&gt;` output | `render.py:_markdown_to_html:166`, import `:178`; jinja2 3.1.6 `ImportError` confirmed | P6 |
+| **D17** | 🟠 High | **Designer emits machine-absolute image paths** (`C:\Users\...`) that break every artifact | `presentation_designer.py:1159–1191` `os.path.abspath` | P6 |
+| **D18** | 🟠 High | **Markdown exporter reads the wrong schema keys** vs `FinalReport` → near-empty markdown | `markdown.py` `report.get("title")`/`summary.get("key_findings")`/`methodology.get("agents_used")` vs actual `question`/`executive_summary`/`sections`/`agents_used` | P7 |
+| **D19** | 🟠 High | **DEEP tier is a Google monopoly** with RPD-20/500 floors + only a slow NVIDIA escape → synthesis starves/timeouts | `config.py` gemini flash rpd20, flash-lite rpd500; ultra-550b slow | P8 |
+| **D20** | 🟠 High | **FAST tier bottlenecked by Cerebras RPM-5** → Wave-0 convoy / multi-minute wall | `config.py` cerebras gpt-oss-120b rpm5, gemma-4-31b rpm5 | P8 |
+| **D21** | 🟡 Med | **STANDARD undersized on Groq TPM-8k + no Google STANDARD model** → specialist serialization | `config.py` groq gpt-oss-120b tpm8k; no Google STANDARD entry | P8 |
+| **D22** | 🟡 Med | **No transport/behavioural stealth** on the working (httpx) path; browser stealth tools all dead | bare httpx fingerprint; Obscura/FlareSolverr/stealth_search unavailable on host | P6/P8 |
+
+Supporting (already noted, reaffirmed): **D3** fact-checker 250-search storm (`fact_checker.py:767 × 554`); **D-charts** `pio.write_image(scale=3)` kaleido/Chrome coupling (`charts.py:518`); **DELIVERY bus subscription** only `{FINDINGS}` (III.3.8 #1); **findings-injection race** (`orchestrator.py:409`, III.3.8 #2).
+
+---
+
+## III.7 — Phase-wise fix plan (P6–P9) — extends Part I's P1–P5
+
+> Ordered by *unblock-first*: get real content flowing and a real PDF out (P6), make the pipeline honest and never-None (P7), fix the LLM fabric (P8), then harden the wiring (P9). Each phase lists exit criteria so completion is testable for **any** query type, not just one example.
+
+### P6 — UNBLOCK: content flows + a real PDF always comes out (🔴 do first)
+**Goal:** on the current headless Linux host, an arbitrary query produces a real, non-escaped PDF with actual content.
+1. **Extraction chain re-order (D14):** platform-guard Obscura (disable on Linux unless native ELF present, log WARNING); make extraction chain **structured-API → Jina Reader → curl_cffi httpx Scrapling/Crawl4AI → browser (only if probe passes)**; wire juniors' per-URL fetch to it (III.3.3).
+2. **Render fixes (D15/D16/D17):** `pip install weasyprint` + native deps (pango/cairo/gdk-pixbuf) + startup smoke-test; change `from jinja2 import Markup` → `from markupsafe import Markup`; replace `os.path.abspath` image paths with base64-inline or relative assets; sanitize `<title>`.
+3. **Designer always runs (D13):** convert `orchestrator.py:919` early-return into a **floor-report fallback**; guarantee Stage 5 runs whenever a report object exists.
+4. **Stealth Layer 1–2 (D22):** curl_cffi impersonation + per-host token bucket + jitter on all fetch paths.
+**Exit criteria:** run 3 *different* query types headless → each yields a PDF with real prose, real numbers from ≥1 structured source, no `&lt;` escapes, no `C:\` paths, and the designer log shows it executed.
+
+### P7 — HONEST + NEVER-NONE synthesis & extraction quality
+**Goal:** the pipeline degrades gracefully and reports the truth about its own coverage.
+1. **Synthesis never returns None (D13 root):** ≤3 DEEP calls/run, batch sections, shard long prompts for slow candidates, emit `FinalReport(degraded=True)` on partial failure.
+2. **Content-aware quality gate (A-QG1):** cap iterations ≤2; if source counts below floor, flag degraded instead of re-looping DEEP.
+3. **Enrichment upgrade (A-SP2):** replace regex `_enrich_context` with a MICRO classification call returning structured intent for any query.
+4. **Markdown exporter schema fix (D18):** align keys to `FinalReport`.
+5. **Fact-checker budget (D3):** verify against local corpus first, cap to top-N searches, share global search budget.
+**Exit criteria:** force-fail the DEEP tier → run still emits a `degraded` PDF; markdown export is non-empty and matches the PDF; fact-checker issues ≤ budgeted searches.
+
+### P8 — LLM FABRIC: multi-provider tiers + stealth identity
+**Goal:** no tier depends on a single provider's floor; DEEP has ≥2 non-Google sources.
+1. **Rebuild tier candidate lists (D19/D20/D21):** FAST primary = Mistral small (+Groq 8b), Cerebras overflow only; STANDARD primary = NVIDIA super-49b/nano-30b or Mistral medium, Groq burst-only; DEEP = {Google flash-lite, Mistral devstral, NVIDIA ultra-550b} round-robin with per-model RPD accounting; STRONG = NVIDIA nemotron / Mistral large.
+2. **Router adjacency ladders:** allow starved tier to borrow neighbouring tier on a *different* provider before returning None; per-candidate timeout override for slow DEEP (ultra-550b).
+3. **Output-budget right-sizing:** cap outputs to section need so STANDARD rarely nears Groq TPM.
+4. **Stealth Layer 3 (config-gated):** proxy/UA rotation switch, off by default.
+**Exit criteria:** kill any one provider's key → every tier still resolves from another provider; DEEP resolves with Google keys removed.
+
+### P9 — WIRING: explicit edges, isolated failures, loud health
+**Goal:** no silent stalls; every producer→consumer edge is guaranteed.
+1. **Bus subscriptions (III.3.8 #1):** DELIVERY subscribes `{FINDINGS, HANDOFF}`.
+2. **Findings read-at-execution (III.3.8 #2):** synthesis pulls findings at run time, not construction snapshot.
+3. **Explicit FinalReport HANDOFF (III.3.8 #3):** delivery driven by message + guaranteed floor variable.
+4. **Isolated gathers (III.3.8 #4):** all `asyncio.gather(..., return_exceptions=True)`; failed child = empty finding.
+5. **ESCALATION on degradation (III.3.8 #5):** unavailable tool / starved tier / blocked host publish to ESCALATION; startup health-report of every tool + tier.
+**Exit criteria:** inject a failing sub-agent and an unavailable tool → run completes with a degraded PDF, an ESCALATION log entry, and a startup health table listing each tool/tier as available/unavailable.
+
+---
+
+### III.8 — Closing invariants (why this holds for a PROPRIETARY multi-workflow system)
+
+Every fix above is stated as an **invariant** (a property that must hold for *all* queries) rather than a patch for one example, because HYPERION is a proprietary engine serving many query types and workflows:
+- **Content invariant:** every run reaches ≥1 working extraction path (structured API or Jina Reader) regardless of host/browser state.
+- **Delivery invariant:** every run that has *any* findings produces a PDF; synthesis never returns None; the designer always executes.
+- **Fabric invariant:** every tier resolves from ≥2 providers; DEEP has ≥2 non-Google sources.
+- **Stealth invariant:** every outbound request is fingerprint-impersonated, rate-jittered, and cheap-first-escalated.
+- **Wiring invariant:** every edge is an explicit message or a floored variable; every gather isolates failures; every degradation is loud.
+- **Exclusion honoured:** reddit and semantic/academic (semantic_scholar) remain deliberately out; OpenAlex (distinct, allowed) stays in.
+
+*End of PART III.*
+
