@@ -12,6 +12,7 @@ from hyperion.tools.deep_search import DeepSearchClient, DeepSearchResult, Extra
 from hyperion.tools.evidence_scorer import EvidenceScorer, EvidenceSummary, ScoredResult
 from hyperion.tools.flaresolverr import FlareSolverrClient, FlareSolverrResult
 from hyperion.tools.fred import FredClient, FREDSeries, FREDSearchResult
+from hyperion.tools.http_extract import HttpExtractClient, HttpExtractResult
 from hyperion.tools.jina import JinaClient, JinaReadResult, JinaSearchResponse, JinaSearchResult
 from hyperion.tools.obscura import ObscuraClient, ObscuraFetchResult, ObscuraScrapeResult
 from hyperion.tools.scrapling import ScraplingBatchResult, ScraplingClient, ScraplingResult
@@ -42,6 +43,9 @@ __all__ = [
     "JinaSearchResult",
     "JinaSearchResponse",
     "JinaReadResult",
+    # HTTP Extract
+    "HttpExtractClient",
+    "HttpExtractResult",
     # Obscura
     "ObscuraClient",
     "ObscuraFetchResult",

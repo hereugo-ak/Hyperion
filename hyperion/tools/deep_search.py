@@ -8,7 +8,7 @@ instead of individually invoking SearxNG, Jina, Obscura, Scrapling, etc.
 Pipeline:
   1. Parallel discovery (SearxNG + Jina Search)
   2. URL dedup + ranking by source credibility
-  3. Extraction (Obscura → Scrapling → Jina Reader → Crawl4AI → FlareSolverr)
+  3. Extraction (Jina Reader → HTTP Extract → Obscura → Crawl4AI → FlareSolverr)
   4. Evidence scoring (support/conflict/neutral heuristic)
   5. Result ranking by relevance + evidence score + freshness
   6. Return ranked, cited markdown
@@ -23,7 +23,7 @@ discovery → extraction → scoring into one call."
 
 Tool selection logic (§5.2 updated):
   Search: SearxNG + Jina Search in parallel (discovery layer)
-  Extract: Obscura → Scrapling → Jina Reader → Crawl4AI → FlareSolverr
+  Extract: Jina Reader → HTTP Extract → Obscura → Crawl4AI → FlareSolverr
 """
 
 from __future__ import annotations
@@ -214,6 +214,7 @@ class DeepSearchClient:
         self.settings = settings
         self._searxng: Any | None = None
         self._jina: Any | None = None
+        self._http_extract: Any | None = None
         self._obscura: Any | None = None
         self._scrapling: Any | None = None
         self._crawl4ai: Any | None = None
@@ -238,6 +239,12 @@ class DeepSearchClient:
             from hyperion.tools.jina import JinaClient
             self._jina = JinaClient(settings=self.settings)
         return self._jina
+
+    def _get_http_extract(self) -> Any:
+        if self._http_extract is None:
+            from hyperion.tools.http_extract import HttpExtractClient
+            self._http_extract = HttpExtractClient(settings=self.settings)
+        return self._http_extract
 
     def _get_obscura(self) -> Any:
         if self._obscura is None:
@@ -480,14 +487,14 @@ class DeepSearchClient:
         self,
         urls: list[str],
     ) -> tuple[list[ExtractedContent], list[str]]:
-        """Extract content from URLs using VIGIL fallback chain.
+        """Extract content from URLs using the VIGIL fallback chain.
 
         For each URL, tries extraction tools in order:
-          1. Obscura (stealth, fast, JS rendering)
-          2. Scrapling (adaptive, anti-bot, Playwright)
-          3. Jina Reader (fast, simple extraction)
-          4. Crawl4AI (heavy extraction, PDFs)
-          5. FlareSolverr (CAPTCHA-protected pages)
+          1. Jina Reader (fast, keyless, reliable — always works)
+          2. HTTP Extract (httpx + trafilatura — keyless, browserless)
+          3. Obscura (stealth, JS rendering — platform-gated)
+          4. Crawl4AI (heavy extraction, PDFs — browser-based)
+          5. FlareSolverr (CAPTCHA-protected pages — last resort)
 
         Once a URL is successfully extracted, it's not retried by lower
         tiers. Returns (extracted_contents, tools_used).
@@ -503,29 +510,7 @@ class DeepSearchClient:
 
         semaphore = asyncio.Semaphore(self.EXTRACTION_CONCURRENCY)
 
-        # Tier 1: Obscura (stealth, fast, JS rendering)
-        obscura_urls = [u for u in urls if u not in extracted_urls]
-        if obscura_urls:
-            tasks = [self._extract_obscura(semaphore, u) for u in obscura_urls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, ExtractedContent) and result.content:
-                    extracted.append(result)
-                    extracted_urls.add(result.url)
-                    tools_used.add("obscura")
-
-        # Tier 2: Scrapling (adaptive, anti-bot, Playwright)
-        scrapling_urls = [u for u in urls if u not in extracted_urls]
-        if scrapling_urls:
-            tasks = [self._extract_scrapling(semaphore, u) for u in scrapling_urls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, ExtractedContent) and result.content:
-                    extracted.append(result)
-                    extracted_urls.add(result.url)
-                    tools_used.add("scrapling")
-
-        # Tier 3: Jina Reader (fast, simple extraction)
+        # Tier 1: Jina Reader (fast, keyless, reliable)
         jina_urls = [u for u in urls if u not in extracted_urls]
         if jina_urls:
             tasks = [self._extract_jina(semaphore, u) for u in jina_urls]
@@ -536,7 +521,29 @@ class DeepSearchClient:
                     extracted_urls.add(result.url)
                     tools_used.add("jina-reader")
 
-        # Tier 4: Crawl4AI (heavy extraction, PDFs)
+        # Tier 2: HTTP Extract (httpx + trafilatura, keyless, browserless)
+        http_urls = [u for u in urls if u not in extracted_urls]
+        if http_urls:
+            tasks = [self._extract_http(semaphore, u) for u in http_urls]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, ExtractedContent) and result.content:
+                    extracted.append(result)
+                    extracted_urls.add(result.url)
+                    tools_used.add("http-extract")
+
+        # Tier 3: Obscura (stealth, JS rendering — platform-gated by D14)
+        obscura_urls = [u for u in urls if u not in extracted_urls]
+        if obscura_urls:
+            tasks = [self._extract_obscura(semaphore, u) for u in obscura_urls]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, ExtractedContent) and result.content:
+                    extracted.append(result)
+                    extracted_urls.add(result.url)
+                    tools_used.add("obscura")
+
+        # Tier 4: Crawl4AI (heavy extraction, PDFs — browser-based)
         crawl4ai_urls = [u for u in urls if u not in extracted_urls]
         if crawl4ai_urls:
             tasks = [self._extract_crawl4ai(semaphore, u) for u in crawl4ai_urls]
@@ -547,7 +554,7 @@ class DeepSearchClient:
                     extracted_urls.add(result.url)
                     tools_used.add("crawl4ai")
 
-        # Tier 5: FlareSolverr (CAPTCHA-protected pages)
+        # Tier 5: FlareSolverr (CAPTCHA-protected pages — last resort)
         flare_urls = [u for u in urls if u not in extracted_urls]
         if flare_urls:
             tasks = [self._extract_flaresolverr(semaphore, u) for u in flare_urls]
@@ -575,6 +582,46 @@ class DeepSearchClient:
         if error_count > 2 and len(content) < 500:
             return False
         return True
+
+    async def _extract_jina(self, semaphore: asyncio.Semaphore, url: str) -> ExtractedContent:
+        """Extract via Jina Reader — fast, keyless, reliable extraction."""
+        async with semaphore:
+            try:
+                jina = self._get_jina()
+                result = await jina.read(url)
+                if result and (result.markdown or result.content):
+                    content = (result.markdown or result.content)[:MAX_CONTENT_CHARS]
+                    if self._is_quality_content(content):
+                        return ExtractedContent(
+                            url=url,
+                            title=result.title or "",
+                            content=content,
+                            markdown=result.markdown or content,
+                            tool_used="jina-reader",
+                        )
+            except Exception as e:
+                logger.debug("Jina Reader extraction failed for %s: %s", url, e)
+            return ExtractedContent(url=url, tool_used="jina-reader")
+
+    async def _extract_http(self, semaphore: asyncio.Semaphore, url: str) -> ExtractedContent:
+        """Extract via HTTP + trafilatura — keyless, browserless extraction."""
+        async with semaphore:
+            try:
+                http_extract = self._get_http_extract()
+                result = await http_extract.extract(url)
+                if result and result.success and result.content:
+                    content = result.content[:MAX_CONTENT_CHARS]
+                    if self._is_quality_content(content):
+                        return ExtractedContent(
+                            url=url,
+                            title=result.title,
+                            content=content,
+                            markdown=result.markdown or content,
+                            tool_used="http-extract",
+                        )
+            except Exception as e:
+                logger.debug("HTTP extract failed for %s: %s", url, e)
+            return ExtractedContent(url=url, tool_used="http-extract")
 
     async def _extract_obscura(self, semaphore: asyncio.Semaphore, url: str) -> ExtractedContent:
         """Extract via Obscura — stealth, fast, JS rendering."""
@@ -615,26 +662,6 @@ class DeepSearchClient:
             except Exception as e:
                 logger.debug("Scrapling extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="scrapling")
-
-    async def _extract_jina(self, semaphore: asyncio.Semaphore, url: str) -> ExtractedContent:
-        """Extract via Jina Reader — fast, simple extraction."""
-        async with semaphore:
-            try:
-                jina = self._get_jina()
-                result = await jina.read(url)
-                if result and (result.markdown or result.content):
-                    content = (result.markdown or result.content)[:MAX_CONTENT_CHARS]
-                    if self._is_quality_content(content):
-                        return ExtractedContent(
-                            url=url,
-                            title=result.title or "",
-                            content=content,
-                            markdown=result.markdown or content,
-                            tool_used="jina-reader",
-                        )
-            except Exception as e:
-                logger.debug("Jina Reader extraction failed for %s: %s", url, e)
-            return ExtractedContent(url=url, tool_used="jina-reader")
 
     async def _extract_crawl4ai(self, semaphore: asyncio.Semaphore, url: str) -> ExtractedContent:
         """Extract via Crawl4AI — heavy extraction, PDFs."""
@@ -690,6 +717,9 @@ class DeepSearchClient:
         if self._jina:
             await self._jina.close()
             self._jina = None
+        if self._http_extract:
+            await self._http_extract.close()
+            self._http_extract = None
         if self._obscura:
             await self._obscura.close()
             self._obscura = None

@@ -22,6 +22,7 @@ dependencies = [
     # Search + extraction
     "duckduckgo-search>=6.0.0",
     "crawl4ai>=0.4.0",
+    "trafilatura>=1.12.0",
     "transformers>=4.44.0",
     "websockets>=12.0",
 
