@@ -254,11 +254,13 @@ class ImageProcessor:
         result.original_height = img.height
 
         # Verify resolution — never upscale (§6.3 rule 4)
+        # D25: Non-fatal — return error result instead of raising
         if img.width < target_width or img.height < target_height:
-            raise ImageTooSmallError(
+            result.error = (
                 f"Image {img.width}x{img.height} < target {target_width}x{target_height}. "
-                f"Find a higher-resolution image. Never upscale."
+                f"Image too small — skipping processing."
             )
+            return result
 
         # Convert to RGB if necessary (for consistent processing)
         if img.mode not in ("RGB", "RGBA"):

@@ -2013,7 +2013,7 @@ class LayoutPlan(BaseModel):
     typography: dict[str, str] = Field(
         default_factory=lambda: {
             "header_font": "Instrument Serif",
-            "body_font": "JetBrains Mono",
+            "body_font": "Source Sans 3",  # D24: professional sans
             "cover_title_size": "36pt",
             "section_header_size": "22pt",
             "subsection_header_size": "14pt",

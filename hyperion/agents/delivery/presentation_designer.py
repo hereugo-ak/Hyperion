@@ -105,7 +105,7 @@ PDF_PALETTE = {
 # Typography system (§7.4)
 TYPOGRAPHY = {
     "header_font": "Instrument Serif",
-    "body_font": "JetBrains Mono",
+    "body_font": "Source Sans 3",  # D24: professional sans, not monospace
     "cover_title_size": "36pt",
     "section_header_size": "22pt",
     "subsection_header_size": "14pt",
@@ -337,9 +337,11 @@ HTML_TEMPLATE = """\
 <body>
 
 {# ── Cover Page ── #}
-<div class="cover">
+<div class="cover{% if not cover_image %} cover--typographic{% endif %}">
     {% if cover_image %}
     <img src="{{ cover_image.image_path }}" class="cover-image" alt="{{ cover_image.caption }}">
+    {% else %}
+    <div class="cover-accent-rule"></div>
     {% endif %}
     <div class="cover-title">
         <h1>{{ report.question }}</h1>

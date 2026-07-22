@@ -188,6 +188,30 @@ body {
     overflow: hidden;
 }
 
+/* D25: Typographic cover fallback — premium gradient when no photo */
+.cover--typographic {
+    background: linear-gradient(
+        135deg,
+        #3D3530 0%,      /* Deep Brown */
+        #1A1A1A 60%,      /* Warm Charcoal */
+        #2A2520 100%
+    );
+}
+
+.cover--typographic .cover-accent-rule {
+    position: absolute;
+    top: 3cm;
+    left: 2cm;
+    width: 4cm;
+    height: 3px;
+    background-color: #C8704D;  /* Terracotta */
+    z-index: 2;
+}
+
+.cover--typographic .cover-content {
+    color: #F5F4EE;  /* Cream text on dark gradient */
+}
+
 .cover-image {
     position: absolute;
     top: 0;

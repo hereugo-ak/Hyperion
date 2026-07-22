@@ -106,7 +106,8 @@ UNSHARP_THRESHOLD = 3
 # Required fonts to embed (§7.4)
 REQUIRED_FONTS = [
     "Instrument Serif",
-    "JetBrains Mono",
+    "Source Sans 3",  # D24: body font changed from JetBrains Mono
+    "JetBrains Mono",  # Still required for tables/numbers
 ]
 
 # PDF output directory
@@ -546,7 +547,8 @@ class RenderEngine(BaseAgent):
                     )
                 processed[img_path] = processed_path
             except ImageTooSmallError as e:
-                self._verification_issues.append(f"Image too small: {e}")
+                # D25: Non-fatal — skip image, don't add to verification issues
+                # The report should still render without this photo
                 processed[img_path] = img_path  # Use original as fallback
 
         # Process chart images
@@ -560,7 +562,7 @@ class RenderEngine(BaseAgent):
                 )
                 processed[chart_path] = processed_path
             except ImageTooSmallError as e:
-                self._verification_issues.append(f"Chart image too small: {e}")
+                # D25: Non-fatal — skip chart image processing
                 processed[chart_path] = chart_path
 
         self._processed_images = processed

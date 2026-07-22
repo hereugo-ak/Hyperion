@@ -14,10 +14,12 @@ statement."
     <title>{{ cover.title }}</title>
 </head>
 <body>
-    <div class="cover">
+    <div class="cover{% if not cover.image_path %} cover--typographic{% endif %}">
         {% if cover.image_path %}
         <img src="{{ cover.image_path }}" alt="{{ cover.title }}" class="cover-image">
         <div class="cover-overlay"></div>
+        {% else %}
+        <div class="cover-accent-rule"></div>
         {% endif %}
 
         <div class="cover-content">
