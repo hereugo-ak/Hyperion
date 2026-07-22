@@ -2063,3 +2063,105 @@ Tier 5  FlareSolverr (Cloudflare IUAM) .... optional, health-checked, last resor
 
 *End of PART IV. — After Parts I–IV, HYPERION has: a verified root-cause diagnosis (I), implementation-grade fixes (II), a per-level forensic audit (III), and an evidence-backed path from reliable to best-in-class (IV).*
 
+
+---
+---
+
+# PART V — OBSCURA VERDICT + DEEP AUDIT OF REPORT GENERATION & PRESENTATION
+
+> **The user's questions, verbatim:** *"tell me we downgraded Obscura and FlareSolverr — are they not worthy? their replacements are better? then do a deep audit on everything around report generation, the designer agents etc. can we even get absolute production-grade HD quality content, text, page, photos? properly formatted? use of premium colours? presentable to S&P 500 executives? is our presentation good enough — because presentation is the main thing? we want complete robustness."*
+>
+> This part answers both: (A) the honest Obscura/FlareSolverr verdict, and (B) a **code-verified** audit of whether the designer/render layer can actually produce an S&P-500-executive-grade PDF today (spoiler: the design *system* is excellent, but four concrete defects make it fail at render time).
+
+## V.0 — Are Obscura & FlareSolverr "not worthy"? (the honest verdict)
+
+**Short answer: they were never doing their job *on this host*, and their replacements are strictly better *for HYPERION's actual deployment* — but they are not "worthless," they're mis-deployed.**
+
+### V.0.1 Obscura — mis-deployed, not worthless
+- **Why it's downgraded:** on this Linux host it is a *Windows `.exe`* (`obscura-bin/obscura.exe`) with **no platform guard** — it physically cannot run (Part III D14), and its CDP/stealth features need an `obscura serve` process nothing starts. So its measured contribution to content today is **zero**.
+- **Is it worthy in principle?** Obscura's *design* (fingerprint randomization, `--stealth`, 12 MCP tools, CDP control) targets detection **layers 2–3** (TLS/JS fingerprint). That's real value **if** you run a genuine native Linux binary. But the benchmark (Part IV.3) shows layers 2–3 are **not** where the hardest gates block you — **layer 4 (automation-protocol/CDP-handshake)** is, and Obscura-via-subprocess does not clearly defeat layer 4 the way **nodriver** (direct-CDP, no Playwright shim) provably does (28/31, 0 blocked).
+- **Verdict:** Not worthless — but **out-classed for the primary role** by `curl_cffi` (layer 2, headless, 26/31) + `nodriver` (layer 4). Keep Obscura only as an *optional* extractor *if* a native Linux build + `obscura serve` are present and healthy. It is a "nice-to-have specialist," not the backbone.
+
+### V.0.2 FlareSolverr — a narrow tool, wrongly treated as general
+- **Why it's downgraded:** it requires a **separate running service** (nothing starts it), it **needs a browser**, and it only solves **Cloudflare IUAM/interstitial** challenges. It does **not** defeat DataDome/Akamai/Turnstile-class gates or layer-4 fingerprinting. Treating it as a general anti-bot answer is the error.
+- **Is it worthy in principle?** Yes — for the *narrow* job of clearing a Cloudflare IUAM cookie on a specific domain, run as a health-checked sidecar. That's it.
+- **Verdict:** Keep as an **optional, health-checked, last-resort sidecar for Cloudflare-IUAM only.** Never in the hot path; never blocking a fetch.
+
+### V.0.3 Are the replacements actually better? (evidence, not opinion)
+| Role | Old (downgraded) | New (promoted) | Why better — measured |
+|---|---|---|---|
+| HTTP fetch (non-JS) | bare httpx / Obscura | **curl_cffi** (impersonate=chrome) | 26/31 real targets; matched a 130 MB patched Chromium fork; headless; 6.4 MB |
+| Hard anti-bot / JS render | Obscura `--stealth` / stealth_search (Playwright) | **nodriver** (direct-CDP) | **28/31, 0 blocked**; only tool through Cloudflare-Turnstile targets |
+| Chrome-shape-blocked sites | — | **Camoufox** (Firefox TLS) | passes google-search/medium where Chromium forks block |
+| Clean article text | (none — raw HTML) | **Trafilatura** | strips boilerplate → usable findings, not nav/ads soup |
+| Cloudflare IUAM | FlareSolverr (as general) | FlareSolverr (as narrow sidecar) | same tool, correct scope |
+
+**Bottom line:** the replacements are better **for a zero-cost, headless-Linux, proprietary multi-workflow engine** — which is exactly what HYPERION is. Obscura/FlareSolverr remain available as optional specialists, not the backbone.
+
+## V.1 — Deep audit: can HYPERION produce S&P-500-executive-grade output TODAY?
+
+**Headline: the *design system* is genuinely excellent — but four code-verified defects make the rendered PDF fall short of executive-grade right now.** I read the actual templates/CSS/pipelines; this is not theoretical.
+
+### V.1.1 What is GENUINELY GOOD (keep — this is real craft)
+Verified in `hyperion/output/templates/styles/hyperion.css` (574 lines) + `presentation_designer.py`:
+- **A deliberate, non-generic palette** (§7.2): warm charcoal `#1A1A1A` (never pure black), cream `#F5F4EE` (never white), terracotta `#C8704D` accent, sage `#7C9885` positive, alert-red `#B5533C` risk-only, deep-brown `#3D3530` grounding. This is a *sophisticated editorial palette*, not clip-art colors. ✅
+- **Real print-design discipline:** `@page` A4 with binding margins, running footer with `counter(page)/counter(pages)`, `string-set: report-title`, full-bleed cover with gradient overlay, dedicated methodology page with inverted dark theme, back cover. ✅
+- **Semantic callout system:** `.key-insight` (terracotta), `.positive-finding` (sage), `.risk-indicator` (alert-red) with `break-inside: avoid`. ✅
+- **Table craft:** dark-brown header, terracotta rule, zebra striping, risk/financial table variants. ✅
+- **Chart brand system** (`charts.py`): fixed color sequence (terracotta first, ≤5 colors, Tufte-minimal), cream paper, 1200×800. ✅
+- **Image pipeline intent** (`images.py`): 6-step Pillow pipeline, 300 DPI, never-upscale, center-weighted crop. ✅
+
+**This is easily the strongest part of the codebase.** The *taste* is executive-grade. The problem is execution.
+
+### V.1.2 What BREAKS executive-grade at render time (code-verified defects D23–D27)
+
+- **D23 🔴 — The premium fonts DO NOT EXIST (fatal to the whole look).**
+  `hyperion.css` declares `@font-face` for **Instrument Serif** and **JetBrains Mono** at `../assets/fonts/*.ttf`, but **there is NO `assets/fonts/` directory in the repo** (verified: "NO fonts dir found"). WeasyPrint silently falls back to a default system serif/sans → **every deliberate typographic decision is discarded at render.** The report you get is *not* the report the CSS describes. **Fix:** vendor the actual `.ttf` files into `assets/fonts/`, verify with a render smoke-test that the embedded font is present in the PDF, and fail loudly if a declared font is missing.
+
+- **D24 🟠 — Monospace body text is the wrong register for S&P-500 executives.**
+  Body copy is set in **JetBrains Mono (a monospace *developer* font)**. It's a deliberate choice ("aligns numbers in tables"), but **no McKinsey/BCG/Bain/Goldman deliverable sets body prose in monospace** — it reads as "technical/engineering," not "boardroom." Monospace is correct for *data tables and figures*, wrong for *narrative*. **Fix:** body/narrative in a refined humanist serif or a clean grotesque sans (e.g. keep Instrument Serif for display headers; use a professional text serif like Source Serif / Newsreader, or a sans like Inter for body); reserve JetBrains Mono for tabular numerals and code only. This single change moves the *register* from "dev report" to "consulting report."
+
+- **D25 🟠 — Photos are fragile and can vanish or error the run.**
+  `images.py` "never upscale — if too small, raise error" + Unsplash requires an **API key**. On a keyless or low-res result, the image step **errors or drops** → covers/section images disappear, and (pre-Part-III) could even fail the render. Stock photos are also the *weakest* executive-grade element — a boardroom report wants **data visualizations and clean iconography**, not stock imagery. **Fix:** (1) make imagery fully optional and non-fatal; (2) prefer a curated set of abstract/editorial cover treatments (solid palette + typographic cover, or a generated gradient/texture) over stock photos; (3) if using photos, downscale-only from a guaranteed-high-res source and always provide a typographic-cover fallback.
+
+- **D26 🔴 — Charts need Chrome (kaleido) and die headless.**
+  `charts.py` exports via `pio.write_image(scale=3)` (kaleido), which pulls a Chromium in many setups → on a headless host with no browser the charts **fail**, and a data report with no charts is not executive-grade. **Fix:** pin kaleido's non-browser static engine and smoke-test it; if it fails, fall back to **matplotlib** (pure-Python, no browser) rendered in the same brand palette; never emit a chart-less report silently — emit a styled data table in place of a failed chart.
+
+- **D27 🟡 — Layout richness is under-used vs the palette's potential.**
+  The CSS supports it, but the *generated* HTML tends toward single-column prose. Executive-grade decks use **executive-summary dashboards, KPI stat-strips, 2–3 column feature grids, pull-quotes, and “so-what” callouts**. **Fix:** give the Presentation Designer explicit **layout components** (KPI strip, two-column comparison, quadrant/matrix, timeline, callout band) and require the executive summary to render as a **visual dashboard**, not a paragraph.
+
+### V.1.3 Honest scorecard — presentation readiness
+| Dimension | Design intent | Render reality (today) | Executive-grade? |
+|---|---|---|---|
+| Color palette | Sophisticated editorial | Correct (CSS colors are inline hex) | ✅ Yes |
+| Typography | Instrument Serif + JetBrains Mono | **Fonts missing → default fallback** (D23); monospace body wrong register (D24) | ❌ No |
+| Layout / structure | Cover, footer, callouts, methodology | Structure good; **under-uses rich layouts** (D27) | 🟡 Partial |
+| Charts | Branded Plotly, 300 DPI | **kaleido/Chrome → fails headless** (D26) | ❌ No |
+| Photos | 300 DPI Pillow pipeline | **key-dependent + raises on low-res** (D25) | 🟡 Fragile |
+| PDF render | WeasyPrint 300 DPI | **weasyprint not installed** (Part III D15) | ❌ No |
+| Text quality | McKinsey-grade prose | depends on content pipeline (Parts I–IV) | 🟡 Depends |
+
+**Verdict:** The design *system* is ~90% of the way to executive-grade — genuinely good taste. But because **fonts are missing, charts need an absent browser, photos are fragile, and WeasyPrint isn't installed**, the *rendered artifact today* is **not** S&P-500-ready. These are all fixable, and none require redesigning the (excellent) visual language.
+
+## V.2 — Phase P14: "Executive-Grade Presentation" (make it boardroom-ready)
+
+> Ships after P6 (which installs WeasyPrint and fixes the escape/paths). P14 is the "presentation is the main thing" phase — it turns the good design *system* into a good rendered *artifact*.
+
+1. **Embed real fonts (D23):** vendor `Instrument Serif` (display) + a professional **body serif/sans** (D24) + `JetBrains Mono` (tabular only) into `assets/fonts/`; render smoke-test asserts each declared font is embedded in the output PDF; fail loudly if missing.
+2. **Fix the body register (D24):** narrative in humanist serif/clean sans; monospace reserved for numerals/tables/code. A/B the two on the golden set (IV.1.3) with the LLM-judge "boardroom register" rubric.
+3. **Charts without a browser (D26):** pin kaleido static engine + smoke-test; matplotlib brand-palette fallback; failed chart → styled data table, never blank.
+4. **Photos optional & premium (D25):** imagery non-fatal; default to typographic/gradient editorial covers; stock photos only from guaranteed-high-res, downscale-only, with fallback.
+5. **Rich executive layouts (D27):** add layout components (KPI stat-strip, 2–3 col grids, quadrant matrix, timeline, callout bands, pull-quotes); executive summary renders as a **visual dashboard**.
+6. **Pixel QA gate:** render the golden set to PDF in CI and assert: fonts embedded, ≥1 chart per data section, no missing-image boxes, no default-font fallback, no orphaned headers, footer on every page, cover full-bleed. A report fails CI if any check fails.
+**Exit criteria:** a blind reviewer cannot distinguish a HYPERION PDF's *production values* (typography, color, charts, layout) from a real McKinsey/BCG deliverable; every golden-set report passes the pixel QA gate.
+
+### V.2.1 Direct answers to the user's presentation questions
+- **"Can we get absolute production-grade HD content/text/pages/photos?"** — **Yes, after P6 + P14.** Text: yes (Parts I–IV content pipeline + real fonts). Pages: yes (WeasyPrint 300 DPI + rich layouts). Charts: yes (kaleido-static/matplotlib at 300 DPI). Photos: yes but **optional/premium** — for boardroom output, prefer data-viz + typographic covers over stock photos.
+- **"Properly formatted / premium colours?"** — the palette is **already premium and correct**; formatting becomes properly executive-grade once fonts + layouts land (D23/D24/D27).
+- **"Presentable to S&P 500 executives? Is presentation good enough?"** — **Not today** (fonts missing, charts/PDF dead on host), **but the design language is already at that level** and P14 closes the execution gap. Presentation *is* treated as the main thing — hence a dedicated phase + a pixel QA gate.
+- **"Complete robustness?"** — full stack: Parts I–III (works, never-None) → IV (durable + measurable + SOTA extraction/stealth) → **V/P14 (executive-grade presentation with a CI pixel gate)**. That is complete, boardroom-grade robustness.
+
+### V.2.2 New defects added: **D23** (fonts missing), **D24** (monospace body register), **D25** (fragile photos), **D26** (kaleido/Chrome charts), **D27** (under-used layouts). Owning phase: **P14** (+ P6 for WeasyPrint/render prerequisites).
+
+*End of PART V.*
+
