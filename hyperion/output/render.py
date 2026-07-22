@@ -169,15 +169,18 @@ class TemplateRenderer:
         Handles: **bold**, *italic*, ## headings, ### sub-headings,
         - bullet lists, and paragraph breaks. Lightweight — no external deps.
 
-        Returns a jinja2.Markup object so Jinja2 does NOT re-escape the output.
+        Returns a markupsafe.Markup object so Jinja2 does NOT re-escape the output.
         """
         if not value:
             return ""
 
         try:
-            from jinja2 import Markup
+            from markupsafe import Markup
         except ImportError:
-            Markup = str  # fallback — str will be auto-escaped by Jinja2
+            try:
+                from jinja2 import Markup  # deprecated fallback for old jinja2
+            except ImportError:
+                Markup = str  # fallback — str will be auto-escaped by Jinja2
 
         import re
 

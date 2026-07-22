@@ -29,6 +29,7 @@ dependencies = [
     # Report generation — 300 DPI PDFs, Plotly charts, Pillow image pipeline
     "weasyprint>=62.0",
     "jinja2>=3.1.0",
+    "markupsafe>=2.1.0",
     "plotly>=5.22.0",
     "kaleido>=0.2.1",
     "pillow>=10.4.0",
