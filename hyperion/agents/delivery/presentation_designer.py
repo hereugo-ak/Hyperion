@@ -242,6 +242,123 @@ h3 {{ font-size: 14pt; font-family: "JetBrains Mono", monospace; font-weight: bo
     font-size: 11pt;
 }}
 
+/* D27: Rich exec layout components */
+.kpi-strip {{
+    display: flex;
+    gap: 0;
+    margin: 0.5cm 0 0.8cm 0;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}}
+.kpi-card {{
+    flex: 1;
+    background-color: {beige};
+    border-top: 3px solid {terracotta};
+    padding: 10px 14px;
+    text-align: center;
+}}
+.kpi-card + .kpi-card {{ margin-left: 2px; }}
+.kpi-value {{
+    font-family: "Instrument Serif", serif;
+    font-size: 20pt;
+    color: {warm_charcoal};
+    line-height: 1.1;
+    margin: 0;
+}}
+.kpi-label {{
+    font-family: "Source Sans 3", sans-serif;
+    font-size: 8pt;
+    color: {warm_gray};
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: 4px;
+}}
+.callout {{
+    background-color: {beige};
+    border-left: 4px solid {terracotta};
+    padding: 12px 16px;
+    margin: 0.4cm 0;
+    font-size: 10pt;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}}
+.callout--alert {{
+    border-left-color: {alert_red};
+    background-color: #B5533C10;
+}}
+.callout-title {{
+    font-family: "Source Sans 3", sans-serif;
+    font-weight: bold;
+    font-size: 9pt;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: {terracotta};
+    margin-bottom: 4px;
+}}
+.callout--alert .callout-title {{ color: {alert_red}; }}
+.dashboard-grid {{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4cm;
+    margin: 0.4cm 0;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}}
+.dashboard-card {{
+    background-color: {cream};
+    border: 1px solid {beige};
+    border-top: 3px solid {terracotta};
+    padding: 10px 14px;
+}}
+.dashboard-card-title {{
+    font-family: "Source Sans 3", sans-serif;
+    font-weight: bold;
+    font-size: 10pt;
+    color: {warm_charcoal};
+    margin-bottom: 4px;
+}}
+.dashboard-card-body {{
+    font-family: "Source Sans 3", sans-serif;
+    font-size: 9pt;
+    color: {deep_brown};
+    line-height: 1.4;
+}}
+.confidence-pill {{
+    display: inline-block;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 7pt;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 2px;
+    text-transform: uppercase;
+    margin-left: 4px;
+}}
+.confidence-pill--high {{ background-color: {sage}; color: {cream}; }}
+.confidence-pill--medium {{ background-color: {terracotta}; color: {cream}; }}
+.confidence-pill--low {{ background-color: {alert_red}; color: {cream}; }}
+.recommendation-banner {{
+    background-color: {deep_brown};
+    color: {cream};
+    padding: 12px 16px;
+    margin: 0.3cm 0 0.5cm 0;
+    text-align: center;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}}
+.recommendation-banner .rec-label {{
+    font-family: "Source Sans 3", sans-serif;
+    font-size: 8pt;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: {terracotta};
+    margin-bottom: 2px;
+}}
+.recommendation-banner .rec-value {{
+    font-family: "Instrument Serif", serif;
+    font-size: 18pt;
+    color: {cream};
+}}
+
 .section-image {{
     width: 40%;
     float: right;
@@ -371,27 +488,68 @@ HTML_TEMPLATE = """\
     </div>
 </div>
 
-{# ── Executive Summary ── #}
+{# ── Executive Summary — D27: Rich dashboard layout ── #}
 <div class="page-break">
     <h2>Executive Summary</h2>
-    <div class="key-insight-box">
-        <strong>Recommendation:</strong> {{ report.recommendation.value | upper }}
+
+    {# Recommendation banner #}
+    <div class="recommendation-banner">
+        <div class="rec-label">Recommendation</div>
+        <div class="rec-value">{{ report.recommendation.value | upper }}</div>
     </div>
+
+    {# KPI strip — key metrics at a glance #}
+    <div class="kpi-strip">
+        <div class="kpi-card">
+            <div class="kpi-value">{{ report.key_findings | length }}</div>
+            <div class="kpi-label">Key Findings</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value">{{ report.total_sources }}</div>
+            <div class="kpi-label">Sources Cited</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value">{{ report.total_data_points }}</div>
+            <div class="kpi-label">Data Points</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value">{{ report.sections | length }}</div>
+            <div class="kpi-label">Analysis Sections</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-value">{{ report.confidence.value | upper }}</div>
+            <div class="kpi-label">Confidence</div>
+        </div>
+    </div>
+
     {{ report.executive_summary | md_to_html }}
 
+    {# Key findings in dashboard grid #}
     <h3>Key Findings</h3>
-    <ul>
+    <div class="dashboard-grid">
         {% for finding in report.key_findings %}
-        <li>{{ finding.title }} — {{ finding.content[:500] }}</li>
+        <div class="dashboard-card">
+            <div class="dashboard-card-title">{{ finding.title }}</div>
+            <div class="dashboard-card-body">
+                {{ finding.content[:300] }}
+                {% if finding.confidence %}
+                <span class="confidence-pill confidence-pill--{{ finding.confidence.value | lower }}">{{ finding.confidence.value | upper }}</span>
+                {% endif %}
+            </div>
+        </div>
         {% endfor %}
-    </ul>
+    </div>
 
+    {# Critical assumptions as callouts #}
+    {% if report.critical_assumptions %}
     <h3>Critical Assumptions</h3>
-    <ul>
-        {% for assumption in report.critical_assumptions %}
-        <li>{{ assumption }}</li>
-        {% endfor %}
-    </ul>
+    {% for assumption in report.critical_assumptions %}
+    <div class="callout callout--alert">
+        <div class="callout-title">Assumption</div>
+        {{ assumption }}
+    </div>
+    {% endfor %}
+    {% endif %}
 </div>
 
 {# ── Analysis Sections ── #}

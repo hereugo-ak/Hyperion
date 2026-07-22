@@ -612,6 +612,171 @@ li {
     break-inside: avoid;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   D27: Rich Executive Layouts — KPI strips, grids, callouts, dashboard
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* KPI Strip — horizontal row of key metrics for the exec summary */
+.kpi-strip {
+    display: flex;
+    gap: 0;
+    margin: 0.5cm 0 0.8cm 0;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+.kpi-card {
+    flex: 1;
+    background-color: #E8E6DD;  /* Beige */
+    border-top: 3px solid #C8704D;  /* Terracotta accent */
+    padding: 10px 14px;
+    text-align: center;
+}
+
+.kpi-card + .kpi-card {
+    margin-left: 2px;
+}
+
+.kpi-value {
+    font-family: var(--header-font);  /* Instrument Serif */
+    font-size: 20pt;
+    color: #1A1A1A;  /* Warm Charcoal */
+    line-height: 1.1;
+    margin: 0;
+}
+
+.kpi-label {
+    font-family: var(--body-font);  /* Source Sans 3 */
+    font-size: 8pt;
+    color: #8B8680;  /* Warm Gray */
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: 4px;
+}
+
+/* Callout — emphasized text block with accent border */
+.callout {
+    background-color: #E8E6DD;  /* Beige */
+    border-left: 4px solid #C8704D;  /* Terracotta */
+    padding: 12px 16px;
+    margin: 0.4cm 0;
+    font-size: 10pt;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+.callout--sage {
+    border-left-color: #7C9885;  /* Sage */
+}
+
+.callout--alert {
+    border-left-color: #B5533C;  /* Alert Red */
+    background-color: #B5533C10;
+}
+
+.callout-title {
+    font-family: var(--body-font);
+    font-weight: bold;
+    font-size: 9pt;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #C8704D;  /* Terracotta */
+    margin-bottom: 4px;
+}
+
+.callout--sage .callout-title {
+    color: #7C9885;  /* Sage */
+}
+
+.callout--alert .callout-title {
+    color: #B5533C;  /* Alert Red */
+}
+
+/* Dashboard Grid — 2-column grid for key findings */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4cm;
+    margin: 0.4cm 0;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+.dashboard-card {
+    background-color: #F5F4EE;  /* Cream */
+    border: 1px solid #E8E6DD;  /* Beige border */
+    border-top: 3px solid #C8704D;  /* Terracotta accent */
+    padding: 10px 14px;
+}
+
+.dashboard-card-title {
+    font-family: var(--body-font);
+    font-weight: bold;
+    font-size: 10pt;
+    color: #1A1A1A;
+    margin-bottom: 4px;
+}
+
+.dashboard-card-body {
+    font-family: var(--body-font);
+    font-size: 9pt;
+    color: #3D3530;  /* Deep Brown */
+    line-height: 1.4;
+}
+
+/* Confidence badge — inline pill for confidence levels */
+.confidence-pill {
+    display: inline-block;
+    font-family: var(--mono-font);
+    font-size: 7pt;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.confidence-pill--high {
+    background-color: #7C9885;  /* Sage */
+    color: #F5F4EE;  /* Cream */
+}
+
+.confidence-pill--medium {
+    background-color: #C8704D;  /* Terracotta */
+    color: #F5F4EE;
+}
+
+.confidence-pill--low {
+    background-color: #B5533C;  /* Alert Red */
+    color: #F5F4EE;
+}
+
+/* Exec summary header — recommendation banner */
+.recommendation-banner {
+    background-color: #3D3530;  /* Deep Brown */
+    color: #F5F4EE;  /* Cream */
+    padding: 12px 16px;
+    margin: 0.3cm 0 0.5cm 0;
+    text-align: center;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+.recommendation-banner .rec-label {
+    font-family: var(--body-font);
+    font-size: 8pt;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #C8704D;  /* Terracotta */
+    margin-bottom: 2px;
+}
+
+.recommendation-banner .rec-value {
+    font-family: var(--header-font);  /* Instrument Serif */
+    font-size: 18pt;
+    color: #F5F4EE;
+}
+
 .break-before {
     page-break-before: always;
     break-before: page;
