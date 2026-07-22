@@ -91,6 +91,7 @@ RESEARCH_LIBRARIAN_SPEC = AgentSpec(
     model_tier=ModelTier.MICRO,
     tools=[
         ToolName.SECOND_BRAIN,
+        ToolName.OPEN_ALEX,
     ],
     skills=[
         SkillSpec(
@@ -402,8 +403,8 @@ class ResearchLibrarian(BaseAgent):
                 except (ValueError, AttributeError, RuntimeError):
                     continue
 
-        except (ValueError, AttributeError, RuntimeError):
-            pass
+        except (ValueError, AttributeError, RuntimeError) as e:
+            await self._log_tool_use("second_brain", "call", f"FAIL · {e}", success=False)
 
         # Sort by relevance score (descending)
         prior_links.sort(key=lambda x: x.relevance_score, reverse=True)
@@ -438,8 +439,8 @@ class ResearchLibrarian(BaseAgent):
                 except (ValueError, AttributeError, RuntimeError):
                     continue
 
-        except (ValueError, AttributeError, RuntimeError):
-            pass
+        except (ValueError, AttributeError, RuntimeError) as e:
+            await self._log_tool_use("second_brain", "call", f"FAIL · {e}", success=False)
 
         return notes
 
@@ -556,8 +557,8 @@ tags: {", ".join(tags)}
             note_path = f"engagements/{engagement_id}.md"
             await second_brain.write(note_path, note_content, tags=tags)
 
-        except (ValueError, AttributeError, RuntimeError):
-            pass
+        except (ValueError, AttributeError, RuntimeError) as e:
+            await self._log_tool_use("second_brain", "call", f"FAIL · {e}", success=False)
 
         return note_path
 

@@ -34,7 +34,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from hyperion.agents.bus import Channel, get_bus, reset_bus
+from hyperion.agents.bus import Channel, MessageType, get_bus, reset_bus
 from hyperion.agents.engagement_director import EngagementDirector
 from hyperion.agents.synthesis_lead import SynthesisLead
 from hyperion.schemas.agents import AgentName, AgentState
@@ -223,7 +223,11 @@ class WorkflowEngine:
     """
 
     MAX_QUALITY_ITERATIONS = 3  # §4.5 Agent 18: max 3 iterations before escalation
-    TASK_TIMEOUT_SECONDS = 300  # 5 minutes per task (matches sub-agent timeout, §4.7)
+    TASK_TIMEOUT_SECONDS = 300  # 5 minutes — default for most agents
+    SPECIALIST_TIMEOUT_SECONDS = 600  # 10 minutes — specialists spawn up to 3 sub-agents
+    # Each sub-agent does SearxNG search + Jina read + LLM analysis.
+    # With SearxNG semaphore=3 and multiple specialists in parallel,
+    # 300s is not enough — specialists were timing out (MARKET, FINANCE, etc.)
 
     def __init__(self, bus: Any = None, router: Any = None) -> None:
         self.bus = bus or get_bus()
@@ -234,6 +238,90 @@ class WorkflowEngine:
         self._all_findings: list[Any] = []  # collected from bus
         self._start_time: float = 0.0
         self._engagement_id: str = ""
+
+    def _log(self, message: str) -> None:
+        """Publish a log message to the TUI via Channel.TUI."""
+        try:
+            import asyncio
+
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(
+                    self.bus.publish(
+                        channel=Channel.TUI,
+                        msg_type=MessageType.STATUS,
+                        sender=AgentName.ENGAGEMENT_DIRECTOR,
+                        payload={
+                            "agent": "ORCHESTRATOR",
+                            "tool": "system",
+                            "action": "log",
+                            "detail": message,
+                        },
+                    )
+                )
+        except Exception:
+            pass
+
+    def _publish_dag_to_tui(self, dag: WorkflowDAG) -> None:
+        """Publish the full DAG task list to the TUI as a checklist."""
+        try:
+            import asyncio
+
+            tasks_info = []
+            for task in dag.tasks:
+                tasks_info.append({
+                    "id": task.id,
+                    "agent": task.agent.value,
+                    "tier": task.model_tier.value,
+                    "status": task.status.value,
+                    "description": task.description[:80],
+                    "dependencies": task.dependencies,
+                })
+
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(
+                    self.bus.publish(
+                        channel=Channel.TUI,
+                        msg_type=MessageType.STATUS,
+                        sender=AgentName.ENGAGEMENT_DIRECTOR,
+                        payload={
+                            "agent": "ORCHESTRATOR",
+                            "tool": "dag",
+                            "action": "task_list",
+                            "detail": f"{len(tasks_info)} tasks dispatched",
+                            "tasks": tasks_info,
+                        },
+                    )
+                )
+        except Exception:
+            pass
+
+    def _publish_task_update(self, task: TaskNode) -> None:
+        """Publish a single task's status change to the TUI."""
+        try:
+            import asyncio
+
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(
+                    self.bus.publish(
+                        channel=Channel.TUI,
+                        msg_type=MessageType.STATUS,
+                        sender=AgentName.ENGAGEMENT_DIRECTOR,
+                        payload={
+                            "agent": "ORCHESTRATOR",
+                            "tool": "task",
+                            "action": "status",
+                            "detail": f"{task.agent.value}: {task.status.value}",
+                            "task_id": task.id,
+                            "task_agent": task.agent.value,
+                            "task_status": task.status.value,
+                        },
+                    )
+                )
+        except Exception:
+            pass
 
     def _get_agent(self, agent_name: AgentName) -> Any:
         """Get or instantiate an agent lazily.
@@ -268,6 +356,7 @@ class WorkflowEngine:
         agent = self._get_agent(task.agent)
         task.status = TaskStatus.RUNNING
         task.started_at = time.time()
+        self._publish_task_update(task)
 
         # Build context from dependency outputs
         context: dict[str, Any] = {}
@@ -288,14 +377,14 @@ class WorkflowEngine:
                 AgentName.CONSUMER_INSIGHTS, AgentName.MA_ANALYST,
                 AgentName.INNOVATION_ANALYST, AgentName.STRATEGY_ANALYST,
             ):
-                # Specialists
+                # Specialists — use extended timeout (they spawn sub-agents)
                 result = await asyncio.wait_for(
                     agent.run(
                         question=task.description,
                         engagement_id=self._engagement_id,
                         context=context if context else None,
                     ),
-                    timeout=self.TASK_TIMEOUT_SECONDS,
+                    timeout=self.SPECIALIST_TIMEOUT_SECONDS,
                 )
 
             elif task.agent == AgentName.FACT_CHECKER:
@@ -306,18 +395,32 @@ class WorkflowEngine:
                         engagement_id=self._engagement_id,
                         findings=self._all_findings or None,
                     ),
-                    timeout=self.TASK_TIMEOUT_SECONDS,
+                    timeout=self.SPECIALIST_TIMEOUT_SECONDS,
                 )
 
             elif task.agent == AgentName.SYNTHESIS_LEAD:
-                # Synthesis Lead needs the DAG and all findings
+                # Synthesis Lead needs the DAG and all findings.
+                # The Synthesis Lead subscribes to Channel.FINDINGS on the bus,
+                # but it's instantiated lazily here — AFTER specialists have
+                # already published their findings. Bus is pub/sub, so missed
+                # messages are gone. Inject the orchestrator's collected
+                # findings directly so synthesis has data to work with.
+                if hasattr(agent, "_collected_findings"):
+                    agent._collected_findings = list(self._all_findings)
+                    agent._findings_by_agent = {}
+                    for finding in self._all_findings:
+                        agent_name = finding.agent
+                        if agent_name not in agent._findings_by_agent:
+                            agent._findings_by_agent[agent_name] = []
+                        agent._findings_by_agent[agent_name].append(finding)
+
                 result = await asyncio.wait_for(
                     agent.run(
                         engagement_id=self._engagement_id,
                         question=dag.question,
                         dag=dag,
                     ),
-                    timeout=self.TASK_TIMEOUT_SECONDS,
+                    timeout=self.SPECIALIST_TIMEOUT_SECONDS,
                 )
 
             elif task.agent == AgentName.QUALITY_GATE:
@@ -406,20 +509,50 @@ class WorkflowEngine:
             task.completed_at = time.time()
             task.output = result.model_dump() if hasattr(result, "model_dump") else str(result)
             self._task_outputs[task.id] = result
+            self._publish_task_update(task)
 
             # Collect findings for Fact Checker and Synthesis Lead
             if hasattr(agent, "_findings"):
+                findings_count = len(agent._findings)
                 self._all_findings.extend(agent._findings)
+                self._log(
+                    f"{task.agent.value}: completed with {findings_count} findings "
+                    f"(total collected: {len(self._all_findings)})"
+                )
+            else:
+                self._log(f"{task.agent.value}: completed (no findings attribute)")
 
             return result
 
         except asyncio.TimeoutError:
+            timeout_used = (
+                self.SPECIALIST_TIMEOUT_SECONDS
+                if task.agent in (
+                    AgentName.MARKET_ANALYST, AgentName.COMPETITIVE_INTEL,
+                    AgentName.FINANCIAL_ANALYST, AgentName.RISK_ANALYST,
+                    AgentName.TECHNOLOGY_ANALYST, AgentName.OPERATIONS_ANALYST,
+                    AgentName.REGULATORY_ANALYST, AgentName.SUSTAINABILITY_ANALYST,
+                    AgentName.CONSUMER_INSIGHTS, AgentName.MA_ANALYST,
+                    AgentName.INNOVATION_ANALYST, AgentName.STRATEGY_ANALYST,
+                )
+                else self.TASK_TIMEOUT_SECONDS
+            )
             task.status = TaskStatus.FAILED
-            task.error = f"Task timed out after {self.TASK_TIMEOUT_SECONDS}s"
+            task.error = f"Task timed out after {timeout_used}s"
+            self._publish_task_update(task)
+            await self.bus.publish_status(
+                task.agent, AgentState.BLOCKED,
+                detail=f"timed out after {timeout_used}s",
+            )
             return None
         except (ValueError, RuntimeError, OSError) as e:
             task.status = TaskStatus.FAILED
             task.error = str(e)
+            self._publish_task_update(task)
+            await self.bus.publish_status(
+                task.agent, AgentState.BLOCKED,
+                detail=str(e)[:200],
+            )
             return None
 
     def _get_output_by_agent(self, dag: WorkflowDAG, agent_name: AgentName) -> Any:
@@ -448,22 +581,36 @@ class WorkflowEngine:
             if isinstance(result, Exception):
                 tasks[i].status = TaskStatus.FAILED
                 tasks[i].error = str(result)
+                await self.bus.publish_status(
+                    tasks[i].agent, AgentState.BLOCKED,
+                    detail=str(result)[:200],
+                )
                 processed.append(None)
             else:
                 processed.append(result)
 
         return processed
 
+    # Delivery agents that must NOT run during _execute_dag — they run
+    # AFTER the quality iteration loop on the final iterated report.
+    _DELIVERY_AGENTS = frozenset({
+        AgentName.PRESENTATION_DESIGNER,
+        AgentName.DATA_VISUALIZER,
+        AgentName.RENDER_ENGINE,
+    })
+
+    # Quality Gate is also excluded from _execute_dag because it runs
+    # in _quality_iteration_loop with proper iteration tracking.
+    # Running it in both places causes double-execution and wasted LLM calls.
+    _DAG_EXCLUDED_AGENTS = _DELIVERY_AGENTS | frozenset({AgentName.QUALITY_GATE})
+
     async def _execute_dag(self, dag: WorkflowDAG) -> dict[str, Any]:
-        """Execute the entire DAG in topological order with parallelism.
+        """Execute the DAG in topological order — specialists through Quality Gate.
 
-        This is the core execution loop:
-        1. Get all ready tasks (pending with all dependencies completed)
-        2. Execute them in parallel via asyncio.gather
-        3. Repeat until all tasks are in terminal states
-
-        The Director monitors the bus for escalations and can adapt the
-        DAG mid-execution (add/remove tasks, reroute dependencies).
+        This runs Stages 1-4: specialists → fact checker → synthesis → quality gate.
+        Delivery tasks (Presentation Designer, Data Visualizer, Render Engine) are
+        deliberately skipped here — they run AFTER the quality iteration loop
+        on the final iterated report, not on the initial draft.
         """
         max_iterations = 100  # Safety valve — prevent infinite loops
         iteration = 0
@@ -483,13 +630,41 @@ class WorkflowEngine:
                         if task.status == TaskStatus.PENDING:
                             task.status = TaskStatus.FAILED
                             task.error = "Deadlock — dependencies never satisfied"
+                            await self.bus.publish_status(
+                                task.agent, AgentState.BLOCKED,
+                                detail="deadlock — dependencies never satisfied",
+                            )
                     break
                 # Wait for running tasks to complete
                 await asyncio.sleep(0.5)
                 continue
 
-            # Execute the wave
-            await self._execute_wave(ready_tasks, dag)
+            # Filter out delivery + quality gate tasks — they run after
+            # specialists complete (quality gate runs in _quality_iteration_loop)
+            ready_non_delivery = [
+                t for t in ready_tasks
+                if t.agent not in self._DAG_EXCLUDED_AGENTS
+            ]
+
+            # If all ready tasks were excluded, mark them as skipped
+            # (they'll be re-run after quality iteration)
+            if not ready_non_delivery and ready_tasks:
+                for task in ready_tasks:
+                    if task.agent in self._DAG_EXCLUDED_AGENTS:
+                        task.status = TaskStatus.PENDING  # Stay pending for later
+                # Check if there are any non-excluded tasks left to run
+                remaining = [
+                    t for t in dag.tasks
+                    if t.status == TaskStatus.PENDING
+                    and t.agent not in self._DAG_EXCLUDED_AGENTS
+                ]
+                if not remaining:
+                    break  # All non-delivery tasks done — exit loop
+                await asyncio.sleep(0.1)
+                continue
+
+            # Execute the wave (non-delivery tasks only)
+            await self._execute_wave(ready_non_delivery, dag)
 
             # Brief yield to allow bus messages to propagate
             await asyncio.sleep(0.1)
@@ -518,44 +693,86 @@ class WorkflowEngine:
         current_score: QualityScore | None = None
         iterations = 0
 
+        # Get visualization output for visual quality scoring (Dimension 10)
+        viz_output = self._get_output_by_agent(dag, AgentName.DATA_VISUALIZER)
+
         for iteration in range(1, self.MAX_QUALITY_ITERATIONS + 1):
             iterations = iteration
 
             # Score the report
-            current_score = await quality_agent.run(
-                question=dag.question,
-                engagement_id=self._engagement_id,
-                final_report=current_report,
-                fact_check_report=fact_check_report,
-                iteration=iteration,
+            current_score = await asyncio.wait_for(
+                quality_agent.run(
+                    question=dag.question,
+                    engagement_id=self._engagement_id,
+                    final_report=current_report,
+                    fact_check_report=fact_check_report,
+                    visualization_output=viz_output,
+                    iteration=iteration,
+                ),
+                timeout=self.SPECIALIST_TIMEOUT_SECONDS,
+            )
+
+            self._log(
+                f"QUALITY iteration {iteration}/{self.MAX_QUALITY_ITERATIONS}: "
+                f"score={current_score.total_score:.1f}/{current_score.threshold:.1f} "
+                f"approved={current_score.approved} "
+                f"critical={len(current_score.critical_dimensions)} "
+                f"gaps={len(current_score.gaps)}"
             )
 
             if current_score is None:
                 break
 
             # Check if score meets threshold (≥ 4.0/5.0)
-            if current_score.weighted_total >= 4.0:
+            if current_score.total_score >= 4.0:
+                self._log(f"QUALITY: threshold met at iteration {iteration}")
                 break  # Quality threshold met
 
-            # Score below threshold — iterate
+            # Score below threshold — iterate with targeted fixes
             if iteration < self.MAX_QUALITY_ITERATIONS:
-                # Synthesis Lead fixes the identified gaps
-                fixed_report = await synthesis_agent.run(
-                    engagement_id=self._engagement_id,
-                    question=dag.question,
-                    dag=dag,
+                # Synthesis Lead applies targeted fixes to the specific
+                # dimensions that scored below 4 (not a full re-synthesis)
+                self._log(
+                    f"SYNTHESIS: starting iteration {iteration + 1} — "
+                    f"fixing {sum(1 for d in current_score.dimensions if d.score < 4)} dimensions"
+                )
+                fixed_report = await asyncio.wait_for(
+                    synthesis_agent.iterate_on_quality(current_score),
+                    timeout=self.SPECIALIST_TIMEOUT_SECONDS,
                 )
                 if fixed_report is not None:
                     current_report = fixed_report
-            # If this was the last iteration, proceed with what we have
+                    self._log(f"SYNTHESIS: iteration {iteration + 1} complete — report updated")
+                else:
+                    self._log(f"SYNTHESIS: iteration {iteration + 1} returned None — using unchanged report")
+            else:
+                self._log(f"QUALITY: max iterations ({self.MAX_QUALITY_ITERATIONS}) reached — proceeding with best available")
+
+        # If we exhausted all iterations without approval, mark it so
+        # delivery agents know to proceed with the best available report
+        if current_score and not current_score.approved and iterations >= self.MAX_QUALITY_ITERATIONS:
+            current_score.max_iterations_reached = True
+
+        # Mark the quality_gate task as COMPLETED in the DAG so that
+        # delivery tasks (presentation_designer, etc.) that depend on
+        # task_quality_gate can proceed.
+        for task in dag.tasks:
+            if task.agent == AgentName.QUALITY_GATE and task.status != TaskStatus.COMPLETED:
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = time.time()
+                task.output = current_score.model_dump() if hasattr(current_score, "model_dump") else str(current_score)
+                self._task_outputs[task.id] = current_score
+                self._publish_task_update(task)
+                break
 
         return current_report, current_score or QualityScore(
-            engagement_id=self._engagement_id,
-            iteration=iterations,
-            dimensions={},
-            weighted_total=0.0,
+            dimensions=[],
+            total_score=0.0,
             approved=False,
-            gaps_identified=["Quality Gate did not produce a score"],
+            iteration=iterations,
+            gaps=["Quality Gate did not produce a score"],
+            critical_dimensions=[],
+            max_iterations_reached=True,
         ), iterations
 
     async def _save_to_second_brain(self, result: EngagementResult) -> None:
@@ -589,7 +806,7 @@ class WorkflowEngine:
                 f"**Question Type:** {result.dag.question_type.value if result.dag else 'unknown'}\n"
                 f"**Recommendation:** {result.final_report.recommendation.value}\n"
                 f"**Confidence:** {result.final_report.confidence.value}\n"
-                f"**Quality Score:** {result.quality_score.weighted_total:.1f}/5.0\n"
+                f"**Quality Score:** {result.quality_score.total_score:.1f}/5.0\n"
                 f"**Duration:** {result.duration_seconds:.0f}s\n"
                 f"**Agents Used:** {', '.join(a.value for a in result.metadata.agents_used)}\n"
                 f"**Sources Accessed:** {result.metadata.sources_accessed}\n"
@@ -603,6 +820,7 @@ class WorkflowEngine:
 
             await brain.save_note(
                 category="engagements",
+                filename=f"engagement-{result.engagement_id}",
                 title=f"Engagement {result.engagement_id}: {result.question[:60]}",
                 content=note_content,
                 tags=[
@@ -632,7 +850,7 @@ class WorkflowEngine:
             report_dict = final_report.model_dump()
             result = exporter.export_to_file(report_dict)
             return result.file_path if result.success else ""
-        except (ImportError, ValueError, OSError):
+        except (ImportError, ValueError, OSError, RuntimeError, TypeError, AttributeError):
             return ""
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -659,9 +877,15 @@ class WorkflowEngine:
         self._start_time = time.time()
         self._engagement_id = f"eng_{uuid.uuid4().hex[:12]}"
 
-        # Reset the bus for a clean engagement
-        reset_bus()
-        self.bus = get_bus()
+        # Use the existing bus if it's already running (TUI scenario),
+        # otherwise create a fresh one for headless mode
+        existing_bus = get_bus()
+        if existing_bus._running:
+            self.bus = existing_bus
+        else:
+            reset_bus()
+            self.bus = get_bus()
+            await self.bus.start()
 
         result = EngagementResult(
             engagement_id=self._engagement_id,
@@ -678,6 +902,10 @@ class WorkflowEngine:
                 conversation_context=conversation_context,
             )
             result.dag = dag
+
+            # Publish the DAG task list to the TUI so the user sees a
+            # real-time checklist of all tasks and their statuses.
+            self._publish_dag_to_tui(dag)
 
             # ─────────────────────────────────────────────────────────────
             # Stage 2-4: Execute the DAG (specialists → fact check → synthesis → quality)
@@ -725,6 +953,7 @@ class WorkflowEngine:
             ]
 
             # Execute delivery tasks in order (they have dependencies)
+            self._log(f"DELIVERY: starting {len(delivery_tasks)} delivery tasks")
             for task in delivery_tasks:
                 if task.status == TaskStatus.PENDING:
                     # Check if dependencies are met
@@ -733,7 +962,10 @@ class WorkflowEngine:
                         for dep in task.dependencies
                     )
                     if ready:
+                        self._log(f"DELIVERY: executing {task.agent.value}")
                         await self._execute_task(task, dag)
+                    else:
+                        self._log(f"DELIVERY: {task.agent.value} dependencies not met — skipping")
 
             # Collect delivery outputs
             result.layout_plan = self._get_output_by_agent(dag, AgentName.PRESENTATION_DESIGNER)
@@ -745,6 +977,12 @@ class WorkflowEngine:
                 result.pdf_path = result.render_output.pdf_path
             elif result.layout_plan and hasattr(result.layout_plan, "pdf_path"):
                 result.pdf_path = result.layout_plan.pdf_path
+
+            self._log(
+                f"DELIVERY: complete — PDF={'YES' if result.pdf_path else 'NO'} "
+                f"layout={'YES' if result.layout_plan else 'NO'} "
+                f"viz={'YES' if result.visualization_output else 'NO'}"
+            )
 
             # Generate markdown export
             result.markdown_path = await self._generate_markdown(
@@ -770,13 +1008,21 @@ class WorkflowEngine:
                     len(t.sub_agents) for t in dag.tasks if t.status == TaskStatus.COMPLETED
                 ),
                 quality_iterations=iterations,
-                final_quality_score=quality_score.weighted_total if quality_score else None,
+                final_quality_score=quality_score.total_score if quality_score else None,
             )
 
             result.duration_seconds = time.time() - self._start_time
             result.adaptation_count = len(dag.adaptation_log)
             result.escalation_count = self._director.get_escalation_count() if self._director else 0
             result.success = True
+
+            self._log(
+                f"ENGAGEMENT COMPLETE: success={result.success} "
+                f"duration={result.duration_seconds:.0f}s "
+                f"quality={quality_score.total_score:.1f}/{quality_score.threshold:.1f} "
+                f"iterations={iterations} "
+                f"PDF={'YES' if result.pdf_path else 'NO'}"
+            )
 
             # ─────────────────────────────────────────────────────────────
             # Save to Second Brain for future learning (§12.8)
@@ -788,17 +1034,27 @@ class WorkflowEngine:
         except (ValueError, RuntimeError, OSError, asyncio.TimeoutError) as e:
             result.error = str(e)
             result.duration_seconds = time.time() - self._start_time
+            self._log(f"ENGAGEMENT FAILED: {type(e).__name__}: {e}")
             return result
 
     async def close(self) -> None:
-        """Clean up resources."""
-        # Close any agents that have cleanup methods
+        """Clean up resources — close all agents and their tool clients."""
         for agent in self._agent_instances.values():
-            if hasattr(agent, "close"):
+            close_method = getattr(agent, "close", None)
+            if callable(close_method):
                 try:
-                    await agent.close()
-                except (RuntimeError, OSError):
+                    await close_method()
+                except Exception:
                     pass
+            else:
+                cleanup_method = getattr(agent, "cleanup", None)
+                if callable(cleanup_method):
+                    try:
+                        result = cleanup_method()
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception:
+                        pass
 
     async def __aenter__(self) -> WorkflowEngine:
         return self

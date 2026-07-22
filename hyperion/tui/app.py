@@ -18,12 +18,16 @@ terminal handles selection & copy natively.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from textual.app import App
 from textual.binding import Binding
 
+from hyperion.tui.screens.deliverable import DeliverableScreen
+from hyperion.tui.screens.engagement import EngagementScreen
 from hyperion.tui.screens.session import SessionScreen
+from hyperion.tui.screens.splash import SplashScreen
 from hyperion.tui.theme import (
     BG_CANVAS,
     BG_SURFACE,
@@ -81,12 +85,14 @@ class HyperionApp(App):
         reduced_motion: bool = False,
         demo: bool = False,
         mouse: bool = True,
+        use_splash: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._reduced_motion = reduced_motion
         self._demo = demo
         self._want_mouse = mouse
+        self._use_splash = use_splash
 
     def on_mount(self) -> None:
         # Apply brand accents to Textual's theme variables where possible.
@@ -104,8 +110,21 @@ class HyperionApp(App):
         except Exception:
             pass
         self.push_screen(
-            SessionScreen(reduced_motion=self._reduced_motion, demo=self._demo)
+            SplashScreen(reduced_motion=self._reduced_motion)
+            if self._use_splash
+            else SessionScreen(reduced_motion=self._reduced_motion, demo=self._demo)
         )
+
+    def show_engagement(self) -> None:
+        """Transition from splash to the engagement room."""
+        self.pop_screen()
+        self.push_screen(
+            EngagementScreen(reduced_motion=self._reduced_motion, demo=self._demo)
+        )
+
+    def show_deliverable(self, result: Any) -> None:
+        """Transition from engagement to the deliverable view."""
+        self.push_screen(DeliverableScreen(engagement_result=result))
 
     # ── copy actions ─────────────────────────────────────────────────────────
 
@@ -158,7 +177,30 @@ class HyperionApp(App):
         except Exception:
             pass
 
+    def on_unmount(self) -> None:
+        """Stop all HYPERION services when the shell exits."""
+        try:
+            import asyncio
+            from hyperion.tui.boot import stop_services
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+            loop.run_until_complete(stop_services())
+        except Exception:
+            pass
 
-def run(reduced_motion: bool = False, demo: bool = False, mouse: bool = True) -> None:
+
+def run(
+    reduced_motion: bool = False,
+    demo: bool = False,
+    mouse: bool = True,
+    use_splash: bool = False,
+) -> None:
     """Entry point used by the CLI `shell` command."""
-    HyperionApp(reduced_motion=reduced_motion, demo=demo, mouse=mouse).run(mouse=mouse)
+    HyperionApp(
+        reduced_motion=reduced_motion,
+        demo=demo,
+        mouse=mouse,
+        use_splash=use_splash,
+    ).run(mouse=mouse)

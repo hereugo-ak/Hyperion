@@ -40,6 +40,8 @@ dependencies = [
     # Data sources
     "alpha-vantage>=3.0.0",
     "fredpy>=1.0.6",
+    "pytrends>=4.7.3",
+    "praw>=7.7.0",
 ]
 
 [project.optional-dependencies]

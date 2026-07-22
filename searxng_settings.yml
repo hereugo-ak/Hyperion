@@ -21,7 +21,7 @@ search:
 server:
   secret_key: "hyperion-searxng-secret-change-me"
   bind_address: "0.0.0.0"
-  port: 8888
+  port: 8080
   limiter: false
   image_proxy: true
 
@@ -33,50 +33,88 @@ ui:
     - simple
 
 outgoing:
-  request_timeout: 10.0
-  max_request_timeout: 15.0
-  useragent_suffix: "HYPERION"
-  # No proxy needed — direct connection for research scraping
+  request_timeout: 15.0
+  max_request_timeout: 30.0
+  useragent_suffix: ""
   proxies: null
+  # Use a realistic browser user agent to avoid bot detection
+  user_agents:
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  # To use rotating proxies (uncomment and set your proxy provider URL):
+  # proxies:
+  #   all://: "http://user:pass@proxy.example.com:8080"
 
 engines:
-  # Prioritize engines that return structured, citable results
-  # for consulting-grade research
-  - name: google
-    engine: google
-    shortcut: g
-    disabled: false
-
-  - name: bing
-    engine: bing
-    shortcut: b
-    disabled: false
-
-  - name: duckduckgo
-    engine: duckduckgo
-    shortcut: ddg
-    disabled: false
-
-  - name: brave
-    engine: brave
-    shortcut: br
-    disabled: false
-
+  # ── PRIMARY: Structured-data engines that NEVER CAPTCHA ──
+  # API-based or database engines with no bot detection.
+  # Reliable backbone of HYPERION search.
   - name: wikipedia
     engine: wikipedia
     shortcut: wp
     disabled: false
+    timeout: 10
 
   - name: github
     engine: github
     shortcut: gh
     disabled: false
+    timeout: 10
 
-  # Disable social media engines — not useful for consulting research
-  - name: twitter
-    engine: twitter
-    disabled: true
+  - name: arxiv
+    engine: arxiv
+    shortcut: ax
+    disabled: false
+    timeout: 10
 
-  - name: instagram
-    engine: instagram
-    disabled: true
+  - name: semantic scholar
+    engine: semantic_scholar
+    shortcut: ss
+    disabled: false
+    timeout: 10
+
+  - name: openlibrary
+    engine: openlibrary
+    shortcut: ol
+    disabled: false
+    timeout: 10
+
+  - name: mojeek
+    engine: mojeek
+    shortcut: mj
+    disabled: false
+    timeout: 15
+
+  # ── SECONDARY: General web engines (intermittent blocks) ──
+  # These sometimes work but may get CAPTCHA'd under heavy load.
+  # SearxNG handles failures gracefully — partial results are still useful.
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+    timeout: 15
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: false
+    timeout: 15
+
+  # ── DISABLED: Engines loaded by use_default_settings that crash on init ──
+  # These must be explicitly disabled to prevent container instability.
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    disabled: true  # HTTP 403 from query.wikidata.org on init — crashes container
+
+  - name: startpage
+    engine: startpage
+    shortcut: sp
+    disabled: true  # CAPTCHA within 1 query
+
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: true  # "Unusual traffic" detection — use google cse instead (default)

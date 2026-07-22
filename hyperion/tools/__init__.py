@@ -1,4 +1,4 @@
-"""Tool registry — SearxNG, Jina, Obscura, Crawl4AI, Wayback, Alpha Vantage, FRED, Unsplash, Second Brain, Unified Search, Unified Extract.
+"""Tool registry — SearxNG, Jina, Obscura, Crawl4AI, Wayback, Alpha Vantage, FRED, Unsplash, Second Brain, Unified Search, Unified Extract, DeepSearch, EvidenceScorer.
 
 Every tool is assigned to agents who actually use it. No decorative tools.
 No tool is assigned to an agent that doesn't need it. No agent lacks a tool
@@ -8,15 +8,29 @@ it does need. This is deliberate — tool assignment is a design decision.
 
 from hyperion.tools.alpha_vantage import AlphaVantageClient, FundamentalData, StockQuote, TimeSeriesData
 from hyperion.tools.crawl4ai import Crawl4AIClient, CrawlResult
+from hyperion.tools.deep_search import DeepSearchClient, DeepSearchResult, ExtractedContent
+from hyperion.tools.evidence_scorer import EvidenceScorer, EvidenceSummary, ScoredResult
+from hyperion.tools.flaresolverr import FlareSolverrClient, FlareSolverrResult
 from hyperion.tools.fred import FredClient, FREDSeries, FREDSearchResult
 from hyperion.tools.jina import JinaClient, JinaReadResult, JinaSearchResponse, JinaSearchResult
 from hyperion.tools.obscura import ObscuraClient, ObscuraFetchResult, ObscuraScrapeResult
+from hyperion.tools.scrapling import ScraplingBatchResult, ScraplingClient, ScraplingResult
 from hyperion.tools.searxng import SearxNGClient, SearchResponse, SearchResult
 from hyperion.tools.second_brain import SecondBrainClient, VaultNote, VaultSearchResult
+from hyperion.tools.stealth_search import StealthSearchClient, StealthSearchResult
 from hyperion.tools.unified_extract import UnifiedExtract, UnifiedExtractResult
 from hyperion.tools.unified_search import UnifiedSearch, UnifiedSearchResult
 from hyperion.tools.unsplash import UnsplashClient, UnsplashImage, UnsplashSearchResult
 from hyperion.tools.wayback import WaybackClient, WaybackContentResult, WaybackSnapshot, WaybackTimelineResult
+
+# ── Phase 2 Data Sources ──
+from hyperion.tools.sec_edgar import SECEdgarClient, SECCompanyInfo, SECFiling, SECFilingContent
+from hyperion.tools.semantic_scholar import AcademicPaper, CitationGraph, SemanticScholarClient
+from hyperion.tools.openalex import OpenAlexClient, OpenAlexInstitution, OpenAlexWork
+from hyperion.tools.world_bank import WorldBankClient, WorldBankCountryProfile, WorldBankIndicator, WorldBankIndicatorData
+from hyperion.tools.google_trends import GoogleTrendsClient, RelatedQuery, RelatedTopic, TrendResult
+from hyperion.tools.hackernews import HackerNewsClient, HNComment, HNStory
+from hyperion.tools.reddit import RedditClient, RedditComment, RedditPost, SentimentSummary, Subreddit
 
 __all__ = [
     # SearxNG
@@ -32,9 +46,19 @@ __all__ = [
     "ObscuraClient",
     "ObscuraFetchResult",
     "ObscuraScrapeResult",
+    # Scrapling
+    "ScraplingClient",
+    "ScraplingResult",
+    "ScraplingBatchResult",
     # Crawl4AI
     "Crawl4AIClient",
     "CrawlResult",
+    # FlareSolverr
+    "FlareSolverrClient",
+    "FlareSolverrResult",
+    # Stealth Search
+    "StealthSearchClient",
+    "StealthSearchResult",
     # Wayback
     "WaybackClient",
     "WaybackSnapshot",
@@ -63,4 +87,46 @@ __all__ = [
     # Unified Extract
     "UnifiedExtract",
     "UnifiedExtractResult",
+    # DeepSearch
+    "DeepSearchClient",
+    "DeepSearchResult",
+    "ExtractedContent",
+    # EvidenceScorer
+    "EvidenceScorer",
+    "ScoredResult",
+    "EvidenceSummary",
+    # ── Phase 2 Data Sources ──
+    # SEC EDGAR
+    "SECEdgarClient",
+    "SECFiling",
+    "SECFilingContent",
+    "SECCompanyInfo",
+    # Semantic Scholar
+    "SemanticScholarClient",
+    "AcademicPaper",
+    "CitationGraph",
+    # OpenAlex
+    "OpenAlexClient",
+    "OpenAlexWork",
+    "OpenAlexInstitution",
+    # World Bank
+    "WorldBankClient",
+    "WorldBankIndicator",
+    "WorldBankIndicatorData",
+    "WorldBankCountryProfile",
+    # Google Trends
+    "GoogleTrendsClient",
+    "TrendResult",
+    "RelatedQuery",
+    "RelatedTopic",
+    # HackerNews
+    "HackerNewsClient",
+    "HNStory",
+    "HNComment",
+    # Reddit
+    "RedditClient",
+    "RedditPost",
+    "RedditComment",
+    "SentimentSummary",
+    "Subreddit",
 ]

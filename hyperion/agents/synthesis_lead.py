@@ -47,6 +47,7 @@ is targeted refinement based on actionable feedback. (§4.5, Agent 18)
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -862,25 +863,76 @@ class SynthesisLead(BaseAgent):
         so a reader can jump to any section without reading prior sections.
         Each section has: key insight, body, findings, implications, sources.
         (§6.1)
+
+        The section body is NOT a concatenation of finding strings. It is
+        a deep analytical narrative written by the Synthesis Lead LLM,
+        synthesizing all findings into McKinsey/BCG-quality prose with:
+        - Context setting and framing
+        - Data presentation with specific numbers
+        - Interpretation and "so what?" analysis
+        - Cross-references to other sections where relevant
+        - Clear implications for the recommendation
         """
-        sections: list[AnalysisSection] = []
 
-        for agent, findings in self._findings_by_agent.items():
+        async def _build_one_section(
+            agent: str,
+            findings: list[KeyFinding],
+        ) -> AnalysisSection:
             if not findings:
-                continue
+                return None  # type: ignore[return-value]
 
-            # The key insight is the most important finding from this agent
             key_finding = max(findings, key=lambda f: len(f.sources))
             all_sources: list[Source] = []
             for f in findings:
                 all_sources.extend(f.sources)
 
-            section = AnalysisSection(
+            findings_digest = "\n\n".join(
+                f"Finding: {f.title}\nContent: {f.content}\nConfidence: {f.confidence.value}\nImplications: {f.implications or 'N/A'}"
+                for f in findings
+            )
+            sources_digest = "\n".join(
+                f"- {s.title}: {s.url}" for s in all_sources[:10]
+            )
+
+            narrative_prompt = (
+                "You are a senior consultant at a top-tier strategy firm (McKinsey/BCG).\n"
+                "Write a deep, analytical narrative section for a client report.\n\n"
+                f"Section topic: {agent.replace('_', ' ').title()}\n"
+                f"Engagement question: {self._question}\n\n"
+                f"Findings from the {agent} analyst:\n{findings_digest}\n\n"
+                f"Sources:\n{sources_digest}\n\n"
+                "Write a comprehensive section body (1500-3000 words) that:\n"
+                "1. Opens with context — why this dimension matters for the question\n"
+                "2. Presents key data points with specific numbers and sources cited inline\n"
+                "3. Interprets the data — what does it mean? What's the 'so what'?\n"
+                "4. Identifies patterns, tensions, or counterarguments within the findings\n"
+                "5. Draws out implications for the overall recommendation\n"
+                "6. Uses clear structure with sub-headings (marked with **bold**)\n"
+                "7. Writes in professional consulting prose — authoritative, precise, no fluff\n"
+                "8. Cites sources naturally (e.g., 'According to [Source]...')\n\n"
+                "Do NOT write bullet points. Write flowing analytical paragraphs.\n"
+                "Do NOT repeat the section title. Start directly with the narrative.\n"
+            )
+
+            section_body = "\n\n".join(f.content for f in findings)  # fallback
+
+            try:
+                response = await self._llm_complete(
+                    user_prompt=narrative_prompt,
+                    urgency=TaskUrgency.HIGH,
+                    temperature=0.3,
+                )
+                if response.success and response.content and len(response.content) > 500:
+                    section_body = response.content
+            except (ValueError, AttributeError, RuntimeError):
+                pass  # Use fallback concatenation
+
+            return AnalysisSection(
                 id=f"section_{agent}",
                 title=agent.replace("_", " ").title(),
                 agent=agent,
                 key_insight=key_finding.title,
-                body="\n\n".join(f.content for f in findings),
+                body=section_body,
                 findings=findings,
                 charts=[],  # Charts are added by Data Visualizer later
                 images=[],  # Images are added by Presentation Designer later
@@ -888,7 +940,19 @@ class SynthesisLead(BaseAgent):
                 sources=list({s.url: s for s in all_sources}.values()),  # Dedupe by URL
                 confidence=findings[0].confidence,
             )
-            sections.append(section)
+
+        # Build all sections in parallel — each section's LLM call is independent
+        tasks = [
+            _build_one_section(agent, findings)
+            for agent, findings in self._findings_by_agent.items()
+            if findings
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        sections: list[AnalysisSection] = []
+        for result in results:
+            if isinstance(result, AnalysisSection):
+                sections.append(result)
 
         return sections
 
@@ -908,6 +972,11 @@ class SynthesisLead(BaseAgent):
         actionable feedback like: 'Dimension 3 (analytical depth) scored
         2/5: the Market Analysis section presents data but doesn't interpret
         it. Fix: add 'so what?' implications to each finding.' (§4.5, Agent 18)
+
+        Implementation: Instead of asking the LLM to reproduce the entire
+        FinalReport JSON (which is too large for reliable JSON generation),
+        we send a condensed summary and ask for targeted fixes only. The
+        fixes are then applied programmatically to the existing report.
         """
         # Identify dimensions that need fixing
         failing_dims = [d for d in quality_score.dimensions if d.score < 4]
@@ -915,24 +984,64 @@ class SynthesisLead(BaseAgent):
         if not failing_dims:
             return report
 
-        # Build targeted fix prompt
+        # Build targeted fix instructions
         fix_instructions = "\n".join(
             f"- {d.name} (scored {d.score}/5): {d.feedback}"
             + (f" Fix: {d.fix_instructions}" if d.fix_instructions else "")
             for d in failing_dims
         )
 
-        current_report_str = report.model_dump_json(indent=2)
+        # Build a CONDENSED summary of the report — not the full JSON.
+        # The LLM only needs enough context to make targeted fixes.
+        section_summaries = "\n".join(
+            f"  Section '{s.title}' (agent={s.agent}): "
+            f"key_insight='{s.key_insight[:100]}', "
+            f"body_length={len(s.body)} chars, "
+            f"findings={len(s.findings)}, "
+            f"sources={len(s.sources)}, "
+            f"implications='{(s.implications or '')[:80]}'"
+            for s in report.sections
+        )
+
+        report_summary = (
+            f"Recommendation: {report.recommendation.value}\n"
+            f"Confidence: {report.confidence.value}\n"
+            f"Executive summary length: {len(report.executive_summary)} chars\n"
+            f"Sections ({len(report.sections)}):\n{section_summaries}\n"
+            f"Key findings: {len(report.key_findings)}\n"
+            f"Total sources: {report.total_sources}\n"
+            f"Risk analysis present: {report.risk_analysis is not None}\n"
+            f"Limitations: {len(report.limitations)}"
+        )
 
         prompt = (
             "You are the Synthesis Lead iterating on the FinalReport based on "
             "Quality Gate feedback.\n\n"
-            f"Current report:\n{current_report_str[:8000]}\n\n"
+            f"Current report summary:\n{report_summary}\n\n"
             f"Quality Gate feedback (dimensions scoring below 4):\n{fix_instructions}\n\n"
-            f"Iteration: {self._quality_iteration} of {self._max_quality_iterations}\n\n"
-            "Produce an improved version of the report as JSON. Only change the "
-            "fields that need fixing based on the feedback. Keep everything else "
-            "the same. Return the FULL updated FinalReport as JSON.\n"
+            f"Iteration: {self._quality_iteration + 1} of {self._max_quality_iterations}\n\n"
+            "Based on the feedback, return TARGETED FIXES as JSON.\n"
+            "Only include fields you want to update. Omit fields that don't need changes.\n\n"
+            "Return format:\n"
+            "{\n"
+            '  "executive_summary": "updated executive summary (if needed)",\n'
+            '  "recommendation_rationale": "updated rationale (if needed)",\n'
+            '  "section_updates": {\n'
+            '    "section_<agent_name>": {\n'
+            '      "body": "updated section body (if needed)",\n'
+            '      "implications": "updated implications (if needed)"\n'
+            '    }\n'
+            '  },\n'
+            '  "new_limitations": ["limitation1", "limitation2"]\n'
+            "}\n\n"
+            "Rules:\n"
+            "1. Do NOT wrap the JSON in markdown code fences.\n"
+            "2. Do NOT add text before or after the JSON.\n"
+            "3. Only include fields that need fixing.\n"
+            "4. Section bodies must be detailed, analytical, consulting-grade prose.\n"
+            "5. Each section body should be 1500-5000 chars of deep analytical prose.\n"
+            "6. Write flowing paragraphs, NOT bullet points. Cite sources inline.\n"
+            "7. Include specific data points, interpretations, and 'so what' analysis.\n"
         )
 
         response = await self._llm_complete(
@@ -943,17 +1052,71 @@ class SynthesisLead(BaseAgent):
         )
 
         if not response.success or not response.content:
+            await self._transition(
+                AgentState.WORKING,
+                f"Quality iteration LLM call failed: {response.error if not response.success else 'empty response'}",
+            )
             return report
 
         try:
-            data = json.loads(response.content)
-            # Preserve engagement_id and question (not changeable by LLM)
-            data["engagement_id"] = report.engagement_id
-            data["question"] = report.question
-            # Update quality score on the report
-            data["quality_score"] = quality_score.model_dump()
-            return FinalReport.model_validate(data)
-        except (json.JSONDecodeError, ValueError):
+            # Strip markdown code fences if present
+            content = response.content.strip()
+            if content.startswith("```"):
+                lines = content.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                content = "\n".join(lines)
+            if not content.startswith("{"):
+                start = content.find("{")
+                end = content.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    content = content[start:end + 1]
+
+            data = json.loads(content)
+
+            # Apply targeted fixes to a deep copy of the report
+            updated = report.model_copy(deep=True)
+
+            if "executive_summary" in data and data["executive_summary"]:
+                updated.executive_summary = data["executive_summary"]
+
+            if "recommendation_rationale" in data and data["recommendation_rationale"]:
+                updated.recommendation_rationale = data["recommendation_rationale"]
+
+            if "new_limitations" in data and isinstance(data["new_limitations"], list):
+                existing = set(updated.limitations)
+                for lim in data["new_limitations"]:
+                    if isinstance(lim, str) and lim not in existing:
+                        updated.limitations.append(lim)
+
+            # Apply section-level updates
+            section_updates = data.get("section_updates", {})
+            if isinstance(section_updates, dict):
+                for section in updated.sections:
+                    key = section.id
+                    if key in section_updates:
+                        update = section_updates[key]
+                        if isinstance(update, dict):
+                            if "body" in update and update["body"]:
+                                section.body = update["body"]
+                            if "implications" in update and update["implications"]:
+                                section.implications = update["implications"]
+
+            await self._transition(
+                AgentState.WORKING,
+                f"Quality iteration {self._quality_iteration + 1}: applied targeted fixes "
+                f"({len(data)} fields updated)",
+            )
+            return updated
+
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            await self._transition(
+                AgentState.WORKING,
+                f"Quality iteration {self._quality_iteration + 1} JSON parse failed: {e!s:.80} — "
+                f"keeping current report",
+            )
             return report
 
     # ─────────────────────────────────────────────────────────────────────

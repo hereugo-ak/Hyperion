@@ -52,6 +52,7 @@ Methodology (§4.4, Agent 10):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -100,6 +101,8 @@ SUSTAINABILITY_ANALYST_SPEC = AgentSpec(
         ToolName.JINA,
         ToolName.OBSCURA,
         ToolName.FRED,
+        ToolName.WORLD_BANK,
+        ToolName.DEEP_SEARCH,
     ],
     skills=[
         SkillSpec(
@@ -370,11 +373,15 @@ class SustainabilityAnalyst(BaseAgent):
                 jina = self.get_tool(ToolName.JINA)
                 top_urls = [r["url"] for r in results[:6] if r.get("url")]
                 for url in top_urls:
-                    content = await jina.read(url)
+                    read_result = await jina.read(url)
+                    if read_result and (read_result.markdown or read_result.content):
+                        content = read_result.markdown or read_result.content
+                    else:
+                        continue
                     if content:
                         self._extracted_content.append({
                             "url": url,
-                            "content": content[:3000],
+                            "content": content[:15000],
                         })
             except (ValueError, AttributeError, RuntimeError):
                 pass
@@ -411,7 +418,11 @@ class SustainabilityAnalyst(BaseAgent):
 
             for url in platform_urls[:6]:
                 try:
-                    page_data = await obscura.scrape(url, stealth=True)
+                    fetch_result = await obscura.fetch(url, stealth=True)
+                    if fetch_result and (fetch_result.markdown or fetch_result.content):
+                        page_data = {"content": (fetch_result.markdown or fetch_result.content)[:15000]}
+                    else:
+                        page_data = None
                     if page_data:
                         results.append({
                             "url": url,
@@ -931,9 +942,13 @@ class SustainabilityAnalyst(BaseAgent):
 
         all_findings: list[KeyFinding] = []
 
-        for spec in sub_specs:
-            findings = await self._spawn_sub_agent(spec)
-            all_findings.extend(findings)
+        results = await asyncio.gather(
+            *(self._spawn_sub_agent(spec) for spec in sub_specs),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, list):
+                all_findings.extend(result)
 
         return all_findings
 

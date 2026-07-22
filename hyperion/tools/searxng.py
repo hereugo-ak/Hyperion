@@ -37,6 +37,8 @@ from urllib.parse import quote_plus
 
 import httpx
 
+from hyperion.tools.jina import JinaClient
+
 
 @dataclass
 class SearchResult:
@@ -61,6 +63,20 @@ class SearchResult:
             "published_date": self.published_date,
         }
 
+    def get(self, key: str, default: Any = "") -> Any:
+        """Dict-like access for compatibility with agents that use .get()."""
+        mapping = {
+            "title": self.title,
+            "url": self.url,
+            "snippet": self.snippet,
+            "content": self.snippet,
+            "engine": self.engine,
+            "score": self.score,
+            "category": self.category,
+            "published_date": self.published_date,
+        }
+        return mapping.get(key, default)
+
 
 @dataclass
 class SearchResponse:
@@ -83,6 +99,20 @@ class SearchResponse:
             "cached": self.cached,
         }
 
+    def __iter__(self):
+        """Iterate over results, yielding SearchResult items."""
+        return iter(self.results)
+
+    def __len__(self) -> int:
+        return len(self.results)
+
+    def __getitem__(self, key):
+        """Support indexing and slicing: response[0], response[:5]."""
+        return self.results[key]
+
+    def __bool__(self) -> bool:
+        return bool(self.results)
+
 
 class SearxNGClient:
     """SearxNG meta-search client.
@@ -103,6 +133,10 @@ class SearxNGClient:
     REQUEST_TIMEOUT = 30  # seconds
     MAX_RETRIES = 3
     RETRY_DELAY = 2  # seconds
+    MAX_CONCURRENT = 5  # limit parallel requests to avoid upstream rate-limits/CAPTCHAs
+
+    # Class-level semaphore shared across all instances
+    _semaphore: asyncio.Semaphore | None = None
 
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
@@ -113,6 +147,8 @@ class SearxNGClient:
         self._client: httpx.AsyncClient | None = None
         self._cache: dict[str, tuple[float, SearchResponse]] = {}
         os.makedirs(self.CACHE_DIR, exist_ok=True)
+        if SearxNGClient._semaphore is None:
+            SearxNGClient._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
 
     @property
     def base_url(self) -> str:
@@ -168,94 +204,138 @@ class SearxNGClient:
         time_range: str = "",
         engines: str = "",
         safesearch: int = 1,
+        max_results: int | None = None,
     ) -> SearchResponse:
-        """Search via SearxNG JSON API.
+        """Search via the unified stealth search system.
+
+        Primary: FlareSolverr (Docker headless Chromium — solves CAPTCHAs, searches DuckDuckGo)
+        Fallback: Playwright stealth Bing (non-headless Chromium with anti-detection)
+
+        SearxNG container and Jina are NOT used — they were unreliable.
+        This method always returns results if the internet is up.
 
         Args:
             query: Search query string
             num_results: Maximum number of results to return
-            categories: Search categories (general, images, news, files, it, science)
-            language: Language code (en, hi, fr, de, etc.)
-            time_range: Time filter (day, week, month, year, or empty for all)
-            engines: Comma-separated list of engines to use (empty = all)
-            safesearch: Safe search level (0=off, 1=moderate, 2=strict)
+            categories: Search categories (ignored — always general web search)
+            language: Language code (ignored — FlareSolverr handles this)
+            time_range: Time filter (ignored)
+            engines: Comma-separated list of engines (ignored)
+            safesearch: Safe search level (ignored)
 
         Returns:
             SearchResponse with deduplicated, scored results.
         """
-        # Check cache
+        if max_results is not None:
+            num_results = max_results
+
         cache_key = self._cache_key(query, num_results=num_results, categories=categories,
                                      language=language, time_range=time_range, engines=engines)
         cached = self._get_cached(cache_key)
         if cached:
             return cached
 
-        client = await self._get_client()
+        # ── PRIMARY: FlareSolverr (headless Chromium, solves CAPTCHAs) ──
+        try:
+            from hyperion.tools.flaresolverr import FlareSolverrClient
 
-        params = {
-            "q": query,
-            "format": "json",
-            "categories": categories,
-            "language": language,
-            "safesearch": str(safesearch),
-            "pageno": "1",
-        }
-        if time_range:
-            params["time_range"] = time_range
-        if engines:
-            params["engines"] = engines
+            flare = FlareSolverrClient()
+            flare_results_raw = await flare.search(query, num_results=num_results)
+            await flare.close()
 
-        last_error: Exception | None = None
-
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                response = await client.get("/search", params=params)
-                response.raise_for_status()
-                data = response.json()
-
+            if flare_results_raw:
                 results: list[SearchResult] = []
-                engines_used: set[str] = set()
+                for fr in flare_results_raw:
+                    results.append(SearchResult(
+                        title=fr.get("title", ""),
+                        url=fr.get("url", ""),
+                        snippet=fr.get("snippet", ""),
+                        engine=fr.get("engine", "flaresolverr"),
+                        score=1.0,
+                        category=categories,
+                    ))
 
-                for item in data.get("results", []):
-                    result = SearchResult(
-                        title=item.get("content", "")[:0] or item.get("title", ""),
-                        url=item.get("url", ""),
-                        snippet=item.get("content", ""),
-                        engine=item.get("engine", ""),
-                        score=float(item.get("score", 0.0)),
-                        category=item.get("category", categories),
-                        published_date=item.get("publishedDate", ""),
+                if results:
+                    results = self._deduplicate(results)[:num_results]
+                    search_response = SearchResponse(
+                        query=query,
+                        results=results,
+                        total=len(results),
+                        took_ms=0,
+                        engines_used=["flaresolverr"],
                     )
-                    if result.url:
-                        results.append(result)
-                        if result.engine:
-                            engines_used.add(result.engine)
+                    self._set_cached(cache_key, search_response)
+                    return search_response
+        except Exception as e:
+            logger.warning("FlareSolverr search failed: %s", e)
 
-                # Deduplicate by URL
-                results = self._deduplicate(results)
+        # ── FALLBACK: Playwright stealth Bing (non-headless Chromium) ──
+        try:
+            from hyperion.tools.stealth_search import StealthSearchClient
 
-                # Sort by score (descending) and limit
-                results.sort(key=lambda r: r.score, reverse=True)
-                results = results[:num_results]
+            stealth = StealthSearchClient()
+            stealth_results_raw = await stealth.search(query, num_results=num_results)
+            await stealth.close()
 
-                search_response = SearchResponse(
-                    query=query,
-                    results=results,
-                    total=len(results),
-                    took_ms=data.get("number_of_results", 0),
-                    engines_used=list(engines_used),
-                )
+            if stealth_results_raw:
+                results = []
+                for sr in stealth_results_raw:
+                    results.append(SearchResult(
+                        title=sr.title,
+                        url=sr.url,
+                        snippet=sr.snippet,
+                        engine=sr.engine,
+                        score=1.0,
+                        category=categories,
+                    ))
 
-                self._set_cached(cache_key, search_response)
-                return search_response
+                if results:
+                    results = self._deduplicate(results)[:num_results]
+                    search_response = SearchResponse(
+                        query=query,
+                        results=results,
+                        total=len(results),
+                        took_ms=0,
+                        engines_used=["stealth_bing"],
+                    )
+                    self._set_cached(cache_key, search_response)
+                    return search_response
+        except Exception as e:
+            logger.warning("Stealth Bing search failed: %s", e)
 
-            except (httpx.HTTPError, httpx.RequestError, KeyError, ValueError) as e:
-                last_error = e
-                if attempt < self.MAX_RETRIES - 1:
-                    await asyncio.sleep(self.RETRY_DELAY * (attempt + 1))
-                continue
+        # ── LAST RESORT: Jina API (no CAPTCHA, always works, fewer results) ──
+        if self.settings:
+            try:
+                jina = JinaClient(settings=self.settings)
+                jina_resp = await jina.search(query=query, num_results=num_results)
+                await jina.close()
 
-        # All retries failed — return empty response
+                if jina_resp.results:
+                    results = []
+                    for jr in jina_resp.results:
+                        results.append(SearchResult(
+                            title=jr.title,
+                            url=jr.url,
+                            snippet=jr.snippet,
+                            engine="jina",
+                            score=1.0,
+                            category=categories,
+                        ))
+
+                    if results:
+                        results = self._deduplicate(results)[:num_results]
+                        search_response = SearchResponse(
+                            query=query,
+                            results=results,
+                            total=len(results),
+                            took_ms=0,
+                            engines_used=["jina"],
+                        )
+                        self._set_cached(cache_key, search_response)
+                        return search_response
+            except Exception as e:
+                logger.warning("Jina search failed: %s", e)
+
         return SearchResponse(
             query=query,
             results=[],

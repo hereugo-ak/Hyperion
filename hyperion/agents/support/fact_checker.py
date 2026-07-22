@@ -98,6 +98,7 @@ FACT_CHECKER_SPEC = AgentSpec(
         ToolName.SEARXNG,
         ToolName.JINA,
         ToolName.OBSCURA,
+        ToolName.DEEP_SEARCH,
     ],
     skills=[
         SkillSpec(
@@ -494,12 +495,12 @@ class FactChecker(BaseAgent):
                     "claim_type."
                 )
 
-                response = await self._call_llm(prompt, TaskUrgency.NORMAL)
-                if response and response.text:
+                response = await self._llm_complete(user_prompt=prompt, urgency=TaskUrgency.NORMAL)
+                if response and response.content:
                     # Parse LLM-extracted claims and merge
                     import json
                     try:
-                        llm_claims = json.loads(response.text)
+                        llm_claims = json.loads(response.content)
                         for i, lc in enumerate(llm_claims[:30]):
                             claim_text = lc.get("claim", "")
                             agent = lc.get("agent", "")
@@ -523,8 +524,8 @@ class FactChecker(BaseAgent):
                     except (json.JSONDecodeError, TypeError):
                         pass
 
-            except (ValueError, AttributeError, RuntimeError):
-                pass
+            except (ValueError, AttributeError, RuntimeError) as e:
+                await self._log_tool_use("llm", "extract_claims", f"FAIL · {e}", success=False)
 
         return all_claims
 
@@ -553,8 +554,8 @@ class FactChecker(BaseAgent):
             results = await searxng.search(query, num_results=5)
             if results:
                 for result in results[:5]:
-                    url = result.get("url", "")
-                    title = result.get("title", "")
+                    url = getattr(result, "url", "")
+                    title = getattr(result, "title", "")
                     if not url:
                         continue
 
@@ -567,12 +568,26 @@ class FactChecker(BaseAgent):
                         url=url,
                         credibility=credibility,
                         accessed_at=datetime.now(),
-                        key_data=result.get("snippet", ""),
+                        key_data=getattr(result, "snippet", ""),
                     )
                     verification_sources.append(source)
 
-        except (ValueError, AttributeError, RuntimeError):
-            pass
+        except (ValueError, AttributeError, RuntimeError) as e:
+            # Log the error — don't silently swallow it
+            try:
+                await self.bus.publish(
+                    channel=Channel.TUI,
+                    msg_type=MessageType.STATUS,
+                    sender=self.name,
+                    payload={
+                        "agent": self.name.value,
+                        "tool": "searxng",
+                        "action": "search_error",
+                        "detail": f"Fact checker SearxNG search failed: {e!s:.120}",
+                    },
+                )
+            except Exception:
+                pass
 
         # Use Jina to extract content from top results for evidence chain validation
         if verification_sources:
@@ -580,14 +595,14 @@ class FactChecker(BaseAgent):
                 jina = self.get_tool(ToolName.JINA)
                 for source in verification_sources[:3]:
                     try:
-                        content = await jina.extract(source.url)
-                        if content:
-                            # Store extracted content for evidence chain validation
-                            source.key_data = (source.key_data or "") + " | " + content[:500]
+                        read_result = await jina.read(source.url)
+                        if read_result and (read_result.markdown or read_result.content):
+                            extracted = read_result.markdown or read_result.content
+                            source.key_data = (source.key_data or "") + " | " + extracted[:500]
                     except (ValueError, AttributeError, RuntimeError):
                         continue
-            except (ValueError, AttributeError, RuntimeError):
-                pass
+            except (ValueError, AttributeError, RuntimeError) as e:
+                await self._log_tool_use("jina", "call", f"FAIL · {e}", success=False)
 
         # Use Obscura for JS-rendered pages if Jina didn't get content
         if verification_sources and not any(s.key_data and len(s.key_data) > 100 for s in verification_sources):
@@ -595,13 +610,14 @@ class FactChecker(BaseAgent):
                 obscura = self.get_tool(ToolName.OBSCURA)
                 for source in verification_sources[:2]:
                     try:
-                        content = await obscura.scrape(source.url)
-                        if content:
-                            source.key_data = (source.key_data or "") + " | " + content[:500]
+                        fetch_result = await obscura.fetch(source.url)
+                        if fetch_result and (fetch_result.markdown or fetch_result.content):
+                            extracted = fetch_result.markdown or fetch_result.content
+                            source.key_data = (source.key_data or "") + " | " + extracted[:500]
                     except (ValueError, AttributeError, RuntimeError):
                         continue
-            except (ValueError, AttributeError, RuntimeError):
-                pass
+            except (ValueError, AttributeError, RuntimeError) as e:
+                await self._log_tool_use("obscura", "call", f"FAIL · {e}", success=False)
 
         return verification_sources
 

@@ -41,6 +41,7 @@ Sub-agent lifecycle (§4.7):
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -158,6 +159,9 @@ class SubAgentRunner:
         elif tool == ToolName.OBSCURA:
             from hyperion.tools.obscura import ObscuraClient
             return ObscuraClient(settings=settings)
+        elif tool == ToolName.SCRAPLING:
+            from hyperion.tools.scrapling import ScraplingClient
+            return ScraplingClient(settings=settings)
         elif tool == ToolName.CRAWL4AI:
             from hyperion.tools.crawl4ai import Crawl4AIClient
             return Crawl4AIClient(settings=settings)
@@ -173,6 +177,30 @@ class SubAgentRunner:
         elif tool == ToolName.SECOND_BRAIN:
             from hyperion.tools.second_brain import SecondBrainClient
             return SecondBrainClient(settings=settings)
+        elif tool == ToolName.DEEP_SEARCH:
+            from hyperion.tools.deep_search import DeepSearchClient
+            return DeepSearchClient(settings=settings)
+        elif tool == ToolName.SEC_EDGAR:
+            from hyperion.tools.sec_edgar import SECEdgarClient
+            return SECEdgarClient(settings=settings)
+        elif tool == ToolName.SEMANTIC_SCHOLAR:
+            from hyperion.tools.semantic_scholar import SemanticScholarClient
+            return SemanticScholarClient(settings=settings)
+        elif tool == ToolName.OPEN_ALEX:
+            from hyperion.tools.openalex import OpenAlexClient
+            return OpenAlexClient(settings=settings)
+        elif tool == ToolName.WORLD_BANK:
+            from hyperion.tools.world_bank import WorldBankClient
+            return WorldBankClient(settings=settings)
+        elif tool == ToolName.GOOGLE_TRENDS:
+            from hyperion.tools.google_trends import GoogleTrendsClient
+            return GoogleTrendsClient(settings=settings)
+        elif tool == ToolName.HACKERNEWS:
+            from hyperion.tools.hackernews import HackerNewsClient
+            return HackerNewsClient(settings=settings)
+        elif tool == ToolName.REDDIT:
+            from hyperion.tools.reddit import RedditClient
+            return RedditClient(settings=settings)
         else:
             raise ValueError(f"Sub-agents cannot use tool: {tool}")
 
@@ -189,7 +217,7 @@ class SubAgentRunner:
         """
         tool_names = ", ".join(self.tools)
         return (
-            "You are a junior research associate at HYPERION Consulting, a "
+            "You are a senior research associate at HYPERION Consulting, a "
             "premium AI consulting firm. You have been assigned a focused "
             "research sub-question by a senior specialist.\n\n"
             "Your directive:\n"
@@ -197,12 +225,18 @@ class SubAgentRunner:
             "2. Cite a source for every factual claim. No source = no claim.\n"
             "3. Report your confidence level: HIGH, MEDIUM, or LOW.\n"
             "4. Identify GAPS — what you couldn't find, what data is missing.\n"
-            "5. Be concise and specific. No hedging, no waffling, no generic "
-            "statements.\n"
-            "6. Use the tools available to you: {tools}.\n"
-            "7. Follow the tool selection strategy: SearxNG first (free, "
-            "unlimited), Jina for extraction, Obscura for JS-rendered pages.\n"
-            "8. Return your findings as structured JSON matching the "
+            "5. Be DETAILED and SPECIFIC. Include exact numbers, percentages, "
+            "dollar figures, dates, and company names. Vague findings are useless.\n"
+            "6. Each finding's content should be 200-500 words of detailed analysis "
+            "with specific data points, not a one-sentence summary.\n"
+            "7. Use the tools available to you: {tools}.\n"
+            "8. Follow the tool selection strategy: SearxNG + Jina Search in "
+            "parallel for discovery, then Obscura → Scrapling → Jina Reader → "
+            "Crawl4AI for extraction. Use SEC EDGAR for financial filings, "
+            "Semantic Scholar/OpenAlex for academic papers, World Bank for "
+            "macro indicators, Google Trends for demand signals, HackerNews/Reddit "
+            "for community sentiment. Scrapling handles anti-bot pages.\n"
+            "9. Return your findings as structured JSON matching the "
             "KeyFinding schema.\n\n"
             "You are NOT a generalist. You are a focused researcher answering "
             "one specific question. Do not expand scope. Do not speculate "
@@ -252,46 +286,147 @@ class SubAgentRunner:
         This is the research phase of the sub-agent lifecycle:
         searches → extracts → collects raw data for analysis.
 
-        The tool selection strategy follows §5.2:
-        - Search: SearxNG first, Jina if poor results, Obscura for JS pages
-        - Extract: Jina Reader first, Obscura for JS, Crawl4AI fallback
+        VIGIL-aligned fallback chain (§5.2 updated):
+        - Search: SearxNG + Jina Search in parallel (discovery layer)
+        - Extract: Obscura → Scrapling → Jina Reader → Crawl4AI → FlareSolverr
         - Historical: Wayback Machine
         - Financial: Alpha Vantage
         - Macro: FRED
+        - Prior research: Second Brain
         """
         raw_data: list[str] = []
+        errors: list[str] = []
 
-        # Search phase — SearxNG is always first (free, unlimited)
+        # ── PARALLEL DISCOVERY ──────────────────────────────────────────
+        # Run SearxNG and Jina Search simultaneously, merge + dedup results
+        searxng_urls: list[str] = []
+        jina_search_urls: list[str] = []
+
+        search_tasks: list[Any] = []
+
         if self._has_tool("searxng"):
-            try:
-                searxng = self._get_tool("searxng")
-                results = await searxng.search(self.spec.question)
-                if results:
-                    raw_data.append(f"Search results:\n{results}")
-            except Exception:
-                pass  # Sub-agents proceed with available data
+            search_tasks.append(self._search_searxng())
+        if self._has_tool("jina"):
+            search_tasks.append(self._search_jina())
 
-        # Extraction phase — Jina for content extraction
-        if self._has_tool("jina") and raw_data:
-            try:
-                jina = self._get_tool("jina")
-                # Extract top URLs from search results
-                # The actual extraction depends on the Jina client interface
-                extracted = await jina.search_and_extract(self.spec.question)
-                if extracted:
-                    raw_data.append(f"Extracted content:\n{extracted}")
-            except Exception:
-                pass
+        # Run searches in parallel
+        if search_tasks:
+            results = await asyncio.gather(*search_tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    errors.append(f"Search: {result!s:.80}")
+                elif isinstance(result, tuple):
+                    label, urls, formatted = result
+                    if formatted:
+                        raw_data.append(formatted)
+                    if label == "searxng":
+                        searxng_urls = urls
+                    elif label == "jina":
+                        jina_search_urls = urls
 
-        # JS-rendered pages — Obscura
-        if self._has_tool("obscura"):
+        # Merge + dedup URLs from both search sources (preserves order)
+        all_urls = list(dict.fromkeys(searxng_urls + jina_search_urls))
+
+        # ── EXTRACTION (VIGIL fallback chain) ───────────────────────────
+        # Obscura → Scrapling → Jina Reader → Crawl4AI → FlareSolverr
+        extracted_urls: set[str] = set()
+
+        # Tier 1: Obscura (stealth, fast, JS rendering)
+        if self._has_tool("obscura") and all_urls:
             try:
                 obscura = self._get_tool("obscura")
-                scraped = await obscura.fetch(self.spec.question)
-                if scraped:
-                    raw_data.append(f"Scraped content:\n{scraped}")
-            except Exception:
-                pass
+                for url in all_urls[:6]:
+                    if url in extracted_urls:
+                        continue
+                    try:
+                        fetch_result = await obscura.fetch(url)
+                        if fetch_result and (fetch_result.markdown or fetch_result.content):
+                            text = (fetch_result.markdown or fetch_result.content)[:15000]
+                            raw_data.append(f"Obscura content from {url}:\n{text}")
+                            extracted_urls.add(url)
+                    except Exception:
+                        continue
+            except Exception as e:
+                errors.append(f"Obscura: {e!s:.80}")
+
+        # Tier 2: Scrapling (adaptive, anti-bot, Playwright)
+        if self._has_tool("scrapling") and all_urls:
+            try:
+                scrapling = self._get_tool("scrapling")
+                for url in all_urls[:6]:
+                    if url in extracted_urls:
+                        continue
+                    try:
+                        scrape_result = await scrapling.fetch(url, stealth=True)
+                        if scrape_result and scrape_result.content:
+                            text = scrape_result.content[:15000]
+                            raw_data.append(f"Scrapling content from {url}:\n{text}")
+                            extracted_urls.add(url)
+                    except Exception:
+                        continue
+            except Exception as e:
+                errors.append(f"Scrapling: {e!s:.80}")
+
+        # Tier 3: Jina Reader (fast, simple extraction)
+        if self._has_tool("jina") and all_urls:
+            try:
+                jina = self._get_tool("jina")
+                for url in all_urls[:8]:
+                    if url in extracted_urls:
+                        continue
+                    try:
+                        read_result = await jina.read(url)
+                        if read_result and (read_result.markdown or read_result.content):
+                            text = (read_result.markdown or read_result.content)[:15000]
+                            raw_data.append(f"Jina content from {url}:\n{text}")
+                            extracted_urls.add(url)
+                    except Exception:
+                        continue
+            except Exception as e:
+                errors.append(f"Jina: {e!s:.80}")
+
+        # Tier 4: Crawl4AI (heavy extraction, PDFs)
+        if self._has_tool("crawl4ai") and all_urls:
+            try:
+                crawl4ai = self._get_tool("crawl4ai")
+                for url in all_urls[:4]:
+                    if url in extracted_urls:
+                        continue
+                    try:
+                        crawl_result = await crawl4ai.crawl(url)
+                        if crawl_result and (crawl_result.markdown or crawl_result.content):
+                            text = (crawl_result.markdown or crawl_result.content)[:15000]
+                            raw_data.append(f"Crawl4AI content from {url}:\n{text}")
+                            extracted_urls.add(url)
+                    except Exception:
+                        continue
+            except Exception as e:
+                errors.append(f"Crawl4AI: {e!s:.80}")
+
+        # Tier 5: FlareSolverr (CAPTCHA-protected pages)
+        if self._has_tool("flaresolverr") and all_urls:
+            try:
+                from hyperion.tools.flaresolverr import FlareSolverrClient
+                flare = FlareSolverrClient()
+                for url in all_urls[:3]:
+                    if url in extracted_urls:
+                        continue
+                    try:
+                        flare_result = await flare.get(url)
+                        if flare_result and flare_result.success and flare_result.html:
+                            import re
+                            text = re.sub(r"<[^>]+>", " ", flare_result.html)
+                            text = re.sub(r"\s+", " ", text).strip()[:15000]
+                            if text and len(text) > 100:
+                                raw_data.append(f"FlareSolverr content from {url}:\n{text}")
+                                extracted_urls.add(url)
+                    except Exception:
+                        continue
+                await flare.close()
+            except Exception as e:
+                errors.append(f"FlareSolverr: {e!s:.80}")
+
+        # ── DATA SOURCES (unchanged) ────────────────────────────────────
 
         # Historical data — Wayback
         if self._has_tool("wayback"):
@@ -300,8 +435,8 @@ class SubAgentRunner:
                 snapshots = await wayback.search(self.spec.question)
                 if snapshots:
                     raw_data.append(f"Historical snapshots:\n{snapshots}")
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"Wayback: {e!s:.80}")
 
         # Financial data — Alpha Vantage
         if self._has_tool("alpha_vantage"):
@@ -310,8 +445,8 @@ class SubAgentRunner:
                 financials = await av.search(self.spec.question)
                 if financials:
                     raw_data.append(f"Financial data:\n{financials}")
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"AlphaVantage: {e!s:.80}")
 
         # Macro data — FRED
         if self._has_tool("fred"):
@@ -320,8 +455,125 @@ class SubAgentRunner:
                 macro = await fred.search(self.spec.question)
                 if macro:
                     raw_data.append(f"Macro data:\n{macro}")
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"FRED: {e!s:.80}")
+
+        # ── Phase 2 Data Sources ────────────────────────────────────────
+
+        # SEC EDGAR — financial filings
+        if self._has_tool("sec_edgar"):
+            try:
+                sec = self._get_tool("sec_edgar")
+                filings = await sec.search_full_text(self.spec.question, limit=10)
+                if filings:
+                    formatted = "\n".join(
+                        f"- {f.company_name} ({f.filing_type}, {f.filing_date}): {f.description[:200]}"
+                        for f in filings[:10]
+                    )
+                    raw_data.append(f"SEC EDGAR filings:\n{formatted}")
+                    # Fetch most recent filing content
+                    content = await sec.get_filing_content(filings[0])
+                    if content and content.content:
+                        raw_data.append(f"SEC filing content ({filings[0].filing_type} {filings[0].company_name}):\n{content.content[:15000]}")
+            except Exception as e:
+                errors.append(f"SEC EDGAR: {e!s:.80}")
+
+        # Semantic Scholar — academic papers
+        if self._has_tool("semantic_scholar"):
+            try:
+                ss = self._get_tool("semantic_scholar")
+                papers = await ss.search(self.spec.question, limit=10, year_range="2020-")
+                if papers:
+                    formatted = "\n".join(
+                        f"- {p.title} ({p.year}, {p.venue}, citations={p.citation_count}): {p.abstract[:300]}"
+                        for p in papers[:10]
+                    )
+                    raw_data.append(f"Semantic Scholar papers:\n{formatted}")
+            except Exception as e:
+                errors.append(f"SemanticScholar: {e!s:.80}")
+
+        # OpenAlex — scholarly works
+        if self._has_tool("open_alex"):
+            try:
+                oa = self._get_tool("open_alex")
+                works = await oa.search_works(self.spec.question, limit=10)
+                if works:
+                    formatted = "\n".join(
+                        f"- {w.title} ({w.year}, cited_by={w.cited_by_count}): {w.abstract[:300]}"
+                        for w in works[:10]
+                    )
+                    raw_data.append(f"OpenAlex works:\n{formatted}")
+            except Exception as e:
+                errors.append(f"OpenAlex: {e!s:.80}")
+
+        # World Bank — macro indicators
+        if self._has_tool("world_bank"):
+            try:
+                wb = self._get_tool("world_bank")
+                # Try GDP indicator as a general macro signal
+                indicator = await wb.get_indicator("gdp", country="all", date_range="2020:2024")
+                if indicator and indicator.data_points:
+                    formatted = "\n".join(
+                        f"- {dp.get('country', 'N/A')}: {dp.get('value', 'N/A')} ({dp.get('date', 'N/A')})"
+                        for dp in indicator.data_points[:15]
+                    )
+                    raw_data.append(f"World Bank data ({indicator.indicator_name}):\n{formatted}")
+            except Exception as e:
+                errors.append(f"WorldBank: {e!s:.80}")
+
+        # Google Trends — demand signals
+        if self._has_tool("google_trends"):
+            try:
+                gt = self._get_tool("google_trends")
+                # Extract keywords from the question (use first few words)
+                keywords = self.spec.question.split()[:3]
+                kw_list = [" ".join(keywords)]
+                trend = await gt.get_interest_over_time(kw_list, timeframe="today 12-m")
+                if trend and trend.interest_data:
+                    formatted = "\n".join(
+                        f"- {d.get('date', 'N/A')}: {d.get(' '.join(kw_list), 0)}"
+                        for d in trend.interest_data[:20]
+                    )
+                    raw_data.append(f"Google Trends interest ({', '.join(kw_list)}):\n{formatted}")
+                # Also get related rising queries
+                related = await gt.get_related_queries(kw_list[0], rising=True)
+                if related:
+                    rel_formatted = "\n".join(
+                        f"- {r.query} ({r.value})" for r in related[:10]
+                    )
+                    raw_data.append(f"Google Trends rising queries:\n{rel_formatted}")
+            except Exception as e:
+                errors.append(f"GoogleTrends: {e!s:.80}")
+
+        # HackerNews — tech community sentiment
+        if self._has_tool("hackernews"):
+            try:
+                hn = self._get_tool("hackernews")
+                stories = await hn.search_stories(self.spec.question, hits=15)
+                if stories:
+                    formatted = "\n".join(
+                        f"- {s.title} (points={s.points}, comments={s.num_comments}): {s.url}"
+                        for s in stories[:15]
+                    )
+                    raw_data.append(f"HackerNews stories:\n{formatted}")
+            except Exception as e:
+                errors.append(f"HackerNews: {e!s:.80}")
+
+        # Reddit — community sentiment
+        if self._has_tool("reddit"):
+            try:
+                reddit = self._get_tool("reddit")
+                posts = await reddit.search_posts(
+                    self.spec.question, sort="relevance", time_filter="year", limit=15
+                )
+                if posts:
+                    formatted = "\n".join(
+                        f"- [{p.subreddit}] {p.title} (upvote={p.upvote_ratio:.0%}, comments={p.num_comments})"
+                        for p in posts[:15]
+                    )
+                    raw_data.append(f"Reddit posts:\n{formatted}")
+            except Exception as e:
+                errors.append(f"Reddit: {e!s:.80}")
 
         # Second Brain — prior research
         if self._has_tool("second_brain"):
@@ -330,10 +582,45 @@ class SubAgentRunner:
                 prior = await brain.search(self.spec.question)
                 if prior:
                     raw_data.append(f"Prior research from vault:\n{prior}")
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"SecondBrain: {e!s:.80}")
+
+        if errors:
+            raw_data.append(f"Tool errors encountered: {'; '.join(errors)}")
 
         return "\n\n---\n\n".join(raw_data) if raw_data else "No raw data available from tools."
+
+    async def _search_searxng(self) -> tuple[str, list[str], str | None]:
+        """Search via SearxNG. Returns (label, urls, formatted_results)."""
+        try:
+            searxng = self._get_tool("searxng")
+            results = await searxng.search(self.spec.question, num_results=15)
+            if results and len(results) > 0:
+                formatted = "\n".join(
+                    f"- {r.title}: {r.url}\n  {r.snippet[:500]}"
+                    for r in results[:15]
+                )
+                urls = [r.url for r in results[:8] if r.url]
+                return ("searxng", urls, f"SearxNG results:\n{formatted}")
+        except Exception as e:
+            pass
+        return ("searxng", [], None)
+
+    async def _search_jina(self) -> tuple[str, list[str], str | None]:
+        """Search via Jina s.jina.ai. Returns (label, urls, formatted_results)."""
+        try:
+            jina = self._get_tool("jina")
+            results = await jina.search(self.spec.question, num_results=10)
+            if results and len(results) > 0:
+                formatted = "\n".join(
+                    f"- {r.title}: {r.url}\n  {r.snippet[:500]}"
+                    for r in results[:10]
+                )
+                urls = [r.url for r in results[:6] if r.url]
+                return ("jina", urls, f"Jina search results:\n{formatted}")
+        except Exception as e:
+            pass
+        return ("jina", [], None)
 
     def _has_tool(self, tool_name: str) -> bool:
         """Check if this sub-agent has access to a specific tool."""

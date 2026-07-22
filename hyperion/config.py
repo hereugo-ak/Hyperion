@@ -487,8 +487,8 @@ class SubAgentConfig(BaseModel):
     # proceeds with available findings and flags the gap (§4.7)
     timeout_seconds: int = 300
 
-    # Sub-agents use MICRO or FAST tier only — don't burn STRONG/DEEP quota (§4.7)
-    allowed_tiers: list[ModelTier] = Field(default_factory=lambda: [ModelTier.MICRO, ModelTier.FAST])
+    # Sub-agents use MICRO/FAST/STANDARD — STANDARD for deeper findings (§4.7)
+    allowed_tiers: list[ModelTier] = Field(default_factory=lambda: [ModelTier.MICRO, ModelTier.FAST, ModelTier.STANDARD])
 
     # Sub-agents cannot spawn their own sub-agents (§4.7)
     allow_recursive: bool = False
@@ -538,11 +538,23 @@ class ToolPathsConfig(BaseModel):
     # Empty string means "look in PATH"
     obscura_path: str = ""
 
+    # FlareSolverr — CAPTCHA-solving proxy in Docker (§5.1)
+    # Solves Cloudflare/DDoS-GUARD challenges via headless Chromium
+    flaresolverr_url: str = "http://localhost:8191/v1"
+
     # Alpha Vantage — financial data API (§5.1)
     alpha_vantage_api_key: str = ""
 
     # FRED — economic data API (§5.1)
     fred_api_key: str = ""
+
+    # ── Phase 2 Data Sources ──
+    reddit_client_id: str = ""
+    reddit_client_secret: str = ""
+    reddit_user_agent: str = "hyperion_research/1.0"
+
+    # Semantic Scholar — academic paper search API (§5.1)
+    semantic_scholar_api_key: str = ""
 
     # Unsplash — image search API (§5.1)
     unsplash_access_key: str = ""
@@ -681,9 +693,14 @@ class Settings(BaseSettings):
     searxng_url: str = "http://localhost:8888"
     jina_api_key: str = ""
     obscura_path: str = ""
+    flaresolverr_url: str = "http://localhost:8191/v1"
     alpha_vantage_api_key: str = ""
     fred_api_key: str = ""
+    reddit_client_id: str = ""
+    reddit_client_secret: str = ""
+    reddit_user_agent: str = "hyperion_research/1.0"
     unsplash_access_key: str = ""
+    semantic_scholar_api_key: str = ""
 
     # ── Computed Configurations ──
     # These are not loaded from env — they are derived from the architecture
@@ -754,9 +771,14 @@ class Settings(BaseSettings):
             searxng_url=self.searxng_url,
             jina_api_key=self.jina_api_key,
             obscura_path=self.obscura_path,
+            flaresolverr_url=self.flaresolverr_url,
             alpha_vantage_api_key=self.alpha_vantage_api_key,
             fred_api_key=self.fred_api_key,
+            reddit_client_id=self.reddit_client_id,
+            reddit_client_secret=self.reddit_client_secret,
+            reddit_user_agent=self.reddit_user_agent,
             unsplash_access_key=self.unsplash_access_key,
+            semantic_scholar_api_key=self.semantic_scholar_api_key,
         )
 
     @property

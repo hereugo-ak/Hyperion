@@ -26,6 +26,7 @@ Components:
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -293,6 +294,7 @@ class WaitGate:
     ) -> None:
         self.config = config
         self._trackers = trackers
+        self._provider_usage: dict[ProviderType, int] = {}  # round-robin counter
 
     def get_tracker(self, provider: ProviderType, model_name: str) -> SlidingWindowTracker | None:
         """Get the tracker for a specific provider+model pair."""
@@ -368,7 +370,23 @@ class WaitGate:
         # Sort by can_serve_now first, then by score
         can_serve_now = [c for c in candidates if c.can_serve_now]
         if can_serve_now:
-            return max(can_serve_now, key=lambda c: c.score)
+            # Round-robin: when scores are within 10% of each other, prefer
+            # the least-used provider. This prevents one provider (Mistral)
+            # from monopolizing all requests because it has higher RPM/TPM limits.
+            best_score = max(c.score for c in can_serve_now)
+            threshold = best_score * 0.9
+            competitive = [c for c in can_serve_now if c.score >= threshold]
+            if len(competitive) > 1:
+                # Among competitive candidates, pick the least-used provider
+                def usage(c: ProviderCandidate) -> int:
+                    return self._provider_usage.get(c.provider_type, 0)
+                min_usage = min(usage(c) for c in competitive)
+                least_used = [c for c in competitive if usage(c) == min_usage]
+                chosen = random.choice(least_used)
+            else:
+                chosen = competitive[0]
+            self._provider_usage[chosen.provider_type] = self._provider_usage.get(chosen.provider_type, 0) + 1
+            return chosen
 
         # None can serve now — pick the one with shortest wait
         return min(candidates, key=lambda c: c.estimated_wait_seconds)

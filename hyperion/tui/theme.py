@@ -59,6 +59,10 @@ LOGO_DIM = "#4A4640"       # pre-sweep dim state
 
 BADGE_COLORS: dict[str, str] = {
     "READY": SAGE,
+    "BOOT": CLAY,
+    "DOCKER": SKY,
+    "SEARXNG": CLAY_SOFT,
+    "PROVIDER": GOLD,
     "THINKING": CLAY,
     "PLAN": CLAY,
     "AGENT": CLAY,

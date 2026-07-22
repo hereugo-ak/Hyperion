@@ -36,7 +36,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
-from hyperion.agents.bus import AgentBus, Channel, get_bus
+from hyperion.agents.bus import AgentBus, Channel, MessageType, get_bus
 from hyperion.config import ModelTier, get_settings
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
@@ -145,6 +145,65 @@ class BaseAgent(ABC):
         return self.spec.system_prompt
 
     # ─────────────────────────────────────────────────────────────────────
+    # Context Enrichment — extract entities from question string
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _enrich_context(self, question: str) -> dict[str, Any]:
+        """Extract industry, geography, sector, etc. from the question string.
+
+        Specialists expect context keys like 'industry', 'geography', 'space',
+        'technology', 'company' — but the orchestrator only passes prior agent
+        outputs keyed by agent name. This method parses the question to populate
+        those keys so search queries are never empty.
+        """
+        import re
+
+        ctx: dict[str, Any] = {}
+        q_lower = question.lower()
+
+        # Geography detection
+        geos = ["us", "usa", "united states", "eu", "europe", "uk", "india", "china",
+                "japan", "germany", "france", "brazil", "canada", "australia",
+                "singapore", "middle east", "africa", "asia pacific", "latam"]
+        found_geos = [g for g in geos if g in q_lower]
+        if found_geos:
+            ctx["geography"] = found_geos[0].upper() if found_geos[0] in ("us", "eu", "uk") else found_geos[0].title()
+            ctx["jurisdiction"] = ctx["geography"]
+            ctx["jurisdictions"] = [ctx["geography"]]
+
+        # Industry/sector detection — common industries
+        industries = [
+            "saas", "fintech", "healthcare", "biotech", "pharmaceutical",
+            "automotive", "retail", "e-commerce", "ecommerce", "logistics",
+            "education", "edtech", "real estate", "proptech", "agriculture",
+            "energy", "manufacturing", "telecommunications", "media",
+            "entertainment", "gaming", "travel", "hospitality", "food",
+            "construction", "aerospace", "defense", "banking", "insurance",
+            "cybersecurity", "ai", "artificial intelligence", "blockchain",
+            "cryptocurrency", "cloud computing", "semiconductor", "robotics",
+        ]
+        found_industries = [ind for ind in industries if ind in q_lower]
+        if found_industries:
+            ctx["industry"] = found_industries[0]
+            ctx["sector"] = found_industries[0]
+            ctx["space"] = found_industries[0]
+
+        # Technology detection
+        techs = ["kotlin", "rust", "python", "react", "kubernetes", "docker",
+                 "aws", "azure", "gcp", "mongodb", "postgresql", "redis"]
+        found_techs = [t for t in techs if t in q_lower]
+        if found_techs:
+            ctx["technology"] = found_techs[0]
+            ctx["technology_category"] = found_techs[0]
+
+        # Company detection — look for capitalized words near "company" or "startup"
+        company_match = re.search(r'(?:company|startup|firm|corporation|inc|ltd)\s+([A-Z][a-zA-Z]+)', question)
+        if company_match:
+            ctx["company"] = company_match.group(1)
+
+        return ctx
+
+    # ─────────────────────────────────────────────────────────────────────
     # State Management — published to bus for TUI (§8.5)
     # ─────────────────────────────────────────────────────────────────────
 
@@ -227,6 +286,38 @@ class BaseAgent(ABC):
         self._findings.append(finding)
         self.state.findings_count = len(self._findings)
         await self.bus.publish_finding(self.name, finding)
+
+    async def _log_tool_use(
+        self,
+        tool: str,
+        action: str,
+        detail: str = "",
+        success: bool | None = None,
+    ) -> None:
+        """Publish a tool-use event to the TUI channel for live display.
+
+        This is NOT a bus channel for agent communication — it's a one-way
+        telemetry feed the TUI subscribes to so the user can see exactly
+        what each agent is doing in real time (§8.7 findings stream).
+
+        Args:
+            tool: Tool name (e.g. "searxng", "jina", "fred")
+            action: What the tool is doing (e.g. "search", "extract", "pull_series")
+            detail: Human-readable detail (e.g. "12 results for 'EV market size'")
+            success: True=success, False=failure, None=in-progress (default)
+        """
+        await self.bus.publish(
+            channel=Channel.TUI,
+            msg_type=MessageType.STATUS,
+            sender=self.name,
+            payload={
+                "agent": self.name.value,
+                "tool": tool,
+                "action": action,
+                "detail": detail,
+                "success": success,
+            },
+        )
 
     async def _publish_findings(self, findings: list[KeyFinding]) -> None:
         """Publish multiple findings."""
@@ -329,6 +420,26 @@ class BaseAgent(ABC):
             response_format=response_format,
         )
 
+        # Publish LLM call telemetry to TUI
+        try:
+            model_name = getattr(response, "model", "unknown")
+            provider_val = getattr(response, "provider", "unknown")
+            provider_name = provider_val.value if hasattr(provider_val, "value") else str(provider_val)
+            await self.bus.publish(
+                channel=Channel.TUI,
+                msg_type=MessageType.STATUS,
+                sender=self.name,
+                payload={
+                    "agent": self.name.value,
+                    "tool": "llm",
+                    "action": f"{provider_name}/{model_name}",
+                    "detail": f"{self.model_tier.value} tier · {'OK' if response.success else 'FAIL'} · {len(response.content or '')} chars",
+                    "success": response.success,
+                },
+            )
+        except Exception:
+            pass
+
         if not response.success:
             await self._transition(
                 AgentState.BLOCKED,
@@ -425,9 +536,16 @@ class BaseAgent(ABC):
         elif tool == ToolName.OBSCURA:
             from hyperion.tools.obscura import ObscuraClient
             return ObscuraClient(settings=self.settings)
+        elif tool == ToolName.SCRAPLING:
+            from hyperion.tools.scrapling import ScraplingClient
+            return ScraplingClient(settings=self.settings)
         elif tool == ToolName.CRAWL4AI:
             from hyperion.tools.crawl4ai import Crawl4AIClient
             return Crawl4AIClient(settings=self.settings)
+        elif tool == ToolName.FLARESOLVERR:
+            from hyperion.tools.flaresolverr import FlareSolverrClient
+            solver_url = getattr(self.settings, "flaresolverr_url", "http://localhost:8191/v1") if self.settings else "http://localhost:8191/v1"
+            return FlareSolverrClient(solver_url=solver_url)
         elif tool == ToolName.WAYBACK:
             from hyperion.tools.wayback import WaybackClient
             return WaybackClient(settings=self.settings)
@@ -443,6 +561,30 @@ class BaseAgent(ABC):
         elif tool == ToolName.SECOND_BRAIN:
             from hyperion.tools.second_brain import SecondBrainClient
             return SecondBrainClient(settings=self.settings)
+        elif tool == ToolName.DEEP_SEARCH:
+            from hyperion.tools.deep_search import DeepSearchClient
+            return DeepSearchClient(settings=self.settings)
+        elif tool == ToolName.SEC_EDGAR:
+            from hyperion.tools.sec_edgar import SECEdgarClient
+            return SECEdgarClient(settings=self.settings)
+        elif tool == ToolName.SEMANTIC_SCHOLAR:
+            from hyperion.tools.semantic_scholar import SemanticScholarClient
+            return SemanticScholarClient(settings=self.settings)
+        elif tool == ToolName.OPEN_ALEX:
+            from hyperion.tools.openalex import OpenAlexClient
+            return OpenAlexClient(settings=self.settings)
+        elif tool == ToolName.WORLD_BANK:
+            from hyperion.tools.world_bank import WorldBankClient
+            return WorldBankClient(settings=self.settings)
+        elif tool == ToolName.GOOGLE_TRENDS:
+            from hyperion.tools.google_trends import GoogleTrendsClient
+            return GoogleTrendsClient(settings=self.settings)
+        elif tool == ToolName.HACKERNEWS:
+            from hyperion.tools.hackernews import HackerNewsClient
+            return HackerNewsClient(settings=self.settings)
+        elif tool == ToolName.REDDIT:
+            from hyperion.tools.reddit import RedditClient
+            return RedditClient(settings=self.settings)
         elif tool == ToolName.PLOTLY:
             from hyperion.output.charts import ChartGenerator
             return ChartGenerator(settings=self.settings)
@@ -578,3 +720,22 @@ class BaseAgent(ABC):
     async def cleanup(self) -> None:
         """Cleanup after execution — unsubscribe from bus."""
         self.bus.unsubscribe(self._sub_id)
+
+    async def close(self) -> None:
+        """Close all tool instances and clean up resources.
+
+        Called by the orchestrator on shutdown. Closes every instantiated
+        tool's HTTP client / browser / connection pool, then delegates to
+        cleanup() to unsubscribe from the bus.
+        """
+        for tool_name, tool in self._tools.items():
+            close_method = getattr(tool, "close", None)
+            if callable(close_method):
+                try:
+                    result = close_method()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except (RuntimeError, OSError, Exception):
+                    pass
+        self._tools.clear()
+        await self.cleanup()

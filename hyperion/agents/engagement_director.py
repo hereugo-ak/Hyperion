@@ -87,20 +87,9 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
     display_name="Engagement Director",
     model_tier=ModelTier.STRONG,
     tools=[
-        # All tools (read-only) — can see everything, modify nothing directly
-        ToolName.SEARXNG,
-        ToolName.JINA,
-        ToolName.OBSCURA,
-        ToolName.CRAWL4AI,
-        ToolName.WAYBACK,
-        ToolName.ALPHA_VANTAGE,
-        ToolName.FRED,
-        ToolName.UNSPLASH,
+        # Orchestrator — needs SECOND_BRAIN for prior research context, DEEP_SEARCH for initial scoping
         ToolName.SECOND_BRAIN,
-        ToolName.PLOTLY,
-        ToolName.WEASYPRINT,
-        ToolName.JINJA2,
-        ToolName.PILLOW,
+        ToolName.DEEP_SEARCH,
     ],
     skills=[
         SkillSpec(

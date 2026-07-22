@@ -99,7 +99,7 @@ class AgentName(str, Enum):
 
 
 class ToolName(str, Enum):
-    """The 12 tools in HYPERION's registry (§5.1).
+    """The 23 tools in HYPERION's registry (§5.1).
 
     Every tool is assigned to agents who actually use it.
     No decorative tools. No tool is assigned to an agent that doesn't need it.
@@ -108,12 +108,25 @@ class ToolName(str, Enum):
     SEARXNG = "searxng"
     JINA = "jina"
     OBSCURA = "obscura"
+    SCRAPLING = "scrapling"
     CRAWL4AI = "crawl4ai"
+    FLARESOLVERR = "flaresolverr"
     WAYBACK = "wayback"
     ALPHA_VANTAGE = "alpha_vantage"
     FRED = "fred"
     UNSPLASH = "unsplash"
     SECOND_BRAIN = "second_brain"
+    DEEP_SEARCH = "deep_search"       # unified search orchestration (VIGIL Layer 5)
+
+    # ── Data Sources (Phase 2) ──
+    SEC_EDGAR = "sec_edgar"
+    SEMANTIC_SCHOLAR = "semantic_scholar"
+    OPEN_ALEX = "open_alex"
+    WORLD_BANK = "world_bank"
+    GOOGLE_TRENDS = "google_trends"
+    HACKERNEWS = "hackernews"
+    REDDIT = "reddit"
+
     PLOTLY = "plotly"
     WEASYPRINT = "weasyprint"
     JINJA2 = "jinja2"

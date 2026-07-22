@@ -608,14 +608,27 @@ class RenderEngine(BaseAgent):
         try:
             weasyprint_tool = self.get_tool(ToolName.WEASYPRINT)
 
-            await weasyprint_tool.render_pdf(
-                html_path=html_path,
+            # PDFRenderer.render_pdf expects HTML string content, not a file path.
+            # Read the HTML file that the Presentation Designer wrote.
+            html_content = ""
+            try:
+                with open(html_path, "r", encoding="utf-8") as f:
+                    html_content = f.read()
+            except (OSError, ValueError):
+                return ""
+
+            if not html_content:
+                return ""
+
+            result = weasyprint_tool.render_pdf(
+                html=html_content,
                 output_path=self._pdf_path,
-                dpi=300,
-                page_size="A4",
             )
 
-            return self._pdf_path
+            if result and result.success:
+                return self._pdf_path
+            else:
+                return ""
 
         except (ValueError, AttributeError, RuntimeError):
             # Fallback: try direct weasyprint import
@@ -900,6 +913,10 @@ class RenderEngine(BaseAgent):
             self._receive_html(html_path, css_path)
         if layout_plan:
             self._layout_plan = layout_plan
+            if layout_plan.html_template_path and not self._html_path:
+                self._receive_html(layout_plan.html_template_path, layout_plan.css_path)
+            if layout_plan.pdf_path and not self._pdf_path:
+                self._pdf_path = layout_plan.pdf_path
 
         if not self._html_path:
             await self._transition(AgentState.DONE, "No HTML path received")
@@ -911,6 +928,19 @@ class RenderEngine(BaseAgent):
 
         # Step 2: Receive image paths
         await self._transition(AgentState.WORKING, "Step 2: Receiving image paths")
+        # Extract image paths from layout plan if not passed directly
+        if not image_paths and layout_plan:
+            image_paths = [
+                img.image_path for img in layout_plan.section_images
+                if img.image_path
+            ]
+            if layout_plan.cover_image and layout_plan.cover_image.image_path:
+                image_paths.append(layout_plan.cover_image.image_path)
+        if not chart_paths and layout_plan:
+            chart_paths = [
+                cp.image_path for cp in layout_plan.chart_placements
+                if cp.image_path
+            ]
         self._receive_image_paths(image_paths, chart_paths)
 
         # Step 3: Process all images through Pillow pipeline

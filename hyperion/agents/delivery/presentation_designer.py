@@ -375,12 +375,12 @@ HTML_TEMPLATE = """\
     <div class="key-insight-box">
         <strong>Recommendation:</strong> {{ report.recommendation.value | upper }}
     </div>
-    <p>{{ report.executive_summary }}</p>
+    {{ report.executive_summary | md_to_html }}
 
     <h3>Key Findings</h3>
     <ul>
         {% for finding in report.key_findings %}
-        <li>{{ finding.title }} — {{ finding.content[:200] }}</li>
+        <li>{{ finding.title }} — {{ finding.content[:500] }}</li>
         {% endfor %}
     </ul>
 
@@ -407,7 +407,7 @@ HTML_TEMPLATE = """\
     {% endif %}
 
     <div class="no-break">
-        {{ section.body }}
+        {{ section.body | md_to_html }}
     </div>
 
     {% for chart in section_charts[section.id] %}
@@ -673,6 +673,14 @@ class PresentationDesigner(BaseAgent):
     CSS_OUTPUT = "output/report.css"
     PDF_OUTPUT = "output/report.pdf"
     IMAGE_DIR = "output/images"
+
+    @staticmethod
+    def _slugify(text: str, max_len: int = 60) -> str:
+        """Convert a question string into a filesystem-safe filename slug."""
+        import re
+        slug = re.sub(r'[^\w\s-]', '', text.lower()).strip()
+        slug = re.sub(r'[\s_-]+', '_', slug)
+        return slug[:max_len].rstrip('_') or "report"
 
     def __init__(
         self,
@@ -987,31 +995,31 @@ class PresentationDesigner(BaseAgent):
             unsplash_tool = self.get_tool(ToolName.UNSPLASH)
             os.makedirs(self.IMAGE_DIR, exist_ok=True)
 
-            results = await unsplash_tool.search_photos(
+            search_result = await unsplash_tool.search(
                 query=search_term,
-                per_page=1,
+                per_page=5,
                 orientation="landscape",
             )
 
-            if not results:
+            if not search_result.images:
                 return None
 
-            photo = results[0]
-            image_url = photo.get("urls", {}).get("regular", "")
-            photographer = photo.get("user", {}).get("name", "Unknown")
-            photo_id = photo.get("id", "")
+            # Pick the first suitable image
+            img = search_result.images[0]
+            photographer = img.photographer or "Unknown"
+            photo_id = img.id
 
-            if not image_url:
+            # Download using the UnsplashClient's download_image method
+            local_path = await unsplash_tool.download_image(img, quality="regular")
+
+            if not local_path or not os.path.exists(local_path):
                 return None
-
-            image_path = os.path.join(self.IMAGE_DIR, f"cover_{photo_id}.png")
-            await unsplash_tool.download_photo(url=image_url, output_path=image_path)
 
             return ImageSelection(
                 id="img_cover_001",
                 page_type=PageType.COVER,
                 search_term=search_term,
-                image_path=image_path,
+                image_path=local_path,
                 photographer=photographer,
                 unsplash_id=photo_id,
                 caption=f"Source: Unsplash via {photographer}",
@@ -1020,7 +1028,7 @@ class PresentationDesigner(BaseAgent):
                 page_number=1,
             )
 
-        except (ValueError, AttributeError, RuntimeError):
+        except (ValueError, AttributeError, RuntimeError, OSError):
             return None
 
     async def _select_section_images(self, report: FinalReport) -> dict[str, ImageSelection]:
@@ -1052,32 +1060,30 @@ class PresentationDesigner(BaseAgent):
                 if not search_term:
                     search_term = "modern business abstract"
 
-                results = await unsplash_tool.search_photos(
+                search_result = await unsplash_tool.search(
                     query=search_term,
-                    per_page=1,
+                    per_page=3,
                     orientation="landscape",
                 )
 
-                if not results:
+                if not search_result.images:
                     continue
 
-                photo = results[0]
-                image_url = photo.get("urls", {}).get("regular", "")
-                photographer = photo.get("user", {}).get("name", "Unknown")
-                photo_id = photo.get("id", "")
+                img = search_result.images[0]
+                photographer = img.photographer or "Unknown"
+                photo_id = img.id
 
-                if not image_url:
+                local_path = await unsplash_tool.download_image(img, quality="regular")
+
+                if not local_path or not os.path.exists(local_path):
                     continue
-
-                image_path = os.path.join(self.IMAGE_DIR, f"section_{section.id}_{photo_id}.png")
-                await unsplash_tool.download_photo(url=image_url, output_path=image_path)
 
                 section_images[section.id] = ImageSelection(
                     id=f"img_section_{section.id}",
                     page_type=PageType.SECTION,
                     section_id=section.id,
                     search_term=search_term,
-                    image_path=image_path,
+                    image_path=local_path,
                     photographer=photographer,
                     unsplash_id=photo_id,
                     caption=f"Source: Unsplash via {photographer}",
@@ -1085,7 +1091,7 @@ class PresentationDesigner(BaseAgent):
                     width_percent=40,
                 )
 
-        except (ValueError, AttributeError, RuntimeError):
+        except (ValueError, AttributeError, RuntimeError, OSError):
             pass
 
         return section_images
@@ -1148,6 +1154,42 @@ class PresentationDesigner(BaseAgent):
         """
         os.makedirs(self.OUTPUT_DIR, exist_ok=True)
 
+        # Convert image paths to absolute so they resolve correctly
+        # regardless of where the HTML file is opened from
+        cover_image_abs = None
+        if cover_image and cover_image.image_path:
+            abs_path = os.path.abspath(cover_image.image_path)
+            if os.path.exists(abs_path):
+                cover_image_abs = cover_image.model_copy(update={"image_path": abs_path})
+            else:
+                cover_image_abs = cover_image
+
+        section_images_abs: dict[str, ImageSelection] = {}
+        for sid, img in section_images.items():
+            if img and img.image_path:
+                abs_path = os.path.abspath(img.image_path)
+                if os.path.exists(abs_path):
+                    section_images_abs[sid] = img.model_copy(update={"image_path": abs_path})
+                else:
+                    section_images_abs[sid] = img
+            else:
+                section_images_abs[sid] = img
+
+        # Convert chart paths to absolute too
+        chart_placements_abs: dict[str, list[ChartPlacement]] = {}
+        for sid, charts in chart_placements.items():
+            abs_charts = []
+            for cp in charts:
+                if cp.image_path:
+                    abs_path = os.path.abspath(cp.image_path)
+                    if os.path.exists(abs_path):
+                        abs_charts.append(cp.model_copy(update={"image_path": abs_path}))
+                    else:
+                        abs_charts.append(cp)
+                else:
+                    abs_charts.append(cp)
+            chart_placements_abs[sid] = abs_charts
+
         # Write CSS file
         with open(self.CSS_OUTPUT, "w", encoding="utf-8") as f:
             f.write(CSS_TEMPLATE)
@@ -1158,11 +1200,11 @@ class PresentationDesigner(BaseAgent):
             # Prepare template context
             context = {
                 "report": report,
-                "cover_image": cover_image,
-                "section_images": section_images,
-                "section_charts": chart_placements,
+                "cover_image": cover_image_abs,
+                "section_images": section_images_abs,
+                "section_charts": chart_placements_abs,
                 "palette": PDF_PALETTE,
-                "css_path": self.CSS_OUTPUT,
+                "css_path": os.path.abspath(self.CSS_OUTPUT),
                 "risk_analysis_html": self._build_risk_analysis_html(report),
                 "appendix_sources_html": self._build_appendix_sources_html(report),
             }
@@ -1172,8 +1214,20 @@ class PresentationDesigner(BaseAgent):
                 context=context,
             )
 
+            # render_template returns a TemplateRenderResult, not a string
+            if hasattr(html_content, "html") and html_content.success:
+                html_str = html_content.html
+            elif hasattr(html_content, "html"):
+                # Template rendered but with errors — use what we got
+                html_str = html_content.html or ""
+            else:
+                html_str = str(html_content)
+
+            if not html_str:
+                raise RuntimeError("Template rendering produced empty HTML")
+
             with open(self.HTML_OUTPUT, "w", encoding="utf-8") as f:
-                f.write(html_content)
+                f.write(html_str)
 
             return self.HTML_OUTPUT
 
@@ -1181,11 +1235,11 @@ class PresentationDesigner(BaseAgent):
             # Fallback: render manually
             html_content = HTML_TEMPLATE.format(
                 report=report,
-                cover_image=cover_image,
-                section_images=section_images,
-                section_charts=chart_placements,
+                cover_image=cover_image_abs,
+                section_images=section_images_abs,
+                section_charts=chart_placements_abs,
                 palette=PDF_PALETTE,
-                css_path=self.CSS_OUTPUT,
+                css_path=os.path.abspath(self.CSS_OUTPUT),
                 risk_analysis_html=self._build_risk_analysis_html(report),
                 appendix_sources_html=self._build_appendix_sources_html(report),
             )
@@ -1254,14 +1308,25 @@ class PresentationDesigner(BaseAgent):
         try:
             weasyprint_tool = self.get_tool(ToolName.WEASYPRINT)
 
-            await weasyprint_tool.render_pdf(
-                html_path=html_path,
+            # PDFRenderer.render_pdf expects HTML string content, not a file path.
+            html_content = ""
+            try:
+                with open(html_path, "r", encoding="utf-8") as f:
+                    html_content = f.read()
+            except (OSError, ValueError):
+                return ""
+
+            if not html_content:
+                return ""
+
+            result = weasyprint_tool.render_pdf(
+                html=html_content,
                 output_path=self.PDF_OUTPUT,
-                dpi=300,
-                page_size="A4",
             )
 
-            return self.PDF_OUTPUT
+            if result and result.success:
+                return self.PDF_OUTPUT
+            return ""
 
         except (ValueError, AttributeError, RuntimeError):
             return ""
@@ -1319,6 +1384,16 @@ class PresentationDesigner(BaseAgent):
         # Subscribe to bus
         self.subscribe_to_bus()
 
+        # Set dynamic output filenames based on question
+        if question:
+            slug = self._slugify(question)
+            self.HTML_OUTPUT = f"output/{slug}.html"
+            self.CSS_OUTPUT = f"output/{slug}.css"
+            self.PDF_OUTPUT = f"output/{slug}.pdf"
+            self.IMAGE_DIR = f"output/{slug}_images"
+            os.makedirs(self.OUTPUT_DIR, exist_ok=True)
+            os.makedirs(self.IMAGE_DIR, exist_ok=True)
+
         # Step 1: Receive FinalReport
         await self._transition(AgentState.WORKING, "Step 1: Receiving FinalReport")
         report = await self._receive_final_report(final_report)
@@ -1332,16 +1407,27 @@ class PresentationDesigner(BaseAgent):
         await self._receive_quality_score(quality_score)
 
         if self._quality_score and not self._quality_score.approved:
-            await self._transition(
-                AgentState.DONE,
-                f"Quality Gate not approved (score {self._quality_score.total_score}) — cannot design layout",
+            quality_note = (
+                f"Quality Gate not approved (score {self._quality_score.total_score:.1f}/5.0"
+                f", iteration {self._quality_score.iteration})"
             )
-            return LayoutPlan(
-                engagement_id=engagement_id,
-                confidence=ConfidenceLevel.LOW,
-                no_blank_pages=False,
-                no_orphaned_images=False,
-            )
+            if self._quality_score.max_iterations_reached:
+                quality_note += " — max iterations reached, proceeding with best report (escalation)"
+                await self._transition(
+                    AgentState.WORKING,
+                    f"Step 2: {quality_note}",
+                )
+            else:
+                await self._transition(
+                    AgentState.DONE,
+                    f"{quality_note} — cannot design layout",
+                )
+                return LayoutPlan(
+                    engagement_id=engagement_id,
+                    confidence=ConfidenceLevel.LOW,
+                    no_blank_pages=False,
+                    no_orphaned_images=False,
+                )
 
         # Step 3: Design layout plan
         await self._transition(AgentState.WORKING, "Step 3: Designing layout plan")

@@ -144,6 +144,15 @@ def consult(
 
 async def _run_engagement(question: str, context: str, output_path: str) -> Any:
     from hyperion.orchestrator import WorkflowEngine
+    from hyperion.tui.boot import stop_services
+
+    # Start Docker containers (FlareSolverr + SearxNG) for headless mode
+    import subprocess
+    for container in ("flaresolverr", "searxng"):
+        try:
+            subprocess.run(["docker", "start", container], capture_output=True, timeout=15)
+        except Exception:
+            pass
 
     engine = WorkflowEngine()
     try:
@@ -156,6 +165,8 @@ async def _run_engagement(question: str, context: str, output_path: str) -> Any:
         return result
     finally:
         await engine.close()
+        # Stop all services on exit (Docker containers + global tool clients)
+        await stop_services()
 
 
 # ── providers ────────────────────────────────────────────────────────────────

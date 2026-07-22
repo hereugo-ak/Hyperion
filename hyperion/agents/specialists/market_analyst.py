@@ -38,6 +38,7 @@ Methodology (§4.4, Agent 3):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -81,6 +82,11 @@ MARKET_ANALYST_SPEC = AgentSpec(
         ToolName.OBSCURA,
         ToolName.ALPHA_VANTAGE,
         ToolName.FRED,
+        ToolName.WORLD_BANK,
+        ToolName.GOOGLE_TRENDS,
+        ToolName.SEMANTIC_SCHOLAR,
+        ToolName.REDDIT,
+        ToolName.DEEP_SEARCH,
     ],
     skills=[
         SkillSpec(
@@ -343,11 +349,15 @@ class MarketAnalyst(BaseAgent):
         try:
             jina = self.get_tool(ToolName.JINA)
             for url in urls[:10]:  # Limit to top 10 URLs to stay within rate limits
-                content = await jina.read(url)
+                read_result = await jina.read(url)
+                if read_result and (read_result.markdown or read_result.content):
+                    content = read_result.markdown or read_result.content
+                else:
+                    continue
                 if content:
                     extracted.append({
                         "url": url,
-                        "content": content[:5000],  # Truncate for context management
+                        "content": content[:15000],  # Truncate for context management
                         "source": "jina",
                     })
         except (ValueError, AttributeError, RuntimeError):
@@ -383,7 +393,11 @@ class MarketAnalyst(BaseAgent):
                 url = r.get("url", "")
                 if not url:
                     continue
-                page_data = await obscura.scrape(url, stealth=True)
+                fetch_result = await obscura.fetch(url, stealth=True)
+                if fetch_result and (fetch_result.markdown or fetch_result.content):
+                    page_data = {"content": (fetch_result.markdown or fetch_result.content)[:15000]}
+                else:
+                    page_data = None
                 if page_data:
                     scraped.append({
                         "url": url,
@@ -420,17 +434,17 @@ class MarketAnalyst(BaseAgent):
             fred = self.get_tool(ToolName.FRED)
 
             # Pull GDP growth for the relevant geography
-            gdp_data = await fred.get_series("GDP", geography=geography)
+            gdp_data = await fred.get_series("GDP")
             if gdp_data:
                 macro["gdp_growth"] = gdp_data
 
             # Pull inflation data
-            inflation_data = await fred.get_series("CPIAUCSL", geography=geography)
+            inflation_data = await fred.get_series("CPIAUCSL")
             if inflation_data:
                 macro["inflation"] = inflation_data
 
             # Pull sector spending if available
-            sector_spending = await fred.get_series("PCES", geography=geography)
+            sector_spending = await fred.get_series("PCES")
             if sector_spending:
                 macro["sector_spending"] = sector_spending
 
@@ -1079,9 +1093,13 @@ class MarketAnalyst(BaseAgent):
 
         all_findings: list[KeyFinding] = []
 
-        for spec in sub_specs:
-            findings = await self._spawn_sub_agent(spec)
-            all_findings.extend(findings)
+        results = await asyncio.gather(
+            *(self._spawn_sub_agent(spec) for spec in sub_specs),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, list):
+                all_findings.extend(result)
 
         return all_findings
 

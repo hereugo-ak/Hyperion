@@ -142,6 +142,10 @@ class MarkdownExporter:
         if not summary:
             return ""
 
+        # Handle case where LLM returns summary as a string instead of dict
+        if isinstance(summary, str):
+            return f"## Executive Summary\n\n{summary}\n"
+
         lines = ["## Executive Summary", ""]
 
         # Key findings
@@ -430,7 +434,7 @@ class MarkdownExporter:
                 success=True,
             )
 
-        except (ValueError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             return MarkdownExportResult(error=str(e))
 
     def export_to_file(

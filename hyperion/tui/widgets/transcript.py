@@ -52,6 +52,7 @@ class LogRow:
     progress: tuple[int, int] | None = None
     aurora: bool = False
     icon: str = ""
+    content_spans: list[tuple[str, str]] | None = None  # colored spans for content
     _line_index: int = -1  # header-line index inside the RichLog
 
     def animating(self) -> bool:
@@ -121,6 +122,7 @@ class Transcript(RichLog):
         progress: tuple[int, int] | None = None,
         aurora: bool = False,
         icon: str = "",
+        content_spans: list[tuple[str, str]] | None = None,
     ) -> LogRow:
         return self.add_row(
             LogRow(
@@ -131,6 +133,7 @@ class Transcript(RichLog):
                 progress=progress,
                 aurora=aurora,
                 icon=icon,
+                content_spans=content_spans,
             )
         )
 
@@ -238,7 +241,11 @@ class Transcript(RichLog):
         else:
             if row.icon:
                 spans.append(span(row.icon + " ", f"bold {bcolor}"))
-            spans.append(span(row.content, TEXT_PRIMARY))
+            if row.content_spans:
+                for s_text, s_style in row.content_spans:
+                    spans.append(span(s_text, s_style))
+            else:
+                spans.append(span(row.content, TEXT_PRIMARY))
         return spans
 
     def _row_lines(self, row: LogRow) -> list:

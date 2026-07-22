@@ -183,13 +183,38 @@ class WorkflowDAG(BaseModel):
         return [t for t in self.tasks if t.agent == agent]
 
     def get_ready_tasks(self) -> list[TaskNode]:
-        """Get all tasks that are ready to run (pending with all dependencies completed)."""
-        completed_ids = {t.id for t in self.tasks if t.status == TaskStatus.COMPLETED}
+        """Get all tasks that are ready to run.
+
+        A task is ready when all its dependencies have reached a terminal
+        state (COMPLETED or FAILED). This allows downstream agents like
+        Synthesis Lead to run with partial findings when some specialists fail.
+        """
+        terminal_ids = {
+            t.id for t in self.tasks
+            if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+        }
         return [
             t for t in self.tasks
             if t.status == TaskStatus.PENDING
-            and all(dep in completed_ids for dep in t.dependencies)
+            and all(dep in terminal_ids for dep in t.dependencies)
         ]
+
+    def cascade_failed_dependencies(self) -> list[TaskNode]:
+        """Mark pending tasks as failed if any dependency failed.
+
+        Without this, a failed dependency causes dependents to deadlock
+        (they never become ready because the dep never reaches COMPLETED).
+        Returns the list of tasks that were newly marked as failed.
+        """
+        failed_ids = {t.id for t in self.tasks if t.status == TaskStatus.FAILED}
+        newly_failed: list[TaskNode] = []
+        for task in self.tasks:
+            if task.status == TaskStatus.PENDING:
+                if any(dep in failed_ids for dep in task.dependencies):
+                    task.status = TaskStatus.FAILED
+                    task.error = "Upstream dependency failed"
+                    newly_failed.append(task)
+        return newly_failed
 
     def get_running_tasks(self) -> list[TaskNode]:
         """Get all currently running tasks."""

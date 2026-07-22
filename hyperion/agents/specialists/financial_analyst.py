@@ -45,6 +45,7 @@ Methodology (§4.4, Agent 5):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -85,8 +86,11 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
     tools=[
         ToolName.ALPHA_VANTAGE,
         ToolName.FRED,
+        ToolName.SEC_EDGAR,
+        ToolName.WORLD_BANK,
         ToolName.SEARXNG,
         ToolName.JINA,
+        ToolName.DEEP_SEARCH,
     ],
     skills=[
         SkillSpec(
@@ -403,22 +407,22 @@ class FinancialAnalyst(BaseAgent):
             fred = self.get_tool(ToolName.FRED)
 
             # 10-year Treasury yield (risk-free rate proxy)
-            tnx_data = await fred.get_series("DGS10", geography=geography)
+            tnx_data = await fred.get_series("DGS10")
             if tnx_data:
                 macro["risk_free_rate"] = tnx_data
 
             # CPI (inflation)
-            cpi_data = await fred.get_series("CPIAUCSL", geography=geography)
+            cpi_data = await fred.get_series("CPIAUCSL")
             if cpi_data:
                 macro["inflation"] = cpi_data
 
             # GDP growth (terminal growth rate ceiling)
-            gdp_data = await fred.get_series("GDP", geography=geography)
+            gdp_data = await fred.get_series("GDP")
             if gdp_data:
                 macro["gdp_growth"] = gdp_data
 
             # Federal funds rate (cost of debt proxy)
-            fed_data = await fred.get_series("FEDFUNDS", geography=geography)
+            fed_data = await fred.get_series("FEDFUNDS")
             if fed_data:
                 macro["fed_funds_rate"] = fed_data
 
@@ -480,11 +484,15 @@ class FinancialAnalyst(BaseAgent):
                 jina = self.get_tool(ToolName.JINA)
                 top_urls = [r["url"] for r in results[:5] if r.get("url")]
                 for url in top_urls:
-                    content = await jina.read(url)
+                    read_result = await jina.read(url)
+                    if read_result and (read_result.markdown or read_result.content):
+                        content = read_result.markdown or read_result.content
+                    else:
+                        continue
                     if content:
                         results.append({
                             "url": url,
-                            "extracted_content": content[:3000],
+                            "extracted_content": content[:15000],
                             "source": "jina",
                         })
             except (ValueError, AttributeError, RuntimeError):
@@ -1148,9 +1156,13 @@ class FinancialAnalyst(BaseAgent):
 
         all_findings: list[KeyFinding] = []
 
-        for spec in sub_specs:
-            findings = await self._spawn_sub_agent(spec)
-            all_findings.extend(findings)
+        results = await asyncio.gather(
+            *(self._spawn_sub_agent(spec) for spec in sub_specs),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, list):
+                all_findings.extend(result)
 
         return all_findings
 

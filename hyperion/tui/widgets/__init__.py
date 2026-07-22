@@ -1,11 +1,20 @@
-"""HYPERION TUI widgets — logo, header, transcript, metrics, prompt, rules.
+"""HYPERION TUI widgets — logo, header, transcript, metrics, prompt, rules,
+mark, agent grid, TPM bars, findings stream, deliverable view.
 
 All widgets are built on Textual ``Content`` and native selectable widgets
 (``Static`` / ``RichLog``), so every surface is copyable.
 """
 
 from hyperion.tui.banner import WORDMARK, hint_content, logo_content, roster_content
+from hyperion.tui.widgets.agent_grid import AgentGrid, GridAgent
+from hyperion.tui.widgets.deliverable import (
+    DeliverableView,
+    ExportRequested,
+    OpenPDFRequested,
+)
+from hyperion.tui.widgets.findings_stream import FindingsStream, FindingEntry
 from hyperion.tui.widgets.header import HeaderBar
+from hyperion.tui.widgets.mark import Mark, MarkState
 from hyperion.tui.widgets.metrics import AgentState, MetricsRail, Telemetry
 from hyperion.tui.widgets.prompt import (
     CancelTurn,
@@ -14,6 +23,7 @@ from hyperion.tui.widgets.prompt import (
     PromptSubmitted,
 )
 from hyperion.tui.widgets.rule import HR_WIDTH, PhaseRule, Rule, hr
+from hyperion.tui.widgets.tpm_bar import TPMBar
 from hyperion.tui.widgets.transcript import LogRow, Transcript
 
 # Backwards-compatible alias — the old ScrollView log wasn't copyable; the
@@ -40,4 +50,15 @@ __all__ = [
     "PhaseRule",
     "hr",
     "HR_WIDTH",
+    # Spec'd widgets (ARCHITECTURE.md §8)
+    "Mark",
+    "MarkState",
+    "AgentGrid",
+    "GridAgent",
+    "TPMBar",
+    "FindingsStream",
+    "FindingEntry",
+    "DeliverableView",
+    "ExportRequested",
+    "OpenPDFRequested",
 ]

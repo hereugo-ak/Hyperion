@@ -110,8 +110,10 @@ class SessionScreen(Screen):
         self._demo = demo
         self._session_id = "0x" + f"{random.randint(0, 0xFFFFFF):06X}"
         self._engagement_task: asyncio.Task | None = None
+        self._boot_task: asyncio.Task | None = None
         self._bus_sub_id = "tui_session"
         self._active_rows: dict[str, LogRow] = {}
+        self._task_list_rows: dict[str, LogRow] = {}  # task_id → row in checklist
 
     # ── compose ────────────────────────────────────────────────────────────────
 
@@ -132,7 +134,9 @@ class SessionScreen(Screen):
         self.query_one("#prompt", PromptBar).focus()
         self._render_intro()
         delay = 0.05 if self._reduced else 0.6
-        self.set_timer(delay, self._show_ready)
+        # Run the premium boot sequence — Docker/SearxNG auto-start,
+        # provider health, roster init, vault prime — all streamed live.
+        self.set_timer(delay, self._start_boot)
         if self._demo:
             self.set_timer(delay + 0.4, self._start_demo)
 
@@ -160,9 +164,40 @@ class SessionScreen(Screen):
         return self.query_one("#status-bar", MetricsRail)
 
     def _show_ready(self) -> None:
+        """Legacy instant-ready — used by /clear, not the initial boot."""
         self._log().add_entry(
             "READY", f"{len(ROSTER)} specialist agents online · context primed"
         )
+
+    def _start_boot(self) -> None:
+        """Kick off the premium boot sequence with animated init steps."""
+        self._boot_task = asyncio.create_task(self._run_boot())
+
+    async def _run_boot(self) -> None:
+        """Stream the boot sequence into the transcript with live spinners."""
+        log = self._log()
+        metrics = self._metrics()
+        try:
+            from hyperion.tui.boot import run_boot_sequence
+
+            metrics.start(phase="boot")
+            results = await run_boot_sequence(
+                log=log,
+                metrics=metrics,
+                reduced_motion=self._reduced,
+            )
+            metrics.set_phase("idle")
+            # Touch providers that came online during boot
+            for p in ("nvidia", "cerebras", "groq", "mistral"):
+                metrics.touch_provider(p)
+        except asyncio.CancelledError:
+            log.add_entry("WARN", "boot sequence interrupted", icon="▸")
+            metrics.finish(ok=False)
+            raise
+        except Exception as exc:
+            log.add_entry("ERROR", f"boot error: {type(exc).__name__}: {exc}", icon="✗")
+            log.add_entry("READY", "core ready (partial boot) · type to begin", icon="▸")
+            metrics.set_phase("idle")
 
     # ── selection / copy helpers used by the App ───────────────────────────────
 
@@ -222,6 +257,7 @@ class SessionScreen(Screen):
             return
         self.query_one("#prompt", PromptBar).set_busy(True)
         self._active_rows.clear()
+        self._task_list_rows.clear()
         self._metrics().start(phase="decompose")
         self._log().add_entry(
             "THINKING",
@@ -247,6 +283,7 @@ class SessionScreen(Screen):
                     Channel.FINDINGS,
                     Channel.HANDOFF,
                     Channel.ESCALATION,
+                    Channel.TUI,
                 },
                 callback=self._on_bus_message,
             )
@@ -266,7 +303,7 @@ class SessionScreen(Screen):
                 ]
                 if result.quality_score is not None:
                     detail.append(
-                        f"quality → {result.quality_score.weighted_total:.1f}/5.0"
+                        f"quality → {result.quality_score.total_score:.1f}/5.0"
                         f" · {result.quality_iterations} iteration(s)"
                     )
                 if result.pdf_path:
@@ -308,12 +345,107 @@ class SessionScreen(Screen):
 
     async def _on_bus_message(self, msg: Any) -> None:
         from hyperion.agents.bus import Channel
-        from hyperion.tui.theme import agent_badge
+        from hyperion.tui.theme import agent_badge, CLAY, SKY, GOLD, SAGE, ROSE, TEXT_DIM, TEXT_PRIMARY
 
         log = self._log()
         metrics = self._metrics()
         try:
-            if msg.channel == Channel.STATUS:
+            if msg.channel == Channel.TUI:
+                payload = msg.payload
+                agent = payload.get("agent", "")
+                tool = payload.get("tool", "")
+                action = payload.get("action", "")
+                detail_str = payload.get("detail", "")
+                badge = agent_badge(agent)
+
+                # ── DAG task list ──
+                if tool == "dag" and action == "task_list":
+                    tasks = payload.get("tasks", [])
+                    self._render_task_list(tasks)
+                    return
+
+                # ── Task status update ──
+                if tool == "task" and action == "status":
+                    task_id = payload.get("task_id", "")
+                    task_agent = payload.get("task_agent", "")
+                    task_status = payload.get("task_status", "")
+                    self._update_task_row(task_id, task_agent, task_status)
+                    return
+
+                # ── Tool / LLM telemetry ──
+                # Build colored spans: provider in sky, model in bold clay,
+                # tier in gold, status in sage/rose, tool name in bold gold
+                if tool == "llm":
+                    # action is like "mistral/magistral-medium-latest"
+                    # detail_str is like "strong tier · OK · 2484 chars"
+                    parts = action.split("/", 1)
+                    provider_name = parts[0] if len(parts) > 1 else ""
+                    model_name = parts[1] if len(parts) > 1 else action
+
+                    # Parse detail for tier, status, chars
+                    detail_parts = detail_str.split(" · ")
+                    tier_str = detail_parts[0] if len(detail_parts) > 0 else ""
+                    status_str = detail_parts[1] if len(detail_parts) > 1 else ""
+                    chars_str = detail_parts[2] if len(detail_parts) > 2 else ""
+
+                    is_ok = "OK" in status_str
+                    status_color = SAGE if is_ok else ROSE
+                    status_icon = "✓" if is_ok else "✗"
+
+                    spans = [
+                        (f"{badge}  ", TEXT_DIM),
+                        (f"{provider_name}/", f"bold {SKY}"),
+                        (model_name, f"bold {CLAY}"),
+                        ("  ·  ", TEXT_DIM),
+                        (tier_str, GOLD),
+                        ("  ·  ", TEXT_DIM),
+                        (f"{status_icon} {status_str}", f"bold {status_color}"),
+                    ]
+                    if chars_str:
+                        spans.append(("  ·  ", TEXT_DIM))
+                        spans.append((chars_str, TEXT_DIM))
+
+                    plain_text = f"{badge}  {action}  ·  {detail_str}"
+                    log.add_entry("TOOL", plain_text, icon="▸", content_spans=spans)
+                else:
+                    # Tool call: tool name in bold gold, action in primary, detail in dim
+                    # Color-code success/failure with ✓/✗ icons
+                    success_val = payload.get("success")
+
+                    if success_val is True:
+                        status_icon = "✓"
+                        status_color = SAGE
+                        status_label = "OK"
+                    elif success_val is False:
+                        status_icon = "✗"
+                        status_color = ROSE
+                        status_label = "FAIL"
+                    else:
+                        status_icon = "▸"
+                        status_color = GOLD
+                        status_label = ""
+
+                    spans = [
+                        (f"{badge} ", TEXT_DIM),
+                        (tool, f"bold {GOLD}"),
+                        (".", TEXT_DIM),
+                        (action, TEXT_PRIMARY),
+                    ]
+                    if status_label:
+                        spans.append(("  ·  ", TEXT_DIM))
+                        spans.append((f"{status_icon} {status_label}", f"bold {status_color}"))
+                    if detail_str:
+                        spans.append(("  ·  ", TEXT_DIM))
+                        spans.append((detail_str, TEXT_DIM))
+
+                    plain_text = f"{badge} {tool}.{action}"
+                    if status_label:
+                        plain_text += f" · {status_label}"
+                    if detail_str:
+                        plain_text += f" · {detail_str}"
+                    log.add_entry("TOOL", plain_text, icon=status_icon, content_spans=spans)
+                metrics.add_tool_call(1)
+            elif msg.channel == Channel.STATUS:
                 agent = msg.agent
                 state = (msg.state or "").lower()
                 detail = msg.detail or ""
@@ -323,10 +455,13 @@ class SessionScreen(Screen):
                     metrics.set_phase("execute")
                     row = self._active_rows.get(agent)
                     if row is None:
+                        # First working state — create spinner row
                         row = log.add_entry(badge, detail or "working…", spinner=True)
                         self._active_rows[agent] = row
                     else:
-                        log.update_row(row, content=detail or row.content, spinner=True)
+                        # Subsequent steps — add as new line, keep spinner alive
+                        log.add_entry(badge, detail or "working…", icon="▸")
+                        log.update_row(row, spinner=True)
                 elif state == "done":
                     row = self._active_rows.get(agent)
                     if row is not None:
@@ -347,15 +482,32 @@ class SessionScreen(Screen):
                 elif state == "waiting":
                     row = self._active_rows.get(agent)
                     if row is not None:
-                        log.update_row(row, content=detail or "waiting…", spinner=True)
+                        # Show waiting as a new line, keep spinner on main row
+                        log.add_entry(badge, detail or "waiting…", icon="▸")
+                        log.update_row(row, spinner=True)
+                elif state == "sub_agent_spawned":
+                    row = self._active_rows.get(agent)
+                    if row is not None:
+                        log.add_entry(badge, detail or "spawning sub-agents…", icon="▸")
+                        log.update_row(row, spinner=True)
             elif msg.channel == Channel.FINDINGS:
                 finding = msg.finding
-                text = (
-                    getattr(finding, "headline", None)
+                # Show finding with its title and a snippet of content
+                title = (
+                    getattr(finding, "title", None)
+                    or getattr(finding, "headline", None)
                     or getattr(finding, "summary", None)
                     or "finding recorded"
                 )
-                log.add_entry(agent_badge(msg.agent), str(text)[:90], icon="▸")
+                content_snippet = ""
+                content_val = getattr(finding, "content", "")
+                if content_val:
+                    content_snippet = f" — {str(content_val)[:80]}"
+                log.add_entry(
+                    agent_badge(msg.agent),
+                    f"{str(title)[:80]}{content_snippet}",
+                    icon="▸",
+                )
             elif msg.channel == Channel.HANDOFF:
                 metrics.set_phase("handoff")
                 log.add_entry(
@@ -366,6 +518,51 @@ class SessionScreen(Screen):
                 log.add_entry("WARN", f"{agent_badge(msg.agent)}: {msg.issue}", icon="▸")
         except Exception:
             pass
+
+    # ── DAG task checklist ──────────────────────────────────────────────────────
+
+    def _render_task_list(self, tasks: list[dict]) -> None:
+        """Render the DAG task list as a real-time checklist in the transcript."""
+        from hyperion.tui.theme import agent_badge
+        log = self._log()
+        self._task_list_rows.clear()
+
+        log.add_entry("PLAN", f"── TASK CHECKLIST ({len(tasks)} tasks) ──", icon="▸")
+        for task in tasks:
+            task_id = task.get("id", "")
+            agent_val = task.get("agent", "")
+            tier = task.get("tier", "")
+            status = task.get("status", "pending")
+            desc = task.get("description", "")
+            badge = agent_badge(agent_val)
+
+            icon = "○"  # pending
+            if status == "running":
+                icon = "◐"
+            elif status == "completed":
+                icon = "●"
+            elif status == "failed":
+                icon = "✗"
+
+            text = f"{icon} {badge} [{tier}] {desc[:60]}"
+            row = log.add_entry("PLAN", text, icon="▸")
+            self._task_list_rows[task_id] = row
+
+    def _update_task_row(self, task_id: str, agent_val: str, status: str) -> None:
+        """Update a single task's status in the checklist."""
+        from hyperion.tui.theme import agent_badge
+        log = self._log()
+        row = self._task_list_rows.get(task_id)
+        if row is not None:
+            icon = "○"
+            if status == "running":
+                icon = "◐"
+            elif status == "completed":
+                icon = "●"
+            elif status == "failed":
+                icon = "✗"
+            badge = agent_badge(agent_val)
+            log.update_row(row, content=f"{icon} {badge} — {status}", icon="▸")
 
     # ── demo mode: premium animations without any API keys ─────────────────────
 
@@ -502,6 +699,9 @@ class SessionScreen(Screen):
         self.set_timer(0.1, self._show_ready)
 
     def action_cancel(self) -> None:
+        if self._boot_task and not self._boot_task.done():
+            self._boot_task.cancel()
+            self._log().add_entry("WARN", "boot sequence cancelled", icon="▸")
         if self._engagement_task and not self._engagement_task.done():
             self._engagement_task.cancel()
             self._log().add_entry("WARN", "agent turn cancelled", icon="▸")

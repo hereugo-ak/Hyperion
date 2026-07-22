@@ -219,20 +219,9 @@ QUALITY_GATE_SPEC = AgentSpec(
     display_name="Quality Gate",
     model_tier=ModelTier.STRONG,
     tools=[
-        # All outputs (read-only) — can read everything the engagement produced
-        ToolName.SEARXNG,
-        ToolName.JINA,
-        ToolName.OBSCURA,
-        ToolName.CRAWL4AI,
-        ToolName.WAYBACK,
-        ToolName.ALPHA_VANTAGE,
-        ToolName.FRED,
-        ToolName.UNSPLASH,
+        # Reviewer — needs search for spot-checking claims, SECOND_BRAIN for prior research
         ToolName.SECOND_BRAIN,
-        ToolName.PLOTLY,
-        ToolName.WEASYPRINT,
-        ToolName.JINJA2,
-        ToolName.PILLOW,
+        ToolName.DEEP_SEARCH,
     ],
     skills=[
         SkillSpec(
@@ -541,8 +530,6 @@ class QualityGate(BaseAgent):
 
         if not feedback_parts:
             feedback_parts.append("All sections present, all key questions answered with evidence.")
-        else:
-            score = min(score, 4 if len(feedback_parts) <= 1 else 3 if len(feedback_parts) <= 2 else 2)
 
         return QualityDimension(
             dimension_id=QualityDimensionName.COMPLETENESS,
@@ -639,12 +626,16 @@ class QualityGate(BaseAgent):
                 score = min(score, 2)
                 feedback_parts.append(f"Section '{section.title}' is too short ({len(section.body)} chars) — surface-level, not deep analysis.")
                 fix_parts.append(f"Expand section '{section.title}' with deeper analysis, framework application, and interpretation.")
+            elif len(section.body) < 1500:
+                score = min(score, 3)
+                feedback_parts.append(f"Section '{section.title}' is shallow ({len(section.body)} chars) — needs more depth, interpretation, and 'so what' analysis.")
+                fix_parts.append(f"Expand section '{section.title}' to 1500+ chars with deeper analysis, specific data points, and consulting-grade prose.")
 
         # Use LLM to evaluate analytical depth if available
         if report.sections and self.router:
             try:
                 sections_text = "\n".join(
-                    f"[{s.title}] {s.body[:200]}..."
+                    f"[{s.title}] {s.body[:500]}..."
                     for s in report.sections[:5]
                 )
 
@@ -658,11 +649,15 @@ class QualityGate(BaseAgent):
                     "fix_instructions (if score < 4)."
                 )
 
-                response = await self._call_llm(prompt, TaskUrgency.HIGH)
-                if response and response.text:
+                response = await self._llm_complete(
+                    user_prompt=prompt,
+                    urgency=TaskUrgency.HIGH,
+                    response_format={"type": "json_object"},
+                )
+                if response and response.success and response.content:
                     import json
                     try:
-                        result = json.loads(response.text)
+                        result = json.loads(response.content)
                         llm_score = int(result.get("score", score))
                         if llm_score < score:
                             score = llm_score
@@ -672,8 +667,8 @@ class QualityGate(BaseAgent):
                     except (json.JSONDecodeError, ValueError, TypeError):
                         pass
 
-            except (ValueError, AttributeError, RuntimeError):
-                pass
+            except (ValueError, AttributeError, RuntimeError) as e:
+                await self._log_tool_use("llm", "score", f"FAIL · {e}", success=False)
 
         if not feedback_parts:
             feedback_parts.append("Deep analysis with frameworks applied correctly, 'so what?' implications throughout.")
@@ -1081,7 +1076,7 @@ class QualityGate(BaseAgent):
 
         dimensions.append(self._score_completeness(report))
         dimensions.append(self._score_evidence_sufficiency(report))
-        dimensions.append(self._score_analytical_depth(report))
+        dimensions.append(await self._score_analytical_depth(report))
         dimensions.append(self._score_logical_consistency(report))
         dimensions.append(self._score_contradiction_resolution(report))
         dimensions.append(self._score_tone_and_voice(report))

@@ -122,6 +122,7 @@ class TemplateRenderer:
             self._env.filters["format_percent"] = self._format_percent
             self._env.filters["format_date"] = self._format_date
             self._env.filters["truncate_chars"] = self._truncate_chars
+            self._env.filters["md_to_html"] = self._markdown_to_html
 
         return self._env
 
@@ -162,37 +163,111 @@ class TemplateRenderer:
             return value
         return value[:length - 3] + "..."
 
-    def render_template(
+    def _markdown_to_html(self, value: str) -> str:
+        """Convert basic markdown to HTML for report rendering.
+
+        Handles: **bold**, *italic*, ## headings, ### sub-headings,
+        - bullet lists, and paragraph breaks. Lightweight — no external deps.
+
+        Returns a jinja2.Markup object so Jinja2 does NOT re-escape the output.
+        """
+        if not value:
+            return ""
+
+        try:
+            from jinja2 import Markup
+        except ImportError:
+            Markup = str  # fallback — str will be auto-escaped by Jinja2
+
+        import re
+
+        html = value
+
+        # Convert markdown headings
+        html = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html, flags=re.MULTILINE)
+        html = re.sub(r"^## (.+)$", r"<h3>\1</h3>", html, flags=re.MULTILINE)
+
+        # Convert bold and italic
+        html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html)
+        html = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html)
+
+        # Convert bullet lists (group consecutive lines)
+        lines = html.split("\n")
+        result: list[str] = []
+        in_list = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                if not in_list:
+                    result.append("<ul>")
+                    in_list = True
+                result.append(f"<li>{stripped[2:]}</li>")
+            else:
+                if in_list:
+                    result.append("</ul>")
+                    in_list = False
+                if stripped and not stripped.startswith("<h"):
+                    # Wrap non-heading, non-empty lines in <p> tags
+                    if not result or not result[-1].startswith("<p>"):
+                        result.append(f"<p>{stripped}</p>")
+                    else:
+                        # Append to previous paragraph
+                        result[-1] = result[-1][:-4] + " " + stripped + "</p>"
+                elif stripped.startswith("<h"):
+                    result.append(stripped)
+        if in_list:
+            result.append("</ul>")
+
+        output = "\n".join(result)
+        if Markup is not str:
+            return Markup(output)
+        return output
+
+    async def render_template(
         self,
-        template_name: str,
-        context: dict[str, Any],
+        template_name: str = "",
+        context: dict[str, Any] | None = None,
+        template_string: str = "",
     ) -> TemplateRenderResult:
         """Render a Jinja2 template with context data.
 
         Args:
             template_name: Template filename (e.g., "report.html.j2")
             context: Dictionary of data to pass to the template
+            template_string: Raw Jinja2 template string (alternative to
+                template_name — used by Presentation Designer which has
+                inline HTML templates)
 
         Returns:
             TemplateRenderResult with the rendered HTML.
         """
         env = self._get_env()
+        context = context or {}
 
         try:
-            template = env.get_template(template_name)
-            html = template.render(**context)
-            return TemplateRenderResult(
-                html=html,
-                template_name=template_name,
-                success=True,
-            )
+            if template_string:
+                template = env.from_string(template_string)
+                html = template.render(**context)
+                return TemplateRenderResult(
+                    html=html,
+                    template_name=template_name or "<inline>",
+                    success=True,
+                )
+            else:
+                template = env.get_template(template_name)
+                html = template.render(**context)
+                return TemplateRenderResult(
+                    html=html,
+                    template_name=template_name,
+                    success=True,
+                )
         except (OSError, ValueError, RuntimeError, KeyError) as e:
             return TemplateRenderResult(
-                template_name=template_name,
+                template_name=template_name or "<inline>",
                 error=str(e),
             )
 
-    def render_report(
+    async def render_report(
         self,
         report_data: dict[str, Any],
         template_name: str = "report.html.j2",
@@ -211,9 +286,9 @@ class TemplateRenderer:
             "generated_date": datetime.now().strftime("%B %d, %Y"),
             "generated_timestamp": datetime.now().isoformat(),
         }
-        return self.render_template(template_name, context)
+        return await self.render_template(template_name, context)
 
-    def render_cover(
+    async def render_cover(
         self,
         cover_data: dict[str, Any],
         template_name: str = "cover.html.j2",
@@ -232,9 +307,9 @@ class TemplateRenderer:
             "cover": cover_data,
             "generated_date": datetime.now().strftime("%B %d, %Y"),
         }
-        return self.render_template(template_name, context)
+        return await self.render_template(template_name, context)
 
-    def render_section(
+    async def render_section(
         self,
         section_data: dict[str, Any],
         template_name: str = "section.html.j2",
@@ -249,7 +324,7 @@ class TemplateRenderer:
             TemplateRenderResult with the rendered section HTML.
         """
         context = {"section": section_data}
-        return self.render_template(template_name, context)
+        return await self.render_template(template_name, context)
 
 
 class PDFRenderer:
@@ -278,10 +353,48 @@ class PDFRenderer:
         self._reports_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_weasyprint(self) -> tuple[Any, Any]:
-        """Import WeasyPrint components. Returns (HTML, CSS)."""
+        """Import WeasyPrint components. Returns (HTML, CSS).
+
+        Raises OSError if native GTK libraries are not available (common on Windows).
+        """
         from weasyprint import HTML, CSS
 
         return HTML, CSS
+
+    def _render_pdf_playwright(self, html: str, output_path: str, css_content: str) -> bool:
+        """Fallback: render HTML to PDF using Playwright Chromium.
+
+        Used when WeasyPrint can't load native GTK libraries (Windows).
+        Produces a print-quality PDF with A4 page size and proper margins.
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+
+            # Write HTML to a temp file so Playwright can load it
+            import tempfile
+            temp_html = output_path.replace(".pdf", "_playwright.html")
+            full_html = html
+            if css_content:
+                full_html = f"<style>{css_content}</style>" + html
+            with open(temp_html, "w", encoding="utf-8") as f:
+                f.write(full_html)
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page()
+                page.goto(f"file:///{temp_html.replace(os.sep, '/')}")
+                page.pdf(
+                    path=output_path,
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "25mm", "bottom": "25mm", "left": "25mm", "right": "25mm"},
+                )
+                browser.close()
+
+            return os.path.exists(output_path) and os.path.getsize(output_path) > 0
+
+        except Exception:
+            return False
 
     def render_pdf(
         self,
@@ -290,7 +403,11 @@ class PDFRenderer:
         cover_html: str = "",
         additional_css: str = "",
     ) -> PDFRenderResult:
-        """Render HTML to a print-quality PDF via WeasyPrint.
+        """Render HTML to a print-quality PDF.
+
+        Tries WeasyPrint first (best quality, embedded fonts). Falls back to
+        Playwright Chromium when WeasyPrint can't load native GTK libraries
+        (common on Windows — libgobject-2.0 not available).
 
         Args:
             html: The rendered HTML content (body of the report)
@@ -301,8 +418,6 @@ class PDFRenderer:
         Returns:
             PDFRenderResult with the PDF path and metadata.
         """
-        HTML, CSS = self._get_weasyprint()
-
         result = PDFRenderResult()
 
         # Generate output path if not provided
@@ -310,24 +425,28 @@ class PDFRenderer:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = str(self._reports_dir / f"hyperion_report_{timestamp}.pdf")
 
+        # Load brand CSS
+        css_content = ""
+        if self.CSS_PATH.exists():
+            css_content = self.CSS_PATH.read_text(encoding="utf-8")
+        if additional_css:
+            css_content += "\n" + additional_css
+
+        # Combine cover + body if cover is provided
+        full_html = html
+        if cover_html:
+            full_html = cover_html + '<div class="page-break"></div>' + html
+
+        # Save HTML for debugging
+        html_path = output_path.replace(".pdf", ".html")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(full_html)
+        result.html_path = html_path
+
+        # ── Attempt 1: WeasyPrint ──
+        weasy_error: Exception | None = None
         try:
-            # Load brand CSS
-            css_content = ""
-            if self.CSS_PATH.exists():
-                css_content = self.CSS_PATH.read_text(encoding="utf-8")
-            if additional_css:
-                css_content += "\n" + additional_css
-
-            # Combine cover + body if cover is provided
-            full_html = html
-            if cover_html:
-                full_html = cover_html + '<div class="page-break"></div>' + html
-
-            # Save HTML for debugging
-            html_path = output_path.replace(".pdf", ".html")
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(full_html)
-            result.html_path = html_path
+            HTML, CSS = self._get_weasyprint()
 
             # Create WeasyPrint HTML object
             html_obj = HTML(string=full_html, base_url=str(Path.cwd()))
@@ -361,14 +480,36 @@ class PDFRenderer:
                 result.fonts_embedded = list(fonts)
                 doc.close()
             except (ImportError, OSError, ValueError):
-                # PyMuPDF not available — can't get page count
                 result.warnings.append("PyMuPDF not available — page count unknown")
 
             return result
 
-        except (OSError, ValueError, RuntimeError) as e:
-            result.error = str(e)
+        except (OSError, ImportError, ValueError, RuntimeError) as exc:
+            weasy_error = exc
+            result.warnings.append(f"WeasyPrint failed: {weasy_error!s:.120}")
+
+        # ── Attempt 2: Playwright Chromium fallback ──
+        if self._render_pdf_playwright(full_html, output_path, css_content):
+            result.pdf_path = output_path
+            result.success = True
+            result.file_size_bytes = os.path.getsize(output_path)
+            result.warnings.append("PDF rendered via Playwright (WeasyPrint unavailable)")
+
+            # Try to get page count
+            try:
+                import fitz
+
+                doc = fitz.open(output_path)
+                result.page_count = len(doc)
+                doc.close()
+            except (ImportError, OSError, ValueError):
+                pass
+
             return result
+
+        # Both methods failed
+        result.error = f"WeasyPrint: {weasy_error!s:.80}; Playwright fallback also failed"
+        return result
 
     def render_from_template(
         self,

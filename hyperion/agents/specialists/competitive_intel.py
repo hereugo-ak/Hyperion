@@ -36,6 +36,7 @@ Methodology (§4.4, Agent 4):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -77,6 +78,8 @@ COMPETITIVE_INTEL_SPEC = AgentSpec(
         ToolName.JINA,
         ToolName.OBSCURA,
         ToolName.WAYBACK,
+        ToolName.SEC_EDGAR,
+        ToolName.DEEP_SEARCH,
     ],
     skills=[
         SkillSpec(
@@ -407,16 +410,24 @@ class CompetitiveIntel(BaseAgent):
                     # Try Obscura first (handles JS-rendered content)
                     if obscura:
                         try:
-                            page_data = await obscura.scrape(url, stealth=True)
+                            fetch_result = await obscura.fetch(url, stealth=True)
+                            if fetch_result and (fetch_result.markdown or fetch_result.content):
+                                page_data = {"content": (fetch_result.markdown or fetch_result.content)[:15000]}
+                            else:
+                                page_data = None
                         except (ValueError, AttributeError, RuntimeError):
                             page_data = None
 
                     # Fall back to Jina if Obscura fails
                     if not page_data and jina:
                         try:
-                            content = await jina.read(url)
+                            read_result = await jina.read(url)
+                            if read_result and (read_result.markdown or read_result.content):
+                                content = read_result.markdown or read_result.content
+                            else:
+                                continue
                             if content:
-                                page_data = {"content": content[:5000]}
+                                page_data = {"content": content[:15000]}
                         except (ValueError, AttributeError, RuntimeError):
                             page_data = None
 
@@ -977,9 +988,13 @@ class CompetitiveIntel(BaseAgent):
 
         all_findings: list[KeyFinding] = []
 
-        for spec in sub_specs:
-            findings = await self._spawn_sub_agent(spec)
-            all_findings.extend(findings)
+        results = await asyncio.gather(
+            *(self._spawn_sub_agent(spec) for spec in sub_specs),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, list):
+                all_findings.extend(result)
 
         return all_findings
 

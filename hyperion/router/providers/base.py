@@ -165,6 +165,8 @@ class BaseProvider:
             self._client = AsyncOpenAI(
                 api_key=self.config.api_key,
                 base_url=self.config.base_url,
+                timeout=60.0,
+                max_retries=2,
             )
         return self._client
 

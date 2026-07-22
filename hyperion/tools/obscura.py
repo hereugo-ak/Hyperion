@@ -310,6 +310,10 @@ class ObscuraClient:
         if not urls:
             return ObscuraScrapeResult()
 
+        # Accept a single URL string for convenience (agents call with one URL)
+        if isinstance(urls, str):
+            urls = [urls]
+
         obscura_bin = self._find_obscura()
 
         cmd = [obscura_bin, "scrape"] + urls
