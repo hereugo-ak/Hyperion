@@ -11,8 +11,11 @@
  *
  * Typography (§7.4):
  * - Instrument Serif for headers (authority, tradition, premium)
- * - JetBrains Mono for body (technical, precise, aligns numbers in tables)
- * - Both fonts embedded via WeasyPrint
+ * - Source Sans 3 for body (humanist sans, professional, readable)
+ * - JetBrains Mono for tabular/numbers/code only (precise alignment)
+ * - All fonts embedded via WeasyPrint
+ *
+ * D24 fix: body register moved off monospace to professional sans.
  *
  * Page rules (§6.3):
  * - Every image has adjacent text context on the SAME page
@@ -58,6 +61,28 @@
     font-style: normal;
 }
 
+/* D24: Professional body font — humanist sans for narrative prose */
+@font-face {
+    font-family: "Source Sans 3";
+    src: url("../assets/fonts/SourceSans3-Regular.ttf") format("truetype");
+    font-weight: normal;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Source Sans 3";
+    src: url("../assets/fonts/SourceSans3-Bold.ttf") format("truetype");
+    font-weight: bold;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Source Sans 3";
+    src: url("../assets/fonts/SourceSans3-It.ttf") format("truetype");
+    font-weight: normal;
+    font-style: italic;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    Page Setup — A4, margins, footer
    ───────────────────────────────────────────────────────────────────────────── */
@@ -69,21 +94,21 @@
     /* Footer on every page (§6.5: "Footer present on every page") */
     @bottom-center {
         content: "HYPERION · many minds. one reading.";
-        font-family: "JetBrains Mono", monospace;
+        font-family: var(--mono-font);
         font-size: 8pt;
         color: #8B8680;  /* Warm Gray */
     }
 
     @bottom-right {
         content: counter(page) " / " counter(pages);
-        font-family: "JetBrains Mono", monospace;
+        font-family: var(--mono-font);
         font-size: 8pt;
         color: #8B8680;  /* Warm Gray */
     }
 
     @bottom-left {
         content: string(report-title);
-        font-family: "JetBrains Mono", monospace;
+        font-family: var(--mono-font);
         font-size: 8pt;
         color: #8B8680;  /* Warm Gray */
     }
@@ -122,7 +147,8 @@
 
     /* Typography (§7.4) */
     --header-font: "Instrument Serif", serif;
-    --body-font: "JetBrains Mono", monospace;
+    --body-font: "Source Sans 3", "Helvetica Neue", sans-serif;  /* D24: professional sans */
+    --mono-font: "JetBrains Mono", monospace;  /* D24: tabular/numbers/code only */
 
     /* Sizes (§7.4) */
     --cover-title-size: 36pt;
@@ -363,13 +389,13 @@ p {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Tables — JetBrains Mono for perfect number alignment
+   Tables — JetBrains Mono for perfect number alignment (D24: mono for tabular only)
    ───────────────────────────────────────────────────────────────────────────── */
 
 table {
     width: 100%;
     border-collapse: collapse;
-    font-family: var(--body-font);
+    font-family: var(--mono-font);  /* D24: mono for tabular number alignment */
     font-size: var(--data-table-size);
     margin: 0.5cm 0;
     page-break-inside: avoid;
@@ -555,6 +581,7 @@ li {
 
 .font-header { font-family: var(--header-font); }
 .font-body { font-family: var(--body-font); }
+.font-mono { font-family: var(--mono-font); }  /* D24: mono utility class */
 
 .no-break {
     page-break-inside: avoid;
