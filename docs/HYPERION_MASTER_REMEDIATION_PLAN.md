@@ -2165,3 +2165,147 @@ Verified in `hyperion/output/templates/styles/hyperion.css` (574 lines) + `prese
 
 *End of PART V.*
 
+
+---
+---
+
+# PART VI — CONSOLIDATED MASTER EXECUTION PLAN (whole pipeline, phase-wise) + CODING-AGENT HANDOFF
+
+> **What this part is:** Parts I–V diagnosed and prescribed in layers. This part collapses **all 27 defects (D1–D27)** and **all 14 phases (P1–P14)** into **one ordered, end-to-end execution plan for the whole pipeline**, plus a per-tool "use it at its best capability" doctrine (including Obscura), and finishes with a **crisp handoff prompt** to give coding agents.
+>
+> **First principle — read this before touching code:** **HYPERION is a proprietary multi-agent research→PDF system. It is NOT a thin wrapper around a model or a scraping library.** Every tool is deployed *at its best capability for its correct use-case*, orchestrated by a purpose-built DAG. Fixes must preserve that proprietary architecture and the deliberate design language — do not "simplify" it into a generic wrapper.
+
+## VI.0 — Tool doctrine: every tool at its BEST capability (including Obscura)
+
+The pipeline is capability-routed. Each tool has ONE job it is best at; the orchestrator escalates cheap→expensive and picks the tool by the *detection surface / data type*, never by habit.
+
+| Tool | Best-capability role (use it for THIS) | Never use it for |
+|---|---|---|
+| **Structured JSON APIs** (World Bank, SEC/EDGAR, FRED, OpenAlex, Crossref, Wikidata, HN) | **First-choice evidence** — hard, citable numbers; zero fingerprint risk; perfect headless | Narrative color / opinion |
+| **Jina Reader** (`r.jina.ai`) | **Server-side clean-text extraction** — no browser, no fingerprint; the default extractor | JS-heavy interactive apps |
+| **curl_cffi** (impersonate=chrome) | **Default HTTP fetch** for non-JS pages — defeats TLS/JA4 (layer 2), headless | Pages requiring JS execution |
+| **Trafilatura** | **Main-content parsing** — strip boilerplate → usable article text + metadata | Fetching (it's a parser, not a client) |
+| **nodriver** (direct-CDP, system Linux Chrome) | **Hard anti-bot / JS render** — defeats automation-protocol layer (Turnstile); the heavy hitter | Simple pages curl_cffi already handles |
+| **Camoufox** (Firefox TLS shape) | **Chrome-shape-blocked targets** — sites that whitelist Firefox | Default use (heavier than curl_cffi) |
+| **Obscura** (native Linux build + `obscura serve`) | **Fingerprint-randomized stealth fetch (layers 2–3) + its 12 MCP tools** for sites where a *rotating, per-request fingerprint* beats a static one; use its CDP/MCP surface when a session needs programmatic control | As a Windows `.exe` on Linux; as the sole backbone |
+| **FlareSolverr** (health-checked sidecar) | **Cloudflare-IUAM cookie clearing ONLY** — narrow, last resort | General anti-bot; hot path |
+| **SearXNG** (managed local instance) | **Primary discovery** meta-search — keyless, budgeted, deduped | Bulk verification storms |
+| **WeasyPrint** | **Primary PDF render** — headless, 300 DPI, embedded fonts | JS-driven layouts |
+| **Plotly+kaleido (static engine) / matplotlib fallback** | **Branded charts at 300 DPI** — kaleido-static primary, matplotlib when no browser | Screenshots of charts |
+| **Pillow pipeline** | **300-DPI image processing** — downscale-only, center-crop | Upscaling (must fail-soft, not raise) |
+
+> **Obscura's rightful place (per the user's instruction to use it at best capability):** ship/point to a **genuine native Linux Obscura binary**, run **`obscura serve`** as a managed process, and use it as the **rotating-fingerprint stealth extractor + MCP tool surface** on targets where per-request fingerprint randomization (layers 2–3) is the winning move and a persistent CDP session is useful. It sits in the ladder *between* Camoufox and FlareSolverr. It is a first-class specialist — just not the sole backbone, because layer-4 gates still need nodriver's direct-CDP control plane.
+
+## VI.1 — The whole-pipeline fix sequence (one ordered path, P1→P14)
+
+Grouped into 5 stages. Each phase lists its defects and the one-line "done" test. Ship stages in order; within a stage, tasks can parallelize.
+
+### STAGE A — MAKE IT WORK (unblock content + a real PDF)  → phases P1, P2, P3, P6
+- **P1/P2/P3 (Parts I–II):** SearXNG-first discovery; kill the FlareSolverr flood (D3); extraction returns real text (D1); findings survive to Synthesis (D4).
+- **P6 (Part III):** platform-guard Obscura (D14); re-order extraction ladder (structured API → Jina Reader → curl_cffi+Trafilatura → nodriver → Camoufox → Obscura(native) → FlareSolverr); **install WeasyPrint + native deps** (D15); fix `jinja2.Markup`→`markupsafe.Markup` double-escape (D16); base64/relative image paths (D17); sanitize `<title>`; convert orchestrator early-return into **floor-report fallback so delivery ALWAYS runs** (D13); curl_cffi transport + per-host jitter (D22).
+- **DONE-A:** 3 different query types run headless → each yields a real PDF with actual content, no `&lt;` escapes, no `C:\` paths, designer log shows it executed.
+
+### STAGE B — MAKE IT HONEST & NEVER-BREAK  → phases P4, P5, P7, P8, P9
+- **P4/P5 (Part II):** specialists degrade never hard-fail (D8); synthesis always returns, fast (D5); router cross-provider ladders (D9).
+- **P7:** synthesis ≤3 DEEP calls, shard long prompts, **never return None** → `FinalReport(degraded=True)`; content-aware quality gate (≤2 loops); MICRO enrichment classifier (D-enrich); markdown exporter schema fix (D18); fact-checker corpus-first + search budget (D3).
+- **P8:** rebuild tier candidate lists — FAST=Mistral-small primary (Cerebras overflow, D20), STANDARD=NVIDIA/Mistral (Groq burst-only, D21), **DEEP={Google flash-lite, Mistral devstral, NVIDIA ultra-550b} round-robin, ≥2 non-Google** (D19); per-candidate timeout override for slow DEEP; output-budget right-sizing.
+- **P9:** DELIVERY subscribes `{FINDINGS, HANDOFF}`; synthesis reads findings at execution-time (fix injection race, D4); explicit FinalReport HANDOFF; all `gather(return_exceptions=True)`; ESCALATION on any tool-unavailable/tier-starved + startup health table.
+- **DONE-B:** kill any one provider key → every tier still resolves; force-fail DEEP → still emits a `degraded` PDF; inject a failing sub-agent + an unavailable tool → run completes with an ESCALATION log entry.
+
+### STAGE C — MAKE IT DURABLE & MEASURABLE  → phases P10, P11
+- **P10:** `RunJournal` (SQLite append-only) + content-addressed artifact store; every DAG node an **idempotent step** with `inputs_hash` cache lookup; orchestrator **replay/resume by `run_id`**; blackboard HANDOFF; `run_manifest.json` with seed + pinned prompt/model versions.
+- **P11:** golden-set across ALL workflow types; deterministic report checks + shared LLM-judge rubric; **CI regression gate** on golden-set mean score.
+- **DONE-C:** kill process at minute N → restart resumes from step N, no recompute; CI fails on a change that drops golden-set quality > threshold.
+
+### STAGE D — MAKE IT SOTA (extraction, stealth, efficiency)  → phases P12, P13
+- **P12:** curl_cffi default fetcher + Trafilatura parse; **nodriver** hard-target extractor; Camoufox secondary; **native Obscura + `obscura serve`** as rotating-fingerprint specialist; tiered cheap-first ladder + **shape-coherence law** (no Linux+residential-proxy contradiction) + behavioural token-bucket/jitter; managed local SearXNG (+optional FlareSolverr) via docker-compose.
+- **P13:** semantic+exact response cache wired to durable step cache; **speculative provider racing** for critical-path DEEP calls; structured-output validate-and-repair loop; metrics + distributed trace + per-run cost/latency ledger + completion health table.
+- **DONE-D:** on headless Linux, zero proxies, ≥90% of a target sample yields clean main-content text; Turnstile targets resolve via nodriver; cache-hit rate reported; DEEP p95 latency drops materially.
+
+### STAGE E — MAKE IT BOARDROOM-GRADE (presentation is the main thing)  → phase P14
+- **P14:** **embed real fonts** into `assets/fonts/` — Instrument Serif (display) + a professional body serif/sans + JetBrains Mono (tabular only) (D23); **fix body register** off monospace (D24); **browserless charts** — kaleido-static + matplotlib brand-palette fallback, failed chart → styled table (D26); **photos optional & premium** — non-fatal, typographic/gradient editorial covers default, downscale-only stock as option (D25); **rich exec layouts** — KPI stat-strips, 2–3 col grids, quadrant/matrix, timelines, callout bands, pull-quotes; exec summary as a **visual dashboard** (D27); **CI pixel-QA gate** — fonts embedded, ≥1 chart per data section, no missing-image boxes, no default-font fallback, footer every page, cover full-bleed.
+- **DONE-E:** a blind reviewer cannot distinguish HYPERION's production values (type, color, charts, layout) from a real McKinsey/BCG deliverable; every golden-set report passes the pixel-QA gate.
+
+## VI.2 — Master defect → phase → done map (single source of truth)
+
+| Stage | Phase | Defects closed | The one test that proves it |
+|---|---|---|---|
+| A | P1–P3 | D2, D3(part), D1, D4(part) | discovery + extraction return real text |
+| A | P6 | D13, D14, D15, D16, D17, D22 | headless run → real non-escaped PDF, designer runs |
+| B | P4,P5,P7 | D5, D8, D18, D3(rest), enrich | force-fail DEEP → degraded PDF still ships |
+| B | P8 | D19, D20, D21, D9 | kill one provider → all tiers resolve |
+| B | P9 | D4(rest), wiring edges 1–5 | failing sub-agent + dead tool → run still completes + escalates |
+| C | P10 | durability gap | crash at min N → resume at min N |
+| C | P11 | measurability gap | CI quality regression gate live |
+| D | P12 | extraction/stealth ceiling | ≥90% clean-text; Turnstile via nodriver; Obscura native specialist live |
+| D | P13 | efficiency/self-improvement | cache-hit + DEEP p95 reported |
+| E | P14 | D23, D24, D25, D26, D27 | blind-reviewer boardroom parity; pixel-QA gate green |
+
+## VI.3 — Global guardrails (apply to EVERY phase)
+1. **Proprietary, not a wrapper:** preserve the DAG orchestration, the agent roles, the design language, and the tool-doctrine routing. Do not collapse it into a single-model or single-library wrapper.
+2. **Zero-cost, headless-first:** every added tool is free + headless-capable; proxies off by default; browser tools gated behind a startup probe.
+3. **Never silent, never None:** every failure escalates (ESCALATION channel + logs); synthesis and delivery always produce *something* honest (`degraded=True` when thin).
+4. **Capability routing:** pick the tool by detection surface / data type; escalate cheap→expensive; use each tool (incl. Obscura) only at its best-capability role.
+5. **Exclusions honoured:** reddit and semantic/academic (semantic_scholar) stay OUT; OpenAlex/Crossref (distinct, allowed) may be used.
+6. **Every change committed + PR'd** on `genspark_ai_developer`; each phase has a passing DONE test before the next.
+
+## VI.4 — CODING-AGENT HANDOFF PROMPT (copy-paste this)
+
+> Give the block below to the coding agent(s). It is intentionally short and points them at THIS file as the single source of truth.
+
+```text
+You are working on HYPERION.
+
+HYPERION is a PROPRIETARY multi-agent research→PDF system — NOT a generic
+wrapper around an LLM or a scraping library. It has a purpose-built DAG
+orchestrator, specialist/sub-agent roles, a 5-provider LLM tier fabric, a
+capability-routed tool stack, and a deliberate McKinsey/BCG-grade design
+language. Preserve that architecture. Do not simplify it into a wrapper.
+
+Your single source of truth is:  docs/HYPERION_MASTER_REMEDIATION_PLAN.md
+
+TASK: Fix and upgrade the WHOLE pipeline exactly as that document specifies —
+end to end: search/discovery, extraction, LLM router + tiers, specialists +
+sub-agents, synthesis, quality gate, delivery (presentation designer, data
+visualizer, render engine), charts, images, PDF render, observability,
+durability, and presentation quality.
+
+Follow PART VI (the consolidated master plan). Execute the stages IN ORDER:
+  STAGE A (P1–P3, P6)  — make it work: content flows + a real non-escaped PDF; designer always runs.
+  STAGE B (P4,P5,P7–P9)— make it honest & never-break: never-None synthesis, multi-provider tiers, wired edges.
+  STAGE C (P10,P11)    — durable (crash-resume) + measurable (golden-set CI gate).
+  STAGE D (P12,P13)    — SOTA extraction/stealth + efficiency (cache, provider racing).
+  STAGE E (P14)        — boardroom-grade presentation + CI pixel-QA gate.
+
+RULES:
+- Close defects D1–D27; each phase has a "DONE" test in the doc — a phase is not
+  done until its test passes. Do not start the next stage until the current
+  stage's DONE tests pass.
+- Use every tool AT ITS BEST CAPABILITY per the VI.0 tool doctrine — including
+  Obscura (native Linux binary + `obscura serve`, as the rotating-fingerprint
+  stealth/MCP specialist), curl_cffi (default HTTP), nodriver (hard anti-bot /
+  Turnstile), Camoufox (Chrome-shape-blocked), Jina Reader + structured APIs
+  (first-choice), Trafilatura (parsing), WeasyPrint (PDF), kaleido-static/
+  matplotlib (charts). Route by detection surface / data type, cheap→expensive.
+- Never silent, never None: every failure escalates + logs; synthesis and
+  delivery always emit something honest (degraded=True when thin).
+- Zero-cost, headless-first; proxies off by default; browser tools gated behind
+  a startup availability probe; obey the shape-coherence law (IV.3.3).
+- Keep reddit and semantic/academic (semantic_scholar) EXCLUDED. OpenAlex and
+  Crossref are allowed.
+- Keep the existing design language (palette + layout system in
+  hyperion/output/templates/); fix its execution (embed the real fonts, move
+  body off monospace, browserless charts, optional premium photos, richer
+  executive layouts) — do not redesign the visual identity.
+
+WORKFLOW: work on branch genspark_ai_developer. Commit after every change with
+a clear message. After each STAGE, open/update a PR summarizing what was fixed,
+which defects closed, and which DONE tests now pass. Share the PR link.
+
+Deliverable of the whole effort: a headless Linux run of several different
+query types, each producing an S&P-500-executive-grade PDF (real embedded
+fonts, branded charts, premium palette, rich layout), with durable resume,
+a green golden-set quality gate, and a green pixel-QA gate.
+```
+
+*End of PART VI — this is the master execution plan and the coding-agent handoff. Parts I–VI together are the complete, self-contained brief: diagnosis (I), implementation detail (II), forensic per-level audit (III), best-in-class SOTA upgrade (IV), Obscura verdict + presentation audit (V), and the consolidated whole-pipeline plan + handoff (VI).*
