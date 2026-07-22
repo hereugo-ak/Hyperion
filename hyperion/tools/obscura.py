@@ -64,14 +64,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -184,8 +188,6 @@ class ObscuraClient:
 
     def _find_obscura(self) -> str:
         """Find the obscura binary."""
-        import sys
-
         # Check configured path first
         if self._obscura_path and os.path.exists(self._obscura_path):
             return self._obscura_path
@@ -212,6 +214,54 @@ class ObscuraClient:
 
         return self._obscura_path  # Return configured path even if not found
 
+    def _is_platform_supported(self) -> bool:
+        """Check if Obscura binary is supported on this platform.
+
+        Obscura is distributed as a Windows binary (.exe). On non-Windows
+        platforms, it won't run even if the file exists in the project.
+        This guard prevents subprocess errors and lets the extraction
+        fallback chain proceed to the next tool.
+        """
+        # Windows: always supported (binary is .exe)
+        if sys.platform == "win32":
+            return True
+
+        # Non-Windows: check if a platform-native binary exists in PATH
+        # (user may have compiled from source for Linux/macOS)
+        found = shutil.which("obscura")
+        if found:
+            return True
+
+        # Check if the local obscura-bin has a non-.exe binary
+        project_root = Path(__file__).resolve().parents[2]
+        native_binary = project_root / "obscura-bin" / "obscura"
+        if native_binary.exists() and sys.platform != "win32":
+            # Verify it's actually executable (not the Windows .exe renamed)
+            try:
+                result = subprocess.run(
+                    [str(native_binary), "--version"],
+                    capture_output=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    return True
+            except (subprocess.SubprocessError, OSError):
+                pass
+
+        logger.debug(
+            "Obscura binary not available on platform %s — skipping, "
+            "extraction fallback chain will use next tool",
+            sys.platform,
+        )
+        return False
+
+    def _binary_available(self) -> bool:
+        """Check if the Obscura binary exists and is platform-supported."""
+        if not self._is_platform_supported():
+            return False
+        obscura_bin = self._find_obscura()
+        return bool(obscura_bin) and os.path.exists(obscura_bin)
+
     # ─────────────────────────────────────────────────────────────────────
     # CLI Commands — one-shot operations
     # ─────────────────────────────────────────────────────────────────────
@@ -232,6 +282,13 @@ class ObscuraClient:
         Returns:
             ObscuraFetchResult with the rendered page content.
         """
+        # Platform guard — skip gracefully if binary not available
+        if not self._binary_available():
+            return ObscuraFetchResult(
+                url=url,
+                error=f"Obscura binary not available on {sys.platform}",
+            )
+
         obscura_bin = self._find_obscura()
 
         cmd = [obscura_bin, "fetch", url, "--dump", output_format]
@@ -313,6 +370,17 @@ class ObscuraClient:
         # Accept a single URL string for convenience (agents call with one URL)
         if isinstance(urls, str):
             urls = [urls]
+
+        # Platform guard — skip gracefully if binary not available
+        if not self._binary_available():
+            return ObscuraScrapeResult(
+                results=[ObscuraFetchResult(
+                    url=u,
+                    error=f"Obscura binary not available on {sys.platform}",
+                ) for u in urls],
+                total=len(urls),
+                failed=len(urls),
+            )
 
         obscura_bin = self._find_obscura()
 
@@ -404,6 +472,11 @@ class ObscuraClient:
         Returns:
             True if connection succeeded, False otherwise.
         """
+        # Platform guard — skip if binary not available
+        if not self._binary_available():
+            logger.debug("Obscura CDP not available on %s — skipping", sys.platform)
+            return False
+
         self._cdp_port = port
 
         try:
