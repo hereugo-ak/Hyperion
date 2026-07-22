@@ -185,6 +185,12 @@ class AgentBus:
         # Per-agent state cache (for TUI agent grid display)
         self._agent_states: dict[AgentName, AgentState] = {}
 
+        # Retained findings — survives until explicitly cleared.
+        # Late subscribers (Synthesis Lead, Fact Checker) are instantiated
+        # after specialists have already published. Without retention,
+        # those findings are lost forever (pub/sub is fire-and-forget).
+        self._retained_findings: list[BusMessage] = []
+
     async def start(self) -> None:
         """Start the dispatch tasks — one per channel."""
         if self._running:
@@ -239,6 +245,11 @@ class AgentBus:
         Specialists subscribe to findings + requests (need-aware).
         Support agents subscribe to findings.
         TUI subscribes to status + findings.
+
+        If Channel.FINDINGS is in the subscription, all retained findings
+        are replayed to the new subscriber immediately. This ensures late
+        subscribers (Synthesis Lead, Fact Checker) don't miss findings
+        published before they were instantiated.
         """
         self._subscriptions[subscriber_id] = Subscription(
             subscriber_id=subscriber_id,
@@ -247,6 +258,20 @@ class AgentBus:
             callback=callback,
             durable=durable,
         )
+
+        # Replay retained findings to late subscribers
+        if Channel.FINDINGS in channels and self._retained_findings:
+            import asyncio as _asyncio
+
+            loop = _asyncio.get_event_loop()
+            for msg in self._retained_findings:
+                try:
+                    if loop.is_running():
+                        loop.create_task(callback(msg))
+                    else:
+                        _asyncio.run(callback(msg))
+                except Exception:
+                    pass  # Replay errors don't crash the bus
 
     def unsubscribe(self, subscriber_id: str) -> None:
         """Remove a subscription."""
@@ -275,6 +300,10 @@ class AgentBus:
         self._history.append(msg)
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history:]
+
+        # Retain FINDING messages for late subscribers (D4 fix)
+        if channel == Channel.FINDINGS and msg_type == MessageType.FINDING:
+            self._retained_findings.append(msg)
 
         # Update agent state cache if this is a status message
         if channel == Channel.STATUS and "state" in payload:
@@ -414,6 +443,18 @@ class AgentBus:
                 continue
             count += 1
         return count
+
+    def get_retained_findings(self) -> list[BusMessage]:
+        """Get all retained FINDING messages — for explicit handoff.
+
+        Used by the orchestrator to inject findings into agents that
+        were instantiated after specialists published (D4 fix).
+        """
+        return list(self._retained_findings)
+
+    def clear_retained_findings(self) -> None:
+        """Clear retained findings — called at the start of a new engagement."""
+        self._retained_findings.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

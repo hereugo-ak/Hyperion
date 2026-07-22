@@ -402,10 +402,22 @@ class WorkflowEngine:
                 # Synthesis Lead needs the DAG and all findings.
                 # The Synthesis Lead subscribes to Channel.FINDINGS on the bus,
                 # but it's instantiated lazily here — AFTER specialists have
-                # already published their findings. Bus is pub/sub, so missed
-                # messages are gone. Inject the orchestrator's collected
-                # findings directly so synthesis has data to work with.
+                # already published their findings. Bus retention (D4 fix)
+                # replays retained findings on subscription, but we also
+                # inject the orchestrator's collected findings directly
+                # as a belt-and-suspenders guarantee.
                 if hasattr(agent, "_collected_findings"):
+                    # Merge: don't duplicate findings already replayed by bus
+                    existing_ids = {id(f) for f in agent._collected_findings}
+                    for finding in self._all_findings:
+                        if id(finding) not in existing_ids:
+                            agent._collected_findings.append(finding)
+                            agent_name = finding.agent
+                            if agent_name not in agent._findings_by_agent:
+                                agent._findings_by_agent[agent_name] = []
+                            agent._findings_by_agent[agent_name].append(finding)
+                else:
+                    # Fallback: set attributes directly
                     agent._collected_findings = list(self._all_findings)
                     agent._findings_by_agent = {}
                     for finding in self._all_findings:
@@ -413,6 +425,11 @@ class WorkflowEngine:
                         if agent_name not in agent._findings_by_agent:
                             agent._findings_by_agent[agent_name] = []
                         agent._findings_by_agent[agent_name].append(finding)
+
+                self._log(
+                    f"SYNTHESIS: injected {len(self._all_findings)} findings "
+                    f"(total in agent: {len(agent._collected_findings)})"
+                )
 
                 result = await asyncio.wait_for(
                     agent.run(
@@ -886,6 +903,9 @@ class WorkflowEngine:
             reset_bus()
             self.bus = get_bus()
             await self.bus.start()
+
+        # Clear retained findings from any previous engagement (D4 fix)
+        self.bus.clear_retained_findings()
 
         result = EngagementResult(
             engagement_id=self._engagement_id,
