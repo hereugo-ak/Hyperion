@@ -947,6 +947,11 @@ class PresentationDesigner(BaseAgent):
         self._cover_image: ImageSelection | None = None
         self._section_images: dict[str, ImageSelection] = {}
 
+        # L5.17: track already-used Unsplash image IDs so no image is ever
+        # reused across the cover and section headers (the "same image every
+        # time" failure). Picking prefers the first unused candidate.
+        self._used_image_ids: set[str] = set()
+
         # Chart placements
         self._chart_placements: dict[str, list[ChartPlacement]] = {}
 
@@ -1271,6 +1276,22 @@ class PresentationDesigner(BaseAgent):
 
         return COVER_IMAGE_SEARCH_TERMS.get("general", "modern business abstract")
 
+    def _pick_unused_image(self, images: list[Any]) -> Any | None:
+        """Return the first image whose ID hasn't been used yet (L5.17).
+
+        Guarantees no image is reused across the cover and section headers.
+        Falls back to the first candidate only if every option is already used
+        (better a repeat than no image), and to None if the list is empty.
+        """
+        if not images:
+            return None
+        for img in images:
+            img_id = getattr(img, "id", None)
+            if not img_id or img_id not in self._used_image_ids:
+                return img
+        # All candidates already used — return the first as a last resort.
+        return images[0]
+
     async def _select_cover_image(self, report: FinalReport) -> ImageSelection | None:
         """Select a cover image from Unsplash.
 
@@ -1293,10 +1314,15 @@ class PresentationDesigner(BaseAgent):
             if not search_result.images:
                 return None
 
-            # Pick the first suitable image
-            img = search_result.images[0]
+            # Pick the first suitable image and reserve its ID so no section
+            # reuses it later (L5.17).
+            img = self._pick_unused_image(search_result.images)
+            if img is None:
+                return None
             photographer = img.photographer or "Unknown"
             photo_id = img.id
+            if photo_id:
+                self._used_image_ids.add(photo_id)
 
             # Download using the UnsplashClient's download_image method
             local_path = await unsplash_tool.download_image(img, quality="regular")
@@ -1398,18 +1424,27 @@ class PresentationDesigner(BaseAgent):
             for section in report.sections:
                 search_term = await self._generate_section_search_term(section)
 
+                # Request more candidates than needed so dedup has room to pick
+                # a fresh image even when the top results collide with prior
+                # sections (L5.17).
                 search_result = await unsplash_tool.search(
                     query=search_term,
-                    per_page=3,
+                    per_page=8,
                     orientation="landscape",
                 )
 
                 if not search_result.images:
                     continue
 
-                img = search_result.images[0]
+                # Pick the first candidate not already used by the cover or an
+                # earlier section — never reuse an image.
+                img = self._pick_unused_image(search_result.images)
+                if img is None:
+                    continue
                 photographer = img.photographer or "Unknown"
                 photo_id = img.id
+                if photo_id:
+                    self._used_image_ids.add(photo_id)
 
                 local_path = await unsplash_tool.download_image(img, quality="regular")
 

@@ -19,11 +19,14 @@ It's instantiated by DeepSearchClient.__init__().
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -163,6 +166,32 @@ class EvidenceScorer:
         "businessinsider.com": 0.50,
     }
 
+    # Retail / e-commerce / ad / low-signal domains that are almost never a
+    # credible source for a consulting engagement. Results on these domains are
+    # dropped outright (Layer 1.3 — "retail/ad domains auto-rejected"). This
+    # prevents garbage like "Best Buy" or a Greek e-shop appearing as a source
+    # for a blockchain or M&A report.
+    DENIED_DOMAINS: frozenset[str] = frozenset({
+        "bestbuy.com", "amazon.com", "ebay.com", "walmart.com", "target.com",
+        "aliexpress.com", "alibaba.com", "etsy.com", "wish.com", "temu.com",
+        "shopify.com", "wayfair.com", "homedepot.com", "lowes.com",
+        "costco.com", "newegg.com", "overstock.com", "ikea.com",
+        "pinterest.com", "tiktok.com", "instagram.com", "facebook.com",
+        "tripadvisor.com", "yelp.com", "groupon.com", "expedia.com",
+        "booking.com", "airbnb.com", "indeed.com", "glassdoor.com",
+    })
+
+    # Substrings in a domain that flag retail / ad / affiliate content.
+    DENIED_DOMAIN_SUBSTRINGS: tuple[str, ...] = (
+        "shop", "store", "e-shop", "eshop", "buy", "deals", "coupon",
+        "affiliate", "franchise", "classifieds",
+    )
+
+    # A result must clear this relevance floor to be kept. Below it, the result
+    # is off-topic noise (SERP ad tiles, shopping results) and is dropped rather
+    # than passed downstream where an agent would try to write around it.
+    MIN_RELEVANCE: float = 0.08
+
     # Negation / conflict indicators
     CONFLICT_INDICATORS = [
         "however", "but", "contrary to", "despite", "actually", "in fact",
@@ -211,7 +240,22 @@ class EvidenceScorer:
             tool_used = result.get("tool_used", "")
             published_date = result.get("published_date")
 
+            # Layer 1.3 — drop retail/ad/off-topic domains before they can be
+            # cited. Fail loud: log every rejection so low-yield queries surface.
+            if self._is_denied_domain(url):
+                logger.info("EvidenceScorer: dropped denied/retail domain %s", url)
+                continue
+
             relevance = self._score_relevance(query, f"{title} {content}")
+
+            # Drop clearly off-topic results (below the relevance floor).
+            if relevance < self.MIN_RELEVANCE:
+                logger.info(
+                    "EvidenceScorer: dropped low-relevance result (%.3f) %s",
+                    relevance, url,
+                )
+                continue
+
             credibility = self._score_credibility(url)
             freshness = self._score_freshness(published_date)
             stance = self._determine_stance(query, content)
@@ -341,6 +385,38 @@ class EvidenceScorer:
                 base_score = min(base_score + 0.1, 1.0)
 
         return min(base_score, 1.0)
+
+    def _is_denied_domain(self, url: str) -> bool:
+        """Return True if the URL's domain is a retail/ad/off-topic source.
+
+        These are auto-rejected (Layer 1.3) so they can never be cited as a
+        source in a consulting report.
+        """
+        if not url:
+            return False
+        try:
+            domain = urlparse(url).netloc.lower()
+        except (ValueError, AttributeError):
+            return False
+        if domain.startswith("www."):
+            domain = domain[4:]
+        if not domain:
+            return False
+
+        # Exact / suffix match against the explicit deny-list.
+        if domain in self.DENIED_DOMAINS:
+            return True
+        for denied in self.DENIED_DOMAINS:
+            if domain.endswith("." + denied):
+                return True
+
+        # Substring heuristic for retail/ad/affiliate domains.
+        host = domain.split(":")[0]
+        label = host.split(".")[0] if "." in host else host
+        for token in self.DENIED_DOMAIN_SUBSTRINGS:
+            if token in label:
+                return True
+        return False
 
     def _score_credibility(self, url: str) -> float:
         """Score source credibility based on domain."""

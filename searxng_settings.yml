@@ -21,6 +21,15 @@ search:
   formats:
     - html
     - json
+  # Required by recent SearXNG builds — omitting these raises
+  # KeyError: 'default_doi_resolver' → HTTP 500 on every /search request.
+  default_doi_resolver: "oadoi.org"
+
+# DOI resolvers map (used by the science category and required at startup).
+doi_resolvers:
+  oadoi.org: "https://oadoi.org/"
+  doi.org: "https://doi.org/"
+  sci-hub.se: "https://sci-hub.se/"
 
 server:
   secret_key: "hyperion-searxng-secret-change-me"
