@@ -2,7 +2,9 @@ version: "3.8"
 
 services:
   searxng:
-    image: searxng/searxng:latest
+    # Pinned to a known-good tag for reproducibility. `latest` is non-deterministic
+    # and a recent build made `default_doi_resolver` mandatory (HTTP 500 without it).
+    image: searxng/searxng:2024.12.10-a4d2a5f68
     container_name: searxng
     ports:
       - "8888:8080"
@@ -13,7 +15,8 @@ services:
     restart: unless-stopped
 
   flaresolverr:
-    image: flaresolverr/flaresolverr:latest
+    # Pinned for reproducibility (CAPTCHA-only fallback, not the primary SERP source).
+    image: flaresolverr/flaresolverr:v3.3.21
     container_name: flaresolverr
     ports:
       - "8191:8191"

@@ -26,8 +26,33 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def clean_url(url: str) -> str:
+    """Drop query params whose value is missing/None/empty (Layer 3 URL guard).
+
+    Prevents broken links like ``https://.../regulations?jurisdiction=None``
+    from ever reaching the page. If every param is dropped, the trailing ``?``
+    is removed too. Non-URL strings are returned unchanged.
+    """
+    if not url or not isinstance(url, str):
+        return url or ""
+    if "?" not in url:
+        return url
+    try:
+        parts = urlparse(url)
+        kept = [
+            (k, v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if v.strip() and v.strip().lower() not in {"none", "null", "unknown", "n/a"}
+        ]
+        new_query = urlencode(kept)
+        return urlunparse(parts._replace(query=new_query))
+    except (ValueError, AttributeError):
+        return url
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +113,12 @@ class Source(BaseModel):
     author: str | None = Field(default=None, description="Author or organization")
     publication_date: str | None = Field(default=None, description="Publication date if available")
     key_data: str | None = Field(default=None, description="The specific data point extracted from this source")
+
+    @field_validator("url")
+    @classmethod
+    def _guard_url(cls, v: str) -> str:
+        """Strip broken/empty query params (e.g. ``?jurisdiction=None``)."""
+        return clean_url(v)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,6 +220,55 @@ class FinancialMetric(BaseModel):
         description="Sensitivity table: {variable: {low/medium/high: value}}"
     )
     sources: list[Source] = Field(default_factory=list)
+
+    # Sentinel values that mean "no data" — never render these as a number.
+    _MISSING = frozenset({"unknown", "n/a", "na", "none", "null", "-", "tbd", ""})
+
+    def has_value(self) -> bool:
+        """True only if this metric carries real, renderable data."""
+        if self.low_estimate is not None or self.high_estimate is not None:
+            return True
+        if self.base_case is not None:
+            return True
+        if self.value is None:
+            return False
+        if isinstance(self.value, str):
+            return self.value.strip().lower() not in self._MISSING
+        return True
+
+    def display_value(self) -> str:
+        """Render a clean, human-readable value string — never a raw dict/object.
+
+        Layer 3: prefers a low–high range, then base case, then the scalar
+        value, always with the unit. Returns "insufficient data" (never a
+        Python repr like ``{'name':...}`` or ``Unknown``) when no data exists.
+        """
+        unit = (self.unit or "").strip()
+
+        def _fmt(n: float) -> str:
+            # Trim trailing .0 on whole numbers for a cleaner look.
+            s = f"{n:,.2f}".rstrip("0").rstrip(".")
+            return s
+
+        def _with_unit(core: str) -> str:
+            if not unit:
+                return core
+            # Currency/percent-style units hug the number; word units get a space.
+            if unit in {"$", "€", "£", "¥"}:
+                return f"{unit}{core}"
+            if unit == "%":
+                return f"{core}%"
+            return f"{core} {unit}"
+
+        if self.low_estimate is not None and self.high_estimate is not None:
+            return _with_unit(f"{_fmt(self.low_estimate)}–{_fmt(self.high_estimate)}")
+        if self.base_case is not None:
+            return _with_unit(_fmt(self.base_case))
+        if not self.has_value():
+            return "insufficient data"
+        if isinstance(self.value, (int, float)):
+            return _with_unit(_fmt(float(self.value)))
+        return _with_unit(str(self.value).strip())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

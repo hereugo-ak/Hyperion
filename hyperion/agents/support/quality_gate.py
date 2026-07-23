@@ -1129,6 +1129,113 @@ class QualityGate(BaseAgent):
 
         return (approved, critical_dims)
 
+    # Filler / placeholder strings that must never reach the page (Layer 3/4).
+    _BANNED_FILLER = (
+        "no specific implications stated",
+        "no competitors identified",
+        "no specific implications could be derived",
+        "so what? no specific",
+        "insufficient evidence to state implications",
+    )
+
+    def _detect_hard_blockers(self, report: FinalReport) -> list[str]:
+        """Scan the rendered report for non-negotiable defects (Layer 4 truth gate).
+
+        Blocks delivery if ANY of the following are present:
+        - Leaked Python objects (``{'`` substrings — raw dicts in the body).
+        - Unresolved ``Unknown`` values rendered as data.
+        - Broken URLs containing ``=None`` / ``=null``.
+        - Banned filler/placeholder strings.
+        - Cover/exec-summary/body verdict disagreement.
+        """
+        blockers: list[str] = []
+
+        # Serialize the human-facing content only (not metadata).
+        text_parts: list[str] = [
+            report.executive_summary or "",
+            report.recommendation_rationale or "",
+        ]
+        for kf in report.key_findings:
+            text_parts.append(f"{kf.title} {kf.content} {kf.implications or ''}")
+        url_parts: list[str] = []
+        for sec in report.sections:
+            text_parts.append(f"{sec.title} {sec.key_insight} {sec.body} {sec.implications or ''}")
+            for src in sec.sources:
+                url_parts.append(src.url or "")
+        blob = "\n".join(text_parts)
+        blob_lower = blob.lower()
+
+        # 1. Leaked Python dict/object repr (e.g. {'name': 'DCF', ...}).
+        if "{'" in blob or ('{"' in blob and '":' in blob):
+            blockers.append(
+                "LEAK: a raw Python object/dict ({'...) reached the report body — "
+                "render via display_value(), never str(datapoint)."
+            )
+
+        # 2. 'Unknown' rendered as data (but allow honest 'unknown risk' prose).
+        #    Flag the leak pattern where Unknown stands in for a value.
+        if re.search(r"[:=|]\s*unknown\b", blob_lower) or re.search(
+            r"\bvalue['\"]?\s*[:=]\s*['\"]?unknown", blob_lower
+        ):
+            blockers.append(
+                "DATA VOID: 'Unknown' value(s) rendered as data — omit the row "
+                "or re-query; never ship 'Unknown' as a data point."
+            )
+
+        # 3. Broken URLs.
+        for u in url_parts:
+            low = u.lower()
+            if "=none" in low or "=null" in low or "=unknown" in low:
+                blockers.append(f"BROKEN URL: source URL has an empty param — {u}")
+                break
+
+        # 4. Banned filler.
+        for phrase in self._BANNED_FILLER:
+            if phrase in blob_lower:
+                blockers.append(
+                    f"FILLER: banned placeholder text found ('{phrase}') — "
+                    "re-analyze this section instead of shipping filler."
+                )
+                break
+
+        # 5. Verdict consistency — the recommendation enum is the single source
+        #    of truth; the exec summary and rationale must not assert a
+        #    different verdict.
+        rec = report.recommendation.value.replace("_", " ").lower()  # e.g. "no go"
+        verdict_terms = {
+            "enter": ["no-go", "no go", "do not", "reject"],
+            "no go": ["conditional", "proceed", "go ahead", "enter"],
+            "conditional": ["no-go", "no go", "unconditional"],
+            "acquire": ["do not acquire", "do-not-acquire", "reject the deal"],
+            "do not acquire": ["proceed with acquisition", "acquire the"],
+        }
+        contradictions = verdict_terms.get(rec, [])
+        for term in contradictions:
+            if term in blob_lower:
+                blockers.append(
+                    f"VERDICT CONTRADICTION: recommendation is '{rec.upper()}' but the "
+                    f"narrative contains conflicting language ('{term}'). "
+                    "Reconcile to a single verdict across cover, summary, and body."
+                )
+                break
+
+        # 6. Honest confidence — a report with evidence voids cannot claim HIGH
+        #    confidence (Layer 4). Count sections with no sources.
+        unsourced = sum(1 for sec in report.sections if not sec.sources)
+        total_sections = len(report.sections) or 1
+        void_ratio = unsourced / total_sections
+        if report.confidence == ConfidenceLevel.HIGH and (
+            void_ratio >= 0.34 or report.total_sources < 3
+        ):
+            blockers.append(
+                f"DISHONEST CONFIDENCE: report claims HIGH confidence but has "
+                f"{unsourced}/{total_sections} unsourced section(s) and "
+                f"{report.total_sources} total source(s). Confidence must track "
+                "real evidence coverage — downgrade or gather more evidence."
+            )
+
+        return blockers
+
     def _identify_gaps(self, report: FinalReport, dimensions: list[QualityDimension]) -> list[str]:
         """Identify specific gaps in the analysis.
 
@@ -1299,9 +1406,18 @@ class QualityGate(BaseAgent):
         await self._transition(AgentState.WORKING, "Step 5: Determining approval")
         approved, critical_dims = self._determine_approval(total_score, dimensions)
 
+        # Step 5b (Layer 4): hard leak / consistency gate. These are
+        # non-negotiable — a report that leaks internals, ships filler, has
+        # broken URLs, or contradicts its own verdict is NEVER approved,
+        # regardless of the weighted score.
+        blockers = self._detect_hard_blockers(report)
+
         # Step 6: Identify gaps and send back if not approved
         await self._transition(AgentState.WORKING, "Step 6: Identifying gaps")
         gaps = self._identify_gaps(report, dimensions)
+        if blockers:
+            approved = False
+            gaps = blockers + gaps
         fix_priority = self._build_fix_priority(dimensions)
 
         # Step 7: Check max iterations

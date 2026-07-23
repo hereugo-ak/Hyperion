@@ -1098,7 +1098,10 @@ class SynthesisLead(BaseAgent):
                 findings=findings,
                 charts=[],  # Charts are added by Data Visualizer later
                 images=[],  # Images are added by Presentation Designer later
-                implications=key_finding.implications or "No specific implications stated.",
+                implications=(
+                    key_finding.implications
+                    or "Insufficient evidence to state implications — this section requires additional research."
+                ),
                 sources=list({s.url: s for s in all_sources}.values()),  # Dedupe by URL
                 confidence=findings[0].confidence,
             )

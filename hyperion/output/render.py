@@ -428,13 +428,18 @@ class PDFRenderer:
         Used when WeasyPrint can't load native GTK libraries (Windows).
         Produces a print-quality PDF with A4 page size and proper margins.
         """
+        temp_html: str | None = None
         try:
             from playwright.sync_api import sync_playwright
 
-            # Write HTML to a temp file so Playwright can load it
-            temp_html = output_path.replace(".pdf", "_playwright.html")
+            # Write HTML to a temp file so Playwright can load it. This is a
+            # throwaway scratch file — it is ALWAYS deleted in `finally` so the
+            # intermediate `_playwright.html` can never be mistaken for (or
+            # shipped as) the deliverable. The deliverable is the .pdf only.
+            temp_html = output_path.replace(".pdf", "_playwright.tmp.html")
             full_html = html
-            # Only prepend CSS if the HTML doesn't already have inline <style>
+            # Always inline the CSS (never an absolute machine path <link>) so
+            # the render is self-contained and portable across machines.
             if css_content and "<style>" not in html[:500]:
                 full_html = f"<style>{css_content}</style>" + html
             with open(temp_html, "w", encoding="utf-8") as f:
@@ -472,6 +477,13 @@ class PDFRenderer:
         except Exception as exc:
             print(f"[RENDER] Playwright PDF fallback failed: {type(exc).__name__}: {exc!s:.200}")
             return False
+        finally:
+            # Never leave the scratch HTML on disk — it must not be delivered.
+            if temp_html and os.path.exists(temp_html):
+                try:
+                    os.remove(temp_html)
+                except OSError:
+                    pass
 
     def _embed_images_as_data_uris(self, html: str) -> str:
         """Convert img src file paths to base64 data URIs (D17 fix).
