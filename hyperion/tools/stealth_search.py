@@ -23,6 +23,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +63,19 @@ class StealthSearchClient:
     BING_URL = "https://www.bing.com/search?q={query}&count={num}"
     GOOGLE_LITE_URL = "https://www.google.com/search?q={query}&num={num}&hl=en&lite=1"
 
-    def __init__(self, headless: bool = False) -> None:
+    def __init__(self, headless: bool = False, settings: Any = None) -> None:
         self.headless = headless
         self._browser = None
         self._playwright = None
+
+        # P8 GAP-3: Stealth Layer 3 — config-gated proxy/UA rotation
+        self._proxy_enabled = False
+        self._proxy_url = ""
+        self._ua_rotation = False
+        if settings:
+            self._proxy_enabled = getattr(settings, "stealth_proxy_enabled", False)
+            self._proxy_url = getattr(settings, "stealth_proxy_url", "")
+            self._ua_rotation = getattr(settings, "stealth_ua_rotation", False)
 
     async def _launch_browser(self):
         """Launch Chromium with stealth patches."""
@@ -82,16 +92,23 @@ class StealthSearchClient:
 
         ua = random.choice(self.USER_AGENTS)
 
-        self._browser = await self._playwright.chromium.launch(
-            headless=self.headless,
-            args=[
+        launch_kwargs: dict[str, Any] = {
+            "headless": self.headless,
+            "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-infobars",
                 "--window-size=1920,1080",
             ],
-        )
+        }
+
+        # P8 GAP-3: Config-gated proxy support
+        if self._proxy_enabled and self._proxy_url:
+            launch_kwargs["proxy"] = {"server": self._proxy_url}
+            logger.info("Stealth search: using proxy %s", self._proxy_url[:30] + "...")
+
+        self._browser = await self._playwright.chromium.launch(**launch_kwargs)
 
         context = await self._browser.new_context(
             user_agent=ua,

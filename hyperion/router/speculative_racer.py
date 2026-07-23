@@ -79,6 +79,7 @@ class SpeculativeRacer:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format=response_format,
+                _skip_speculative=True,
             )
 
         # Pick top 2 providers by priority
@@ -99,6 +100,7 @@ class SpeculativeRacer:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format=response_format,
+                _skip_speculative=True,
             )
 
         trace("speculative", tier=tier.value, status="racing",
@@ -156,6 +158,7 @@ class SpeculativeRacer:
             temperature=temperature,
             max_tokens=max_tokens,
             response_format=response_format,
+            _skip_speculative=True,
         )
 
     async def _dispatch_single(

@@ -613,10 +613,12 @@ class EngagementDirector(BaseAgent):
             f"Return a JSON object with:\n"
             f"  - question_types: array of types (from: go_no_go, comparison, "
             f"forecast, diagnostic, optimization, general)\n"
-            f"  - selected_agents: array of agent names from the list above\n"
+            f"  - selected_agents: array of agent names from the list above — "
+            f"select ALL specialists that are relevant (typically 8-12 for a "
+            f"comprehensive analysis; never fewer than 6)\n"
             f"  - key_question: the real question behind the question (1-2 sentences)\n"
             f"  - research_domains: array of {{name, question, agent, priority}} objects "
-            f"(4-8 domains, each with a specific question and assigned agent)\n"
+            f"(8-12 domains, each with a specific question and assigned agent)\n"
             f"  - critical_path: which domain is on the critical path (must complete first)"
         )
 
@@ -664,6 +666,16 @@ class EngagementDirector(BaseAgent):
             # Fallback if no agents selected
             if not selected_agents:
                 selected_agents = QUESTION_TYPE_AGENTS.get(question_types[0], [])
+
+            # Ensure minimum of 6 agents for comprehensive analysis
+            MIN_AGENTS = 6
+            if len(selected_agents) < MIN_AGENTS:
+                defaults = QUESTION_TYPE_AGENTS.get(question_types[0], QUESTION_TYPE_AGENTS[QuestionType.GENERAL])
+                for da in defaults:
+                    if da not in selected_agents:
+                        selected_agents.append(da)
+                    if len(selected_agents) >= MIN_AGENTS:
+                        break
 
             key_question = data.get("key_question", question)
 

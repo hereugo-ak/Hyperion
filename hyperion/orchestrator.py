@@ -223,12 +223,13 @@ class WorkflowEngine:
             print(f"PDF: {result.pdf_path}")
     """
 
-    MAX_QUALITY_ITERATIONS = 3  # §4.5 Agent 18: max 3 iterations before escalation
-    TASK_TIMEOUT_SECONDS = 300  # 5 minutes — default for most agents
-    SPECIALIST_TIMEOUT_SECONDS = 600  # 10 minutes — specialists spawn up to 3 sub-agents
+    MAX_QUALITY_ITERATIONS = 2  # P7: capped at ≤2 (was 3) — content-aware quality gate
+    TASK_TIMEOUT_SECONDS = 600  # 10 minutes — default for most agents
+    SPECIALIST_TIMEOUT_SECONDS = 1200  # 20 minutes — specialists spawn up to 3 sub-agents
     # Each sub-agent does SearxNG search + Jina read + LLM analysis.
     # With SearxNG semaphore=3 and multiple specialists in parallel,
-    # 300s is not enough — specialists were timing out (MARKET, FINANCE, etc.)
+    # and potentially slow network conditions, 600s was not enough —
+    # specialists were timing out (MARKET, REGULATORY, INNOVATE, etc.)
 
     def __init__(self, bus: Any = None, router: Any = None) -> None:
         self.bus = bus or get_bus()
@@ -407,6 +408,16 @@ class WorkflowEngine:
                 AgentName.CONSUMER_INSIGHTS, AgentName.MA_ANALYST,
                 AgentName.INNOVATION_ANALYST, AgentName.STRATEGY_ANALYST,
             ):
+                # P7 GAP-2: Enrich context with MICRO LLM classifier to
+                # populate industry/geography/sector/etc. from the question
+                # so specialists' search queries are never empty.
+                try:
+                    enriched = await agent._enrich_context(task.description or dag.question)
+                    if enriched:
+                        context.update(enriched)
+                except Exception:
+                    pass
+
                 # Specialists — use extended timeout (they spawn sub-agents)
                 result = await asyncio.wait_for(
                     agent.run(
@@ -808,6 +819,18 @@ class WorkflowEngine:
         # Get visualization output for visual quality scoring (Dimension 10)
         viz_output = self._get_output_by_agent(dag, AgentName.DATA_VISUALIZER)
 
+        # P7: Content-aware source-count floor — if the report has fewer
+        # sources than this, stop iterating because more passes won't fix
+        # thin evidence; the problem is insufficient data, not insufficient
+        # synthesis.  This prevents wasteful LLM calls on thin reports.
+        source_floor = 3
+        try:
+            from hyperion.config import get_settings
+            _cfg = get_settings()
+            source_floor = getattr(_cfg, "quality_source_floor", 3)
+        except Exception:
+            pass
+
         for iteration in range(1, self.MAX_QUALITY_ITERATIONS + 1):
             iterations = iteration
 
@@ -839,6 +862,17 @@ class WorkflowEngine:
             if current_score.total_score >= 4.0:
                 self._log(f"QUALITY: threshold met at iteration {iteration}")
                 break  # Quality threshold met
+
+            # P7: Content-aware stop — if source count is below floor, stop
+            # iterating.  More synthesis passes won't fix thin evidence.
+            report_sources = getattr(current_report, "total_sources", 0)
+            if report_sources < source_floor:
+                self._log(
+                    f"QUALITY: content-aware stop — only {report_sources} sources "
+                    f"(< floor {source_floor}). More iterations won't fix thin evidence."
+                )
+                current_score.max_iterations_reached = True
+                break
 
             # Score below threshold — iterate with targeted fixes
             if iteration < self.MAX_QUALITY_ITERATIONS:
@@ -1099,6 +1133,18 @@ class WorkflowEngine:
         self._manifest.save()
         trace("durable", run_id=self._engagement_id, status="journal_opened")
 
+        # P9 GAP-4: Startup health table — check every tool + tier
+        try:
+            from hyperion.obs.health import check_startup_health
+            from hyperion.config import get_settings
+            check_startup_health(get_settings())
+        except Exception:
+            pass  # Health check is best-effort — don't block the pipeline
+
+        # Reset SearxNG search budget for this engagement
+        from hyperion.tools.searxng import SearxNGClient
+        SearxNGClient.reset_budget()
+
         # Use the existing bus if it's already running (TUI scenario),
         # otherwise create a fresh one for headless mode
         existing_bus = get_bus()
@@ -1295,6 +1341,13 @@ class WorkflowEngine:
                 f"PDF={'YES' if result.pdf_path else 'NO'}"
             )
 
+            # P13 GAP-6: Completion health table
+            try:
+                from hyperion.obs.health import print_completion_health
+                print_completion_health(result)
+            except Exception:
+                pass
+
             # P10: Save final manifest metrics
             if self._manifest:
                 self._manifest.record_final_metrics(
@@ -1314,6 +1367,11 @@ class WorkflowEngine:
             # ─────────────────────────────────────────────────────────────
             await self._save_to_second_brain(result)
 
+            # ─────────────────────────────────────────────────────────────
+            # End-of-run summary
+            # ─────────────────────────────────────────────────────────────
+            self._print_run_summary(result)
+
             return result
 
         except (ValueError, RuntimeError, OSError, asyncio.TimeoutError) as e:
@@ -1329,11 +1387,84 @@ class WorkflowEngine:
                     success=False,
                 )
                 self._manifest.save()
+            # Print summary even on failure
+            self._print_run_summary(result)
             return result
         finally:
             # P10: Close journal
             if self._journal:
                 self._journal.close()
+
+    def _print_run_summary(self, result: EngagementResult) -> None:
+        """Print end-of-run summary with report link, timing, status, and token breakdown."""
+        duration = result.duration_seconds
+        mins = int(duration // 60)
+        secs = int(duration % 60)
+
+        # Build separator
+        sep = "=" * 72
+
+        print(f"\n{sep}")
+        print("  HYPERION ENGAGEMENT SUMMARY")
+        print(sep)
+
+        # Status
+        status_str = "SUCCESS" if result.success else "FAILED"
+        print(f"  Status:          {status_str}")
+        if result.error and not result.success:
+            print(f"  Error:           {result.error[:200]}")
+
+        # Report links
+        print(f"  PDF Report:      {result.pdf_path or 'N/A'}")
+        print(f"  Markdown Report: {result.markdown_path or 'N/A'}")
+
+        # Timing
+        print(f"  Duration:        {mins}m {secs}s ({duration:.1f}s)")
+
+        # Quality
+        if result.quality_score:
+            print(f"  Quality Score:   {result.quality_score.total_score:.1f}/5.0")
+            print(f"  Quality Iters:   {result.quality_iterations}")
+        else:
+            print(f"  Quality Score:   N/A")
+
+        # Agents & findings
+        if result.dag:
+            agents = ", ".join(a.value for a in result.dag.agents_selected)
+            print(f"  Agents Used:     {agents}")
+        print(f"  Adaptations:     {result.adaptation_count}")
+        print(f"  Escalations:     {result.escalation_count}")
+
+        # Token breakdown by provider
+        token_summary: dict[str, Any] = {}
+        if self.router and hasattr(self.router, "get_token_summary"):
+            try:
+                token_summary = self.router.get_token_summary()
+            except Exception:
+                pass
+
+        total_tokens = token_summary.get("total_tokens", 0)
+        total_calls = token_summary.get("total_calls", 0)
+        print(f"\n  Total Tokens:    {total_tokens:,}")
+        print(f"  Total LLM Calls: {total_calls:,}")
+
+        by_provider = token_summary.get("by_provider", {})
+        if by_provider:
+            print(f"\n  Token Breakdown by Provider:")
+            print(f"  {'Provider':<16} {'Input':>10} {'Output':>10} {'Total':>12} {'Calls':>8}")
+            print(f"  {'-' * 16} {'-' * 10} {'-' * 10} {'-' * 12} {'-' * 8}")
+            for provider_name in sorted(by_provider.keys()):
+                stats = by_provider[provider_name]
+                print(
+                    f"  {provider_name:<16} "
+                    f"{stats['input_tokens']:>10,} "
+                    f"{stats['output_tokens']:>10,} "
+                    f"{stats['total_tokens']:>12,} "
+                    f"{stats['calls']:>8,}"
+                )
+
+        print(sep)
+        print()
 
     async def close(self) -> None:
         """Clean up resources — close all agents and their tool clients."""

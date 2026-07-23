@@ -232,7 +232,7 @@ class SynthesisLead(BaseAgent):
         # Quality gate score (received from Quality Gate)
         self._quality_score: QualityScore | None = None
         self._quality_iteration: int = 0
-        self._max_quality_iterations: int = 3
+        self._max_quality_iterations: int = 2  # P7: capped at ≤2 (was 3)
 
         # The current FinalReport (iteratively refined)
         self._current_report: FinalReport | None = None
@@ -267,6 +267,90 @@ class SynthesisLead(BaseAgent):
                 if agent_name not in self._findings_by_agent:
                     self._findings_by_agent[agent_name] = []
                 self._findings_by_agent[agent_name].append(finding)
+            else:
+                # Specialists publish full analysis objects via bus.publish
+                # without a "finding" key — extract summary data as a synthetic
+                # KeyFinding so the synthesis lead has access to quantitative
+                # results (TAM, DCF, WACC, etc.) for narrative generation.
+                payload = msg.payload
+                agent_name = msg.sender.value
+
+                # Map analysis payload keys to readable content
+                analysis_keys = [
+                    "market_analysis", "financial_analysis", "risk_analysis",
+                    "technology_assessment", "operations_analysis",
+                    "regulatory_analysis", "sustainability_analysis",
+                    "consumer_insights", "ma_analysis", "innovation_analysis",
+                    "strategy_analysis", "competitive_landscape",
+                ]
+                for key in analysis_keys:
+                    if key in payload:
+                        try:
+                            summary = json.dumps(payload[key], default=str)[:3000]
+                        except (TypeError, ValueError):
+                            summary = str(payload[key])[:3000]
+
+                        # Extract headline metrics from common fields
+                        headlines = []
+                        headline_title = ""
+                        analysis_data = payload.get(key, {})
+                        if isinstance(analysis_data, dict):
+                            # Try to build a meaningful title from key metrics
+                            for title_key, label in [
+                                ("tam_triangulated", "TAM"),
+                                ("dcf_valuation", "DCF Valuation"),
+                                ("comp_valuation", "Comp Valuation"),
+                                ("market_maturity", "Market Maturity"),
+                                ("residual_risk_summary", "Residual Risk"),
+                                ("build_vs_buy", "Build vs Buy"),
+                            ]:
+                                val = analysis_data.get(title_key)
+                                if val is not None:
+                                    val_str = str(val)
+                                    if len(val_str) > 120:
+                                        val_str = val_str[:117] + "..."
+                                    headlines.append(f"{label}: {val_str}")
+                                    if not headline_title:
+                                        headline_title = f"{label}: {val_str}"
+
+                            # Extract key value drivers as headlines
+                            kvd = analysis_data.get("key_value_drivers", [])
+                            if isinstance(kvd, list):
+                                for vd in kvd[:3]:
+                                    headlines.append(f"Key Value Driver — {vd}")
+                                    if not headline_title:
+                                        headline_title = f"Key Value Driver — {vd}"
+
+                        if not headline_title:
+                            # Fallback: use confidence or risk count
+                            for fb_key in ("confidence", "risk_count", "competitor_count", "white_space_count"):
+                                fb_val = payload.get(fb_key)
+                                if fb_val is not None:
+                                    headline_title = f"{fb_key.replace('_', ' ').title()}: {fb_val}"
+                                    break
+
+                        if not headline_title:
+                            headline_title = f"{agent_name.replace('_', ' ').title()} Analysis"
+
+                        content = summary
+                        if headlines:
+                            content = "\n".join(headlines) + "\n\n" + summary
+
+                        synthetic = KeyFinding(
+                            id=f"summary_{agent_name}_{uuid.uuid4().hex[:8]}",
+                            agent=agent_name,
+                            finding_type="analysis_summary",
+                            title=headline_title[:200],
+                            content=content,
+                            sources=[],
+                            confidence=ConfidenceLevel.MEDIUM,
+                            implications=headlines[0] if headlines else "",
+                        )
+                        self._collected_findings.append(synthetic)
+                        if agent_name not in self._findings_by_agent:
+                            self._findings_by_agent[agent_name] = []
+                        self._findings_by_agent[agent_name].append(synthetic)
+                        break
 
         elif msg.channel == Channel.HANDOFF:
             payload = msg.payload
@@ -877,6 +961,25 @@ class SynthesisLead(BaseAgent):
         - Clear implications for the recommendation
         """
 
+        # Consulting-style section titles — never use raw agent names as headings
+        AGENT_SECTION_TITLES = {
+            "market_analyst": "Market Landscape",
+            "competitive_intel": "Competitive Landscape",
+            "financial_analyst": "Financial Viability",
+            "risk_analyst": "Risk Assessment",
+            "technology_analyst": "Technology Architecture",
+            "operations_analyst": "Operational Feasibility",
+            "regulatory_analyst": "Regulatory Environment",
+            "sustainability_analyst": "Sustainability Assessment",
+            "consumer_insights": "Consumer Insights",
+            "ma_analyst": "M&A Assessment",
+            "innovation_analyst": "Innovation Outlook",
+            "strategy_analyst": "Strategic Options",
+        }
+
+        def _section_title(agent: str) -> str:
+            return AGENT_SECTION_TITLES.get(agent, agent.replace("_", " ").title())
+
         async def _build_one_section(
             agent: str,
             findings: list[KeyFinding],
@@ -884,11 +987,11 @@ class SynthesisLead(BaseAgent):
             if not findings:
                 return AnalysisSection(
                     id=f"section_{agent}",
-                    title=agent.replace("_", " ").title(),
+                    title=_section_title(agent),
                     agent=agent,
                     key_insight="No findings available for this section",
                     body=(
-                        f"The {agent.replace('_', ' ')} analysis did not produce "
+                        f"The {_section_title(agent)} analysis did not produce "
                         f"specific findings for this engagement. This is a data-"
                         f"availability gap, not an absence of analytical relevance."
                     ),
@@ -900,7 +1003,16 @@ class SynthesisLead(BaseAgent):
                     confidence=ConfidenceLevel.LOW,
                 )
 
-            key_finding = max(findings, key=lambda f: len(f.sources))
+            # Select the best finding for the key insight box.
+            # Prefer findings with real implications and non-generic titles.
+            # Avoid "analysis_summary" type findings whose titles may be raw data labels.
+            def _insight_score(f: KeyFinding) -> tuple:
+                has_implications = bool(f.implications and f.implications.strip())
+                is_specific = f.finding_type != "analysis_summary"
+                has_sources = len(f.sources) > 0
+                return (has_implications and is_specific, has_implications, has_sources, len(f.sources))
+
+            key_finding = max(findings, key=_insight_score)
             all_sources: list[Source] = []
             for f in findings:
                 all_sources.extend(f.sources)
@@ -916,11 +1028,11 @@ class SynthesisLead(BaseAgent):
             narrative_prompt = (
                 "You are a senior consultant at a top-tier strategy firm (McKinsey/BCG).\n"
                 "Write a deep, analytical narrative section for a client report.\n\n"
-                f"Section topic: {agent.replace('_', ' ').title()}\n"
+                f"Section topic: {_section_title(agent)}\n"
                 f"Engagement question: {self._question}\n\n"
                 f"Findings from the {agent} analyst:\n{findings_digest}\n\n"
                 f"Sources:\n{sources_digest}\n\n"
-                "Write a comprehensive section body (1500-3000 words) that:\n"
+                "Write a comprehensive section body (2000-4000 words) that:\n"
                 "1. Opens with context — why this dimension matters for the question\n"
                 "2. Presents key data points with specific numbers and sources cited inline\n"
                 "3. Interprets the data — what does it mean? What's the 'so what'?\n"
@@ -928,9 +1040,13 @@ class SynthesisLead(BaseAgent):
                 "5. Draws out implications for the overall recommendation\n"
                 "6. Uses clear structure with sub-headings (marked with **bold**)\n"
                 "7. Writes in professional consulting prose — authoritative, precise, no fluff\n"
-                "8. Cites sources naturally (e.g., 'According to [Source]...')\n\n"
+                "8. Cites sources naturally (e.g., 'According to [Source]...')\n"
+                "9. Includes at least 4-6 substantial paragraphs of 150+ words each\n"
+                "10. Synthesizes across findings — don't just summarize each finding\n"
+                "11. Ends with a clear 'so what' paragraph that connects to the engagement\n\n"
                 "Do NOT write bullet points. Write flowing analytical paragraphs.\n"
                 "Do NOT repeat the section title. Start directly with the narrative.\n"
+                "Do NOT write fewer than 2000 words. Depth is critical.\n"
             )
 
             section_body = "\n\n".join(f.content for f in findings)  # fallback
@@ -942,17 +1058,40 @@ class SynthesisLead(BaseAgent):
                     temperature=0.3,
                     system_prompt_override=(
                         "You are a senior consultant writing a report section. "
-                        "Write analytical prose, not bullet points."
+                        "Write analytical prose, not bullet points. "
+                        "Each section must be at least 2000 words of deep analysis."
                     ),
                 )
-                if response.success and response.content and len(response.content) > 500:
+                if response.success and response.content and len(response.content) > 800:
                     section_body = response.content
+                elif response.success and response.content:
+                    # Response too short — retry with stronger instruction
+                    retry_prompt = (
+                        f"The previous attempt was only {len(response.content)} characters — "
+                        f"far too short for a consulting report section.\n\n"
+                        f"{narrative_prompt}\n\n"
+                        f"Previous attempt (DO NOT REPEAT — write something better):\n"
+                        f"{response.content[:500]}\n\n"
+                        "Write the FULL section now. It must be at least 2000 words. "
+                        "Do not stop early. Do not summarize. Write complete paragraphs."
+                    )
+                    retry_response = await self._llm_complete(
+                        user_prompt=retry_prompt,
+                        urgency=TaskUrgency.NORMAL,
+                        temperature=0.4,
+                        system_prompt_override=(
+                            "You are a senior consultant. Your previous attempt was too short. "
+                            "Write a thorough, deep analytical section of at least 2000 words."
+                        ),
+                    )
+                    if retry_response.success and retry_response.content and len(retry_response.content) > 800:
+                        section_body = retry_response.content
             except (ValueError, AttributeError, RuntimeError):
                 pass  # Use fallback concatenation
 
             return AnalysisSection(
                 id=f"section_{agent}",
-                title=agent.replace("_", " ").title(),
+                title=_section_title(agent),
                 agent=agent,
                 key_insight=key_finding.title,
                 body=section_body,

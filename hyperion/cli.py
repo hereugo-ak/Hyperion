@@ -146,13 +146,58 @@ async def _run_engagement(question: str, context: str, output_path: str) -> Any:
     from hyperion.orchestrator import WorkflowEngine
     from hyperion.tui.boot import stop_services
 
-    # Start Docker containers (FlareSolverr + SearxNG) for headless mode
+    # Start Docker containers fresh (stop+remove+recreate) for headless mode
     import subprocess
+    from pathlib import Path
+
+    def _searxng_settings_path() -> str:
+        here = Path(__file__).resolve()
+        for parent in here.parents:
+            candidate = parent / "searxng_settings.yml"
+            if candidate.exists():
+                return str(candidate).replace("\\", "/")
+        return str(here.parents[2] / "searxng_settings.yml").replace("\\", "/")
+
+    def _searxng_limiter_path() -> str:
+        here = Path(__file__).resolve()
+        for parent in here.parents:
+            candidate = parent / "searxng-limiter.toml"
+            if candidate.exists():
+                return str(candidate).replace("\\", "/")
+        return str(here.parents[2] / "searxng-limiter.toml").replace("\\", "/")
+
     for container in ("flaresolverr", "searxng"):
         try:
-            subprocess.run(["docker", "start", container], capture_output=True, timeout=15)
+            subprocess.run(["docker", "stop", container], capture_output=True, timeout=15)
+            subprocess.run(["docker", "rm", container], capture_output=True, timeout=10)
         except Exception:
             pass
+
+    # Recreate SearxNG fresh
+    try:
+        settings_path = _searxng_settings_path()
+        limiter_path = _searxng_limiter_path()
+        subprocess.run(
+            ["docker", "run", "-d", "--name", "searxng",
+             "-p", "8888:8080",
+             "-v", f"{settings_path}:/etc/searxng/settings.yml",
+             "-v", f"{limiter_path}:/etc/searxng/limiter.toml",
+             "searxng/searxng"],
+            capture_output=True, timeout=60,
+        )
+    except Exception:
+        pass
+
+    # Recreate FlareSolverr fresh
+    try:
+        subprocess.run(
+            ["docker", "run", "-d", "--name", "flaresolverr",
+             "-p", "8191:8191",
+             "ghcr.io/flaresolverr/flaresolverr:latest"],
+            capture_output=True, timeout=60,
+        )
+    except Exception:
+        pass
 
     engine = WorkflowEngine()
     try:

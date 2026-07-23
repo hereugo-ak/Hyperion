@@ -294,13 +294,47 @@ class CompetitiveIntel(BaseAgent):
         # Start with pre-seeded competitors from context
         results: list[dict[str, Any]] = []
 
-        # Search for competitors using multiple query patterns
-        query_patterns = [
-            f"{market_query} competitors",
-            f"{market_query} alternatives",
-            f"{market_query} market leaders top companies",
-            f"best {market_query} companies comparison",
-        ]
+        # Build focused search queries from context, not the raw question
+        company = self._context.get("company") or ""
+        sector = self._context.get("sector") or self._context.get("industry") or ""
+        geography = self._context.get("geography") or ""
+
+        # Derive a short search term from the question if context is sparse
+        question_short = market_query[:100] if market_query else ""
+
+        # Build the core search term: prefer company/sector, fall back to question
+        if company:
+            core_term = company
+            query_patterns = [
+                f"{company} competitors",
+                f"{company} alternatives",
+                f"{company} vs",
+                f"companies like {company}",
+                f"{company} market share competitors",
+            ]
+        elif sector:
+            core_term = sector
+            query_patterns = [
+                f"{sector} market leaders top companies",
+                f"best {sector} companies comparison",
+                f"{sector} competitors alternatives",
+                f"top {sector} companies {geography}".strip(),
+                f"{sector} industry key players",
+            ]
+        else:
+            core_term = question_short
+            query_patterns = [
+                f"{question_short} competitors",
+                f"{question_short} alternatives",
+                f"{question_short} market leaders top companies",
+                f"best {question_short} companies comparison",
+            ]
+
+        # Add sector+geography scoped patterns if we have both
+        if sector and geography:
+            query_patterns.append(f"top {sector} companies in {geography}")
+        if company and sector:
+            query_patterns.append(f"{company} competitors in {sector}")
 
         try:
             searxng = self.get_tool(ToolName.SEARXNG)
@@ -325,7 +359,7 @@ class CompetitiveIntel(BaseAgent):
             pass
 
         # Use LLM to extract competitor names from search results
-        competitor_names = await self._extract_competitor_names(market_query, results)
+        competitor_names = await self._extract_competitor_names(core_term, results)
 
         # Merge with pre-seeded competitors
         all_names = list(set(competitor_names + self._competitor_names))

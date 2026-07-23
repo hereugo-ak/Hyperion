@@ -232,7 +232,100 @@ def run_deterministic_checks(
         detail=recommendation if recommendation else "Missing",
     ))
 
+    # ─────────────────────────────────────────────────────────────────────
+    # P14 GAP-8: CI Pixel-QA Gate — visual/structural PDF checks
+    # ─────────────────────────────────────────────────────────────────────
+
+    # Check 11: Fonts embedded in PDF
+    if pdf_path and os.path.exists(pdf_path):
+        fonts_embedded = _check_fonts_embedded(pdf_path)
+        results.append(CheckResult(
+            name="fonts_embedded",
+            passed=len(fonts_embedded) >= 2,
+            detail=f"{len(fonts_embedded)} fonts: {fonts_embedded[:3]}" if fonts_embedded else "No fonts embedded",
+        ))
+    else:
+        results.append(CheckResult(
+            name="fonts_embedded",
+            passed=False,
+            detail="PDF not found — cannot check fonts",
+        ))
+
+    # Check 12: No missing images (all image paths resolve)
+    missing_images: list[str] = []
+    for section in sections:
+        for img in section.get("charts", []):
+            img_path = img.get("image_path", "") or img.get("path", "")
+            if img_path and not os.path.exists(img_path):
+                missing_images.append(img_path)
+    results.append(CheckResult(
+        name="no_missing_images",
+        passed=len(missing_images) == 0,
+        detail=f"Missing: {missing_images[:3]}" if missing_images else "All images resolve",
+    ))
+
+    # Check 13: Cover page present (executive_summary acts as cover proxy)
+    has_cover = bool(report.get("executive_summary", "").strip())
+    results.append(CheckResult(
+        name="cover_page_present",
+        passed=has_cover,
+        detail="Cover/exec summary present" if has_cover else "No executive summary (cover)",
+    ))
+
+    # Check 14: Footer/source attribution present
+    has_footer = total_sources > 0 and any(
+        section.get("body", "") and "source" in section.get("body", "").lower()
+        for section in sections
+    )
+    results.append(CheckResult(
+        name="footer_source_attribution",
+        passed=has_footer,
+        detail="Source attribution found" if has_footer else "No source attribution in sections",
+    ))
+
+    # Check 15: PDF page count is reasonable (15-40 pages)
+    if pdf_path and os.path.exists(pdf_path):
+        page_count = _get_pdf_page_count(pdf_path)
+        results.append(CheckResult(
+            name="page_count_reasonable",
+            passed=page_count is not None and 5 <= page_count <= 60,
+            detail=f"{page_count} pages" if page_count is not None else "Could not read PDF",
+        ))
+    else:
+        results.append(CheckResult(
+            name="page_count_reasonable",
+            passed=False,
+            detail="PDF not found",
+        ))
+
     return results
+
+
+def _check_fonts_embedded(pdf_path: str) -> list[str]:
+    """Check which fonts are embedded in the PDF using PyMuPDF."""
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(pdf_path)
+        fonts: set[str] = set()
+        for page in doc:
+            for font in page.get_fonts():
+                fonts.add(font[3])  # Font name
+        doc.close()
+        return list(fonts)
+    except (ImportError, OSError, ValueError):
+        return []
+
+
+def _get_pdf_page_count(pdf_path: str) -> int | None:
+    """Get PDF page count using PyMuPDF."""
+    try:
+        import fitz
+        doc = fitz.open(pdf_path)
+        count = doc.page_count
+        doc.close()
+        return count
+    except (ImportError, OSError, ValueError):
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

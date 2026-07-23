@@ -42,6 +42,7 @@ Sub-agent lifecycle (§4.7):
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -432,7 +433,7 @@ class SubAgentRunner:
         if self._has_tool("wayback"):
             try:
                 wayback = self._get_tool("wayback")
-                snapshots = await wayback.search(self.spec.question)
+                snapshots = await wayback.search(self._condense_query(self.spec.question))
                 if snapshots:
                     raw_data.append(f"Historical snapshots:\n{snapshots}")
             except Exception as e:
@@ -442,7 +443,7 @@ class SubAgentRunner:
         if self._has_tool("alpha_vantage"):
             try:
                 av = self._get_tool("alpha_vantage")
-                financials = await av.search(self.spec.question)
+                financials = await av.search(self._condense_query(self.spec.question))
                 if financials:
                     raw_data.append(f"Financial data:\n{financials}")
             except Exception as e:
@@ -452,7 +453,7 @@ class SubAgentRunner:
         if self._has_tool("fred"):
             try:
                 fred = self._get_tool("fred")
-                macro = await fred.search(self.spec.question)
+                macro = await fred.search(self._condense_query(self.spec.question))
                 if macro:
                     raw_data.append(f"Macro data:\n{macro}")
             except Exception as e:
@@ -464,7 +465,7 @@ class SubAgentRunner:
         if self._has_tool("sec_edgar"):
             try:
                 sec = self._get_tool("sec_edgar")
-                filings = await sec.search_full_text(self.spec.question, limit=10)
+                filings = await sec.search_full_text(self._condense_query(self.spec.question), limit=10)
                 if filings:
                     formatted = "\n".join(
                         f"- {f.company_name} ({f.filing_type}, {f.filing_date}): {f.description[:200]}"
@@ -482,7 +483,7 @@ class SubAgentRunner:
         if self._has_tool("semantic_scholar"):
             try:
                 ss = self._get_tool("semantic_scholar")
-                papers = await ss.search(self.spec.question, limit=10, year_range="2020-")
+                papers = await ss.search(self._condense_query(self.spec.question), limit=10, year_range="2020-")
                 if papers:
                     formatted = "\n".join(
                         f"- {p.title} ({p.year}, {p.venue}, citations={p.citation_count}): {p.abstract[:300]}"
@@ -496,7 +497,7 @@ class SubAgentRunner:
         if self._has_tool("open_alex"):
             try:
                 oa = self._get_tool("open_alex")
-                works = await oa.search_works(self.spec.question, limit=10)
+                works = await oa.search_works(self._condense_query(self.spec.question), limit=10)
                 if works:
                     formatted = "\n".join(
                         f"- {w.title} ({w.year}, cited_by={w.cited_by_count}): {w.abstract[:300]}"
@@ -525,8 +526,9 @@ class SubAgentRunner:
         if self._has_tool("google_trends"):
             try:
                 gt = self._get_tool("google_trends")
-                # Extract keywords from the question (use first few words)
-                keywords = self.spec.question.split()[:3]
+                # Extract keywords from the condensed query
+                condensed = self._condense_query(self.spec.question)
+                keywords = condensed.split()[:3]
                 kw_list = [" ".join(keywords)]
                 trend = await gt.get_interest_over_time(kw_list, timeframe="today 12-m")
                 if trend and trend.interest_data:
@@ -549,7 +551,7 @@ class SubAgentRunner:
         if self._has_tool("hackernews"):
             try:
                 hn = self._get_tool("hackernews")
-                stories = await hn.search_stories(self.spec.question, hits=15)
+                stories = await hn.search_stories(self._condense_query(self.spec.question), hits=15)
                 if stories:
                     formatted = "\n".join(
                         f"- {s.title} (points={s.points}, comments={s.num_comments}): {s.url}"
@@ -564,7 +566,7 @@ class SubAgentRunner:
             try:
                 reddit = self._get_tool("reddit")
                 posts = await reddit.search_posts(
-                    self.spec.question, sort="relevance", time_filter="year", limit=15
+                    self._condense_query(self.spec.question), sort="relevance", time_filter="year", limit=15
                 )
                 if posts:
                     formatted = "\n".join(
@@ -579,7 +581,7 @@ class SubAgentRunner:
         if self._has_tool("second_brain"):
             try:
                 brain = self._get_tool("second_brain")
-                prior = await brain.search(self.spec.question)
+                prior = await brain.search(self._condense_query(self.spec.question))
                 if prior:
                     raw_data.append(f"Prior research from vault:\n{prior}")
             except Exception as e:
@@ -590,11 +592,76 @@ class SubAgentRunner:
 
         return "\n\n---\n\n".join(raw_data) if raw_data else "No raw data available from tools."
 
+    @staticmethod
+    def _condense_query(question: str, max_len: int = 120) -> str:
+        """Condense a long research question into a concise search query.
+
+        Sub-agent questions are often full paragraphs (e.g., 'Find TAM data
+        for: Should India enter the blockchain market?'). Search engines
+        return poor results for paragraph-length queries. This method:
+        1. Strips common prefixes ('Find ', 'Search for ', 'Research ')
+        2. Removes parenthetical asides and em-dashes
+        3. Removes filler words that add noise
+        4. Truncates to max_len at a word boundary
+        """
+        q = question.strip()
+
+        # Strip common instruction prefixes
+        for prefix in (
+            "Find ", "Search for ", "Research ", "Identify ",
+            "Look up ", "Gather ", "Collect ", "Analyze ",
+            "Investigate ", "Explore ", "Discover ",
+        ):
+            if q.lower().startswith(prefix.lower()):
+                q = q[len(prefix):]
+                break
+
+        # Remove 'TAM data for:', 'spending data for:', etc.
+        q = re.sub(r'^\s*(?:[A-Z]{2,}\s+)?(?:data|information|details|facts|statistics|metrics|numbers|figures|reports?|studies|trends?|analysis|insights?)\s+(?:for|on|about|regarding|related to)\s*:?\s*', '', q, flags=re.IGNORECASE)
+
+        # Remove parenthetical asides: (e.g., Bitcoin, Ethereum)
+        q = re.sub(r'\([^)]*\)', '', q)
+
+        # Remove em-dashes and everything after them (usually instructions)
+        q = re.sub(r'\s*[\u2014\u2013--]+\s*', ' ', q)
+
+        # Remove filler words
+        filler = {
+            'the', 'a', 'an', 'for', 'of', 'to', 'in', 'on', 'at', 'by',
+            'with', 'from', 'about', 'into', 'through', 'during', 'before',
+            'after', 'above', 'below', 'between', 'under', 'further',
+            'then', 'once', 'here', 'there', 'when', 'where', 'why',
+            'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most',
+            'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
+            'same', 'so', 'than', 'too', 'very', 'can', 'will', 'just',
+            'should', 'now', 'is', 'are', 'was', 'were', 'be', 'been',
+            'being', 'have', 'has', 'had', 'do', 'does', 'did', 'would',
+            'could', 'may', 'might', 'must', 'shall', 'this', 'that',
+            'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
+            'what', 'which', 'who', 'whom', 'whose', 'and', 'or', 'but',
+            'if', 'because', 'as', 'until', 'while', 'also', 'use',
+            'using', 'used', 'like', 'e.g.', 'e.g', 'eg', 'i.e.', 'i.e',
+            'ie', 'etc', 'etc.', 'similar', 'target', 'specific',
+        }
+        words = q.split()
+        kept = [w for w in words if w.lower().strip('.,;:!?') not in filler]
+        q = ' '.join(kept) if kept else q
+
+        # Collapse whitespace
+        q = re.sub(r'\s+', ' ', q).strip()
+
+        # Truncate at word boundary
+        if len(q) > max_len:
+            q = q[:max_len].rsplit(' ', 1)[0]
+
+        return q.strip() or question[:max_len]
+
     async def _search_searxng(self) -> tuple[str, list[str], str | None]:
         """Search via SearxNG. Returns (label, urls, formatted_results)."""
         try:
             searxng = self._get_tool("searxng")
-            results = await searxng.search(self.spec.question, num_results=15)
+            query = self._condense_query(self.spec.question)
+            results = await searxng.search(query, num_results=15)
             if results and len(results) > 0:
                 formatted = "\n".join(
                     f"- {r.title}: {r.url}\n  {r.snippet[:500]}"
@@ -610,7 +677,8 @@ class SubAgentRunner:
         """Search via Jina s.jina.ai. Returns (label, urls, formatted_results)."""
         try:
             jina = self._get_tool("jina")
-            results = await jina.search(self.spec.question, num_results=10)
+            query = self._condense_query(self.spec.question)
+            results = await jina.search(query, num_results=10)
             if results and len(results) > 0:
                 formatted = "\n".join(
                     f"- {r.title}: {r.url}\n  {r.snippet[:500]}"

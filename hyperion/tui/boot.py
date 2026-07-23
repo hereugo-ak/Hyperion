@@ -197,12 +197,14 @@ async def run_boot_sequence(
             log.update_row(step.row, content="creating SearxNG container with latest config…", spinner=True)
         settings_path = _searxng_settings_path()
         settings_path_docker = settings_path.replace("\\", "/")
+        limiter_path = str(Path(settings_path_docker).parent / "searxng-limiter.toml").replace("\\", "/")
         rc3, out3, err3 = await _run_subprocess(
             [
                 "docker", "run", "-d",
                 "--name", "searxng",
                 "-p", "8888:8080",
                 "-v", f"{settings_path_docker}:/etc/searxng/settings.yml",
+                "-v", f"{limiter_path}:/etc/searxng/limiter.toml",
                 "searxng/searxng",
             ],
             timeout=60,
@@ -226,40 +228,29 @@ async def run_boot_sequence(
         step = _start_step("FLARE", "starting FlareSolverr CAPTCHA-bypass container")
         await asyncio.sleep(0.3 if not reduced_motion else 0.05)
 
-        # Check if FlareSolverr container already exists
-        rc_f, out_f, _ = await _run_subprocess(
-            ["docker", "ps", "-a", "--filter", "name=flaresolverr",
-             "--format", "{{.Names}}"], timeout=10
-        )
-        container_exists = rc_f == 0 and "flaresolverr" in out_f
+        # Always stop and remove existing container for a clean start
+        if step.row:
+            log.update_row(step.row, content="stopping existing FlareSolverr container…", spinner=True)
+        await _run_subprocess(["docker", "stop", "flaresolverr"], timeout=15)
+        await _run_subprocess(["docker", "rm", "flaresolverr"], timeout=10)
 
-        if container_exists:
-            # Just start it (it may be stopped)
-            rc_f2, _, err_f2 = await _run_subprocess(["docker", "start", "flaresolverr"], timeout=15)
-            if rc_f2 == 0:
-                await asyncio.sleep(2.0)
-                _finish_step(step, OK, "FlareSolverr started · localhost:8191 → CAPTCHA bypass ready")
-                results["flare"] = (OK, "started")
-            else:
-                _finish_step(step, WARN, f"FlareSolverr start failed: {err_f2.strip()[:50]}")
-                results["flare"] = (WARN, "start failed")
+        # Create and run fresh container
+        if step.row:
+            log.update_row(step.row, content="creating FlareSolverr container…", spinner=True)
+        rc_f3, _, err_f3 = await _run_subprocess(
+            ["docker", "run", "-d",
+             "--name", "flaresolverr",
+             "-p", "8191:8191",
+             "ghcr.io/flaresolverr/flaresolverr:latest"],
+            timeout=60,
+        )
+        if rc_f3 == 0:
+            await asyncio.sleep(3.0)
+            _finish_step(step, OK, "FlareSolverr started · localhost:8191 → CAPTCHA bypass ready")
+            results["flare"] = (OK, "started")
         else:
-            # Create and run new container
-            rc_f3, _, err_f3 = await _run_subprocess(
-                ["docker", "run", "-d",
-                 "--name", "flaresolverr",
-                 "-p", "8191:8191",
-                 "--restart", "unless-stopped",
-                 "ghcr.io/flaresolverr/flaresolverr:latest"],
-                timeout=60,
-            )
-            if rc_f3 == 0:
-                await asyncio.sleep(3.0)
-                _finish_step(step, OK, "FlareSolverr created · localhost:8191 → CAPTCHA bypass ready")
-                results["flare"] = (OK, "created")
-            else:
-                _finish_step(step, WARN, f"FlareSolverr failed: {err_f3.strip()[:50]}")
-                results["flare"] = (WARN, "create failed")
+            _finish_step(step, WARN, f"FlareSolverr failed: {err_f3.strip()[:50]}")
+            results["flare"] = (WARN, "create failed")
     else:
         step = _start_step("FLARE", "FlareSolverr — skipped (Docker unavailable)")
         await asyncio.sleep(0.2 if not reduced_motion else 0.05)
@@ -283,7 +274,6 @@ async def run_boot_sequence(
             ("fred", "fred_api_key"),
             ("jina", "jina_api_key"),
             ("unsplash", "unsplash_access_key"),
-            ("semantic_scholar", "semantic_scholar_api_key"),
         ]
         for tool_name, key_attr in key_checks:
             key_val = getattr(settings, key_attr, "")
@@ -425,10 +415,14 @@ async def stop_services() -> None:
     Stops Docker containers (SearxNG, FlareSolverr) and closes any
     globally accessible tool clients — mirroring the boot sequence.
     """
-    # Stop Docker containers
+    # Stop and remove Docker containers for a clean slate next boot
     for container in ("searxng", "flaresolverr"):
         try:
             await _run_subprocess(["docker", "stop", container], timeout=15)
+        except Exception:
+            pass
+        try:
+            await _run_subprocess(["docker", "rm", container], timeout=10)
         except Exception:
             pass
 

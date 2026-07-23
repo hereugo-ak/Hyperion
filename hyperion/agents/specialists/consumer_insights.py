@@ -1040,10 +1040,10 @@ class ConsumerInsightsAnalyst(BaseAgent):
         )
 
         # Extract context
-        company = self._context.get("company", "")
-        sector = self._context.get("sector", self._context.get("industry", ""))
-        product_category = self._context.get("product_category", sector)
-        segment = self._context.get("segment", "")
+        company = self._context.get("company") or ""
+        sector = self._context.get("sector") or self._context.get("industry") or ""
+        product_category = self._context.get("product_category") or sector
+        segment = self._context.get("segment") or ""
 
         # Spawn sub-agents for parallel data collection
         if sector or company:

@@ -377,7 +377,7 @@ class QualityGate(BaseAgent):
     """
 
     APPROVAL_THRESHOLD = 4.0
-    MAX_ITERATIONS = 3
+    MAX_ITERATIONS = 2  # P7: capped at ≤2 (was 3) — content-aware quality gate
     CRITICAL_THRESHOLD = 3  # Scores below this are critical
 
     def __init__(

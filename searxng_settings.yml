@@ -3,8 +3,12 @@
 # Self-hosted meta-search. Docker-based. Aggregates 70+ search engines.
 # No API key, no rate limit, no tracking. Used by all specialist agents.
 # ═══════════════════════════════════════════════════════════════════════════
+# IMPORTANT: use_default_settings: false — we explicitly list only engines
+# that work reliably. Setting true loads ALL 70+ default engines, most of
+# which now return CAPTCHA/403/rate-limit errors, polluting results and
+# wasting time. With false, only the engines listed below are loaded.
 
-use_default_settings: true
+use_default_settings: false
 
 general:
   instance_name: "HYPERION Search"
@@ -33,8 +37,8 @@ ui:
     - simple
 
 outgoing:
-  request_timeout: 15.0
-  max_request_timeout: 30.0
+  request_timeout: 20.0
+  max_request_timeout: 45.0
   useragent_suffix: ""
   proxies: null
   # Use a realistic browser user agent to avoid bot detection
@@ -47,74 +51,38 @@ outgoing:
   # proxies:
   #   all://: "http://user:pass@proxy.example.com:8080"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Engines — ONLY explicitly listed engines are loaded (use_default_settings: false)
+# These are the engines that consistently work without CAPTCHA/403/rate-limit.
+# When SearxNG fails on all of these, the SearxNG client falls back to Jina.
+# ─────────────────────────────────────────────────────────────────────────────
 engines:
-  # ── PRIMARY: Structured-data engines that NEVER CAPTCHA ──
-  # API-based or database engines with no bot detection.
-  # Reliable backbone of HYPERION search.
+  - name: bing
+    engine: bing
+    shortcut: bi
+    disabled: false
+    timeout: 20
+
   - name: wikipedia
     engine: wikipedia
     shortcut: wp
     disabled: false
-    timeout: 10
+    timeout: 20
+
+  - name: arxiv
+    engine: arxiv
+    shortcut: ar
+    disabled: false
+    timeout: 20
 
   - name: github
     engine: github
     shortcut: gh
     disabled: false
-    timeout: 10
+    timeout: 20
 
-  - name: arxiv
-    engine: arxiv
-    shortcut: ax
+  - name: hackernews
+    engine: hackernews
+    shortcut: hn
     disabled: false
-    timeout: 10
-
-  - name: semantic scholar
-    engine: semantic_scholar
-    shortcut: ss
-    disabled: false
-    timeout: 10
-
-  - name: openlibrary
-    engine: openlibrary
-    shortcut: ol
-    disabled: false
-    timeout: 10
-
-  - name: mojeek
-    engine: mojeek
-    shortcut: mj
-    disabled: false
-    timeout: 15
-
-  # ── SECONDARY: General web engines (intermittent blocks) ──
-  # These sometimes work but may get CAPTCHA'd under heavy load.
-  # SearxNG handles failures gracefully — partial results are still useful.
-  - name: duckduckgo
-    engine: duckduckgo
-    shortcut: ddg
-    disabled: false
-    timeout: 15
-
-  - name: brave
-    engine: brave
-    shortcut: br
-    disabled: false
-    timeout: 15
-
-  # ── DISABLED: Engines loaded by use_default_settings that crash on init ──
-  # These must be explicitly disabled to prevent container instability.
-  - name: wikidata
-    engine: wikidata
-    shortcut: wd
-    disabled: true  # HTTP 403 from query.wikidata.org on init — crashes container
-
-  - name: startpage
-    engine: startpage
-    shortcut: sp
-    disabled: true  # CAPTCHA within 1 query
-
-  - name: google
-    engine: google
-    shortcut: g
-    disabled: true  # "Unusual traffic" detection — use google cse instead (default)
+    timeout: 20

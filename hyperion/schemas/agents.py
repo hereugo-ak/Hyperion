@@ -221,7 +221,7 @@ class SubAgentSpec(BaseModel):
     findings_model: str = Field(
         description="Name of the Pydantic model the sub-agent must produce"
     )
-    timeout_seconds: int = Field(default=300, description="5-minute timeout per §4.7")
+    timeout_seconds: int = Field(default=600, description="10-minute timeout per §4.7")
     context: dict[str, Any] = Field(
         default_factory=dict,
         description="Context bundle from parent (prior findings, search terms, etc.)"

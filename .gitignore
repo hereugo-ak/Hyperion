@@ -64,3 +64,14 @@ htmlcov/
 # Logs
 *.log
 logs/
+
+artifacts/
+output/*.html
+output/*.css
+output/*.pdf
+test_full_render*
+test_render*
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+

@@ -1,0 +1,11 @@
+[botdetection]
+trusted_proxies = ["127.0.0.1", "172.17.0.0/16"]
+ipv4_prefix = 32
+ipv6_prefix = 48
+
+[botdetection.ip_limit]
+filter_link_local = true
+link_token = false
+
+[botdetection.ip_lists]
+pass_ip = ["127.0.0.1", "172.17.0.0/16"]

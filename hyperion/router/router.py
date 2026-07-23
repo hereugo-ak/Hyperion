@@ -146,6 +146,12 @@ class LLMRouter:
         self._speculative_racer = SpeculativeRacer(router=self)
         self._structured_validator = StructuredValidator(router=self)
 
+        # Token tracking: per-provider cumulative token usage for end-of-run summary
+        self._token_usage_by_provider: dict[ProviderType, dict[str, int]] = {
+            pt: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "calls": 0}
+            for pt in ProviderType
+        }
+
         # Model lookup: tier → list of (provider_type, model_spec)
         self._tier_models: dict[ModelTier, list[tuple[ProviderType, ModelSpec]]] = {}
         for provider_type, provider_config in provider_configs.items():
@@ -159,6 +165,41 @@ class LLMRouter:
     def get_provider(self, provider_type: ProviderType) -> BaseProvider:
         """Get a provider instance by type."""
         return self._providers[provider_type]
+
+    def get_token_summary(self) -> dict[str, Any]:
+        """Get per-provider token usage breakdown for end-of-run summary.
+
+        Returns a dict with:
+        - total_tokens: sum across all providers
+        - total_input_tokens, total_output_tokens, total_calls
+        - by_provider: {provider_name: {input, output, total, calls}}
+        """
+        by_provider: dict[str, dict[str, int]] = {}
+        grand_total = 0
+        grand_input = 0
+        grand_output = 0
+        grand_calls = 0
+        for pt, stats in self._token_usage_by_provider.items():
+            if stats["total_tokens"] == 0 and stats["calls"] == 0:
+                continue
+            name = pt.value if hasattr(pt, "value") else str(pt)
+            by_provider[name] = {
+                "input_tokens": stats["input_tokens"],
+                "output_tokens": stats["output_tokens"],
+                "total_tokens": stats["total_tokens"],
+                "calls": stats["calls"],
+            }
+            grand_total += stats["total_tokens"]
+            grand_input += stats["input_tokens"]
+            grand_output += stats["output_tokens"]
+            grand_calls += stats["calls"]
+        return {
+            "total_tokens": grand_total,
+            "total_input_tokens": grand_input,
+            "total_output_tokens": grand_output,
+            "total_calls": grand_calls,
+            "by_provider": by_provider,
+        }
 
     def _predicted_rate_limited(self, provider_type: ProviderType) -> bool:
         """D9: Check if a provider is predicted to be rate-limited right now.
@@ -242,6 +283,7 @@ class LLMRouter:
         temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, str] | None = None,
+        _skip_speculative: bool = False,
     ) -> RouterResponse:
         """Execute a completion request at the given tier.
 
@@ -278,14 +320,15 @@ class LLMRouter:
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            use_semantic=(urgency != TaskUrgency.CRITICAL),
+            use_semantic=(urgency != TaskUrgency.HIGH),
         )
         if cached is not None:
             trace("cache", tier=tier.value, agent=agent_name, status="hit")
             return cached
 
         # P13: Speculative racing for DEEP tier (critical-path latency reduction)
-        if tier == ModelTier.DEEP and urgency == TaskUrgency.CRITICAL:
+        # _skip_speculative prevents infinite recursion when the racer falls back
+        if tier == ModelTier.DEEP and urgency == TaskUrgency.HIGH and not _skip_speculative:
             response = await self._speculative_racer.race(
                 tier=tier,
                 messages=messages,
@@ -581,6 +624,13 @@ class LLMRouter:
                 estimated_tokens=estimated_tokens,
                 actual_tokens=response.total_tokens,
             )
+            # Track per-provider token usage for end-of-run summary
+            stats = self._token_usage_by_provider.get(candidate.provider_type)
+            if stats is not None:
+                stats["input_tokens"] += response.input_tokens
+                stats["output_tokens"] += response.output_tokens
+                stats["total_tokens"] += response.total_tokens
+                stats["calls"] += 1
             return response
 
         # Request failed — attempt failover within the tier

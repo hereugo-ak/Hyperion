@@ -561,14 +561,14 @@ class FactChecker(BaseAgent):
             content_lower = (finding.content or "").lower()
             if claim_lower in content_lower or claim_words & set(content_lower.split()):
                 # This finding's content references the claim — use its sources
-                for src_url in finding.sources[:3]:
-                    if not src_url:
+                for src in finding.sources[:3]:
+                    if not src or not src.url:
                         continue
-                    credibility = self._score_domain_credibility(src_url)
+                    credibility = self._score_domain_credibility(src.url)
                     local_sources.append(Source(
-                        id=f"local_{hashlib.md5(src_url.encode()).hexdigest()[:8]}",
-                        title=finding.title[:100],
-                        url=src_url,
+                        id=f"local_{hashlib.md5(src.url.encode()).hexdigest()[:8]}",
+                        title=src.title or finding.title[:100],
+                        url=src.url,
                         credibility=credibility,
                         accessed_at=datetime.now(),
                         key_data=finding.content[:500],

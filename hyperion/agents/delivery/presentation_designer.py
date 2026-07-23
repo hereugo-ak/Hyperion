@@ -127,6 +127,20 @@ TYPOGRAPHY = {
 # Section-specific Unsplash search term templates (§5.4)
 # Specific, relevant, not generic. "Modern boardroom meeting" not "business."
 SECTION_IMAGE_SEARCH_TERMS: dict[str, str] = {
+    # Agent name keys (match section.agent field directly)
+    "market_analyst": "market analysis charts on screen",
+    "competitive_intel": "modern corporate strategy meeting",
+    "financial_analyst": "financial charts on screen",
+    "risk_analyst": "risk management dashboard",
+    "technology_analyst": "modern technology infrastructure",
+    "operations_analyst": "modern factory operations",
+    "regulatory_analyst": "government building columns",
+    "sustainability_analyst": "green sustainable business",
+    "consumer_insights": "consumer shopping retail",
+    "ma_analyst": "corporate merger acquisition handshake",
+    "innovation_analyst": "innovation technology lab",
+    "strategy_analyst": "chess strategy pieces board",
+    # Topic-based keys (for title matching fallback)
     "market_analysis": "market analysis charts on screen",
     "market": "market analysis charts on screen",
     "competitive": "modern corporate strategy meeting",
@@ -209,21 +223,65 @@ h3 {{ font-size: 14pt; font-family: "JetBrains Mono", monospace; font-weight: bo
     page: cover;
     margin: 0;
     padding: 0;
+    position: relative;
+    width: 100%;
+    height: 297mm;
+    overflow: hidden;
 }}
 
 .cover-image {{
     width: 100%;
-    height: 100vh;
+    height: 100%;
     object-fit: cover;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
+}}
+
+.cover-overlay {{
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 60%;
+    background: linear-gradient(to top, rgba(26,26,26,0.92) 0%, rgba(26,26,26,0.75) 40%, rgba(26,26,26,0.3) 75%, rgba(26,26,26,0) 100%);
+    z-index: 2;
 }}
 
 .cover-title {{
     position: absolute;
-    bottom: 60mm;
+    bottom: 50mm;
     left: 25mm;
+    right: 25mm;
     color: {cream};
-    font-size: 36pt;
+    font-size: 32pt;
     font-family: "Instrument Serif", serif;
+    z-index: 3;
+    line-height: 1.2;
+}}
+
+.cover-title h1 {{
+    color: {cream};
+    font-size: 32pt;
+    line-height: 1.2;
+    margin-bottom: 12px;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+}}
+
+.cover--typographic {{
+    background-color: {warm_charcoal};
+    height: 297mm;
+}}
+
+.cover-accent-rule {{
+    position: absolute;
+    top: 120mm;
+    left: 25mm;
+    width: 60mm;
+    height: 3px;
+    background-color: {terracotta};
+    z-index: 3;
 }}
 
 .key-insight-box {{
@@ -391,7 +449,7 @@ h3 {{ font-size: 14pt; font-family: "JetBrains Mono", monospace; font-weight: bo
 }}
 
 .data-table {{
-    font-size: 9pt;
+    font-size: 10pt;
     width: 100%;
     border-collapse: collapse;
 }}
@@ -399,14 +457,39 @@ h3 {{ font-size: 14pt; font-family: "JetBrains Mono", monospace; font-weight: bo
 .data-table th {{
     background-color: {beige};
     color: {warm_charcoal};
-    padding: 6px 10px;
+    padding: 8px 12px;
     text-align: left;
     border-bottom: 2px solid {terracotta};
+    font-family: "Instrument Serif", serif;
+    font-size: 12pt;
 }}
 
 .data-table td {{
-    padding: 6px 10px;
+    padding: 8px 12px;
     border-bottom: 1px solid {beige};
+    color: {warm_charcoal};
+}}
+
+.data-table tr:hover {{
+    background-color: {beige};
+}}
+
+/* TOC specific styling */
+.toc-table td:first-child {{
+    font-family: "Instrument Serif", serif;
+    font-size: 12pt;
+}}
+
+.toc-table td:last-child {{
+    text-align: right;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10pt;
+    color: {warm_gray};
+    width: 40px;
+}}
+
+.toc-dots {{
+    border-bottom: 1px dotted {warm_gray};
 }}
 
 .footer {{
@@ -449,7 +532,7 @@ HTML_TEMPLATE = """\
 <head>
     <meta charset="UTF-8">
     <title>{{ report.question }}</title>
-    <link rel="stylesheet" href="{{ css_path }}">
+    <style>{{ css_content | safe }}</style>
 </head>
 <body>
 
@@ -457,16 +540,17 @@ HTML_TEMPLATE = """\
 <div class="cover{% if not cover_image %} cover--typographic{% endif %}">
     {% if cover_image %}
     <img src="{{ cover_image.image_path }}" class="cover-image" alt="{{ cover_image.caption }}">
+    <div class="cover-overlay"></div>
     {% else %}
     <div class="cover-accent-rule"></div>
     {% endif %}
     <div class="cover-title">
         <h1>{{ report.question }}</h1>
-        <p style="color: {{ palette.cream }}; font-size: 14pt;">{{ report.recommendation.value | upper }}</p>
-        <p style="color: {{ palette.warm_gray }}; font-size: 10pt;">
+        <p style="color: {{ palette.cream }}; font-size: 14pt; margin-top: 8px;">{{ report.recommendation.value | upper }}</p>
+        <p style="color: {{ palette.warm_gray }}; font-size: 10pt; margin-top: 4px;">
             {{ report.generated_at.strftime('%B %Y') }} · Engagement {{ report.engagement_id }}
         </p>
-        <p style="color: {{ palette.warm_gray }}; font-size: 10pt;">
+        <p style="color: {{ palette.warm_gray }}; font-size: 10pt; margin-top: 2px;">
             Confidence: <span class="confidence-badge-{{ report.confidence.value }}">{{ report.confidence.value | upper }}</span>
         </p>
     </div>
@@ -475,7 +559,7 @@ HTML_TEMPLATE = """\
 {# ── Table of Contents ── #}
 <div class="page-break">
     <h2>Table of Contents</h2>
-    <div class="data-table">
+    <div class="data-table toc-table">
         <table>
             <tr><td>Executive Summary</td><td>3</td></tr>
             {% for section in report.sections %}
@@ -558,7 +642,7 @@ HTML_TEMPLATE = """\
     <h2>{{ section.title }}</h2>
 
     <div class="key-insight-box">
-        {{ section.key_insight }}
+        {{ section.key_insight | clean_dict_repr }}
     </div>
 
     {% if section_images[section.id] %}
@@ -587,7 +671,7 @@ HTML_TEMPLATE = """\
 {% if report.risk_analysis %}
 <div class="page-break">
     <h2>Risk Analysis</h2>
-    {{ risk_analysis_html }}
+    {{ risk_analysis_html | safe }}
 </div>
 {% endif %}
 
@@ -616,7 +700,7 @@ HTML_TEMPLATE = """\
 <div class="page-break">
     <h2>Appendix</h2>
     <h3>Full Source List</h3>
-    {{ appendix_sources_html }}
+    {{ appendix_sources_html | safe }}
 </div>
 
 {# ── Back Cover ── #}
@@ -1136,20 +1220,65 @@ class PresentationDesigner(BaseAgent):
     # Step 4: Select Unsplash images for cover and section headers
     # ─────────────────────────────────────────────────────────────────────
 
+    async def _generate_cover_search_term(self, report: FinalReport) -> str:
+        """Use LLM to generate a context-aware Unsplash search term for the cover.
+
+        Instead of hardcoded substring matching that always falls back to
+        "modern business abstract", the LLM analyzes the question and picks
+        a specific, visual search term that reflects the actual topic.
+        """
+        # Build a quick summary of the report topic
+        section_titles = [s.title for s in report.sections[:8]]
+        sections_str = "; ".join(section_titles) if section_titles else "N/A"
+
+        prompt = (
+            "You are selecting a cover image for a business consulting report.\n"
+            f"Report question: {report.question}\n"
+            f"Report sections: {sections_str}\n"
+            f"Recommendation: {report.recommendation.value}\n\n"
+            "Generate a SINGLE Unsplash search term (2-5 words) that:\n"
+            "- Is visually specific (e.g., 'Mumbai skyline at dusk', not 'city')\n"
+            "- Reflects the actual topic, industry, or geography of the question\n"
+            "- Would return high-quality, professional landscape photos\n"
+            "- Is NOT generic (avoid 'business', 'office', 'abstract')\n\n"
+            "Return JSON: {\"search_term\": \"your search term here\"}"
+        )
+
+        try:
+            response = await self._llm_complete(
+                user_prompt=prompt,
+                urgency=TaskUrgency.NORMAL,
+                temperature=0.4,
+                response_format={"type": "json_object"},
+            )
+            if response.success and response.content:
+                import json
+                data = json.loads(response.content)
+                term = data.get("search_term", "").strip()
+                if term and len(term) < 100:
+                    return term
+        except (ValueError, KeyError, TypeError):
+            pass
+
+        # Fallback: keyword-based matching (improved with word-level matching)
+        question_lower = report.question.lower()
+        for key, term in COVER_IMAGE_SEARCH_TERMS.items():
+            if key == "general":
+                continue
+            # Match on word boundaries, not substring (so "ma" doesn't match "market")
+            if key in question_lower.split() or f" {key} " in f" {question_lower} ":
+                return term
+
+        return COVER_IMAGE_SEARCH_TERMS.get("general", "modern business abstract")
+
     async def _select_cover_image(self, report: FinalReport) -> ImageSelection | None:
         """Select a cover image from Unsplash.
 
         Cover image = full-bleed, relevant to the topic, 300 DPI.
-        Search terms are specific to the question type, not generic.
+        Uses LLM to generate a context-aware search term based on the
+        actual question content, not hardcoded substring matching.
         """
-        # Determine search term based on question content
-        question_lower = report.question.lower()
-        search_term = COVER_IMAGE_SEARCH_TERMS.get("general", "modern business abstract")
-
-        for key, term in COVER_IMAGE_SEARCH_TERMS.items():
-            if key in question_lower:
-                search_term = term
-                break
+        search_term = await self._generate_cover_search_term(report)
 
         try:
             unsplash_tool = self.get_tool(ToolName.UNSPLASH)
@@ -1191,12 +1320,71 @@ class PresentationDesigner(BaseAgent):
         except (ValueError, AttributeError, RuntimeError, OSError):
             return None
 
+    async def _generate_section_search_term(self, section: AnalysisSection) -> str:
+        """Use LLM to generate a context-aware Unsplash search term for a section.
+
+        Analyzes the section title, agent type, and key insight to generate
+        a specific, visually relevant search term — not a generic stock photo.
+        """
+        # First try hardcoded terms based on agent name (fast path)
+        agent_name = section.agent if isinstance(section.agent, str) else str(section.agent)
+        agent_key = agent_name.lower().replace(" ", "_")
+
+        # Try direct agent name match
+        if agent_key in SECTION_IMAGE_SEARCH_TERMS:
+            return SECTION_IMAGE_SEARCH_TERMS[agent_key]
+
+        # Try partial agent name match (e.g., "market_analyst" → "market")
+        for key in SECTION_IMAGE_SEARCH_TERMS:
+            if key in agent_key or agent_key.startswith(key):
+                return SECTION_IMAGE_SEARCH_TERMS[key]
+
+        # Use LLM for context-aware search term
+        body_preview = section.body[:500] if section.body else ""
+        prompt = (
+            "You are selecting a header image for a section of a business consulting report.\n"
+            f"Section title: {section.title}\n"
+            f"Section topic: {agent_name.replace('_', ' ')}\n"
+            f"Key insight: {section.key_insight[:200] if section.key_insight else 'N/A'}\n"
+            f"Content preview: {body_preview[:300]}\n\n"
+            "Generate a SINGLE Unsplash search term (2-5 words) that:\n"
+            "- Is visually specific to THIS section's topic\n"
+            "- Would return professional, landscape photos\n"
+            "- Is NOT generic (avoid 'business', 'office', 'abstract')\n"
+            "- Reflects the actual content, not just the section name\n\n"
+            "Return JSON: {\"search_term\": \"your search term here\"}"
+        )
+
+        try:
+            response = await self._llm_complete(
+                user_prompt=prompt,
+                urgency=TaskUrgency.NORMAL,
+                temperature=0.4,
+                response_format={"type": "json_object"},
+            )
+            if response.success and response.content:
+                import json
+                data = json.loads(response.content)
+                term = data.get("search_term", "").strip()
+                if term and len(term) < 100:
+                    return term
+        except (ValueError, KeyError, TypeError):
+            pass
+
+        # Fallback: try title-based matching with normalization
+        title_normalized = section.title.lower().replace(" ", "_")
+        for key, term in SECTION_IMAGE_SEARCH_TERMS.items():
+            if key in title_normalized:
+                return term
+
+        return SECTION_IMAGE_SEARCH_TERMS.get("general", "modern business abstract")
+
     async def _select_section_images(self, report: FinalReport) -> dict[str, ImageSelection]:
         """Select Unsplash images for each section header.
 
         Section images = 40% page width, right-aligned, with caption.
-        Search terms are specific to the section topic, not generic.
-        "Modern boardroom meeting" not "business."
+        Uses LLM to generate context-aware search terms per section based
+        on actual content, not hardcoded generic terms.
         """
         section_images: dict[str, ImageSelection] = {}
 
@@ -1208,17 +1396,7 @@ class PresentationDesigner(BaseAgent):
             os.makedirs(self.IMAGE_DIR, exist_ok=True)
 
             for section in report.sections:
-                # Determine specific search term for this section
-                search_term = SECTION_IMAGE_SEARCH_TERMS.get(section.id, "")
-                if not search_term:
-                    # Try matching on title
-                    title_lower = section.title.lower()
-                    for key, term in SECTION_IMAGE_SEARCH_TERMS.items():
-                        if key in title_lower:
-                            search_term = term
-                            break
-                if not search_term:
-                    search_term = "modern business abstract"
+                search_term = await self._generate_section_search_term(section)
 
                 search_result = await unsplash_tool.search(
                     query=search_term,
@@ -1350,9 +1528,10 @@ class PresentationDesigner(BaseAgent):
                     abs_charts.append(cp)
             chart_placements_abs[sid] = abs_charts
 
-        # Write CSS file
+        # Write CSS file (also keep for debugging)
+        css_content = CSS_TEMPLATE
         with open(self.CSS_OUTPUT, "w", encoding="utf-8") as f:
-            f.write(CSS_TEMPLATE)
+            f.write(css_content)
 
         try:
             jinja2_tool = self.get_tool(ToolName.JINJA2)
@@ -1364,7 +1543,7 @@ class PresentationDesigner(BaseAgent):
                 "section_images": section_images_abs,
                 "section_charts": chart_placements_abs,
                 "palette": PDF_PALETTE,
-                "css_path": os.path.abspath(self.CSS_OUTPUT),
+                "css_content": css_content,
                 "risk_analysis_html": self._build_risk_analysis_html(report),
                 "appendix_sources_html": self._build_appendix_sources_html(report),
             }
@@ -1392,20 +1571,31 @@ class PresentationDesigner(BaseAgent):
             return self.HTML_OUTPUT
 
         except (ValueError, AttributeError, RuntimeError):
-            # Fallback: render manually
-            html_content = HTML_TEMPLATE.format(
-                report=report,
-                cover_image=cover_image_abs,
-                section_images=section_images_abs,
-                section_charts=chart_placements_abs,
-                palette=PDF_PALETTE,
-                css_path=os.path.abspath(self.CSS_OUTPUT),
-                risk_analysis_html=self._build_risk_analysis_html(report),
-                appendix_sources_html=self._build_appendix_sources_html(report),
-            )
+            # Fallback: render manually with Jinja2
+            try:
+                from jinja2 import Environment, BaseLoader
+                env = Environment(loader=BaseLoader(), autoescape=True)
+                env.filters["md_to_html"] = lambda v: v or ""
+                env.filters["clean_dict_repr"] = lambda v: str(v) if v else ""
+                template = env.from_string(HTML_TEMPLATE)
+                html_str = template.render(
+                    report=report,
+                    cover_image=cover_image_abs,
+                    section_images=section_images_abs,
+                    section_charts=chart_placements_abs,
+                    palette=PDF_PALETTE,
+                    css_content=css_content,
+                    risk_analysis_html=self._build_risk_analysis_html(report),
+                    appendix_sources_html=self._build_appendix_sources_html(report),
+                )
+            except Exception:
+                # Last resort: strip Jinja2 tags and do basic format
+                html_str = HTML_TEMPLATE.replace("{{ css_content | safe }}", css_content)
+                html_str = html_str.replace("{{ report.question }}", str(report.question))
+                html_str = html_str.replace("{{ report.recommendation.value | upper }}", str(report.recommendation.value).upper())
 
             with open(self.HTML_OUTPUT, "w", encoding="utf-8") as f:
-                f.write(html_content)
+                f.write(html_str)
 
             return self.HTML_OUTPUT
 

@@ -404,10 +404,11 @@ class TechnologyAnalyst(BaseAgent):
 
             for vendor in vendors:
                 # Common vendor pricing URLs
+                vendor_safe = (vendor or "").lower().replace(' ', '')
                 pricing_urls = [
-                    f"https://www.{vendor.lower().replace(' ', '')}.com/pricing",
+                    f"https://www.{vendor_safe}.com/pricing",
                     f"https://aws.amazon.com/marketplace/seller-profile?id={vendor}",
-                    f"https://www.{vendor.lower().replace(' ', '')}.com/features",
+                    f"https://www.{vendor_safe}.com/features",
                 ]
 
                 for url in pricing_urls:
@@ -919,10 +920,13 @@ class TechnologyAnalyst(BaseAgent):
 
         try:
             data = json.loads(response.content)
-            return (
-                data.get("platform_assessment", ""),
-                data.get("lock_in_risk_summary", ""),
-            )
+            platform = data.get("platform_assessment", "")
+            lock_in = data.get("lock_in_risk_summary", "")
+            if not isinstance(platform, str):
+                platform = json.dumps(platform) if isinstance(platform, dict) else str(platform)
+            if not isinstance(lock_in, str):
+                lock_in = json.dumps(lock_in) if isinstance(lock_in, dict) else str(lock_in)
+            return (platform, lock_in)
         except (json.JSONDecodeError, ValueError):
             return ("", "")
 

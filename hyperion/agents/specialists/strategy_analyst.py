@@ -730,7 +730,7 @@ class StrategyAnalyst(BaseAgent):
                 )
                 resources.append(vrio_result)
 
-                impl = vrio_result.competitive_implication.lower()
+                impl = (vrio_result.competitive_implication or "").lower()
                 if "sustained" in impl:
                     sustained.append(vrio_result.resource)
                 elif "temporary" in impl:

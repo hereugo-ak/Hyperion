@@ -893,7 +893,7 @@ class RegulatoryAnalyst(BaseAgent):
         burden_rank = {"low": 1, "medium": 2, "high": 3, "very high": 4}
         lightest = min(
             jurisdiction_comparison,
-            key=lambda j: burden_rank.get(j.compliance_burden.lower(), 2),
+            key=lambda j: burden_rank.get((j.compliance_burden or "").lower(), 2),
         )
 
         # Build evolution summary from historical data

@@ -1032,7 +1032,8 @@ class MarketAnalyst(BaseAgent):
 
         try:
             data = json.loads(response.content)
-            maturity = data.get("maturity", "unknown").lower()
+            maturity = data.get("maturity") or "unknown"
+            maturity = maturity.lower() if isinstance(maturity, str) else "unknown"
             valid = {"emerging", "growing", "mature", "declining"}
             return maturity if maturity in valid else "unknown"
         except (json.JSONDecodeError, ValueError):
@@ -1058,8 +1059,8 @@ class MarketAnalyst(BaseAgent):
         """
         # Extract geography and segment from the market query
         # This is a simple heuristic — the LLM in the sizing steps will refine
-        geography = self._context.get("geography", "")
-        segment = self._context.get("segment", "")
+        geography = self._context.get("geography") or ""
+        segment = self._context.get("segment") or ""
 
         sub_specs = [
             SubAgentSpec(
@@ -1291,7 +1292,7 @@ class MarketAnalyst(BaseAgent):
             self._scraped_data = await self._scrape_dashboards(self._question)
 
         # Step 3: Pull macroeconomic context
-        geography = self._context.get("geography", "US")
+        geography = self._context.get("geography") or "US"
         await self._transition(AgentState.WORKING, f"Step 3: Pulling macro data (FRED) for {geography}")
         self._macro_data = await self._pull_macro_context(geography)
 

@@ -135,8 +135,8 @@ class TestOrchestrator:
 
         engine = WorkflowEngine()
         assert engine is not None
-        assert engine.MAX_QUALITY_ITERATIONS == 3
-        assert engine.TASK_TIMEOUT_SECONDS == 300
+        assert engine.MAX_QUALITY_ITERATIONS == 2  # P7: capped at ≤2
+        assert engine.TASK_TIMEOUT_SECONDS == 600
 
     def test_engagement_result_dataclass(self):
         """EngagementResult should have required fields."""

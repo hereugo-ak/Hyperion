@@ -185,6 +185,8 @@ class ObscuraClient:
         self._cdp_port: int = self.DEFAULT_PORT
         self._command_id: int = 0
         self._stealth: bool = True
+        # P12 GAP-5: Managed `obscura serve` subprocess
+        self._serve_proc: asyncio.subprocess.Process | None = None
 
     def _find_obscura(self) -> str:
         """Find the obscura binary."""
@@ -458,11 +460,103 @@ class ObscuraClient:
             )
 
     # ─────────────────────────────────────────────────────────────────────
+    # P12 GAP-5: Managed `obscura serve` subprocess
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def start_serve(self, port: int = DEFAULT_PORT) -> bool:
+        """Start `obscura serve` as a managed subprocess.
+
+        Spawns the Obscura CDP server in the background and waits for it
+        to become ready.  The process is tracked and cleaned up by
+        stop_serve() or close().
+
+        Args:
+            port: CDP WebSocket port (default 9222)
+
+        Returns:
+            True if the server started successfully, False otherwise.
+        """
+        if self._serve_proc and self._serve_proc.returncode is None:
+            # Already running
+            return True
+
+        if not self._binary_available():
+            logger.debug("Obscura serve: binary not available on %s", sys.platform)
+            return False
+
+        obscura_bin = self._find_obscura()
+        cmd = [obscura_bin, "serve", "--port", str(port)]
+        if self._stealth:
+            cmd.append("--stealth")
+
+        try:
+            self._serve_proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            logger.info("Obscura serve started (pid=%d, port=%d)", self._serve_proc.pid, port)
+
+            # Wait for the server to become ready
+            if await self._wait_for_serve(port):
+                self._cdp_port = port
+                return True
+            else:
+                logger.warning("Obscura serve did not become ready within timeout")
+                await self.stop_serve()
+                return False
+
+        except (OSError, FileNotFoundError) as e:
+            logger.warning("Obscura serve failed to start: %s", e)
+            self._serve_proc = None
+            return False
+
+    async def _wait_for_serve(self, port: int, timeout: float = 10.0) -> bool:
+        """Wait for the Obscura serve HTTP endpoint to respond."""
+        import time as _time
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    resp = await client.get(f"http://localhost:{port}/json/version")
+                    if resp.status_code == 200:
+                        return True
+            except (httpx.HTTPError, httpx.RequestError):
+                pass
+            await asyncio.sleep(0.5)
+        return False
+
+    async def stop_serve(self) -> None:
+        """Stop the managed `obscura serve` subprocess."""
+        if self._serve_proc and self._serve_proc.returncode is None:
+            try:
+                self._serve_proc.terminate()
+                await asyncio.wait_for(self._serve_proc.wait(), timeout=5.0)
+                logger.info("Obscura serve stopped (pid=%d)", self._serve_proc.pid)
+            except asyncio.TimeoutError:
+                self._serve_proc.kill()
+                logger.warning("Obscura serve killed (did not terminate gracefully)")
+            except (OSError, ProcessLookupError):
+                pass
+        self._serve_proc = None
+
+    def _is_serve_running(self) -> bool:
+        """Check if the managed serve process is still alive."""
+        return (
+            self._serve_proc is not None
+            and self._serve_proc.returncode is None
+        )
+
+    # ─────────────────────────────────────────────────────────────────────
     # CDP WebSocket — multi-step interactive browser session
     # ─────────────────────────────────────────────────────────────────────
 
     async def connect_cdp(self, port: int = DEFAULT_PORT) -> bool:
         """Connect to an Obscura CDP WebSocket server.
+
+        P12 GAP-5: If no server is running on the specified port, this
+        method will auto-start `obscura serve` as a managed subprocess
+        before connecting.
 
         Requires `obscura serve --port <port> --stealth` to be running.
 
@@ -478,6 +572,15 @@ class ObscuraClient:
             return False
 
         self._cdp_port = port
+
+        # P12 GAP-5: Auto-start managed serve process if not already running
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.get(f"http://localhost:{port}/json/version")
+        except (httpx.HTTPError, httpx.RequestError):
+            # Server not running — try to start it
+            if not await self.start_serve(port):
+                return False
 
         try:
             # Get the WebSocket endpoint from the CDP HTTP API
@@ -735,8 +838,9 @@ class ObscuraClient:
             self._cdp_client = None
 
     async def close(self) -> None:
-        """Close all connections."""
+        """Close all connections and stop managed serve process."""
         await self.close_browser()
+        await self.stop_serve()
 
     async def __aenter__(self) -> ObscuraClient:
         return self

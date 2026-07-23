@@ -133,13 +133,14 @@ class SearxNGClient:
 
     CACHE_DIR = "output/.searxng_cache"
     CACHE_TTL_SECONDS = 3600  # 1 hour
-    REQUEST_TIMEOUT = 30  # seconds
+    REQUEST_TIMEOUT = 45  # seconds — must match SearxNG max_request_timeout
     MAX_RETRIES = 3
     RETRY_DELAY = 2  # seconds
-    MAX_CONCURRENT = 5  # limit parallel requests to avoid upstream rate-limits/CAPTCHAs
+    MAX_CONCURRENT = 10  # allow more parallel searches across 12 specialists
 
-    # Search budget cap — 60 discovery searches per engagement (§5.2)
-    SEARCH_BUDGET_CAP = 60
+    # Search budget cap — 200 discovery searches per engagement
+    # 12 specialists × ~10-15 searches each + 3 sub-agents × ~3 searches each = 150-200
+    SEARCH_BUDGET_CAP = 200
 
     # Class-level semaphore shared across all instances
     _semaphore: asyncio.Semaphore | None = None
@@ -281,8 +282,17 @@ class SearxNGClient:
                         engines_used=sorted(engines_used_set),
                     )
 
-                # SearXNG returned zero results — try next attempt
+                # Log unresponsive engines for debugging
+                unresponsive = data.get("unresponsive_engines", [])
+                if unresponsive:
+                    logger.warning(
+                        "SearXNG unresponsive engines for '%s': %s",
+                        query[:80], unresponsive,
+                    )
+
+                # SearXNG returned zero results — don't retry, engines are likely blocked
                 logger.debug("SearXNG returned 0 results for '%s' (attempt %d)", query, attempt + 1)
+                break  # No point retrying if engines are blocked/CAPTCHA'd
 
             except (httpx.HTTPError, httpx.RequestError, KeyError, ValueError) as e:
                 logger.warning("SearXNG JSON API error (attempt %d): %s", attempt + 1, e)
@@ -337,6 +347,10 @@ class SearxNGClient:
 
         return None
 
+    # Only use engines that are reliable (no CAPTCHA/403 issues)
+    # Must match searxng_settings.yml engine list
+    RELIABLE_ENGINES = "bing,wikipedia,arxiv,github,hackernews"
+
     async def search(
         self,
         query: str,
@@ -345,7 +359,7 @@ class SearxNGClient:
         language: str = "en",
         time_range: str = "",
         engines: str = "",
-        safesearch: int = 1,
+        safesearch: int = 0,
         max_results: int | None = None,
     ) -> SearchResponse:
         """Search via SearXNG JSON API — the primary discovery engine.
@@ -372,8 +386,11 @@ class SearxNGClient:
         if max_results is not None:
             num_results = max_results
 
+        # Use reliable engines by default to avoid CAPTCHA/403 from flaky defaults
+        effective_engines = engines if engines else self.RELIABLE_ENGINES
+
         cache_key = self._cache_key(query, num_results=num_results, categories=categories,
-                                     language=language, time_range=time_range, engines=engines)
+                                     language=language, time_range=time_range, engines=effective_engines)
         cached = self._get_cached(cache_key)
         if cached:
             return cached
@@ -397,7 +414,7 @@ class SearxNGClient:
                 categories=categories,
                 language=language,
                 time_range=time_range,
-                engines=engines,
+                engines=effective_engines,
                 safesearch=safesearch,
             )
 

@@ -123,6 +123,7 @@ class TemplateRenderer:
             self._env.filters["format_date"] = self._format_date
             self._env.filters["truncate_chars"] = self._truncate_chars
             self._env.filters["md_to_html"] = self._markdown_to_html
+            self._env.filters["clean_dict_repr"] = self._clean_dict_repr
 
         return self._env
 
@@ -163,6 +164,49 @@ class TemplateRenderer:
             return value
         return value[:length - 3] + "..."
 
+    def _clean_dict_repr(self, value: Any) -> str:
+        """Clean up raw dict/list reprs that leak into report text.
+
+        When the synthesis lead or specialist agents put a Pydantic model's
+        repr() or a dict's str() into a text field, it shows up in the report
+        as ``{'recommendation': 'BUY', 'time_to_market_build': 'Unknown', ...}``.
+        This filter extracts readable key-value pairs from such strings and
+        formats them as ``Key: Value`` lines. If the value is already clean
+        text, it passes through unchanged.
+        """
+        import re as _re
+        if value is None:
+            return ""
+        text = str(value)
+        # Detect dict repr pattern: starts with { and contains 'key': 'value'
+        if text.strip().startswith("{") and "'" in text:
+            # Try to parse as JSON-like dict string
+            try:
+                # Replace single quotes with double quotes for JSON parsing
+                json_str = text.replace("'", '"')
+                import json as _json
+                data = _json.loads(json_str)
+                lines = []
+                for k, v in data.items():
+                    # Make key readable: replace underscores with spaces, title case
+                    readable_key = k.replace("_", " ").title()
+                    lines.append(f"{readable_key}: {v}")
+                return " · ".join(lines)
+            except (ValueError, TypeError):
+                pass
+            # Fallback: regex extract key-value pairs
+            pairs = _re.findall(r"'([\w_]+)':\s*'([^']*)'", text)
+            if pairs:
+                lines = []
+                for k, v in pairs:
+                    readable_key = k.replace("_", " ").title()
+                    lines.append(f"{readable_key}: {v}")
+                return " · ".join(lines)
+            # If we can't extract pairs, just truncate the raw repr
+            if len(text) > 200:
+                return text[:197] + "..."
+        return text
+
     def _markdown_to_html(self, value: str) -> str:
         """Convert basic markdown to HTML for report rendering.
 
@@ -198,9 +242,13 @@ class TemplateRenderer:
         lines = html.split("\n")
         result: list[str] = []
         in_list = False
+        in_paragraph = False
         for line in lines:
             stripped = line.strip()
             if stripped.startswith("- "):
+                if in_paragraph:
+                    result.append("</p>")
+                    in_paragraph = False
                 if not in_list:
                     result.append("<ul>")
                     in_list = True
@@ -210,16 +258,26 @@ class TemplateRenderer:
                     result.append("</ul>")
                     in_list = False
                 if stripped and not stripped.startswith("<h"):
-                    # Wrap non-heading, non-empty lines in <p> tags
-                    if not result or not result[-1].startswith("<p>"):
-                        result.append(f"<p>{stripped}</p>")
+                    # Empty line breaks the current paragraph
+                    if not in_paragraph:
+                        result.append(f"<p>{stripped}")
+                        in_paragraph = True
                     else:
-                        # Append to previous paragraph
-                        result[-1] = result[-1][:-4] + " " + stripped + "</p>"
+                        result.append(stripped)
                 elif stripped.startswith("<h"):
+                    if in_paragraph:
+                        result.append("</p>")
+                        in_paragraph = False
                     result.append(stripped)
+                else:
+                    # Empty line — close current paragraph
+                    if in_paragraph:
+                        result.append("</p>")
+                        in_paragraph = False
         if in_list:
             result.append("</ul>")
+        if in_paragraph:
+            result.append("</p>")
 
         output = "\n".join(result)
         if Markup is not str:
@@ -374,29 +432,45 @@ class PDFRenderer:
             from playwright.sync_api import sync_playwright
 
             # Write HTML to a temp file so Playwright can load it
-            import tempfile
             temp_html = output_path.replace(".pdf", "_playwright.html")
             full_html = html
-            if css_content:
+            # Only prepend CSS if the HTML doesn't already have inline <style>
+            if css_content and "<style>" not in html[:500]:
                 full_html = f"<style>{css_content}</style>" + html
             with open(temp_html, "w", encoding="utf-8") as f:
                 f.write(full_html)
 
+            # Build proper file:// URL for Windows (C:\path → file:///C:/path)
+            file_url = f"file:///{temp_html.replace(os.sep, '/').lstrip('/')}"
+
             with sync_playwright() as p:
                 browser = p.chromium.launch()
                 page = browser.new_page()
-                page.goto(f"file:///{temp_html.replace(os.sep, '/')}")
+                page.goto(file_url, wait_until="networkidle")
                 page.pdf(
                     path=output_path,
                     format="A4",
                     print_background=True,
-                    margin={"top": "25mm", "bottom": "25mm", "left": "25mm", "right": "25mm"},
+                    margin={
+                        "top": "25mm",
+                        "bottom": "25mm",
+                        "left": "40mm",
+                        "right": "25mm",
+                    },
+                    prefer_css_page_size=True,
                 )
                 browser.close()
 
-            return os.path.exists(output_path) and os.path.getsize(output_path) > 0
+            success = os.path.exists(output_path) and os.path.getsize(output_path) > 0
+            if not success:
+                print("[RENDER] Playwright: PDF file missing or empty after render")
+            return success
 
-        except Exception:
+        except ImportError:
+            print("[RENDER] Playwright not installed — cannot use PDF fallback")
+            return False
+        except Exception as exc:
+            print(f"[RENDER] Playwright PDF fallback failed: {type(exc).__name__}: {exc!s:.200}")
             return False
 
     def _embed_images_as_data_uris(self, html: str) -> str:

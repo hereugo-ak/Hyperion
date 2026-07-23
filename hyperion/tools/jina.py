@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from urllib.parse import quote_plus
 
 
 @dataclass
@@ -224,7 +225,7 @@ class JinaClient:
         client = await self._get_client()
         await self._rate_limit()
 
-        url = f"{self.SEARCH_URL}/{query}"
+        url = f"{self.SEARCH_URL}/{quote_plus(query)}"
 
         last_error: Exception | None = None
 
