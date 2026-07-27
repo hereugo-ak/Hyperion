@@ -677,7 +677,88 @@ progress, `[x]` = landed with proof.
     3 skipped pre-Phase-1; +16 net new tests, zero regressions after the
     `unified_search.py` revert described above).
 - [ ] **1.3** LLM query planner — 5–10 diversified queries per sub-question
-- [ ] **1.4** Purge intent-destroying words from `filler`; keep parentheticals as a variant
+- [x] **1.4** Purge intent-destroying words from `filler`; keep parentheticals as a variant
+  - **Before**: `sub_agent.py`'s `_condense_query` `filler` set (used by all 12
+    specialists' 15 sub-agent search/scrape methods via
+    `SubAgentRunner._condense_query`, audit §4.4 Finding B-3) included
+    `'not'`, `'should'`, `'how'`, `'why'`, `'what'`, `'which'`, `'most'`,
+    `'more'` — every one of these is intent-carrying, not grammatical
+    filler: stripping `'not'` inverts a negated question into its opposite
+    (`"Should we NOT enter this market?"` → after stripping `not`, the
+    condensed query reads as an unqualified *enter-market* search, the
+    literal opposite of what was asked); stripping `'should'`/`'how'`/
+    `'why'`/`'what'`/`'which'` deletes the interrogative that tells a
+    search engine what KIND of answer is wanted; stripping `'most'`/
+    `'more'` deletes superlative/comparative scope (`"the most affected
+    sectors"` → `"affected sectors"`, silently broadening the intended
+    scope). Separately, `_condense_query` unconditionally deleted
+    parenthetical asides (`r'\([^)]*\)'`) with no recovery path, so a
+    question like `"Should we enter now or wait? (Bitcoin, Ethereum)"`
+    lost the only tokens naming the actual subject entities.
+  - **Fixed — filler set**: removed all 8 words above from `filler` (verified
+    live: `SubAgentRunner._condense_query("Should we NOT enter this
+    market?")` now retains `"Should NOT enter market?"`-equivalent tokens
+    instead of silently dropping the negation/interrogative/modal).
+  - **Fixed — parentheticals**: added a new classmethod
+    `_condense_query_variants(question, max_len=120) -> list[str]` that
+    keeps `_condense_query`'s existing parenthetical-stripping contract
+    unchanged for its primary output (zero behavioural change for the 11
+    other call sites — Wayback, Alpha Vantage, FRED, SEC EDGAR, Semantic
+    Scholar, OpenAlex, Google Trends, HackerNews, Reddit, Second Brain —
+    which still call the single-query `_condense_query` directly and are
+    therefore unaffected), and additionally returns a **second** variant
+    that folds the parenthetical's content back in — but only when the
+    parenthetical looks like a real entity list rather than an
+    instructional aside (`"(see above)"`, bare `"(e.g.)"`/`"(etc.)"`
+    alone are filtered out as trivial). A leading `"e.g."`/`"i.e."`/
+    `"etc."` label *inside* an otherwise-real entity parenthetical (e.g.
+    `"(e.g. Salesforce, HubSpot)"`) is stripped from the variant so the
+    literal abbreviation token doesn't ride along into the search query —
+    verified live: `_condense_query_variants("Compare vendor pricing (e.g.
+    Salesforce, HubSpot)")` → `["Compare vendor pricing", "Compare vendor
+    pricing Salesforce, HubSpot"]`. Only wired into the two callers that
+    already fan out in parallel and can afford a second search leg without
+    doubling every tool call in the whole pipeline: `_search_searxng` and
+    `_search_jina` now loop over `_condense_query_variants(...)`, run each
+    variant, and merge+dedup results by URL (first-seen order preserved)
+    before formatting — so a named-entity comparison question fires one
+    query anchored on the general topic and one anchored on the named
+    entities, instead of the entities being silently discarded.
+  - Verified live (no mocks): confirmed the exact filler-word removal via
+    inline `_condense_query` calls on words `not/should/how/why/what/
+    which/most/more`, and confirmed `_condense_query_variants` recovers
+    `"Bitcoin, Ethereum"` as a second variant from
+    `"Should we enter now or wait? (Bitcoin, Ethereum)"` while the primary
+    variant stays entity-free (preserving `_condense_query`'s existing
+    contract) — also confirmed trivial parentheticals (`"(see above)"`,
+    `"(etc.)"`) correctly produce only 1 variant, and the `max_len` cap is
+    respected on both variants independently.
+  - New tests added to `tests/test_sub_agent_query.py` (24 net new,
+    41 → 65 → 66 after one follow-up regression test): `TestCondenseQuery
+    IntentPreservation` (7 tests: parametrized survival check for all 8
+    removed filler words, explicit negation/superlative/comparative/
+    interrogative semantic-preservation assertions, one control test
+    confirming genuine grammatical filler — `"the"`, `"of"`, `"in"` — is
+    still stripped); `TestCondenseQueryVariants` (7 tests: single-variant
+    when no parenthetical, never-empty-list guarantee, entity parenthetical
+    → 2 variants with entities isolated to the second, the `"(e.g.
+    Salesforce, HubSpot)"` label-stripping regression test added during
+    this fix's polish pass, trivial-parenthetical → 1 variant, `max_len`
+    respected on both variants, and the full adversarial-input corpus from
+    Phase 0 run through the new method with never-raises/never-empty
+    assertions); `TestSearchMethodsUseVariants` (5 tests, real
+    `SubAgentRunner` instances with mocked `searxng`/`jina` tool clients:
+    both search methods fire exactly 2 awaited calls when an entity
+    parenthetical is present and exactly 1 when it isn't, the Jina variant
+    call is confirmed to carry the entity text, cross-variant URL
+    deduplication is confirmed via a shared URL appearing in both mocked
+    variant responses but only once in the final `urls` list, and a tool
+    exception on the primary call is confirmed to be caught and logged
+    rather than propagating — `_search_searxng` still returns
+    `("searxng", [], None)` cleanly).
+  - Full suite: **564 passed, 3 skipped** (was 563 passed, 3 skipped
+    pre-1.4-polish-test, 539 passed/3 skipped after 1.6; +25 net new tests
+    across this fix, zero regressions).
 - [ ] **1.5** Low-yield reformulation (<3 results → broaden → retry once)
 - [x] **1.6** `resolve_subject` into `market_analyst`, `regulatory_analyst`, `risk_analyst`
   - Confirmed via `grep -rln "resolve_subject" hyperion/agents/specialists/*.py`

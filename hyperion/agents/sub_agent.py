@@ -614,6 +614,19 @@ class SubAgentRunner:
         2. Removes parenthetical asides and em-dashes
         3. Removes filler words that add noise
         4. Truncates to max_len at a word boundary
+
+        WHY THE FILLER SET IS SMALLER THAN IT LOOKS (fix 1.4, audit §4.4
+        Finding B-3): the previous filler set deleted the exact words that
+        carry a consulting question's analytical intent —
+        ``'not'`` inverted the meaning of any negative-framed question
+        ("should we NOT enter" -> "enter", the opposite of what was asked),
+        and ``'should'``, ``'how'``, ``'why'``, ``'what'``, ``'which'``,
+        ``'most'``, ``'more'`` are the interrogative/comparative words that
+        distinguish "the biggest market" from "the fastest-growing market"
+        or "how to enter" from "why not to enter". Those eight words are
+        removed from the filler set below. Grammatical connective tissue
+        (articles, prepositions, auxiliary verbs) is still stripped — that
+        part of the pipeline was never the problem.
         """
         q = question.strip()
 
@@ -631,6 +644,17 @@ class SubAgentRunner:
         q = re.sub(r'^\s*(?:[A-Z]{2,}\s+)?(?:data|information|details|facts|statistics|metrics|numbers|figures|reports?|studies|trends?|analysis|insights?)\s+(?:for|on|about|regarding|related to)\s*:?\s*', '', q, flags=re.IGNORECASE)
 
         # Remove parenthetical asides: (e.g., Bitcoin, Ethereum)
+        #
+        # NOTE: the removed content is NOT thrown away here — parentheticals
+        # frequently name the specific entities the question is actually
+        # about ("(Bitcoin, Ethereum)"), so deleting them outright turned a
+        # concrete comparison query into a generic one. `_condense_query`
+        # keeps producing the entity-free primary query (still useful, and
+        # keeps this method's existing return type/behavior for the 11
+        # callers that only need one query), but `_condense_query_variants`
+        # below reconstructs a second query that folds the parenthetical
+        # content back in, for the two callers (SearxNG, Jina) that fan out
+        # multiple queries in parallel and can afford a second search leg.
         q = re.sub(r'\([^)]*\)', '', q)
 
         # Remove em-dashes, en-dashes, and hyphens used as separators.
@@ -642,20 +666,29 @@ class SubAgentRunner:
         # search (see HYPERION_DEEP_AUDIT_2026-07-27.md §0 / finding B-1).
         q = re.sub(r'\s*[\u2013\u2014-]+\s*', ' ', q)
 
-        # Remove filler words
+        # Remove filler words — grammatical connective tissue only.
+        #
+        # fix 1.4 (audit §4.4 Finding B-3): 'not', 'should', 'how', 'why',
+        # 'what', 'which', 'most', 'more' used to be in this set and were
+        # removed. Those are not noise — they carry the question's
+        # analytical intent (negation, comparison, interrogative framing).
+        # Deleting them silently rewrote "should we NOT enter this market"
+        # into "enter market", the opposite question, and collapsed "the
+        # MOST effective strategy" into "effective strategy", discarding
+        # the superlative that made the question specific.
         filler = {
             'the', 'a', 'an', 'for', 'of', 'to', 'in', 'on', 'at', 'by',
             'with', 'from', 'about', 'into', 'through', 'during', 'before',
             'after', 'above', 'below', 'between', 'under', 'further',
-            'then', 'once', 'here', 'there', 'when', 'where', 'why',
-            'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most',
-            'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
+            'then', 'once', 'here', 'there', 'when', 'where',
+            'all', 'any', 'both', 'each', 'few',
+            'other', 'some', 'such', 'no', 'nor', 'only', 'own',
             'same', 'so', 'than', 'too', 'very', 'can', 'will', 'just',
-            'should', 'now', 'is', 'are', 'was', 'were', 'be', 'been',
+            'now', 'is', 'are', 'was', 'were', 'be', 'been',
             'being', 'have', 'has', 'had', 'do', 'does', 'did', 'would',
             'could', 'may', 'might', 'must', 'shall', 'this', 'that',
             'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
-            'what', 'which', 'who', 'whom', 'whose', 'and', 'or', 'but',
+            'who', 'whom', 'whose', 'and', 'or', 'but',
             'if', 'because', 'as', 'until', 'while', 'also', 'use',
             'using', 'used', 'like', 'e.g.', 'e.g', 'eg', 'i.e.', 'i.e',
             'ie', 'etc', 'etc.', 'similar', 'target', 'specific',
@@ -673,18 +706,101 @@ class SubAgentRunner:
 
         return q.strip() or question[:max_len]
 
+    @classmethod
+    def _condense_query_variants(cls, question: str, max_len: int = 120) -> list[str]:
+        """Return 1-2 search queries: the condensed primary query, plus a
+        second variant that folds any parenthetical content back in.
+
+        fix 1.4 (audit §4.4 Finding B-3): `_condense_query` strips
+        parenthetical asides like "(Bitcoin, Ethereum)" entirely — those
+        asides are frequently where a question's specific entities live,
+        so simply deleting them produced a generic query with no way to
+        recover the named entities. This method keeps the primary
+        (entity-free) query as variant 1, and — when the question actually
+        contained a non-trivial parenthetical — appends a second variant
+        that appends the parenthetical's content to the primary query, so
+        callers that can afford two search legs (SearxNG, Jina) get one
+        query anchored on the general topic and one anchored on the named
+        entities.
+
+        Returns a list of length 1 when there is no usable parenthetical
+        (the common case), or length 2 when there is one. Never returns an
+        empty list.
+        """
+        primary = cls._condense_query(question, max_len=max_len)
+
+        # Pull out parenthetical content the same way _condense_query
+        # strips it, so the variant is built from exactly what was removed.
+        parens = re.findall(r'\(([^)]*)\)', question)
+        # Filter out trivial/instructional parentheticals ("(see above)",
+        # single short words that are unlikely to be a named entity list),
+        # keeping ones that look like a comma/semicolon-separated entity
+        # list or a multi-word phrase — that is the pattern the audit's
+        # example ("(Bitcoin, Ethereum)") and real sub-agent questions
+        # actually use.
+        entity_text = ""
+        for p in parens:
+            p = p.strip()
+            if not p:
+                continue
+            if len(p) < 3:
+                continue
+            if re.match(r'^(?:e\.?g\.?|i\.?e\.?|see .*|etc\.?)$', p, flags=re.IGNORECASE):
+                continue
+            # Strip a leading "e.g."/"i.e."/"etc." label so a parenthetical
+            # like "(e.g. Salesforce, HubSpot)" contributes the real entity
+            # names ("Salesforce, HubSpot") to the variant query without the
+            # literal abbreviation token riding along (fix 1.4 polish).
+            p = re.sub(r'^(?:e\.?g\.?|i\.?e\.?|etc\.?)\s*[:,]?\s*', '', p, flags=re.IGNORECASE).strip()
+            if len(p) < 3:
+                continue
+            entity_text = p
+            break
+
+        if not entity_text:
+            return [primary]
+
+        # Build the second variant: primary query + the entity list,
+        # truncated the same way as the primary.
+        variant = f"{primary} {entity_text}".strip()
+        variant = re.sub(r'\s+', ' ', variant).strip()
+        if len(variant) > max_len:
+            variant = variant[:max_len].rsplit(' ', 1)[0]
+
+        if not variant or variant == primary:
+            return [primary]
+
+        return [primary, variant]
+
     async def _search_searxng(self) -> tuple[str, list[str], str | None]:
-        """Search via SearxNG. Returns (label, urls, formatted_results)."""
+        """Search via SearxNG. Returns (label, urls, formatted_results).
+
+        fix 1.4: runs the primary condensed query, and — when the question
+        contained a parenthetical naming specific entities (e.g. "(Bitcoin,
+        Ethereum)") — a second query that folds those entities back in, so
+        a named-entity comparison question isn't reduced to a single,
+        entity-free search.
+        """
         try:
             searxng = self._get_tool("searxng")
-            query = self._condense_query(self.spec.question)
-            results = await searxng.search(query, num_results=15)
-            if results and len(results) > 0:
+            queries = self._condense_query_variants(self.spec.question)
+            all_results: list[Any] = []
+            seen_urls: set[str] = set()
+            for query in queries:
+                variant_results = await searxng.search(query, num_results=15)
+                for r in (variant_results or []):
+                    url = getattr(r, "url", "") or ""
+                    if url and url in seen_urls:
+                        continue
+                    if url:
+                        seen_urls.add(url)
+                    all_results.append(r)
+            if all_results:
                 formatted = "\n".join(
                     f"- {r.title}: {r.url}\n  {r.snippet[:500]}"
-                    for r in results[:15]
+                    for r in all_results[:15]
                 )
-                urls = [r.url for r in results[:8] if r.url]
+                urls = [r.url for r in all_results[:8] if r.url]
                 return ("searxng", urls, f"SearxNG results:\n{formatted}")
         except Exception as e:
             # Fix 0.3: fail loud, not silent — a swallowed exception here
@@ -697,17 +813,31 @@ class SubAgentRunner:
         return ("searxng", [], None)
 
     async def _search_jina(self) -> tuple[str, list[str], str | None]:
-        """Search via Jina s.jina.ai. Returns (label, urls, formatted_results)."""
+        """Search via Jina s.jina.ai. Returns (label, urls, formatted_results).
+
+        fix 1.4: same two-variant strategy as `_search_searxng` — see its
+        docstring.
+        """
         try:
             jina = self._get_tool("jina")
-            query = self._condense_query(self.spec.question)
-            results = await jina.search(query, num_results=10)
-            if results and len(results) > 0:
+            queries = self._condense_query_variants(self.spec.question)
+            all_results: list[Any] = []
+            seen_urls: set[str] = set()
+            for query in queries:
+                variant_results = await jina.search(query, num_results=10)
+                for r in (variant_results or []):
+                    url = getattr(r, "url", "") or ""
+                    if url and url in seen_urls:
+                        continue
+                    if url:
+                        seen_urls.add(url)
+                    all_results.append(r)
+            if all_results:
                 formatted = "\n".join(
                     f"- {r.title}: {r.url}\n  {r.snippet[:500]}"
-                    for r in results[:10]
+                    for r in all_results[:10]
                 )
-                urls = [r.url for r in results[:6] if r.url]
+                urls = [r.url for r in all_results[:6] if r.url]
                 return ("jina", urls, f"Jina search results:\n{formatted}")
         except Exception as e:
             # Fix 0.3: fail loud, not silent — see note in _search_searxng.
