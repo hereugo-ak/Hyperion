@@ -56,11 +56,13 @@ import asyncio
 import json
 import uuid
 from typing import Any
+from urllib.parse import quote_plus
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
+from hyperion.tools.query_utils import detect_geographies, resolve_subject
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -340,17 +342,57 @@ class SustainabilityAnalyst(BaseAgent):
         try:
             searxng = self.get_tool(ToolName.SEARXNG)
 
+            # Resolve the subject we are actually researching.
+            #
+            # WHY THIS IS NOT JUST `sector`. `sector` arrives from the
+            # Director's handover, and for a macro question such as "should
+            # India reduce its dependence on imports" that handover carries no
+            # sector at all. The templates below then interpolated the empty
+            # string and this agent searched for literally
+            # "carbon footprint emissions data" — visible verbatim in the
+            # SearxNG docker logs. A query with no subject cannot return
+            # anything relevant to the engagement, so we fall back to the
+            # engagement's own subject (and, failing that, the user's
+            # question) before building any query.
+            subject = resolve_subject(
+                self._context, "sector", "industry", question=self._question
+            ) or sector
+            entity = (company or "").strip() or subject
+            geographies = detect_geographies(self._question or "")
+            geo = geographies[0] if geographies else ""
+
+            def _q(*parts: str) -> str:
+                """Join query parts, dropping empties, and anchor to geography.
+
+                Building queries through this helper makes an empty
+                interpolation impossible: a missing part disappears instead of
+                leaving a hole that turns the query into a bare template.
+                """
+                return " ".join(p.strip() for p in (*parts, geo) if p and p.strip())
+
             query_patterns = [
-                f"{company} ESG rating MSCI Sustainalytics",
-                f"{sector} ESG performance benchmarks",
-                f"{sector} carbon footprint emissions data",
-                f"{sector} sustainability report best practices",
-                f"{company} sustainability report carbon emissions",
-                f"{sector} Scope 1 Scope 2 Scope 3 emissions",
-                f"{sector} green bond sustainability-linked loan rates",
-                f"{sector} circular economy opportunities",
-                f"{sector} CSRD TCFD CDP reporting requirements",
+                _q(entity, "ESG rating MSCI Sustainalytics"),
+                _q(subject, "ESG performance benchmarks"),
+                _q(subject, "carbon footprint emissions data"),
+                _q(subject, "sustainability report best practices"),
+                _q(entity, "sustainability report carbon emissions"),
+                _q(subject, "Scope 1 Scope 2 Scope 3 emissions"),
+                _q(subject, "green bond sustainability-linked loan rates"),
+                _q(subject, "circular economy opportunities"),
+                _q(subject, "climate disclosure reporting requirements"),
             ]
+
+            # Drop empties and duplicates. When company and sector resolve to
+            # the same value the entity/subject variants collapse into one
+            # another, and re-issuing an identical query only burns rate limit.
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for pattern in query_patterns:
+                key = pattern.lower()
+                if pattern and key not in seen:
+                    seen.add(key)
+                    deduped.append(pattern)
+            query_patterns = deduped
 
             for pattern in query_patterns[:12]:
                 search_results = await searxng.search(pattern, max_results=6)
@@ -408,13 +450,27 @@ class SustainabilityAnalyst(BaseAgent):
         try:
             obscura = self.get_tool(ToolName.OBSCURA)
 
-            # ESG rating platforms and databases
+            # ESG rating platforms and databases.
+            #
+            # Parameterised URLs are only included when there is a value to
+            # put in them, and the value is percent-encoded. Previously an
+            # empty `company`/`sector` produced `...?id=` and
+            # `...?sector=` — requests that fetch an empty result page, and
+            # an unencoded multi-word sector produced a malformed URL.
             platform_urls = [
-                f"https://www.msci.com/our-solutions/esg-investing/esg-ratings-climate-search-tool/issuer?id={company}",
                 "https://www.sustainalytics.com/esg-rating",
                 "https://www.cdp.net/en/responses",
-                f"https://www.gri.org/report-search?sector={sector}",
             ]
+            if company.strip():
+                platform_urls.append(
+                    "https://www.msci.com/our-solutions/esg-investing/"
+                    "esg-ratings-climate-search-tool/issuer"
+                    f"?id={quote_plus(company.strip())}"
+                )
+            if sector.strip():
+                platform_urls.append(
+                    f"https://www.gri.org/report-search?sector={quote_plus(sector.strip())}"
+                )
 
             for url in platform_urls[:6]:
                 try:
@@ -1017,20 +1073,41 @@ class SustainabilityAnalyst(BaseAgent):
             f"Starting sustainability analysis: {self._question[:80]}",
         )
 
-        # Extract context
+        # Extract context.
+        #
+        # `sector` is resolved through the engagement rather than read raw,
+        # because a macro question ships no `sector` key and every downstream
+        # query template interpolated that emptiness into a subject-less search.
         company = self._context.get("company", "")
-        sector = self._context.get("sector", self._context.get("industry", ""))
-        jurisdictions = self._context.get("jurisdictions", ["US", "EU"])
+        sector = resolve_subject(
+            self._context, "sector", "industry", question=self._question
+        )
 
-        # Spawn sub-agents for parallel ESG data collection
+        # Jurisdictions are DETECTED, never defaulted. The previous default of
+        # ["US", "EU"] meant an India engagement was assessed against CSRD and
+        # SEC climate rules — an authoritative-looking answer about the wrong
+        # country. An empty list means "no jurisdiction filter", which is
+        # honest; a wrong jurisdiction is not.
+        jurisdictions = self._context.get("jurisdictions") or detect_geographies(
+            self._question or ""
+        )
+
+        # Spawn sub-agents for parallel ESG data collection.
+        #
+        # This used to be gated on `if sector or company`, so an engagement
+        # that supplied neither silently skipped its entire parallel research
+        # phase. With `sector` now resolved from the question, that gate can
+        # only close when there is genuinely no subject at all.
         if sector or company:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning ESG data collection sub-agents")
             sub_findings = await self._spawn_sustainability_sub_agents(company, sector, jurisdictions)
             self._sub_agent_findings = sub_findings
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+        else:
+            self._log("No resolvable subject or company — skipping ESG sub-agents")
 
         # Step 1: Search for ESG data and ratings
-        await self._transition(AgentState.WORKING, f"Step 1: Searching ESG data for {company or sector}")
+        await self._transition(AgentState.WORKING, f"Step 1: Searching ESG data for {company or sector or 'the engagement subject'}")
         self._search_results = await self._search_esg_data(company, sector)
 
         # Step 2: Scrape ESG rating platforms

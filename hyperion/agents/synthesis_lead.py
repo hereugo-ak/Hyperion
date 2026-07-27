@@ -619,11 +619,23 @@ class SynthesisLead(BaseAgent):
             else:
                 # Equal weight — this is a deeply entrenched contradiction
                 # Spawn a sub-agent for a focused deep dive (§4.3, Agent 2)
+                # Record whether a deep dive actually ran, so the resolution
+                # text cannot claim an investigation that never happened —
+                # the sub-agent budget may already be spent.
+                _specs_before = len(self._sub_agent_specs)
                 winner = await self._deep_dive_contradiction(contradiction, finding_a, finding_b)
-                resolution = (
-                    f"Contradiction was deeply entrenched (equal evidence weight: "
-                    f"{weight_a:.2f}). Sub-agent deep dive resolved in favor of {winner}."
-                )
+                if len(self._sub_agent_specs) > _specs_before:
+                    resolution = (
+                        f"Contradiction was deeply entrenched (equal evidence weight: "
+                        f"{weight_a:.2f}). Sub-agent deep dive resolved in favor of {winner}."
+                    )
+                else:
+                    resolution = (
+                        f"Contradiction was deeply entrenched (equal evidence weight: "
+                        f"{weight_a:.2f}) and the sub-agent research budget was already "
+                        f"spent. Resolved in favor of {winner} on source count; treat "
+                        f"this resolution as provisional."
+                    )
 
             contradiction.resolution = resolution
             contradiction.evidence_weighted_winner = winner
@@ -691,6 +703,23 @@ class SynthesisLead(BaseAgent):
         requires reasoning) and SearxNG + Jina to independently verify
         the conflicting claims.
         """
+        # Short-circuit once the sub-agent budget is spent.
+        #
+        # This method is called once per evidence-tied contradiction, and a
+        # real run can produce many ties. With max_sub_agents=1 only the first
+        # call can ever succeed, so every later call did a full round trip just
+        # to be refused. Detecting exhaustion up front and going straight to
+        # the deterministic source-count tiebreak keeps resolution honest and
+        # removes the busywork that fed the escalation storm.
+        if len(self._sub_agent_specs) >= self.max_sub_agents:
+            self._log(
+                "SYNTHESIS: sub-agent budget spent; resolving contradiction "
+                f"'{contradiction.finding_a[:60]}' by source count instead of deep dive"
+            )
+            if len(finding_a.sources) >= len(finding_b.sources):
+                return contradiction.agent_a
+            return contradiction.agent_b
+
         sub_question = (
             f"Two agents disagree on '{contradiction.finding_a}':\n"
             f"Agent {contradiction.agent_a} claims: {finding_a.content[:200]}\n"

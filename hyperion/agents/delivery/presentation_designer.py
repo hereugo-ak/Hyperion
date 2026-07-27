@@ -202,22 +202,85 @@ CSS_TEMPLATE = """\
     }}
 }}
 
+/* ── Body typography ───────────────────────────────────────────────────────
+   The body font WAS "JetBrains Mono", monospace. That single declaration was
+   the largest gap between this output and an MGI/BCG deliverable: no
+   consulting firm sets running prose in a monospace font. Monospace forces
+   uniform character width, which destroys the word-shape cues fluent readers
+   rely on, caps comfortable measure at ~55 characters, and reads as code or
+   terminal output rather than as analysis.
+
+   Note the codebase already *declared* the right answer:
+   TYPOGRAPHY["body_font"] = "Source Sans 3" carries the comment
+   "professional sans, not monospace". The CSS simply ignored it and
+   hardcoded the mono stack. Monospace is now confined to where it is
+   genuinely correct — tabular figures and data labels, where fixed advance
+   width makes digits align in a column.
+
+   `font-variant-numeric: oldstyle-nums` is deliberately NOT set on body:
+   consulting prose is number-dense and lining figures read better inline. */
 body {{
-    font-family: "JetBrains Mono", monospace;
+    font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
     font-size: 10pt;
     color: {warm_charcoal};
     background-color: {cream};
-    line-height: 1.6;
+    /* 1.6 was loose for a 10pt sans at this measure; 1.5 tightens the block
+       into a more solid grey without crowding descenders. */
+    line-height: 1.5;
+    /* Consulting reports are read, not skimmed for keywords: hyphenation plus
+       justification is what gives a benchmark page its even left-right block.
+       Kept modest so no line breaks more than twice in a row. */
+    text-align: justify;
+    hyphens: auto;
+    -webkit-hyphens: auto;
+    orphans: 3;
+    widows: 3;
 }}
 
-h1, h2, h3 {{
-    font-family: "Instrument Serif", serif;
+h1, h2, h3, h4 {{
+    font-family: "Instrument Serif", Georgia, serif;
     color: {warm_charcoal};
+    /* Headings are set tight: display type at 22-36pt needs negative
+       tracking and sub-1.2 leading or it looks airy and amateur. */
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    /* A heading must never be the last thing on a page. */
+    page-break-after: avoid;
+    text-align: left;
+    hyphens: none;
 }}
 
 h1 {{ font-size: 36pt; }}  /* Cover title */
-h2 {{ font-size: 22pt; }}  /* Section headers */
-h3 {{ font-size: 14pt; font-family: "JetBrains Mono", monospace; font-weight: bold; }}  /* Subsection headers */
+
+/* Section headers. The vertical space is asymmetric ON PURPOSE: far more
+   above than below, so the heading binds visually to the text it introduces
+   rather than floating between two blocks. This is the single most reliable
+   whitespace cue for a deliberate-looking page. */
+h2 {{
+    font-size: 22pt;
+    margin: 0 0 10pt 0;
+}}
+
+/* Subsection headers were 14pt BOLD MONOSPACE — visually a code comment.
+   Now small-caps sans: it reads as a label, sits quietly under the serif h2,
+   and establishes a third level without competing with it. */
+h3 {{
+    font-size: 10.5pt;
+    font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: {terracotta};
+    margin: 20pt 0 6pt 0;
+}}
+
+p {{ margin: 0 0 8pt 0; }}
+
+/* Tabular figures: monospace belongs HERE, where fixed advance width makes
+   digits line up in a column, and nowhere else. */
+table, .kpi-value, .data-table, .chart-data-table {{
+    font-variant-numeric: tabular-nums;
+}}
 
 .cover {{
     page: cover;
@@ -913,6 +976,10 @@ class PresentationDesigner(BaseAgent):
     """
 
     OUTPUT_DIR = "output"
+    # Build intermediates (CSS, scratch HTML) live here, NOT in output/.
+    # output/ is reserved for things the client is meant to receive, so a
+    # failed render can never leave a bare stylesheet as the "deliverable".
+    BUILD_DIR = "output/.build"
     HTML_OUTPUT = "output/report.html"
     CSS_OUTPUT = "output/report.css"
     PDF_OUTPUT = "output/report.pdf"
@@ -1563,10 +1630,25 @@ class PresentationDesigner(BaseAgent):
                     abs_charts.append(cp)
             chart_placements_abs[sid] = abs_charts
 
-        # Write CSS file (also keep for debugging)
+        # The CSS is an INTERNAL build input, not a deliverable.
+        #
+        # HISTORY: this used to write directly to self.CSS_OUTPUT
+        # (output/<slug>.css) *before* the HTML/PDF were generated. When PDF
+        # rendering then failed, that stylesheet was the only file left in
+        # output/ — which is exactly how a 34-minute engagement delivered a
+        # lone `should_india_reduce_its_dependence_on_the_imports.css` and no
+        # report. A build intermediate must never be able to outlive, or be
+        # mistaken for, the deliverable.
+        #
+        # It is therefore written to a clearly-marked build directory. The
+        # PDF/HTML deliverable is the only thing that lands in output/.
         css_content = CSS_TEMPLATE
-        with open(self.CSS_OUTPUT, "w", encoding="utf-8") as f:
-            f.write(css_content)
+        try:
+            os.makedirs(self.BUILD_DIR, exist_ok=True)
+            with open(self._css_build_path(), "w", encoding="utf-8") as f:
+                f.write(css_content)
+        except OSError as e:
+            self._log(f"DESIGNER: could not write build CSS ({e}); continuing with inline CSS")
 
         try:
             jinja2_tool = self.get_tool(ToolName.JINJA2)
@@ -1678,6 +1760,15 @@ class PresentationDesigner(BaseAgent):
     # Step 7: Generate PDF with WeasyPrint
     # ─────────────────────────────────────────────────────────────────────
 
+    def _css_build_path(self) -> str:
+        """Path of the stylesheet build intermediate.
+
+        Lives under BUILD_DIR, never in output/. See the comment at the CSS
+        write site: a stylesheet left in output/ after a failed render was
+        mistaken for the deliverable.
+        """
+        return os.path.join(self.BUILD_DIR, os.path.basename(self.CSS_OUTPUT))
+
     async def _generate_pdf(self, html_path: str) -> str:
         """Generate the final PDF with WeasyPrint.
 
@@ -1687,6 +1778,16 @@ class PresentationDesigner(BaseAgent):
         - Brand colors (warm palette, no blue)
         - Proper margins (25mm all sides, 15mm binding)
         - Page breaks (no blank pages, no orphaned images)
+
+        Returns the path to the produced artifact: the PDF on success, or the
+        styled HTML fallback if both PDF engines are unavailable. Returns ""
+        only when nothing at all could be produced.
+
+        Every exit path is logged. This method used to `return ""` silently
+        from five different places and swallow errors with a narrow
+        `except (ValueError, AttributeError, RuntimeError)`, so a Windows GTK
+        OSError escaped while the caller was left with an empty string and no
+        idea why — the report simply vanished with no diagnostic.
         """
         os.makedirs(self.OUTPUT_DIR, exist_ok=True)
 
@@ -1698,10 +1799,12 @@ class PresentationDesigner(BaseAgent):
             try:
                 with open(html_path, "r", encoding="utf-8") as f:
                     html_content = f.read()
-            except (OSError, ValueError):
+            except (OSError, ValueError) as e:
+                self._log(f"RENDER: cannot read staged HTML {html_path}: {e}")
                 return ""
 
             if not html_content:
+                self._log(f"RENDER: staged HTML {html_path} is empty; nothing to render")
                 return ""
 
             result = weasyprint_tool.render_pdf(
@@ -1710,10 +1813,31 @@ class PresentationDesigner(BaseAgent):
             )
 
             if result and result.success:
+                self._log(f"RENDER: PDF produced at {self.PDF_OUTPUT}")
                 return self.PDF_OUTPUT
+
+            # PDF failed. The renderer now emits a styled, self-contained HTML
+            # fallback — surface it rather than discarding it. Returning ""
+            # here is what left the user with an empty output directory.
+            fallback = getattr(result, "html_path", "") if result else ""
+            if fallback and os.path.exists(fallback):
+                self._log(
+                    f"RENDER: PDF unavailable ({getattr(result, 'error', 'unknown')!s:.120}); "
+                    f"delivering HTML fallback {fallback}"
+                )
+                return fallback
+
+            self._log(
+                "RENDER: PDF generation failed with no fallback: "
+                f"{getattr(result, 'error', 'unknown error')!s:.200}"
+            )
             return ""
 
-        except (ValueError, AttributeError, RuntimeError):
+        except Exception as e:
+            # Broad by design: WeasyPrint on Windows raises OSError/ImportError
+            # from missing GTK natives, which the old narrow tuple let escape
+            # and abort the whole delivery stage.
+            self._log(f"RENDER: PDF generation raised {type(e).__name__}: {e!s:.200}")
             return ""
 
     # ─────────────────────────────────────────────────────────────────────
@@ -1883,7 +2007,7 @@ class PresentationDesigner(BaseAgent):
             section_images=all_section_images,
             chart_placements=all_chart_placements,
             html_template_path=html_path,
-            css_path=self.CSS_OUTPUT,
+            css_path=self._css_build_path(),
             pdf_path=pdf_path,
             typography=TYPOGRAPHY,
             color_palette=PDF_PALETTE,
@@ -1924,7 +2048,7 @@ class PresentationDesigner(BaseAgent):
                 "context_bundle": {
                     "layout_plan": layout_plan.model_dump(),
                     "html_path": html_path,
-                    "css_path": self.CSS_OUTPUT,
+                    "css_path": self._css_build_path(),
                     "pdf_output_path": self.PDF_OUTPUT,
                     "images_to_process": [img.image_path for img in all_section_images] +
                                          ([self._cover_image.image_path] if self._cover_image else []),

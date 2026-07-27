@@ -49,11 +49,13 @@ import asyncio
 import json
 import uuid
 from typing import Any
+from urllib.parse import quote_plus
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
+from hyperion.tools.query_utils import detect_geographies
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -390,6 +392,47 @@ class RiskAnalyst(BaseAgent):
     # Step 2: Scrape regulatory/sanctions databases (Obscura)
     # ─────────────────────────────────────────────────────────────────────
 
+    async def _discover_regulatory_portals(self, jurisdiction: str) -> list[str]:
+        """Find official regulatory sources for a non-US jurisdiction by search.
+
+        Mirrors the Regulatory Analyst's discovery step. Returns [] on any
+        failure — an empty portal list is honest, whereas falling back to the
+        US portals would file US federal material as this jurisdiction's
+        regulatory risk.
+        """
+        urls: list[str] = []
+        try:
+            from hyperion.tools.query_utils import get_engagement_focus
+
+            searxng = self.get_tool(ToolName.SEARXNG)
+            _q, _subject, _geo = get_engagement_focus()
+            sector = (
+                self._context.get("industry")
+                or self._context.get("sector")
+                or _subject
+                or ""
+            )
+            discovery = await searxng.search(
+                f"{jurisdiction} official government regulatory authority "
+                f"sanctions compliance {sector}".strip(),
+                max_results=4,
+            )
+            for r in (getattr(discovery, "results", None) or [])[:3]:
+                url = getattr(r, "url", "")
+                if url and url not in urls:
+                    urls.append(url)
+            if urls:
+                self._log(
+                    f"RISK: discovered {len(urls)} official source(s) by search "
+                    f"for jurisdiction {jurisdiction!r}"
+                )
+        except Exception as e:
+            self._log(
+                f"RISK: portal discovery failed for {jurisdiction!r} "
+                f"({type(e).__name__}); no portal data for this jurisdiction"
+            )
+        return urls
+
     async def _scrape_regulatory_databases(self, jurisdiction: str) -> list[dict[str, Any]]:
         """Scrape government risk portals, sanctions lists, and regulatory databases.
 
@@ -403,11 +446,36 @@ class RiskAnalyst(BaseAgent):
         try:
             obscura = self.get_tool(ToolName.OBSCURA)
 
-            # Regulatory portals to scrape
-            portals = [
-                f"https://www.govinfo.gov/regulations?jurisdiction={jurisdiction}",
-                f"https://sanctionslist.gov/search?q={jurisdiction}",
-            ]
+            # Regulatory portals to scrape.
+            #
+            # govinfo.gov and sanctionslist.gov are UNITED STATES government
+            # sites. Passing a non-US jurisdiction to them does not retrieve
+            # that country's rules — it queries US databases for a foreign
+            # country name, which returns US material about that country (or
+            # nothing) and was then filed as that country's regulatory risk.
+            # Combined with the caller's old `jurisdiction="US"` default, an
+            # India engagement was assessed against US federal regulations.
+            #
+            # So the US portals are only used for a US jurisdiction. For any
+            # other named jurisdiction we search for that country's own
+            # regulatory sources instead of pretending the US ones apply.
+            jurisdiction = (jurisdiction or "").strip()
+            is_us = jurisdiction.upper() in {"US", "USA", "UNITED STATES", ""}
+
+            if is_us:
+                portals = [
+                    f"https://www.govinfo.gov/regulations?jurisdiction={quote_plus(jurisdiction or 'US')}",
+                    f"https://sanctionslist.gov/search?q={quote_plus(jurisdiction or 'US')}",
+                ]
+            else:
+                portals = []
+                discovered = await self._discover_regulatory_portals(jurisdiction)
+                portals.extend(discovered)
+                if not portals:
+                    self._log(
+                        f"No regulatory portal found for jurisdiction {jurisdiction!r} — "
+                        "skipping portal scrape rather than substituting US sources"
+                    )
 
             for url in portals:
                 try:
@@ -1057,7 +1125,13 @@ class RiskAnalyst(BaseAgent):
 
         # Extract context
         industry = self._context.get("industry", "")
-        jurisdiction = self._context.get("jurisdiction", "US")
+        # Detected, never defaulted. This was `.get("jurisdiction", "US")`,
+        # so an engagement about any other country was assessed against US
+        # federal regulations and US sanctions lists.
+        jurisdiction = self._context.get("jurisdiction") or ""
+        if not jurisdiction:
+            _detected = detect_geographies(self._question or "")
+            jurisdiction = _detected[0] if _detected else ""
         space = self._context.get("space", industry)
 
         # Spawn sub-agents for parallel risk data collection

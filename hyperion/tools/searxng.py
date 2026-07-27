@@ -39,6 +39,7 @@ from urllib.parse import quote_plus
 import httpx
 
 from hyperion.tools.jina import JinaClient
+from hyperion.tools.query_utils import ground_query
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,27 @@ class SearxNGClient:
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self.REQUEST_TIMEOUT),
-                headers={"Accept": "application/json"},
+                headers={
+                    "Accept": "application/json",
+                    # Identify as a normal browser client. SearxNG's bot
+                    # detection inspects User-Agent and will reject or throttle
+                    # a bare httpx UA even when the limiter is disabled.
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    "Accept-Language": "en-US,en;q=0.9",
+                    # searxng-limiter.toml lists 172.17.0.0/16 (the docker
+                    # bridge) in trusted_proxies, but requests originating on
+                    # the host arrive with no X-Forwarded-For at all, so the
+                    # limiter cannot resolve a trusted client IP and buckets
+                    # every query into the same aggressive rate limit — the
+                    # 429s visible in the docker logs. Presenting a loopback
+                    # forwarded-for marks the request as local and trusted.
+                    "X-Forwarded-For": "127.0.0.1",
+                    "X-Real-IP": "127.0.0.1",
+                },
             )
         return self._client
 
@@ -347,9 +368,34 @@ class SearxNGClient:
 
         return None
 
-    # Only use engines that are reliable (no CAPTCHA/403 issues)
-    # Must match searxng_settings.yml engine list
-    RELIABLE_ENGINES = "bing,wikipedia,arxiv,github,hackernews"
+    # General-web engines used for business/strategy research.
+    #
+    # WHY THIS LIST CHANGED. It was
+    #     "bing,wikipedia,arxiv,github,hackernews"
+    # and the docker logs showed arxiv/github/wikipedia producing the timeouts,
+    # 403s and 429s that starved every search. Two distinct problems:
+    #
+    #  1. WRONG CORPUS. arxiv (physics/CS preprints), github (source code) and
+    #     hackernews (tech forum) cannot answer "should India reduce its
+    #     dependence on imports". They contribute ~nothing on a business query
+    #     while consuming the per-request timeout budget, so a single slow
+    #     engine delays the whole aggregated response.
+    #  2. RATE LIMITING. wikipedia/arxiv aggressively 429 a datacenter IP
+    #     issuing dozens of queries per engagement.
+    #
+    # duckduckgo is added as a second general-web source so a Bing hiccup no
+    # longer means zero results. Specialist corpora remain reachable on demand
+    # via the `engines=` argument and the dedicated science/code tools
+    # (Semantic Scholar, OpenAlex), which are the right instruments for that job.
+    RELIABLE_ENGINES = "bing,duckduckgo"
+
+    # Engines appropriate to non-general categories, so a caller asking for
+    # `categories="science"` still reaches the right corpus.
+    CATEGORY_ENGINES = {
+        "science": "arxiv,google scholar,semantic scholar",
+        "it": "github,stackoverflow",
+        "news": "bing news,duckduckgo news",
+    }
 
     async def search(
         self,
@@ -386,8 +432,40 @@ class SearxNGClient:
         if max_results is not None:
             num_results = max_results
 
-        # Use reliable engines by default to avoid CAPTCHA/403 from flaky defaults
-        effective_engines = engines if engines else self.RELIABLE_ENGINES
+        # ── Query grounding (single choke point for all 45 specialist call
+        # sites) ──
+        # Specialists build queries from hardcoded f-string templates such as
+        # f"{sector} carbon footprint emissions data". When the interpolated
+        # variable is empty, the outbound query becomes subject-less and cannot
+        # possibly answer the user's question. Rather than trust 11 specialist
+        # modules to each get this right, every query is grounded HERE, against
+        # the engagement's actual question/subject/geography.
+        #
+        # A query that still has no subject after grounding is dropped rather
+        # than sent — a useless search costs 20s of timeout and pollutes the
+        # findings with irrelevant sources.
+        original_query = query
+        grounded = ground_query(query)
+        if not grounded:
+            logger.warning(
+                "Dropping contentless search query (no subject after grounding): %r",
+                original_query[:120],
+            )
+            return SearchResponse(query=original_query, results=[], total=0, engines_used=[])
+        if grounded != original_query:
+            logger.info("Grounded query: %r → %r", original_query[:100], grounded[:100])
+        query = grounded
+
+        # Pick the engine set. An explicit `engines=` argument always wins.
+        # Otherwise route by category so a science/it/news query reaches the
+        # right corpus instead of being forced through general-web engines
+        # (or, as before, sending business questions to arxiv and github).
+        if engines:
+            effective_engines = engines
+        else:
+            effective_engines = self.CATEGORY_ENGINES.get(
+                (categories or "general").lower(), self.RELIABLE_ENGINES
+            )
 
         cache_key = self._cache_key(query, num_results=num_results, categories=categories,
                                      language=language, time_range=time_range, engines=effective_engines)

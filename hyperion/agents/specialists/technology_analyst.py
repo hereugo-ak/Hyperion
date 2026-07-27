@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from typing import Any
 
@@ -58,6 +59,7 @@ from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
+from hyperion.tools.query_utils import detect_geographies, resolve_subject
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -339,16 +341,79 @@ class TechnologyAnalyst(BaseAgent):
         try:
             searxng = self.get_tool(ToolName.SEARXNG)
 
-            query_patterns = [
-                f"best {technology_category} for {use_case}",
-                f"{technology_category} vendor comparison 2024 2025",
-                f"{technology_category} alternatives pricing",
-                f"{technology_category} architecture case study",
-                f"{technology_category} API documentation review",
-            ]
+            # Resolve what we are actually evaluating.
+            #
+            # WHY NOT JUST `technology_category`. It comes from the Director's
+            # handover via self._context.get("technology_category", ""), and a
+            # question that is not phrased as a tech-selection problem carries
+            # no such key. The templates below then interpolated "" and this
+            # agent searched for "vendor comparison 2024 2025" — a query with
+            # no subject, which cannot return anything about the engagement.
+            subject = resolve_subject(
+                self._context,
+                "technology_category",
+                "technology",
+                "industry",
+                "sector",
+                question=self._question,
+            ) or technology_category
+            geographies = detect_geographies(self._question or "")
+            geo = geographies[0] if geographies else ""
+
+            def _q(*parts: str) -> str:
+                """Join query parts, dropping empties, anchored to geography.
+
+                Assembling queries here rather than in an f-string makes an
+                empty interpolation structurally impossible: an absent part
+                vanishes instead of leaving a hole that turns the query into a
+                subject-less template.
+                """
+                return " ".join(p.strip() for p in (*parts, geo) if p and p.strip())
+
+            # The templates split by subject kind for the same reason as the
+            # sentiment search below: "API documentation review" and
+            # "architecture case study" presuppose a software artefact. Asked
+            # about national import dependence they return confidently
+            # irrelevant material, which contaminates a report far more than an
+            # empty result set would.
+            if self._looks_like_software(subject):
+                query_patterns = [
+                    _q("best", subject, f"for {use_case}" if use_case.strip() else ""),
+                    _q(subject, "vendor comparison"),
+                    _q(subject, "alternatives pricing"),
+                    _q(subject, "architecture case study"),
+                    _q(subject, "API documentation review"),
+                ]
+            else:
+                query_patterns = [
+                    _q("best", subject, f"for {use_case}" if use_case.strip() else ""),
+                    _q(subject, "options comparison"),
+                    _q(subject, "cost analysis"),
+                    _q(subject, "capability assessment case study"),
+                    _q(subject, "supplier landscape"),
+                ]
+
+            # Drop empties and duplicates so identical searches do not burn
+            # rate limit against the same engine.
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for pattern in query_patterns:
+                key = pattern.lower()
+                if pattern and key not in seen:
+                    seen.add(key)
+                    deduped.append(pattern)
+            query_patterns = deduped
 
             for pattern in query_patterns:
-                search_results = await searxng.search(pattern, max_results=8)
+                # Recency is expressed as SearxNG's `time_range` parameter, not
+                # as literal years in the query. The old template appended
+                # "2024 2025", which (a) rots the moment the calendar advances
+                # and (b) is stripped by query normalisation as recency noise
+                # anyway, so it never actually constrained anything. `time_range`
+                # is applied by the engine and cannot be normalised away.
+                search_results = await searxng.search(
+                    pattern, max_results=8, time_range="year"
+                )
                 for r in search_results:
                     results.append({
                         "title": r.get("title", ""),
@@ -440,6 +505,36 @@ class TechnologyAnalyst(BaseAgent):
     # Step 3: Search for developer sentiment and reviews (SearxNG)
     # ─────────────────────────────────────────────────────────────────────
 
+    # Vocabulary that indicates the subject is a software/IT artefact, for
+    # which developer-forum sources are genuinely authoritative.
+    _SOFTWARE_HINTS = frozenset({
+        "software", "platform", "saas", "api", "sdk", "framework", "library",
+        "database", "cloud", "kubernetes", "container", "microservice",
+        "microservices", "devops", "ci", "cd", "crm", "erp", "cms", "iaas",
+        "paas", "middleware", "runtime", "compiler", "orm", "queue", "cache",
+        "warehouse", "lakehouse", "etl", "observability", "monitoring",
+        "authentication", "app", "application", "stack", "tooling", "tool",
+        "language", "python", "javascript", "typescript", "java", "golang",
+        "rust", "postgres", "postgresql", "mysql", "mongodb", "redis", "kafka",
+        "snowflake", "databricks", "aws", "azure", "gcp", "terraform", "docker",
+        "llm", "ml", "mlops", "vector", "embedding", "frontend", "backend",
+    })
+
+    @classmethod
+    def _looks_like_software(cls, subject: str) -> bool:
+        """True when developer-forum sources are appropriate for `subject`.
+
+        Site-anchored queries such as "<subject> complaints issues github" are
+        excellent for a software product and actively harmful for a
+        macroeconomic subject: they return confidently irrelevant results
+        instead of an empty set, and irrelevant-but-plausible is the failure
+        mode that poisons a report.
+        """
+        if not subject:
+            return False
+        tokens = {t for t in re.findall(r"[a-z0-9\-\+#\.]+", subject.lower()) if t}
+        return bool(tokens & cls._SOFTWARE_HINTS)
+
     async def _search_developer_reviews(self, technology: str) -> list[dict[str, Any]]:
         """Search for developer sentiment, reviews, and community feedback.
 
@@ -454,14 +549,62 @@ class TechnologyAnalyst(BaseAgent):
         try:
             searxng = self.get_tool(ToolName.SEARXNG)
 
-            query_patterns = [
-                f"{technology} developer review reddit",
-                f"{technology} pros and cons stack overflow",
-                f"{technology} complaints issues github",
-                f"{technology} hacker news discussion",
-                f"why I left {technology} engineering blog",
-                f"{technology} vs alternatives developer experience",
-            ]
+            subject = resolve_subject(
+                self._context,
+                "technology",
+                "technology_category",
+                "industry",
+                "sector",
+                question=self._question,
+            ) or technology
+
+            if not subject:
+                # Without a subject these become bare site names
+                # ("developer review reddit"), which return noise. Returning
+                # early is the honest outcome.
+                self._log("No resolvable technology subject — skipping practitioner-sentiment search")
+                return results
+
+            def _q(*parts: str) -> str:
+                return " ".join(p.strip() for p in parts if p and p.strip())
+
+            # Practitioner sentiment queries.
+            #
+            # These used to name developer forums unconditionally
+            # ("... reddit", "... stack overflow", "... github",
+            # "... hacker news"). Those are the right venues when the subject
+            # is a software product, and the wrong ones when the engagement is
+            # about, say, national import dependence — a site-restricted query
+            # returns noise rather than nothing, which is worse. So the
+            # site-anchored variants are only issued when the subject actually
+            # looks like a software/technology product; otherwise we ask for
+            # practitioner experience in neutral terms.
+            if self._looks_like_software(subject):
+                query_patterns = [
+                    _q(subject, "developer review reddit"),
+                    _q(subject, "pros and cons stack overflow"),
+                    _q(subject, "complaints issues github"),
+                    _q(subject, "hacker news discussion"),
+                    _q("why we moved off", subject, "engineering blog"),
+                    _q(subject, "vs alternatives developer experience"),
+                ]
+            else:
+                query_patterns = [
+                    _q(subject, "practitioner review limitations"),
+                    _q(subject, "advantages and disadvantages assessment"),
+                    _q(subject, "implementation challenges lessons learned"),
+                    _q(subject, "criticism drawbacks analysis"),
+                    _q(subject, "alternatives comparison tradeoffs"),
+                ]
+
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for pattern in query_patterns:
+                key = pattern.lower()
+                if pattern and key not in seen:
+                    seen.add(key)
+                    deduped.append(pattern)
+            query_patterns = deduped
 
             for pattern in query_patterns:
                 search_results = await searxng.search(pattern, max_results=5)
@@ -1055,11 +1198,23 @@ class TechnologyAnalyst(BaseAgent):
             f"Starting technology assessment: {self._question[:80]}",
         )
 
-        # Extract context
-        technology_category = self._context.get("technology_category", "")
-        use_case = self._context.get("use_case", "")
+        # Extract context.
+        #
+        # `technology_category` is resolved through the engagement rather than
+        # read raw: the Director's handover often omits it, and every query
+        # template downstream used to interpolate that emptiness, producing
+        # subject-less searches like "vendor comparison 2024 2025".
+        technology_category = resolve_subject(
+            self._context,
+            "technology_category",
+            "technology",
+            "industry",
+            "sector",
+            question=self._question,
+        )
+        use_case = self._context.get("use_case", "") or ""
         vendors = self._context.get("vendors", [])
-        technology = self._context.get("technology", technology_category)
+        technology = self._context.get("technology") or technology_category
 
         # Spawn sub-agents for parallel vendor data collection
         if vendors or technology:

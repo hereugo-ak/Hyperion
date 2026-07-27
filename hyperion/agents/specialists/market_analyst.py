@@ -425,10 +425,37 @@ class MarketAnalyst(BaseAgent):
 
         GDP growth, sector spending, inflation, and interest rates drive
         market size. A market in a country with 7% GDP growth behaves
-        differently than one in a country with 1% GDP growth. FRED provides
-        the macro context that frames the market sizing. (§5.1)
+        differently than one in a country with 1% GDP growth. (§5.1)
+
+        IMPORTANT — THIS IS UNITED STATES DATA. The series pulled below (GDP,
+        CPIAUCSL, PCES) are US series. `geography` never selected the series;
+        it only labelled the source. The docstring above therefore described
+        an adaptivity this method does not have, and the caller's `"US"`
+        default hid the problem: an India market sizing was framed with US GDP
+        growth and US consumer spending, cited as "FRED Macroeconomic Data —
+        India". Market sizing is exactly where that distortion compounds,
+        because the macro figure scales the whole TAM estimate.
+
+        The provenance is now recorded truthfully and a `geography_mismatch`
+        entry is set when a different geography was requested, so the sizing
+        steps and the Fact Checker can see the proxy for what it is.
         """
         macro: dict[str, Any] = {}
+
+        requested = (geography or "").strip()
+        if requested and requested.upper() not in {"US", "USA", "UNITED STATES"}:
+            macro["geography_mismatch"] = {
+                "requested": requested,
+                "actual": "US",
+                "note": (
+                    "FRED serves US series only. These are US macro figures "
+                    f"used as a proxy and must not be presented as {requested} data."
+                ),
+            }
+            self._log(
+                f"FRED macro context is US-only; requested {requested!r} "
+                "cannot be served — flagging mismatch"
+            )
 
         try:
             fred = self.get_tool(ToolName.FRED)
@@ -448,12 +475,20 @@ class MarketAnalyst(BaseAgent):
             if sector_spending:
                 macro["sector_spending"] = sector_spending
 
+            # Cite what was actually retrieved (US), not what was requested.
             self._sources.append(Source(
                 id=f"src_{len(self._sources):03d}",
-                title=f"FRED Macroeconomic Data — {geography}",
+                title="FRED Macroeconomic Data — United States",
                 url="https://fred.stlouisfed.org",
                 credibility=SourceCredibility.GOVERNMENT,
-                key_data=f"GDP growth, inflation, sector spending for {geography}",
+                key_data=(
+                    "US GDP growth, inflation, sector spending"
+                    + (
+                        f" (US proxy — {requested} series unavailable from FRED)"
+                        if macro.get("geography_mismatch")
+                        else ""
+                    )
+                ),
             ))
 
         except (ValueError, AttributeError, RuntimeError):
@@ -1292,7 +1327,8 @@ class MarketAnalyst(BaseAgent):
             self._scraped_data = await self._scrape_dashboards(self._question)
 
         # Step 3: Pull macroeconomic context
-        geography = self._context.get("geography") or "US"
+        # Detected, never defaulted (was `or "US"`).
+        geography = self._context.get("geography") or ""
         await self._transition(AgentState.WORKING, f"Step 3: Pulling macro data (FRED) for {geography}")
         self._macro_data = await self._pull_macro_context(geography)
 

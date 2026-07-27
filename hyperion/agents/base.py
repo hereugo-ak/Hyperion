@@ -105,6 +105,11 @@ class BaseAgent(ABC):
         # Sub-agent specs spawned by this agent
         self._sub_agent_specs: list[SubAgentSpec] = []
 
+        # Issue texts already escalated, for deduplication. See _escalate():
+        # each escalation costs the Director a STRONG-tier LLM call, so a loop
+        # emitting the same issue repeatedly must not be allowed to storm it.
+        self._escalated_issues: set[str] = set()
+
         # Subscription ID for bus
         self._sub_id = f"agent_{spec.name.value}"
 
@@ -397,6 +402,45 @@ class BaseAgent(ABC):
             },
         )
 
+    def _log(self, message: str) -> None:
+        """Publish a diagnostic log line to the TUI. Synchronous, never raises.
+
+        CRITICAL: several agents (notably RenderEngine) call `self._log()` from
+        inside `except` blocks. Before this method existed, that call raised
+        AttributeError *while handling another error*, masking the real failure
+        and aborting the delivery stage — which is exactly how an engagement
+        could finish with a stray `report.css` and no PDF. This is therefore a
+        deliberately bulletproof, non-async, exception-swallowing shim: logging
+        must NEVER be able to break the pipeline.
+        """
+        try:
+            import asyncio
+
+            coro = self.bus.publish(
+                channel=Channel.TUI,
+                msg_type=MessageType.STATUS,
+                sender=self.name,
+                payload={
+                    "agent": self.name.value,
+                    "tool": "system.log",
+                    "action": message[:400],
+                    "detail": "",
+                    "success": None,
+                },
+            )
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop — nothing is listening; drop the message.
+                coro.close()
+                return
+            task = loop.create_task(coro)
+            # Prevent "Task exception was never retrieved" noise.
+            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        except Exception:
+            # Logging must never propagate. Swallow everything.
+            pass
+
     async def _publish_findings(self, findings: list[KeyFinding]) -> None:
         """Publish multiple findings."""
         for finding in findings:
@@ -409,7 +453,24 @@ class BaseAgent(ABC):
         - Spawn new agents mid-engagement (adaptive replanning, §10.2)
         - Reroute tasks if an agent fails
         - Reallocate model tiers if budget is running low
+
+        DEDUPLICATED. Every escalation costs the Director a STRONG-tier LLM
+        call to evaluate. An agent in a loop (e.g. Synthesis Lead iterating
+        over N contradictions, each hitting the same sub-agent cap) used to
+        emit the identical escalation N times, and each one triggered a fresh
+        Director evaluation — an escalation storm that burned STRONG quota and
+        wall-clock time while producing zero new information. The same issue
+        text from the same agent is therefore only escalated once per
+        engagement; repeats are logged and dropped.
         """
+        key = issue.strip().lower()[:160]
+        if key in self._escalated_issues:
+            self._log(
+                f"ESCALATION suppressed (duplicate, already reported): {issue[:120]}"
+            )
+            return
+        self._escalated_issues.add(key)
+
         await self.bus.publish_escalation(
             agent=self.name,
             issue=issue,
@@ -730,9 +791,18 @@ class BaseAgent(ABC):
         from hyperion.agents.sub_agent import SubAgentRunner
 
         if len(self._sub_agent_specs) >= self.max_sub_agents:
-            await self._escalate(
-                issue=f"Max sub-agents ({self.max_sub_agents}) already spawned",
-                suggested_action="Proceed with available findings and flag the gap",
+            # Budget exhaustion is a NORMAL, expected outcome of a bounded
+            # resource — not an anomaly the Director needs to reason about.
+            # This used to call _escalate(), so an agent looping over N items
+            # (e.g. Synthesis Lead resolving N contradictions with
+            # max_sub_agents=1) fired N escalations, each costing the Director
+            # a STRONG-tier LLM evaluation that could only ever conclude
+            # "proceed with available findings". That was the escalation storm.
+            # The correct behaviour is to log the gap and carry on.
+            self._log(
+                f"SUB-AGENT budget reached ({len(self._sub_agent_specs)}/"
+                f"{self.max_sub_agents}); proceeding without spawning: "
+                f"{spec.question[:80]}"
             )
             return []
 

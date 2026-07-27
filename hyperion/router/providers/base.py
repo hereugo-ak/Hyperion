@@ -24,6 +24,57 @@ from openai import AsyncOpenAI
 from hyperion.config import ModelSpec, ModelTier, ProviderConfig, ProviderType
 
 
+def _coerce_content(raw: Any) -> str:
+    """Flatten any OpenAI-compatible `message.content` shape into a str.
+
+    Handles, in order of how often we actually see them:
+
+    - ``None`` / falsy            -> ``""``
+    - ``str``                     -> unchanged
+    - ``list`` of content blocks  -> the text parts joined
+      (Mistral & some NVIDIA models return this; blocks may be dicts with
+      ``text``/``content``/``value`` keys, or pydantic objects with a
+      ``.text`` attribute, or bare strings)
+    - anything else               -> ``str(raw)``
+
+    Never raises: a malformed block is skipped rather than allowed to take
+    down the calling agent.
+    """
+    if not raw:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, (list, tuple)):
+        parts: list[str] = []
+        for block in raw:
+            if not block:
+                continue
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+            if isinstance(block, dict):
+                for key in ("text", "content", "value"):
+                    val = block.get(key)
+                    if isinstance(val, str) and val:
+                        parts.append(val)
+                        break
+                    # Nested blocks, e.g. {"content": [{"text": "..."}]}
+                    if isinstance(val, (list, tuple)) and val:
+                        nested = _coerce_content(val)
+                        if nested:
+                            parts.append(nested)
+                        break
+                continue
+            # Pydantic / SDK objects exposing .text or .content
+            for attr in ("text", "content", "value"):
+                val = getattr(block, attr, None)
+                if isinstance(val, str) and val:
+                    parts.append(val)
+                    break
+        return "".join(parts)
+    return str(raw)
+
+
 class ProviderStatus(str, Enum):
     """Health status of a provider (§3.6 Failover Handler)."""
 
@@ -135,6 +186,19 @@ class RouterResponse:
     error: str | None = None
     raw_response: Any | None = None
 
+    def __post_init__(self) -> None:
+        """Enforce the `content: str` contract at the type boundary.
+
+        Defense in depth. `_coerce_content` already normalizes the provider
+        path, but this dataclass is the single type through which every LLM
+        result reaches every agent, and ~every agent calls
+        `response.content.strip()`. Guaranteeing str here means no future
+        provider quirk or new construction site can reintroduce the
+        `'list' object has no attribute 'strip'` class of crash.
+        """
+        if not isinstance(self.content, str):
+            self.content = _coerce_content(self.content)
+
 
 class BaseProvider:
     """Base class for all LLM providers.
@@ -217,9 +281,20 @@ class BaseProvider:
                 input_tokens = response.usage.prompt_tokens or 0
                 output_tokens = response.usage.completion_tokens or 0
 
-            content = ""
-            if response.choices and response.choices[0].message.content:
-                content = response.choices[0].message.content
+            # Normalize the message content to a plain str.
+            #
+            # `RouterResponse.content` is typed `str` and ~every caller does
+            # `response.content.strip()`. But the OpenAI-compatible wire format
+            # allows `message.content` to be a LIST of content blocks
+            # (e.g. [{"type":"text","text":"..."}]), and Mistral in particular
+            # returns that shape. Passing the list straight through produced
+            # the production crash `'list' object has no attribute 'strip'`
+            # in ma_analyst (and would eventually hit every other agent).
+            # Normalizing here fixes it once for all 5 providers and all
+            # call sites, rather than sprinkling isinstance checks around.
+            content = _coerce_content(
+                response.choices[0].message.content if response.choices else None
+            )
 
             return RouterResponse(
                 content=content,

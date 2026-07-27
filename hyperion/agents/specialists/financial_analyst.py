@@ -392,7 +392,7 @@ class FinancialAnalyst(BaseAgent):
     # Step 2: Pull macroeconomic inputs for discount rates (FRED)
     # ─────────────────────────────────────────────────────────────────────
 
-    async def _pull_macro_inputs(self, geography: str = "US") -> dict[str, Any]:
+    async def _pull_macro_inputs(self, geography: str = "") -> dict[str, Any]:
         """Pull macroeconomic data for DCF discount rates and scenario modeling.
 
         Key inputs:
@@ -400,8 +400,37 @@ class FinancialAnalyst(BaseAgent):
         - Inflation rate → nominal vs real cash flow adjustment
         - GDP growth → terminal growth rate ceiling
         - Interest rates → cost of debt
+
+        IMPORTANT — THIS IS UNITED STATES DATA. The FRED series pulled below
+        (DGS10, CPIAUCSL, GDP, FEDFUNDS) are US series and nothing else. The
+        ``geography`` argument does not and cannot change which series are
+        fetched — it only labelled the source. That combination was actively
+        dangerous: the default was ``"US"``, but when a caller passed "India"
+        the same US Treasury yields and US CPI came back and the source was
+        then labelled "FRED Macroeconomic Data — India". A DCF built on that
+        discounts Indian cash flows at a US risk-free rate while the citation
+        claims Indian provenance.
+
+        The geography is therefore recorded honestly as US, and a
+        ``geography_mismatch`` entry is set whenever a different geography was
+        requested, so downstream consumers can discount or exclude it.
         """
         macro: dict[str, Any] = {}
+
+        requested = (geography or "").strip()
+        if requested and requested.upper() not in {"US", "USA", "UNITED STATES"}:
+            macro["geography_mismatch"] = {
+                "requested": requested,
+                "actual": "US",
+                "note": (
+                    "FRED serves US series only. These macro inputs are US "
+                    f"figures and must not be presented as {requested} data."
+                ),
+            }
+            self._log(
+                f"FRED macro inputs are US-only; requested geography {requested!r} "
+                "cannot be served — flagging mismatch"
+            )
 
         try:
             fred = self.get_tool(ToolName.FRED)
@@ -426,12 +455,21 @@ class FinancialAnalyst(BaseAgent):
             if fed_data:
                 macro["fed_funds_rate"] = fed_data
 
+            # Cite the data's real provenance (US), not the geography that was
+            # requested. Mislabelling a source is worse than lacking one.
             self._sources.append(Source(
                 id=f"src_{len(self._sources):03d}",
-                title=f"FRED Macroeconomic Data — {geography}",
+                title="FRED Macroeconomic Data — United States",
                 url="https://fred.stlouisfed.org",
                 credibility=SourceCredibility.GOVERNMENT,
-                key_data="Risk-free rate, inflation, GDP growth, Fed funds rate",
+                key_data=(
+                    "US risk-free rate, inflation, GDP growth, Fed funds rate"
+                    + (
+                        f" (US proxy — {requested} series unavailable from FRED)"
+                        if macro.get("geography_mismatch")
+                        else ""
+                    )
+                ),
             ))
 
         except (ValueError, AttributeError, RuntimeError):
@@ -1239,7 +1277,10 @@ class FinancialAnalyst(BaseAgent):
         tickers = self._context.get("tickers", [])
         industry = self._context.get("industry", "")
         business_model = self._context.get("business_model", "")
-        geography = self._context.get("geography", "US")
+        # Detected, never defaulted. This was `.get("geography", "US")`, which
+        # meant an engagement about any other country was silently analysed as
+        # the United States.
+        geography = self._context.get("geography") or ""
         tam_from_market = self._context.get("tam")
 
         # Spawn sub-agents for parallel data collection

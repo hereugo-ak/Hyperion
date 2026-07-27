@@ -80,33 +80,67 @@ outgoing:
 # These are the engines that consistently work without CAPTCHA/403/rate-limit.
 # When SearxNG fails on all of these, the SearxNG client falls back to Jina.
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# ENGINE SELECTION RATIONALE
+# --------------------------
+# Previously this list was bing + wikipedia + arxiv + github + hackernews, and
+# the docker logs showed arxiv/github/wikipedia generating the timeouts, 403s
+# and 429s that starved research. Two separate faults:
+#
+#   1. Wrong corpus. arxiv (preprints), github (code) and hackernews (forum)
+#      cannot answer a business/strategy question, yet each one still consumed
+#      the request timeout budget — one slow engine delays the aggregated
+#      response for all of them.
+#   2. Rate limiting. wikipedia and arxiv 429 a datacenter IP that issues dozens
+#      of queries per engagement.
+#
+# General web search now uses two independent providers (bing + duckduckgo) so
+# one provider failing no longer means zero results. Specialist corpora are
+# still loaded but are only reached via an explicit category/engine request,
+# and dedicated tools (Semantic Scholar, OpenAlex) remain the primary route for
+# academic work. Timeouts are raised from 20s to 30s: the previous value was
+# below what these engines need under load, which is itself a source of the
+# "engine timeout" lines in the logs.
 engines:
+  # ── General web (default set for business research) ──
   - name: bing
     engine: bing
     shortcut: bi
     disabled: false
-    timeout: 20
+    timeout: 30
 
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+    timeout: 30
+
+  # ── Specialist corpora: loaded but NOT in the default set. ──
+  # Reached only via categories=science/it or an explicit engines= argument,
+  # so they can no longer slow down or pollute a general business query.
   - name: wikipedia
     engine: wikipedia
     shortcut: wp
-    disabled: false
-    timeout: 20
+    disabled: true
+    timeout: 30
 
   - name: arxiv
     engine: arxiv
     shortcut: ar
-    disabled: false
-    timeout: 20
+    categories: science
+    disabled: true
+    timeout: 30
 
   - name: github
     engine: github
     shortcut: gh
-    disabled: false
-    timeout: 20
+    categories: it
+    disabled: true
+    timeout: 30
 
   - name: hackernews
     engine: hackernews
     shortcut: hn
-    disabled: false
-    timeout: 20
+    categories: it
+    disabled: true
+    timeout: 30
