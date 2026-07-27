@@ -161,6 +161,20 @@ class WorkflowDAG(BaseModel):
     question: str = Field(description="The original business question")
     question_type: QuestionType = Field(description="Classified question type")
     tasks: list[TaskNode] = Field(default_factory=list, description="All tasks in the DAG")
+    # The agent that receives the question and breaks it down is the one that
+    # understands what the question is ABOUT, so its decomposition carries the
+    # scope forward rather than leaving every downstream consumer to re-derive
+    # it from keyword lists. Empty means "the question named no jurisdiction",
+    # which is a legitimate answer — the pipeline then runs without a
+    # jurisdiction filter instead of inventing one.
+    geographies: list[str] = Field(
+        default_factory=list,
+        description="Jurisdictions the question is about, primary first, as extracted by the Director",
+    )
+    subject: str = Field(
+        default="",
+        description="Industry/sector/topic the question is about, as extracted by the Director",
+    )
     agents_selected: list[AgentName] = Field(
         default_factory=list,
         description="Specialists selected by the Director for this engagement",

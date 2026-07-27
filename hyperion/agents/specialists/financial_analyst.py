@@ -71,6 +71,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.tools.query_utils import resolve_subject
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1275,7 +1276,12 @@ class FinancialAnalyst(BaseAgent):
 
         # Extract context
         tickers = self._context.get("tickers", [])
-        industry = self._context.get("industry", "")
+        # Four-tier resolution (industry -> sector -> engagement subject ->
+        # the user's question) rather than a single context key that may be
+        # absent. An empty industry produced benchmark searches with no subject.
+        industry = resolve_subject(
+            self._context, "industry", "sector", question=self._question
+        )
         business_model = self._context.get("business_model", "")
         # Detected, never defaulted. This was `.get("geography", "US")`, which
         # meant an engagement about any other country was silently analysed as

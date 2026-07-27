@@ -83,6 +83,7 @@ from hyperion.schemas.models import (
     SynergyAnalysis,
     ValuationGap,
 )
+from hyperion.tools.query_utils import resolve_subject
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -383,7 +384,32 @@ class MAAnalyst(BaseAgent):
 
         if response.success and response.content:
             return response.content.strip()
-        return f"Acquisition criteria for {acquirer or sector}: {size_range} {geography} {sector}"
+        # Fallback when the LLM call fails. Built by joining non-empty parts
+        # rather than interpolating: geography and size_range are frequently
+        # absent, and the previous f-string then produced
+        # "Acquisition criteria for X:  semiconductors" — a doubled space and a
+        # dangling colon. This value is used downstream as search criteria, so a
+        # malformed string becomes a malformed query.
+        subject = (acquirer or sector or "").strip()
+        # Drop any part that merely repeats the subject. With no acquirer in
+        # the handover the subject falls back to the sector, and the naive
+        # join then produced "Acquisition criteria for semiconductors:
+        # semiconductors" — the word twice in one search query, which wastes
+        # the query's signal on a duplicate token. Verified by running the
+        # fallback across the six realistic handover shapes.
+        parts = [
+            p.strip()
+            for p in (size_range, geography, sector)
+            if p and p.strip() and p.strip().casefold() != subject.casefold()
+        ]
+        descriptor = " ".join(parts)
+        if not descriptor:
+            return f"Acquisition criteria for {subject}" if subject else ""
+        return (
+            f"Acquisition criteria for {subject}: {descriptor}"
+            if subject
+            else f"Acquisition criteria: {descriptor}"
+        )
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 2: Search for potential targets (SearxNG + Jina + Obscura)
@@ -1150,7 +1176,11 @@ class MAAnalyst(BaseAgent):
         )
 
         # Extract context
-        sector = self._context.get("sector", self._context.get("industry", ""))
+        # See resolve_subject: four-tier resolution ending at the user's own
+        # question, so a query can never be built around an empty subject.
+        sector = resolve_subject(
+            self._context, "sector", "industry", question=self._question
+        )
 
         # Step 1: Define acquisition criteria
         await self._transition(AgentState.WORKING, "Step 1: Defining acquisition criteria with Engagement Director")

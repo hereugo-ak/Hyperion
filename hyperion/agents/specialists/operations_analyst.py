@@ -76,6 +76,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.tools.query_utils import resolve_subject
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1065,7 +1066,11 @@ class OperationsAnalyst(BaseAgent):
 
         # Extract context
         industry = self._context.get("industry", "")
-        sector = self._context.get("sector", industry)
+        # Four-tier resolution (sector -> industry -> engagement subject ->
+        # the user's question) instead of a single context key.
+        sector = resolve_subject(
+            self._context, "sector", "industry", question=self._question
+        ) or industry
         process_type = self._context.get("process_type", "manufacturing")
 
         # Spawn sub-agents for parallel data collection

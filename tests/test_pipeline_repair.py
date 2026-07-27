@@ -839,6 +839,20 @@ class TestTypography:
         assert m, f"no CSS block for {selector!r}"
         return m.group(1)
 
+    def _css_code(self) -> str:
+        """CSS with /* ... */ comments stripped.
+
+        Required for any assertion of the form "token X must not appear".
+        The stylesheet documents its own bug history, so it legitimately quotes
+        the defective `{page}` placeholder inside a comment. Asserting against
+        the raw text confuses the fix's documentation with the defect itself —
+        the same trap that made an earlier regex-based geography guard flag
+        docstrings. Judge the declarations, not the prose.
+        """
+        import re
+
+        return re.sub(r"/\*.*?\*/", "", self._css(), flags=re.S)
+
     def test_body_is_not_monospace(self):
         """No consulting firm sets running prose in a monospace font: uniform
         character width destroys word-shape cues and reads as terminal output.
@@ -882,13 +896,1167 @@ class TestTypography:
 
     def test_no_unresolved_palette_placeholders(self):
         """CSS_TEMPLATE is .format()-ed at import; a stray {token} would ship
-        as a literal brace in the stylesheet."""
+        as a literal brace in the stylesheet.
+
+        This test previously WHITELISTED {page} and {section_title}, on the
+        stated belief that they were "WeasyPrint running-element markers
+        deliberately escaped through to the output". That belief was wrong, and
+        the whitelist is what allowed the bug to survive: they are not markers
+        of any kind. Rendering the template to a real PDF and extracting the
+        text showed the literal characters "{page}" printed in the footer of
+        every page. There is no such thing as a brace placeholder in CSS —
+        page numbers come from counter(page). The whitelist is therefore gone
+        and NO leftover brace token is tolerated.
+        """
         import re
 
-        # {page} and {section_title} are WeasyPrint running-element markers,
-        # deliberately escaped through to the output.
-        leftovers = {
-            t for t in re.findall(r"\{[a-z_]+\}", self._css())
-            if t not in ("{page}", "{section_title}")
+        leftovers = set(re.findall(r"\{[a-z_]+\}", self._css_code()))
+        assert not leftovers, f"unresolved placeholders in emitted CSS: {leftovers}"
+
+    def test_page_number_uses_css_counter_not_placeholder(self):
+        """Regression: the footer must use counter(page), never a brace token.
+
+        Guards the specific defect directly, so that reintroducing a
+        "{page}"-style placeholder fails with an explanatory message rather
+        than only tripping the generic leftover-token test.
+        """
+        css = self._css_code()
+        assert "counter(page)" in css, "footer does not use counter(page)"
+        assert "{page}" not in css, "literal {page} placeholder is back in the CSS"
+        assert "{section_title}" not in css, "literal {section_title} placeholder is back"
+
+    def test_running_header_is_fed_by_string_set(self):
+        """string(section-title) resolves to empty unless something sets it."""
+        css = self._css_code()
+        if "string(section-title)" in css:
+            assert "string-set: section-title" in css, (
+                "@top-center consumes string(section-title) but no rule sets it, "
+                "so every running header would render blank"
+            )
+
+    def test_kpi_labels_cannot_hyphenate(self):
+        """Short KPI descriptors must never break across lines.
+
+        The rendered PDF printed "KEY FIND-INGS" and "CONFID-ENCE": body-level
+        `hyphens: auto` is inherited, and a narrow KPI card triggers it.
+        """
+        for cls in ("kpi-card", "kpi-label"):
+            block = self._block(f".{cls}")
+            assert "hyphens: none" in block, (
+                f".{cls} does not disable hyphenation, so short labels can "
+                f"break mid-word (e.g. 'KEY FIND-INGS')"
+            )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Lifecycle: fresh initialisation on shell start, complete teardown on quit
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestServiceLifecycle:
+    """Everything HYPERION starts must be started fresh and stopped on quit.
+
+    The teardown was silently a no-op. `HyperionApp.on_unmount` was a SYNC
+    handler that did `asyncio.get_running_loop().run_until_complete(...)`.
+    Textual dispatches unmount from inside its own running loop, so that call
+    raises `RuntimeError: This event loop is already running`, and a bare
+    `except Exception: pass` swallowed it. Result: `stop_services` ran zero
+    times and every shell session leaked its SearxNG / FlareSolverr containers.
+    """
+
+    def test_quit_handlers_are_awaitable(self):
+        """A sync handler cannot await teardown from inside a running loop.
+
+        This is the root cause, asserted directly: if either handler is ever
+        made sync again, teardown silently stops happening.
+        """
+        import inspect
+
+        from hyperion.tui.app import HyperionApp
+
+        assert inspect.iscoroutinefunction(HyperionApp.action_quit), (
+            "action_quit must be async or teardown cannot be awaited"
+        )
+        assert inspect.iscoroutinefunction(HyperionApp.on_unmount), (
+            "on_unmount must be async or teardown cannot be awaited"
+        )
+
+    def test_no_run_until_complete_in_tui_shutdown(self):
+        """`run_until_complete` on Textual's own loop always raises.
+
+        Inspected via AST, not text search: the module's docstrings quote
+        `run_until_complete` while explaining this very bug, and a substring
+        match cannot tell the fix's documentation from the defect. Only actual
+        call nodes count.
+        """
+        import ast
+        import inspect
+
+        from hyperion.tui import app as app_mod
+
+        tree = ast.parse(inspect.getsource(app_mod))
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run_until_complete"
+        ]
+        assert not offenders, (
+            f"run_until_complete called in the TUI at line(s) {offenders}: it "
+            f"raises 'This event loop is already running' when invoked from a "
+            f"Textual handler, and teardown silently never runs"
+        )
+
+    async def test_teardown_runs_once_inside_a_running_loop(self, monkeypatch):
+        """The exact failing condition: teardown invoked from a live loop."""
+        from hyperion.tui import boot as boot_mod
+        from hyperion.tui.app import HyperionApp
+
+        calls = {"n": 0}
+
+        async def _fake_stop() -> None:
+            calls["n"] += 1
+
+        monkeypatch.setattr(boot_mod, "stop_services", _fake_stop)
+
+        app = HyperionApp.__new__(HyperionApp)  # no Textual runtime required
+        await app._shutdown_services()
+        assert calls["n"] == 1, "teardown did not run inside a running loop"
+
+        # A second quit must not tear down again: two concurrent `docker rm`
+        # calls race and make the failure look intermittent.
+        await app._shutdown_services()
+        assert calls["n"] == 1, "teardown ran twice"
+
+    async def test_teardown_never_raises(self, monkeypatch):
+        """Teardown runs on the exit path; raising there masks the real error."""
+        from hyperion.tui import boot as boot_mod
+        from hyperion.tui.app import HyperionApp
+
+        async def _boom() -> None:
+            raise RuntimeError("docker daemon unreachable")
+
+        monkeypatch.setattr(boot_mod, "stop_services", _boom)
+
+        app = HyperionApp.__new__(HyperionApp)
+        await app._shutdown_services()  # must not propagate
+
+    def test_cli_shell_guarantees_teardown(self):
+        """Ctrl+C / crash never reach Textual's handlers.
+
+        The CLI must therefore also stop services in a `finally`, otherwise an
+        interrupted boot leaves containers running.
+        """
+        import inspect
+
+        from hyperion import cli
+
+        src = inspect.getsource(cli.shell)
+        assert "finally" in src, "shell() has no finally block guaranteeing teardown"
+        assert "_ensure_services_stopped" in src
+        assert hasattr(cli, "_ensure_services_stopped")
+
+
+class TestFreshProcessState:
+    """A session must not inherit the previous engagement's global state.
+
+    Router, agent bus, search budget and the engagement focus are all
+    module-level singletons. Each shipped a `reset_*` helper documented as
+    "useful for testing" — and none was ever called by the application, so a
+    second engagement in one shell inherited the first one's provider
+    cooldowns, spent search budget and subject/geography focus.
+    """
+
+    def test_reset_process_state_clears_every_subsystem(self):
+        """Dirty the process the way a finished engagement would, then reset."""
+        import hyperion.agents.bus as bus_mod
+        import hyperion.router.router as router_mod
+        from hyperion.tools.query_utils import (
+            get_engagement_focus,
+            set_engagement_focus,
+        )
+        from hyperion.tools.search_budget import SearchBudget
+        from hyperion.tui.boot import reset_process_state
+
+        set_engagement_focus(subject="United States semiconductors", geography="US")
+        router_mod.get_router()
+        bus_mod.get_bus()
+        SearchBudget.current().used["bing"] = 42
+
+        count = reset_process_state()
+
+        assert count == 4, f"expected 4 subsystems reset, got {count}"
+        assert router_mod._router is None, "router singleton survived reset"
+        assert bus_mod._bus is None, "agent bus singleton survived reset"
+        assert not SearchBudget.current().used, "search budget was not zeroed"
+        assert not any(get_engagement_focus()), (
+            "stale engagement focus survived: a leftover geography is exactly "
+            "how one engagement's country leaks into the next report"
+        )
+
+    def test_boot_sequence_resets_state_before_anything_else(self):
+        """'initializing core systems' must do real work, not just sleep."""
+        import inspect
+
+        from hyperion.tui import boot as boot_mod
+
+        src = inspect.getsource(boot_mod.run_boot_sequence)
+        assert "reset_process_state()" in src, (
+            "boot sequence never resets process state, so a relaunch inherits "
+            "the previous engagement's singletons"
+        )
+
+    async def test_stop_services_is_idempotent(self, monkeypatch):
+        """Quit may be triggered more than once; teardown must tolerate it."""
+        from hyperion.tui import boot as boot_mod
+
+        async def _fake_subprocess(cmd, timeout=15.0):
+            return 0, "", ""
+
+        monkeypatch.setattr(boot_mod, "_run_subprocess", _fake_subprocess)
+
+        await boot_mod.stop_services()
+        await boot_mod.stop_services()
+
+    async def test_stop_services_removes_not_just_stops_containers(self, monkeypatch):
+        """A stopped-but-present container keeps its cached SearxNG results.
+
+        Fresh-on-start therefore requires `docker rm`, not only `docker stop`.
+        """
+        from hyperion.tui import boot as boot_mod
+
+        seen: list[list[str]] = []
+
+        async def _record(cmd, timeout=15.0):
+            seen.append(list(cmd))
+            return 0, "", ""
+
+        monkeypatch.setattr(boot_mod, "_run_subprocess", _record)
+        await boot_mod.stop_services()
+
+        for container in ("searxng", "flaresolverr"):
+            assert ["docker", "stop", container] in seen, f"{container} not stopped"
+            assert ["docker", "rm", container] in seen, f"{container} not removed"
+
+    async def test_stop_services_closes_llm_clients(self, monkeypatch):
+        """Provider httpx pools must be closed, or sockets outlive the shell."""
+        from hyperion.tui import boot as boot_mod
+
+        closed = {"n": 0}
+
+        class _FakeRouter:
+            async def close(self) -> None:
+                closed["n"] += 1
+
+        async def _fake_subprocess(cmd, timeout=15.0):
+            return 0, "", ""
+
+        monkeypatch.setattr(boot_mod, "_run_subprocess", _fake_subprocess)
+        monkeypatch.setattr(
+            "hyperion.router.router.get_router", lambda: _FakeRouter()
+        )
+
+        await boot_mod.stop_services()
+        assert closed["n"] == 1, "router.close() was not awaited on shutdown"
+
+
+class TestToolConfiguration:
+    """Tool configuration must be consistent across every launcher.
+
+    docker-compose.yml pinned both images to exact tags and documented why:
+    "`latest` is non-deterministic and a recent build made
+    `default_doi_resolver` mandatory (HTTP 500 without it)". The code that
+    actually starts the containers ignored those pins — boot.py ran bare
+    "searxng/searxng" and cli.py had a SECOND unpinned copy — so every
+    `hyperion shell` pulled whatever `latest` happened to be. A SearxNG
+    returning HTTP 500 presents to the user as "search found nothing".
+    """
+
+    @staticmethod
+    def _compose() -> str:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        return (root / "docker-compose.yml").read_text(encoding="utf-8")
+
+    def test_images_are_pinned_not_latest(self):
+        from hyperion.tui import boot
+
+        for name, image in (
+            ("SEARXNG_IMAGE", boot.SEARXNG_IMAGE),
+            ("FLARESOLVERR_IMAGE", boot.FLARESOLVERR_IMAGE),
+        ):
+            assert ":" in image, f"{name} has no tag, so it resolves to :latest"
+            assert not image.endswith(":latest"), (
+                f"{name} is pinned to :latest, which is non-deterministic"
+            )
+
+    def test_code_pins_match_docker_compose(self):
+        """One pin, two places to change it — assert they agree."""
+        from hyperion.tui import boot
+
+        compose = self._compose()
+        for name, image in (
+            ("SEARXNG_IMAGE", boot.SEARXNG_IMAGE),
+            ("FLARESOLVERR_IMAGE", boot.FLARESOLVERR_IMAGE),
+        ):
+            tag = image.rsplit(":", 1)[-1]
+            assert tag in compose, (
+                f"{name} tag {tag!r} does not appear in docker-compose.yml: the "
+                f"compose file and the launcher would start different versions"
+            )
+
+    def test_no_unpinned_image_literals_in_launchers(self):
+        """Both launchers must use the constants, not their own strings."""
+        import ast
+        import inspect
+
+        from hyperion import cli
+        from hyperion.tui import boot
+
+        for module in (boot, cli):
+            tree = ast.parse(inspect.getsource(module))
+            bad = [
+                node.value
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and ("searxng/searxng" in node.value or "flaresolverr" in node.value)
+                and node.value not in (boot.SEARXNG_IMAGE, boot.FLARESOLVERR_IMAGE)
+                and node.value != "flaresolverr"  # bare container name is fine
+            ]
+            assert not bad, (
+                f"{module.__name__} contains its own image literal(s) {bad}: "
+                f"use boot.SEARXNG_IMAGE / boot.FLARESOLVERR_IMAGE so the pin "
+                f"cannot drift between launchers"
+            )
+
+    def test_searxng_port_matches_client_default(self):
+        """A published port that disagrees with the client's base URL means
+        every search fails with a connection error, silently."""
+        from hyperion.tui import boot
+
+        assert f":{boot.SEARXNG_PORT}" in self._compose(), (
+            f"SEARXNG_PORT {boot.SEARXNG_PORT} is not the port published by "
+            f"docker-compose.yml"
+        )
+
+    def test_consult_uses_the_shared_launcher(self):
+        """The headless path must not re-implement container startup."""
+        import inspect
+
+        from hyperion import cli
+
+        src = inspect.getsource(cli._run_engagement)
+        assert "start_services" in src, "consult does not use the shared launcher"
+
+        # Inspect string CONSTANTS, not the raw text: the function's comment
+        # explains the drift it fixes and therefore mentions "docker".
+        import ast
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(src))
+        docker_literals = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value.strip().startswith("docker")
+        ]
+        assert not docker_literals, (
+            f"consult still issues its own docker commands ({docker_literals}): "
+            f"that duplicate is how the image pins drifted in the first place"
+        )
+
+
+class TestSectionOpenersAndExhibitAnatomy:
+    """Sections must be announced, and exhibits must carry full provenance.
+
+    Sections previously began with a bare h2 straight into the key-insight box,
+    so starting a new section looked no different from a paragraph break. Both
+    benchmarks announce sections (MGI: a letterspaced "C H A P T E R  O N E"
+    eyebrow; BCG: a full-width opener with generous whitespace).
+    """
+
+    @staticmethod
+    def _html() -> str:
+        from hyperion.agents.delivery.presentation_designer import HTML_TEMPLATE
+
+        return HTML_TEMPLATE
+
+    @staticmethod
+    def _css() -> str:
+        from hyperion.agents.delivery.presentation_designer import CSS_TEMPLATE
+
+        return CSS_TEMPLATE
+
+    def test_sections_have_an_opener(self):
+        html = self._html()
+        assert 'class="section-opener"' in html, "sections are not announced"
+        assert 'class="section-eyebrow"' in html
+
+    def test_section_number_is_derived_not_authored(self):
+        """`loop.index` cannot disagree with the real section order; a
+        hand-written or model-supplied number can."""
+        html = self._html()
+        assert "Section {{ loop.index }}" in html, (
+            "section number is not derived from loop.index, so it can drift "
+            "out of step with the actual section order"
+        )
+
+    def test_opener_styles_exist(self):
+        css = self._css()
+        for selector in (".section-opener", ".section-eyebrow", ".section-rule"):
+            assert selector in css, f"{selector} has no styling"
+
+    def test_eyebrow_is_letterspaced(self):
+        """Wide tracking is what makes a short label read as a signpost."""
+        import re
+
+        m = re.search(r"\n\.section-eyebrow\s*\{(.*?)\n\}", self._css(), re.S)
+        assert m, "no .section-eyebrow block"
+        assert "letter-spacing" in m.group(1)
+
+    def test_exhibit_note_is_emitted(self):
+        """The .exhibit-note class existed in CSS but was never rendered."""
+        html = self._html()
+        assert 'class="exhibit-note"' in html, (
+            ".exhibit-note is styled but never emitted, so methodology "
+            "qualifiers can never appear under an exhibit"
+        )
+
+    def test_note_precedes_source(self):
+        """Benchmark order is 'Note: … Source: …'."""
+        html = self._html()
+        assert html.index('class="exhibit-note"') < html.index(
+            'class="exhibit-source"'
+        ), "source line is emitted before the note"
+
+    def test_note_and_source_are_conditional(self):
+        """A fabricated provenance line is as bad as a fabricated geography."""
+        html = self._html()
+        assert "{% if chart.note %}" in html, "note is emitted unconditionally"
+        assert "{% if chart.source_citation %}" in html, (
+            "source line is emitted unconditionally, so charts without a known "
+            "source would ship an empty or invented citation"
+        )
+
+    def test_chart_placement_has_a_note_field(self):
+        """The template reads chart.note; the model must actually define it,
+        otherwise the field can never be populated."""
+        from hyperion.schemas.models import ChartPlacement
+
+        assert "note" in ChartPlacement.model_fields
+        assert ChartPlacement(chart_id="c1").note == "", (
+            "note must default to empty so nothing is invented"
+        )
+
+
+class TestSubjectResolutionIsExplicit:
+    """Specialists must resolve their subject, not read one hopeful key.
+
+    `self._context.get("sector", "")` yields "" whenever the engagement director
+    did not populate that key, and the query templates then interpolated the
+    empty string — producing searches like "carbon footprint emissions data"
+    with no subject at all, visible verbatim in the SearxNG logs. A query with
+    no subject cannot return anything relevant to the engagement.
+
+    `resolve_subject(context, *keys, question=...)` walks the named keys, then
+    the engagement subject, then the user's own question, so the subject is
+    always what the user actually asked about.
+
+    This is defence in depth: `ground_query` at the single SearxNG call site
+    already re-anchors any query that lost its subject. Making it explicit in
+    each specialist keeps the invariant local and readable.
+    """
+
+    SPECIALISTS = (
+        "competitive_intel.py",
+        "consumer_insights.py",
+        "innovation_analyst.py",
+        "ma_analyst.py",
+        "operations_analyst.py",
+        "strategy_analyst.py",
+        "financial_analyst.py",
+        "sustainability_analyst.py",
+        "technology_analyst.py",
+    )
+
+    @staticmethod
+    def _src(filename: str) -> str:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        return (root / "hyperion" / "agents" / "specialists" / filename).read_text(
+            encoding="utf-8"
+        )
+
+    @pytest.mark.parametrize("filename", SPECIALISTS)
+    def test_specialist_uses_resolve_subject(self, filename):
+        src = self._src(filename)
+        assert "resolve_subject(" in src, (
+            f"{filename} does not resolve its subject explicitly, so a missing "
+            f"context key yields an empty subject and subject-less queries"
+        )
+
+    @pytest.mark.parametrize("filename", SPECIALISTS)
+    def test_resolve_subject_is_imported(self, filename):
+        """Using the name without importing it is a runtime NameError on the
+        engagement's hot path — caught here rather than 30 minutes in."""
+        import ast
+
+        tree = ast.parse(self._src(filename))
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
         }
-        assert not leftovers, f"unresolved palette placeholders: {leftovers}"
+        if "resolve_subject(" in self._src(filename):
+            assert "resolve_subject" in imported, (
+                f"{filename} calls resolve_subject but never imports it"
+            )
+
+    @pytest.mark.parametrize("filename", SPECIALISTS)
+    def test_no_double_space_holes_in_query_templates(self, filename):
+        """An f-string with an empty interpolation leaves a doubled space.
+
+        f"top {sector} companies {geography}" becomes "top  companies" when both
+        are empty — a malformed query built from a template rather than from the
+        user's question.
+        """
+        import ast
+
+        src = self._src(filename)
+        tree = ast.parse(src)
+
+        # Only f-strings that look like SEARCH QUERIES matter. A display string
+        # such as f"- {m.name}: {m.value} {m.unit}" (a bullet built for an LLM
+        # prompt) has adjacent interpolations by design: an absent unit there is
+        # cosmetic, whereas an absent term in a query changes what is searched.
+        # The discriminator is whether the f-string carries query vocabulary.
+        QUERY_WORDS = (
+            "acquisition", "criteria", "market", "competitor", "companies",
+            "top", "best", "industry", "report", "analysis", "data",
+            "forecast", "benchmark", "trends", "news", "regulation",
+        )
+
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            literal = "".join(
+                v.value
+                for v in node.values
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+            ).lower()
+            if not any(word in literal for word in QUERY_WORDS):
+                continue
+            # Two interpolations separated only by a single space: if either is
+            # empty the result gains a doubled space or silently loses a term.
+            for i in range(len(node.values) - 2):
+                a, b, c = node.values[i], node.values[i + 1], node.values[i + 2]
+                if (
+                    isinstance(a, ast.FormattedValue)
+                    and isinstance(b, ast.Constant)
+                    and isinstance(b.value, str)
+                    and b.value == " "
+                    and isinstance(c, ast.FormattedValue)
+                ):
+                    offenders.append(node.lineno)
+        assert not offenders, (
+            f"{filename} builds queries with adjacent interpolations at line(s) "
+            f"{sorted(set(offenders))}: if either is empty the query gains a "
+            f"doubled space or loses a term. Join through a _q()-style helper "
+            f"that drops empty parts instead."
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CODEX REVIEW FINDING 1 — THE PRONOUN "us"
+#
+# Found by automated review of PR #9. The gazetteer added to stop wrong-country
+# analysis reintroduced it: the alias "us" was compiled case-insensitively, so
+# the English first-person plural pronoun matched. In "help us decide whether
+# to enter India" the pronoun sits at offset 5 and "India" at offset 38, so
+# detect_geographies returned ["US", "India"] and the PRIMARY geography — the
+# one published through set_engagement_focus and appended to every grounded
+# search — was the United States.
+#
+# That is verbatim the original failure of this system, arriving through a
+# convenience alias rather than a hardcoded default. These tests exist because
+# the defect class survived one fix already.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestPronounUsCannotAnchorGeography:
+    """The word "us" in ordinary English must not mean the United States."""
+
+    @pytest.mark.parametrize(
+        "question,expected_primary",
+        [
+            ("help us decide whether to enter India", "India"),
+            ("tell us about Brazil", "Brazil"),
+            ("give us a market entry plan for Vietnam", "Vietnam"),
+            ("can you help us understand China's EV subsidies", "China"),
+            ("show us how Germany regulates battery recycling", "Germany"),
+        ],
+    )
+    def test_pronoun_does_not_become_primary_geography(self, question, expected_primary):
+        """The country the user named must rank first, not the pronoun.
+
+        Regression: every one of these returned "US" as the primary geography,
+        which then anchored all grounded searches to the wrong country.
+        """
+        from hyperion.tools.query_utils import detect_geographies
+
+        geos = detect_geographies(question)
+        assert geos, f"no geography detected in {question!r}"
+        assert geos[0] == expected_primary, (
+            f"{question!r} -> {geos}; primary must be {expected_primary!r}. "
+            f"The pronoun 'us' must not be read as the United States."
+        )
+        assert "US" not in geos, (
+            f"{question!r} -> {geos}; the pronoun 'us' leaked in as a "
+            f"jurisdiction. Every grounded search would be anchored to the "
+            f"United States."
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "give us a plan",
+            "help us out",
+            "tell us what to do",
+            "it would cost us too much",
+            "thus we must decide",
+        ],
+    )
+    def test_pronoun_alone_detects_nothing(self, text):
+        """No geography at all is the correct answer for a bare pronoun.
+
+        Empty means "no jurisdiction filter", which is honest. Returning "US"
+        here is the failure mode: confident output about a country nobody
+        mentioned.
+        """
+        from hyperion.tools.query_utils import detect_geographies
+
+        assert detect_geographies(text) == [], (
+            f"{text!r} names no country; detection must return []."
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "US market entry strategy",
+            "the U.S. market for EVs",
+            "expansion into the USA",
+            "United States tariffs on imports",
+            "america's semiconductor policy",
+            "U.S.A. federal procurement rules",
+        ],
+    )
+    def test_genuine_united_states_references_still_detected(self, text):
+        """Fixing the pronoun must not stop detecting the actual country.
+
+        A fix that suppressed all US detection would trade one wrong-country
+        bug for another. Every real spelling must still resolve.
+        """
+        from hyperion.tools.query_utils import detect_geographies
+
+        assert "US" in detect_geographies(text), (
+            f"{text!r} names the United States explicitly; it must be detected."
+        )
+
+    def test_lowercase_us_alias_is_not_registered_case_insensitively(self):
+        """Pin the mechanism, not just the behaviour.
+
+        The alias table must not contain a lowercase "us" key, and the
+        compiled pattern for the US acronym must not carry IGNORECASE.
+        Someone re-adding `"us": "US"` for convenience reintroduces the bug.
+        """
+        import re
+
+        from hyperion.tools.query_utils import _GEO_ALIASES, _GEO_PATTERNS
+
+        assert "us" not in _GEO_ALIASES, (
+            "_GEO_ALIASES must not map lowercase 'us' — it is a pronoun. Use "
+            "the uppercase 'US' key, which is matched case-sensitively."
+        )
+        # Recover the alias from the compiled pattern. NOT via
+        # str.strip("()?<![A-Za-z0-9]") — a charset strip also eats the "a"
+        # off "usa", which made an earlier version of this test flag the
+        # perfectly correct USA pattern. Match the boundary wrapper instead.
+        wrapper = re.compile(
+            r"^\(\?<!\[A-Za-z0-9\]\)(?P<alias>.*)\(\?!\[A-Za-z0-9\]\)$"
+        )
+        for pattern, canonical in _GEO_PATTERNS:
+            match = wrapper.match(pattern.pattern)
+            if not match:
+                continue
+            alias = match.group("alias")
+            if alias != "US":
+                continue
+            assert not (pattern.flags & re.IGNORECASE), (
+                f"pattern {pattern.pattern!r} for US is case-insensitive; the "
+                f"two-letter acronym must be matched case-sensitively so the "
+                f"pronoun 'us' cannot match."
+            )
+            break
+        else:  # pragma: no cover - the alias must exist
+            pytest.fail(
+                "no pattern found for the uppercase 'US' alias; the United "
+                "States must still be detectable in its acronym form."
+            )
+
+    def test_india_question_still_resolves_to_india(self):
+        """The originating failure must stay fixed."""
+        from hyperion.tools.query_utils import detect_geographies
+
+        assert detect_geographies(INDIA_Q) == ["India"]
+
+
+class TestCanonicalizeGeographies:
+    """The gazetteer normalises the agent's answer; it does not overrule it."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("India", ["India"]),
+            ("bharat", ["India"]),
+            ("the Indian market", ["India"]),
+            ("united states", ["US"]),
+            ("US", ["US"]),
+            ("EU", ["EU"]),
+            ("uk", ["UK"]),
+            (["India", "China"], ["India", "China"]),
+        ],
+    )
+    def test_agent_labels_are_canonicalised(self, value, expected):
+        """Varied phrasings must collapse onto one canonical label.
+
+        Without this the jurisdiction filter and the report headers disagree.
+        """
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies(value) == expected
+
+    def test_two_letter_codes_survive_the_contentless_filter(self):
+        """`is_contentless` ignores tokens under three letters.
+
+        Found by running: applied before alias lookup it discarded "US" and
+        "EU" — the two most common jurisdictions in the gazetteer — because
+        neither contains a word of 3+ letters. Alias lookup must come first.
+        """
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies("US") == ["US"]
+        assert canonicalize_geographies("EU") == ["EU"]
+        assert canonicalize_geographies(["US", "EU"]) == ["US", "EU"]
+
+    def test_unknown_country_is_kept_not_dropped(self):
+        """An incomplete alias table is not evidence the agent is wrong.
+
+        "Uzbekistan" is absent from the gazetteer. Dropping it would silently
+        strip the engagement's only geography — the exact class of bug this
+        module exists to prevent.
+        """
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies("Uzbekistan") == ["Uzbekistan"]
+        assert canonicalize_geographies(["Uzbekistan", "India"]) == [
+            "Uzbekistan",
+            "India",
+        ]
+
+    @pytest.mark.parametrize("value", ["", None, "N/A", "none", [], 42, {}])
+    def test_empty_input_never_invents_a_geography(self, value):
+        """No input must never become a default jurisdiction."""
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies(value) == []
+
+    def test_prose_answer_is_scanned_not_used_verbatim(self):
+        """LLMs sometimes answer a geography field with a sentence."""
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        got = canonicalize_geographies(
+            "the question concerns India and its trade partners in Asia"
+        )
+        assert got == ["India"], got
+
+    def test_global_is_demoted_below_concrete_countries(self):
+        """"Global" is a weak signal next to a named country."""
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies(["Global", "India"]) == ["India", "Global"]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CODEX REVIEW FINDING 2 — BARE B/M/T MAGNITUDE SUFFIXES
+#
+# _MAGNITUDES has always defined bare "b" and "m", but _NUM_RE's magnitude
+# alternation omitted them. So "$2.4B" — the single most common way an analyst
+# writes a large business figure — parsed as (2.4, "USD"). A $2.4B bar was
+# plotted 10^9 too short beside a "$88.9 billion" bar, and the abbreviated
+# series visually vanished from the exhibit.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestChartMagnitudeSuffixes:
+    """Abbreviated and spelled-out magnitudes must scale identically."""
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("$2.4B", 2.4e9),
+            ("$5M", 5e6),
+            ("$1.2T", 1.2e12),
+            ("$600M+", 600e6),
+            ("$2.4 billion", 2.4e9),
+            ("$88.9 billion", 88.9e9),
+            ("340 million", 340e6),
+            ("5 bn", 5e9),
+            ("10k", 10e3),
+            ("₹4.2 lakh", 4.2e5),
+            ("$5m", 5e6),
+        ],
+    )
+    def test_magnitude_is_applied(self, text, expected):
+        """Regression: bare B/M/T were dropped, understating by 10^6-10^12."""
+        from hyperion.output.chart_specs import _NUM_RE, _parse_number
+
+        match = _NUM_RE.search(text)
+        assert match is not None, f"{text!r} did not match _NUM_RE"
+        parsed = _parse_number(text, match)
+        assert parsed is not None, f"{text!r} parsed to None"
+        assert parsed[0] == pytest.approx(expected), (
+            f"{text!r} -> {parsed[0]:,.0f}, expected {expected:,.0f}"
+        )
+
+    def test_abbreviated_and_spelled_out_are_comparable(self):
+        """The actual chart defect: mixing spellings mis-scaled by 10^9.
+
+        A finding containing both "$2.4B" and "$88.9 billion" produced bars of
+        2.4 and 88,900,000,000 — the first invisible.
+        """
+        from hyperion.output.chart_specs import _NUM_RE, _parse_number
+
+        def value(text):
+            return _parse_number(text, _NUM_RE.search(text))[0]
+
+        assert value("$2.4B") == value("$2.4 billion")
+        assert value("$5M") == value("$5 million")
+        ratio = value("$88.9 billion") / value("$2.4B")
+        assert 30 < ratio < 40, (
+            f"ratio {ratio:.2e} — the two figures are not on the same scale, "
+            f"so one bar would be invisible in the exhibit."
+        )
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("45 t CO2e", 45.0),      # tonne, a unit — not 45 trillion
+            ("12 m of pipe", 12.0),   # metres — not 12 million
+            ("3.5 bps", 3.5),         # basis points — not 3.5 billion
+        ],
+    )
+    def test_lowercase_unit_symbols_are_not_magnitudes(self, text, expected):
+        """Lowercase t/m without a currency are SI units, not magnitudes.
+
+        This is why the single-letter forms are matched case-sensitively
+        (uppercase) or only after a currency symbol. Reading "45 t CO2e" as
+        45 trillion tonnes would be a far worse error than the one being fixed.
+        """
+        from hyperion.output.chart_specs import _NUM_RE, _parse_number
+
+        match = _NUM_RE.search(text)
+        parsed = _parse_number(text, match)
+        assert parsed is not None
+        assert parsed[0] == pytest.approx(expected), f"{text!r} -> {parsed}"
+
+    def test_magnitude_group_covers_every_defined_magnitude(self):
+        """Pin the mechanism: _MAGNITUDES and _NUM_RE must not drift apart.
+
+        The bug was precisely a divergence — the dict defined "b" and "m",
+        the regex could never capture them. Any future key added to the dict
+        must be matchable by the pattern.
+        """
+        from hyperion.output.chart_specs import _MAGNITUDES, _NUM_RE
+
+        unmatched = []
+        for key in _MAGNITUDES:
+            probe = f"${1} {key}" if len(key) > 1 else f"$1{key.upper()}"
+            match = _NUM_RE.search(probe)
+            if not match or (match.group("magnitude") or "").lower() != key.lower():
+                # Single letters are intentionally uppercase-or-after-currency;
+                # try the currency-prefixed lowercase form too.
+                match = _NUM_RE.search(f"$1{key}")
+                if not match or (match.group("magnitude") or "").lower() != key.lower():
+                    unmatched.append(key)
+        assert not unmatched, (
+            f"_MAGNITUDES defines {unmatched} but _NUM_RE cannot capture them, "
+            f"so those suffixes are silently ignored and the value is "
+            f"understated by orders of magnitude."
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE — THE DECOMPOSING AGENT OWNS THE SCOPE
+#
+# Geography used to be decided by a regex gazetteer at orchestrator.py:412,
+# while the Engagement Director — which already spends an LLM call decomposing
+# the very same question — was never asked. Specialist routing was likewise
+# decided by unconditional substring scans that ran BEFORE the LLM. Both are
+# now demoted to fallbacks behind the agent's judgement.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestDecompositionOwnsScope:
+    """The agent that breaks the question down decides what it is about."""
+
+    def test_dag_carries_geography_and_subject(self):
+        """The scope must travel on the DAG, not be re-derived downstream.
+
+        Without these fields every consumer re-guesses geography from the raw
+        text with its own heuristics, and they disagree with each other.
+        """
+        from hyperion.schemas.workflow import WorkflowDAG
+
+        fields = WorkflowDAG.model_fields
+        assert "geographies" in fields, (
+            "WorkflowDAG must carry the Director's extracted geographies."
+        )
+        assert "subject" in fields, (
+            "WorkflowDAG must carry the Director's extracted subject."
+        )
+        # Defaults must be empty — never an invented jurisdiction.
+        dag = WorkflowDAG(
+            engagement_id="e",
+            question="q",
+            question_type=list(WorkflowDAG.model_fields["question_type"].annotation)[0],
+            estimated_total_llm_calls=1,
+            estimated_total_tokens=1,
+            estimated_duration_minutes=1.0,
+        )
+        assert dag.geographies == []
+        assert dag.subject == ""
+
+    def test_decomposition_prompt_asks_for_geography_and_subject(self):
+        """The LLM cannot return scope it was never asked for.
+
+        Pins the contract: the prompt built by _classify_question_llm must
+        request both fields and must warn about the "us" pronoun, because that
+        is the trap a model is most likely to fall into on this task.
+        """
+        source = inspect.getsource(
+            __import__(
+                "hyperion.agents.engagement_director", fromlist=["x"]
+            ).EngagementDirector._classify_question_llm
+        )
+        assert "geographies" in source, (
+            "the decomposition prompt must ask for geographies"
+        )
+        assert "subject" in source, "the decomposition prompt must ask for subject"
+        assert "pronoun" in source.lower(), (
+            "the prompt must warn that 'us' is a pronoun, not the United States"
+        )
+
+    def test_keyword_triggers_are_not_used_on_the_happy_path(self):
+        """Word lists must not override the Director's roster.
+
+        Regression: MA_TRIGGERS / SUSTAINABILITY_TRIGGERS /
+        REGULATORY_TRIGGERS were scanned unconditionally and appended
+        specialists before the LLM was consulted, so a question mentioning
+        "green" got a sustainability analyst whether or not it was about
+        sustainability. They now live behind _trigger_fallback_agents, called
+        only when the decomposition fails or returns an empty roster.
+        """
+        from hyperion.agents import engagement_director as ed
+
+        source = inspect.getsource(ed.EngagementDirector._classify_question_llm)
+        for name in ("MA_TRIGGERS", "SUSTAINABILITY_TRIGGERS", "REGULATORY_TRIGGERS"):
+            assert name not in source, (
+                f"{name} is referenced directly in _classify_question_llm. "
+                f"Keyword scans must be confined to the failure path "
+                f"(_trigger_fallback_agents), not run alongside the LLM."
+            )
+
+    def test_trigger_fallback_still_works_for_degraded_mode(self):
+        """The fallback must remain functional — it is the safety net.
+
+        Demoting the keyword lists must not delete them: when all five
+        providers are unreachable, a roster from weak keywords beats none.
+        """
+        from hyperion.agents.engagement_director import EngagementDirector
+        from hyperion.schemas.agents import AgentName
+
+        director = EngagementDirector()
+        got = director._trigger_fallback_agents(
+            "should we acquire a green logistics firm"
+        )
+        assert AgentName.MA_ANALYST in got
+        assert AgentName.SUSTAINABILITY_ANALYST in got
+        assert director._trigger_fallback_agents(INDIA_Q) == []
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("electronics imports", "electronics imports"),
+            ("  EV batteries  ", "EV batteries"),
+            (["EV batteries", "x"], "EV batteries"),
+            ("The industry here is the broad electronics sector.", ""),
+            ("", ""),
+            ("N/A", ""),
+            (42, ""),
+            (None, ""),
+        ],
+    )
+    def test_subject_must_be_a_label_not_prose(self, value, expected):
+        """A sentence spliced into a search query is as useless as "".
+
+        The Director sometimes answers a "subject" field with a full sentence;
+        accepting it verbatim produced unusable queries.
+        """
+        from hyperion.agents.engagement_director import EngagementDirector
+
+        assert EngagementDirector._clean_subject(value) == expected
+
+
+class TestOrchestratorPrefersAgentScope:
+    """Precedence: agent decision > per-agent classifier > regex backstop."""
+
+    @staticmethod
+    def _engine():
+        from hyperion.orchestrator import WorkflowEngine
+
+        engine = WorkflowEngine.__new__(WorkflowEngine)
+        engine._engagement_context = None
+        engine._log = lambda *a, **k: None
+        return engine
+
+    @staticmethod
+    def _dag(question, geographies, subject=""):
+        from hyperion.schemas.workflow import QuestionType, WorkflowDAG
+
+        return WorkflowDAG(
+            engagement_id="e",
+            question=question,
+            question_type=QuestionType.GENERAL,
+            geographies=geographies,
+            subject=subject,
+            estimated_total_llm_calls=1,
+            estimated_total_tokens=1,
+            estimated_duration_minutes=1.0,
+        )
+
+    class _StubAgent:
+        async def _enrich_context(self, question):
+            return {}
+
+        def _enrich_context_regex(self, question):
+            return {}
+
+    async def test_agent_geography_wins_over_text_order(self):
+        """The Director's answer beats whatever the regex would have found.
+
+        "compare US tariffs when selling into Vietnam" mentions the US first,
+        so a text scan makes it primary. The Director understands Vietnam is
+        the subject market. The agent must win.
+        """
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(),
+            self._dag(
+                "compare US tariffs when selling into Vietnam",
+                ["Vietnam", "US"],
+                "consumer electronics",
+            ),
+        )
+        assert ctx["geography"] == "Vietnam", ctx
+        assert ctx["jurisdictions"] == ["Vietnam", "US"], ctx
+        assert ctx["industry"] == "consumer electronics", ctx
+
+    async def test_pronoun_question_scoped_by_agent_not_gazetteer(self):
+        """End-to-end guard on the Codex finding."""
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(),
+            self._dag("help us decide whether to enter India", ["India"], "retail"),
+        )
+        assert ctx["geography"] == "India", ctx
+
+    async def test_regex_backstop_used_when_agent_returned_nothing(self):
+        """A partial LLM object must not cost the engagement its anchor."""
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(), self._dag(INDIA_Q, [], "")
+        )
+        assert ctx["geography"] == "India", ctx
+        assert ctx.get("industry"), "a subject must always be derivable"
+
+    async def test_no_geography_anywhere_stays_empty(self):
+        """The governing invariant, at the integration level."""
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(), self._dag("how do we improve gross margin", [], "")
+        )
+        assert not ctx.get("geography"), (
+            f"geography={ctx.get('geography')!r} was invented; the question "
+            f"names no country, so no jurisdiction filter is correct."
+        )
+
+    async def test_agent_geography_unknown_to_gazetteer_is_preserved(self):
+        """Trust the agent over the completeness of the word list."""
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(), self._dag("market entry in Uzbekistan", ["Uzbekistan"])
+        )
+        assert ctx["geography"] == "Uzbekistan", ctx
+
+
+class TestMAFallbackCriteriaAreWellFormed:
+    """The LLM-failure fallback becomes a live search query."""
+
+    async def test_fallback_never_repeats_or_malforms(self):
+        """Regression: 'Acquisition criteria for semiconductors: semiconductors'.
+
+        With no acquirer in the handover the subject falls back to the sector,
+        and the naive join then emitted the same word twice in one query,
+        wasting the query's signal. Earlier still, an absent geography left a
+        doubled space and a dangling colon.
+        """
+        import re as _re
+
+        from hyperion.agents.specialists.ma_analyst import MAAnalyst
+
+        class _Failed:
+            success = False
+            content = ""
+
+        analyst = MAAnalyst()
+
+        async def _fail(**kwargs):
+            return _Failed()
+
+        analyst._llm_complete = _fail
+
+        contexts = [
+            {},
+            {"sector": "semiconductors"},
+            {"sector": "semiconductors", "geography": "India"},
+            {"acquirer": "Tata", "sector": "semiconductors", "geography": "India"},
+            {"acquirer": "Tata"},
+            {"geography": "India"},
+        ]
+        for context in contexts:
+            out = await analyst._define_acquisition_criteria("q", context)
+            assert "  " not in out, f"doubled space in {out!r} for {context}"
+            assert not _re.search(r":\s*$", out), f"dangling colon in {out!r}"
+            assert "None" not in out, f"literal None in {out!r}"
+            words = [w for w in _re.findall(r"[A-Za-z]{4,}", out.lower())
+                     if w not in {"acquisition", "criteria"}]
+            assert len(words) == len(set(words)), (
+                f"{out!r} repeats a term; the duplicate wastes query signal."
+            )

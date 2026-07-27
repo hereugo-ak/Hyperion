@@ -2058,6 +2058,13 @@ class ChartPlacement(BaseModel):
     image_path: str = Field(default="", description="Path to the chart PNG (300 DPI)")
     caption: str = Field(default="", description="Chart caption")
     source_citation: str = Field(default="", description="Data source citation")
+    # Methodology qualifier printed above the source line, matching the
+    # benchmark convention ("Note: Based on McKinsey Industry Classification…
+    # Source: …"). Distinct from `source_citation`: a note explains how the
+    # figure was constructed, a source says where the data came from. Defaults
+    # empty and the template omits the line entirely when unset — an invented
+    # note is as misleading as an invented source.
+    note: str = Field(default="", description="Methodology note shown above the source line")
     width_percent: int = Field(default=80, description="Width as percentage of page")
     placement: str = Field(default="center", description="Placement on page: 'center', 'left', 'right'")
 

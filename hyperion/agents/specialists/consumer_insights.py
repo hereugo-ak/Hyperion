@@ -86,6 +86,7 @@ from hyperion.schemas.models import (
     SourceCredibility,
     WillingnessToPay,
 )
+from hyperion.tools.query_utils import resolve_subject
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1041,7 +1042,13 @@ class ConsumerInsightsAnalyst(BaseAgent):
 
         # Extract context
         company = self._context.get("company") or ""
-        sector = self._context.get("sector") or self._context.get("industry") or ""
+        # Resolve explicitly rather than reading one key and hoping it is set:
+        # resolve_subject walks sector -> industry -> engagement subject -> the
+        # user's question, so the subject is what the user actually asked about
+        # and cannot be empty while the question is non-empty.
+        sector = resolve_subject(
+            self._context, "sector", "industry", question=self._question
+        )
         product_category = self._context.get("product_category") or sector
         segment = self._context.get("segment") or ""
 

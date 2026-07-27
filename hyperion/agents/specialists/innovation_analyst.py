@@ -91,6 +91,7 @@ from hyperion.schemas.models import (
     SourceCredibility,
     TechnologyTRL,
 )
+from hyperion.tools.query_utils import resolve_subject
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1089,7 +1090,11 @@ class InnovationAnalyst(BaseAgent):
         )
 
         # Extract context
-        sector = self._context.get("sector", self._context.get("industry", ""))
+        # Four-tier resolution ending at the user's question, so a query is
+        # never built around an empty subject.
+        sector = resolve_subject(
+            self._context, "sector", "industry", question=self._question
+        )
         space = self._context.get("space", sector)
 
         # Step 1: Search for emerging technologies

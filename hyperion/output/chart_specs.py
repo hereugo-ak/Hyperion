@@ -46,7 +46,7 @@ __all__ = ["mine_chart_specs"]
 # Matches the shapes analysts actually write:
 #   $2.4B  |  12.5%  |  1,250 units  |  USD 340 million  |  ₹4.2 lakh crore
 _MAGNITUDES: dict[str, float] = {
-    "trillion": 1e12, "tn": 1e12,
+    "trillion": 1e12, "tn": 1e12, "t": 1e12,
     "billion": 1e9, "bn": 1e9, "b": 1e9,
     "million": 1e6, "mn": 1e6, "m": 1e6,
     "crore": 1e7,          # Indian numbering — 10 million
@@ -54,12 +54,39 @@ _MAGNITUDES: dict[str, float] = {
     "thousand": 1e3, "k": 1e3,
 }
 
+# BUG HISTORY. _MAGNITUDES has always defined bare "b" and "m", but the
+# magnitude alternation below used to read
+#     (?P<magnitude>trillion|billion|million|thousand|crore|lakh|tn|bn|mn|k)?
+# — no bare b, m or t. So the single most common way an analyst writes a
+# business number, "$2.4B", matched with magnitude=None and _parse_number
+# returned (2.4, "USD"): a $2.4 billion market plotted as a bar of height 2.4
+# next to a "$88.9 billion" bar of height 88,900,000,000. Mixing the two
+# spellings in one finding mis-scaled the chart by a factor of 10^9 and made
+# the abbreviated series visually vanish. Verified before the fix:
+#     _parse_number("$2.4B")  -> (2.4, 'USD')
+#     _parse_number("$5M")    -> (5.0, 'USD')
+#     _parse_number("$1.2T")  -> (1.2, 'USD')
+#
+# The single-letter forms are matched CASE-SENSITIVELY as uppercase, or as
+# lowercase only when a currency symbol precedes them. That distinction is
+# load-bearing:
+#   "45 t CO2e"   -> lowercase "t" is the SI tonne, a unit, not 45 trillion.
+#   "12 m of pipe"-> lowercase "m" is metres.
+#   "$5m"         -> lowercase, but the "$" proves it is a money magnitude.
+# Multi-letter aliases (billion, bn, k…) stay case-insensitive because none of
+# them collide with a unit symbol. The negative lookahead stops "5 bn" from
+# also matching the "b" branch inside a longer word like "5 bps".
 _NUM_RE = re.compile(
     r"""
     (?P<currency>[$€£¥₹]|USD|EUR|GBP|INR|JPY)?\s*
     (?P<value>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)
     \s*
-    (?P<magnitude>trillion|billion|million|thousand|crore|lakh|tn|bn|mn|k)?
+    (?P<magnitude>
+        trillion|billion|million|thousand|crore|lakh|tn|bn|mn|k
+      | (?-i:[TBM])                       # uppercase single letter: $2.4B, 5M
+      | (?(currency)(?-i:[tbm]))          # lowercase only after a currency
+    )?
+    (?![A-Za-z])
     \s*
     (?P<percent>%|percent|percentage\s+points?|pp)?
     """,

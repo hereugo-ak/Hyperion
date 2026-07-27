@@ -61,6 +61,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.tools.query_utils import resolve_subject
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -296,8 +297,33 @@ class CompetitiveIntel(BaseAgent):
 
         # Build focused search queries from context, not the raw question
         company = self._context.get("company") or ""
-        sector = self._context.get("sector") or self._context.get("industry") or ""
         geography = self._context.get("geography") or ""
+
+        # Resolve the subject explicitly rather than reading one context key and
+        # hoping it is populated. `resolve_subject` walks sector -> industry ->
+        # the engagement subject -> the user's own question, so the subject is
+        # whatever the user actually asked about and is never empty while the
+        # question is non-empty.
+        #
+        # This is defence in depth, not a live bug fix: `ground_query` at the
+        # single SearxNG call site already re-anchors any query that lost its
+        # subject. Making it explicit here keeps the invariant local — a reader
+        # of this function can see that a subject-less query is impossible
+        # without having to know about the choke point.
+        sector = resolve_subject(
+            self._context, "sector", "industry", question=self._question
+        )
+
+        def _q(*parts: str) -> str:
+            """Join query parts, dropping empties.
+
+            Every query is built through this helper so an absent part
+            disappears instead of leaving a hole. The previous
+            f"top {sector} companies {geography}" collapsed to
+            "top  companies" with a doubled space when both were empty —
+            a query that cannot return anything relevant.
+            """
+            return " ".join(p.strip() for p in parts if p and p.strip())
 
         # Derive a short search term from the question if context is sparse
         question_short = market_query[:100] if market_query else ""
@@ -306,35 +332,39 @@ class CompetitiveIntel(BaseAgent):
         if company:
             core_term = company
             query_patterns = [
-                f"{company} competitors",
-                f"{company} alternatives",
-                f"{company} vs",
-                f"companies like {company}",
-                f"{company} market share competitors",
+                _q(company, "competitors"),
+                _q(company, "alternatives"),
+                _q(company, "vs"),
+                _q("companies like", company),
+                _q(company, "market share competitors"),
             ]
         elif sector:
             core_term = sector
             query_patterns = [
-                f"{sector} market leaders top companies",
-                f"best {sector} companies comparison",
-                f"{sector} competitors alternatives",
-                f"top {sector} companies {geography}".strip(),
-                f"{sector} industry key players",
+                _q(sector, "market leaders top companies"),
+                _q("best", sector, "companies comparison"),
+                _q(sector, "competitors alternatives"),
+                _q("top", sector, "companies", geography),
+                _q(sector, "industry key players"),
             ]
         else:
             core_term = question_short
             query_patterns = [
-                f"{question_short} competitors",
-                f"{question_short} alternatives",
-                f"{question_short} market leaders top companies",
-                f"best {question_short} companies comparison",
+                _q(question_short, "competitors"),
+                _q(question_short, "alternatives"),
+                _q(question_short, "market leaders top companies"),
+                _q("best", question_short, "companies comparison"),
             ]
 
         # Add sector+geography scoped patterns if we have both
         if sector and geography:
-            query_patterns.append(f"top {sector} companies in {geography}")
+            query_patterns.append(_q("top", sector, "companies in", geography))
         if company and sector:
-            query_patterns.append(f"{company} competitors in {sector}")
+            query_patterns.append(_q(company, "competitors in", sector))
+
+        # A query that is empty or lost its subject cannot return anything
+        # relevant, so it is dropped rather than sent.
+        query_patterns = [q for q in query_patterns if q.strip()]
 
         try:
             searxng = self.get_tool(ToolName.SEARXNG)

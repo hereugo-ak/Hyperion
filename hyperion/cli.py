@@ -82,13 +82,48 @@ def shell(
     """
     try:
         from hyperion.tui.app import HyperionApp
-
-        HyperionApp(reduced_motion=reduced_motion, demo=demo, mouse=not no_mouse).run(
-            mouse=not no_mouse
-        )
     except ImportError:
         console.print(f"[{ERROR}]Textual not installed. Run: pip install textual rich[/{ERROR}]")
         raise typer.Exit(code=1)
+
+    # Teardown is guaranteed here as well as inside the app.
+    #
+    # The TUI tears down in `action_quit` / `on_unmount`, which covers a normal
+    # quit. Neither runs if the process dies another way: Ctrl+C during the boot
+    # sequence, an unhandled exception in a screen, or a terminal that closes
+    # the pty. Those paths previously left `searxng` and `flaresolverr` running
+    # with no user-visible sign, and the user's requirement is that quitting the
+    # shell terminates everything.
+    #
+    # `stop_services` is idempotent (docker stop/rm of an absent container is a
+    # no-op) and the app marks itself stopped, so the common case does not pay
+    # for this twice.
+    try:
+        HyperionApp(reduced_motion=reduced_motion, demo=demo, mouse=not no_mouse).run(
+            mouse=not no_mouse
+        )
+    except KeyboardInterrupt:
+        console.print(f"[{DIM}]interrupted — shutting services down…[/{DIM}]")
+    finally:
+        _ensure_services_stopped()
+
+
+def _ensure_services_stopped() -> None:
+    """Best-effort synchronous teardown for the process-exit path.
+
+    Runs on its own event loop because by this point Textual's loop is gone.
+    Never raises: an exception escaping here would replace whatever error
+    actually terminated the shell, hiding the real cause.
+    """
+    try:
+        from hyperion.tui.boot import stop_services
+
+        asyncio.run(stop_services())
+    except Exception as exc:  # noqa: BLE001 - must not mask the original failure
+        console.print(
+            f"[{WARN}]warning: could not confirm service shutdown "
+            f"({type(exc).__name__}). Check `docker ps`.[/{WARN}]"
+        )
 
 
 @app.command()
@@ -144,60 +179,17 @@ def consult(
 
 async def _run_engagement(question: str, context: str, output_path: str) -> Any:
     from hyperion.orchestrator import WorkflowEngine
-    from hyperion.tui.boot import stop_services
+    from hyperion.tui.boot import reset_process_state, start_services, stop_services
 
-    # Start Docker containers fresh (stop+remove+recreate) for headless mode
-    import subprocess
-    from pathlib import Path
-
-    def _searxng_settings_path() -> str:
-        here = Path(__file__).resolve()
-        for parent in here.parents:
-            candidate = parent / "searxng_settings.yml"
-            if candidate.exists():
-                return str(candidate).replace("\\", "/")
-        return str(here.parents[2] / "searxng_settings.yml").replace("\\", "/")
-
-    def _searxng_limiter_path() -> str:
-        here = Path(__file__).resolve()
-        for parent in here.parents:
-            candidate = parent / "searxng-limiter.toml"
-            if candidate.exists():
-                return str(candidate).replace("\\", "/")
-        return str(here.parents[2] / "searxng-limiter.toml").replace("\\", "/")
-
-    for container in ("flaresolverr", "searxng"):
-        try:
-            subprocess.run(["docker", "stop", container], capture_output=True, timeout=15)
-            subprocess.run(["docker", "rm", container], capture_output=True, timeout=10)
-        except Exception:
-            pass
-
-    # Recreate SearxNG fresh
-    try:
-        settings_path = _searxng_settings_path()
-        limiter_path = _searxng_limiter_path()
-        subprocess.run(
-            ["docker", "run", "-d", "--name", "searxng",
-             "-p", "8888:8080",
-             "-v", f"{settings_path}:/etc/searxng/settings.yml",
-             "-v", f"{limiter_path}:/etc/searxng/limiter.toml",
-             "searxng/searxng"],
-            capture_output=True, timeout=60,
-        )
-    except Exception:
-        pass
-
-    # Recreate FlareSolverr fresh
-    try:
-        subprocess.run(
-            ["docker", "run", "-d", "--name", "flaresolverr",
-             "-p", "8191:8191",
-             "ghcr.io/flaresolverr/flaresolverr:latest"],
-            capture_output=True, timeout=60,
-        )
-    except Exception:
-        pass
+    # Fresh start, same as the shell.
+    #
+    # This function used to inline its own copy of the container launch: its own
+    # settings-path resolvers, its own `docker run` argv, its own image strings —
+    # and those strings had drifted to unpinned `:latest` while docker-compose.yml
+    # and boot.py were pinned. `start_services()` is now the single launcher, so
+    # a pin change cannot be applied to one entry point and missed by the other.
+    reset_process_state()
+    await start_services()
 
     engine = WorkflowEngine()
     try:

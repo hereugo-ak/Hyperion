@@ -58,6 +58,38 @@ async def _run_powershell(script: str, timeout: float = 15.0) -> tuple[int, str,
     )
 
 
+# ── Container images: ONE source of truth ────────────────────────────────────
+#
+# CONFIGURATION DRIFT. docker-compose.yml pins both images to exact digests and
+# explains why:
+#
+#     # Pinned to a known-good tag for reproducibility. `latest` is
+#     # non-deterministic and a recent build made `default_doi_resolver`
+#     # mandatory (HTTP 500 without it).
+#
+# The code that actually starts the containers ignored those pins. `boot.py` ran
+# bare "searxng/searxng" (i.e. :latest) and "flaresolverr:latest", and `cli.py`
+# repeated the same unpinned strings a second time. So the documented reason for
+# pinning applied to `docker compose up` only, while every `hyperion shell`
+# pulled whatever `latest` happened to be — the exact failure the comment warns
+# about, with an HTTP 500 SearxNG presenting as "search returned no results".
+#
+# Defined once here and imported by both call sites, so a pin change cannot be
+# applied to one launcher and missed by the other. A test asserts these match
+# docker-compose.yml.
+SEARXNG_IMAGE = "searxng/searxng:2024.12.10-a4d2a5f68"
+FLARESOLVERR_IMAGE = "flaresolverr/flaresolverr:v3.3.21"
+
+# Host ports. Kept beside the images because SearxNGClient's default base URL
+# must agree with the published port; a mismatch here is invisible until every
+# search silently fails.
+SEARXNG_PORT = 8888
+FLARESOLVERR_PORT = 8191
+
+# Containers HYPERION owns and is therefore allowed to stop/remove.
+MANAGED_CONTAINERS = ("searxng", "flaresolverr")
+
+
 def _searxng_settings_path() -> str:
     """Resolve the absolute path to searxng_settings.yml."""
     # Walk up from this file to find the project root (where searxng_settings.yml lives).
@@ -133,9 +165,17 @@ async def run_boot_sequence(
 
     # ── Step 1: Core ──────────────────────────────────────────────────────
     step = _start_step("BOOT", "initializing HYPERION core systems")
+    # Discard any in-process state left by a previous engagement in this same
+    # interpreter before anything else touches it. Without this, "initializing
+    # core systems" was a cosmetic sleep: the router, agent bus, search budget
+    # and engagement focus are module-level singletons, so a second engagement
+    # inherited the first one's provider health, cooldowns, spent search budget
+    # and — most damaging — its subject/geography focus, which is precisely the
+    # mechanism by which one engagement's geography can leak into the next.
+    reset_count = reset_process_state()
     await asyncio.sleep(0.4 if not reduced_motion else 0.1)
-    _finish_step(step, OK, "core systems initialized")
-    results["core"] = (OK, "core systems initialized")
+    _finish_step(step, OK, f"core systems initialized · {reset_count} subsystems reset")
+    results["core"] = (OK, f"core systems initialized · {reset_count} subsystems reset")
 
     # ── Step 2: Docker daemon ─────────────────────────────────────────────
     step = _start_step("DOCKER", "checking Docker daemon")
@@ -202,10 +242,10 @@ async def run_boot_sequence(
             [
                 "docker", "run", "-d",
                 "--name", "searxng",
-                "-p", "8888:8080",
+                "-p", f"{SEARXNG_PORT}:8080",
                 "-v", f"{settings_path_docker}:/etc/searxng/settings.yml",
                 "-v", f"{limiter_path}:/etc/searxng/limiter.toml",
-                "searxng/searxng",
+                SEARXNG_IMAGE,
             ],
             timeout=60,
         )
@@ -240,8 +280,8 @@ async def run_boot_sequence(
         rc_f3, _, err_f3 = await _run_subprocess(
             ["docker", "run", "-d",
              "--name", "flaresolverr",
-             "-p", "8191:8191",
-             "ghcr.io/flaresolverr/flaresolverr:latest"],
+             "-p", f"{FLARESOLVERR_PORT}:8191",
+             FLARESOLVERR_IMAGE],
             timeout=60,
         )
         if rc_f3 == 0:
@@ -409,14 +449,27 @@ async def run_boot_sequence(
     return results
 
 
-async def stop_services() -> None:
-    """Stop all HYPERION services on shutdown.
+async def start_services() -> dict[str, bool]:
+    """Recreate the managed containers from a clean slate. Headless entry point.
 
-    Stops Docker containers (SearxNG, FlareSolverr) and closes any
-    globally accessible tool clients — mirroring the boot sequence.
+    `hyperion consult` previously carried its own copy of this logic — its own
+    settings-path resolver, its own `docker run` argv, its own image strings.
+    Two copies of one launch sequence is how the version pins drifted: the
+    compose file was pinned, and the CLI copy kept pulling `:latest`. The TUI
+    boot sequence reports per-step progress so it keeps its own inline flow, but
+    both now source images, ports and container names from the constants above.
+
+    Returns a per-service dict so the caller can report what actually came up
+    rather than assuming success.
     """
-    # Stop and remove Docker containers for a clean slate next boot
-    for container in ("searxng", "flaresolverr"):
+    started: dict[str, bool] = {"searxng": False, "flaresolverr": False}
+
+    if shutil.which("docker") is None:
+        return started
+
+    # Fresh state is the whole point: stop AND remove, so a container created
+    # from an older image or an older settings file cannot survive into this run.
+    for container in MANAGED_CONTAINERS:
         try:
             await _run_subprocess(["docker", "stop", container], timeout=15)
         except Exception:
@@ -426,9 +479,124 @@ async def stop_services() -> None:
         except Exception:
             pass
 
-    # Close any global tool clients (router, etc.)
+    settings_path = _searxng_settings_path().replace("\\", "/")
+    limiter_path = str(
+        Path(settings_path).parent / "searxng-limiter.toml"
+    ).replace("\\", "/")
+
     try:
-        from hyperion.router.router import get_router
+        rc, _, _ = await _run_subprocess(
+            [
+                "docker", "run", "-d",
+                "--name", "searxng",
+                "-p", f"{SEARXNG_PORT}:8080",
+                "-v", f"{settings_path}:/etc/searxng/settings.yml",
+                "-v", f"{limiter_path}:/etc/searxng/limiter.toml",
+                SEARXNG_IMAGE,
+            ],
+            timeout=60,
+        )
+        started["searxng"] = rc == 0
+    except Exception:
+        pass
+
+    try:
+        rc, _, _ = await _run_subprocess(
+            [
+                "docker", "run", "-d",
+                "--name", "flaresolverr",
+                "-p", f"{FLARESOLVERR_PORT}:8191",
+                FLARESOLVERR_IMAGE,
+            ],
+            timeout=60,
+        )
+        started["flaresolverr"] = rc == 0
+    except Exception:
+        pass
+
+    if any(started.values()):
+        # The containers accept TCP before their apps finish booting; querying
+        # immediately yields a connection error that looks like "search broken".
+        await asyncio.sleep(3.0)
+
+    return started
+
+
+def reset_process_state() -> int:
+    """Drop every module-level singleton so a session starts genuinely clean.
+
+    HYPERION keeps the router, agent bus, search budget, settings and the
+    engagement focus as process-global singletons. Each module already shipped a
+    `reset_*` helper, but every one of them was documented as "useful for
+    testing" and none was ever called by the application. The consequence is
+    that a shell session which runs two engagements carries the first one's
+    provider cooldowns, spent search budget and — the dangerous one — its
+    subject/geography focus into the second.
+
+    Returns the number of subsystems successfully reset, so the boot transcript
+    can report a real number instead of an unverifiable "initialized".
+
+    Each reset is independent: one missing module must not prevent the rest.
+    """
+    reset = 0
+
+    # Engagement focus first — a stale subject/geography is the failure mode
+    # that silently produces a report about the wrong country.
+    try:
+        from hyperion.tools.query_utils import clear_engagement_focus
+
+        clear_engagement_focus()
+        reset += 1
+    except Exception:
+        pass
+
+    try:
+        from hyperion.router.router import reset_router
+
+        reset_router()
+        reset += 1
+    except Exception:
+        pass
+
+    try:
+        from hyperion.agents.bus import reset_bus
+
+        reset_bus()
+        reset += 1
+    except Exception:
+        pass
+
+    try:
+        from hyperion.tools.search_budget import SearchBudget
+
+        # `start()` replaces the instance outright, zeroing per-engine spend.
+        SearchBudget.start()
+        reset += 1
+    except Exception:
+        pass
+
+    return reset
+
+
+async def stop_services() -> None:
+    """Terminate everything HYPERION started, in dependency order.
+
+    Called on shell quit (and from `hyperion consult`'s finally block). Must be
+    idempotent: `docker stop` / `docker rm` on an absent container is a no-op,
+    and the singleton resets are naturally idempotent, so running this twice is
+    harmless. It must also never raise — it runs on the exit path, where an
+    exception would mask whatever actually ended the session.
+
+    Order matters. LLM clients are closed BEFORE the containers they may be
+    mid-request against, so a in-flight HTTP call fails against a closed client
+    rather than a vanished container (the latter can hang until timeout).
+    """
+    # ── 1. Close LLM provider clients ────────────────────────────────────────
+    # Each provider holds a persistent httpx AsyncClient with a connection pool.
+    # Left open, those sockets and their reader tasks survive until GC, which is
+    # what "the LLMs did not terminate" looks like from outside.
+    try:
+        from hyperion.router.router import get_router, reset_router
 
         router = get_router()
         close_method = getattr(router, "close", None)
@@ -436,6 +604,31 @@ async def stop_services() -> None:
             result = close_method()
             if asyncio.iscoroutine(result):
                 await result
+        # Drop the singleton so a relaunch in the same interpreter builds fresh
+        # clients rather than reusing ones whose transports are now closed.
+        reset_router()
+    except Exception:
+        pass
+
+    # ── 2. Stop and REMOVE the containers ────────────────────────────────────
+    # `rm` as well as `stop`: a stopped-but-present container keeps its cached
+    # SearxNG results, so the next boot is not actually a fresh instance. Both
+    # are attempted for every container even if an earlier one fails.
+    for container in MANAGED_CONTAINERS:
+        try:
+            await _run_subprocess(["docker", "stop", container], timeout=15)
+        except Exception:
+            pass
+        try:
+            await _run_subprocess(["docker", "rm", container], timeout=10)
+        except Exception:
+            pass
+
+    # ── 3. Clear in-process state ────────────────────────────────────────────
+    # Mirrors the boot-time reset so quit leaves nothing behind even when the
+    # interpreter itself keeps running (embedded / test / REPL use).
+    try:
+        reset_process_state()
     except Exception:
         pass
 
