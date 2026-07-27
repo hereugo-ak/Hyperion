@@ -86,8 +86,16 @@ _GEO_ALIASES: dict[str, str] = {
     "pakistan": "Pakistan", "bangladesh": "Bangladesh", "sri lanka": "Sri Lanka",
     "nepal": "Nepal",
     # North America
+    #
+    # NOTE the absence of a lowercase "us" alias here — see
+    # _ACRONYM_ONLY_ALIASES below. "us" is an English pronoun, and matching it
+    # case-insensitively made "help us decide whether to enter India" resolve
+    # to the United States as the PRIMARY geography (US appears at offset 5,
+    # India at offset 38), which then anchored every grounded search to the
+    # wrong country. That is the original failure of this system, reintroduced
+    # through the back door of a convenience alias.
     "united states": "US", "usa": "US", "u.s.": "US", "u.s.a": "US",
-    "america": "US", "american": "US", "us": "US",
+    "america": "US", "american": "US", "US": "US",
     "canada": "Canada", "canadian": "Canada",
     "mexico": "Mexico", "mexican": "Mexico",
     # Europe
@@ -141,11 +149,48 @@ _GEO_ALIASES: dict[str, str] = {
 # The lookarounds assert only that the alias is not glued to another
 # alphanumeric token, which is the property actually wanted: "U.S." matches in
 # "the U.S. market" while "u.s.a" is correctly left to the longer alias.
+#
+# CASE SENSITIVITY. Most aliases are proper nouns and are safely matched
+# case-insensitively — "should india reduce imports" must find India even
+# though the user did not capitalise it. But three aliases collide with common
+# English function words, and for those a case-insensitive match is actively
+# harmful:
+#
+#   "us" -> the first-person plural pronoun. "help us decide whether to
+#           enter India" put US at offset 5 and India at offset 38, so US
+#           became the PRIMARY geography and every grounded search was
+#           anchored to the United States. This is verbatim the failure that
+#           produced 119 findings about America for a question about India.
+#   "it" -> not in the gazetteer, but reserved here for the same reason.
+#   "in" -> the preposition; likewise never an alias.
+#
+# The rule: an alias listed with any uppercase character in _GEO_ALIASES is
+# matched CASE-SENSITIVELY, so only the acronym form counts. "US", "U.S.",
+# "USA", "United States" and "America" all still resolve to the United
+# States; the bare lowercase pronoun "us" does not resolve to anything.
+# Because `re.escape` is applied to the alias as written, adding an
+# uppercase-only alias is the whole mechanism — no separate list to keep in
+# sync.
+_ACRONYM_ONLY_ALIASES = frozenset({"US"})
+
+
+def _alias_flags(alias: str) -> int:
+    """Return the regex flags for one alias.
+
+    Aliases that are indistinguishable from English function words when
+    lowercased must be matched case-sensitively so a pronoun cannot anchor an
+    engagement to the wrong jurisdiction.
+    """
+    if alias in _ACRONYM_ONLY_ALIASES or alias != alias.lower():
+        return 0
+    return re.IGNORECASE
+
+
 _GEO_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(
             r"(?<![A-Za-z0-9])" + re.escape(alias) + r"(?![A-Za-z0-9])",
-            re.IGNORECASE,
+            _alias_flags(alias),
         ),
         canonical,
     )
@@ -155,8 +200,102 @@ _GEO_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+def canonicalize_geographies(values: Any, limit: int = 4) -> list[str]:
+    """Normalise geography labels that an *agent* extracted, preserving order.
+
+    ROLE OF THIS FUNCTION IN THE ARCHITECTURE. Geography is decided by the
+    Engagement Director — the agent that receives the question and breaks it
+    down. It already makes an LLM call to decompose the question, and an LLM
+    reading "should India reduce its dependence on the imports" understands
+    the subject country far better than any word list can. This gazetteer's
+    job is therefore NOT to decide the geography. It has two narrower jobs:
+
+    1. Canonicalise — map the agent's phrasing onto the labels the rest of
+       the pipeline uses, so "Bharat", "the Indian market" and "India" all
+       become "India", and "the States" becomes "US". Without this, the
+       jurisdiction filter and the report headers disagree with each other.
+    2. Backstop — when the LLM call fails outright (five providers, any of
+       which can time out or rate-limit), ``detect_geographies`` still gives
+       the engagement a country anchor drawn from the user's own words.
+
+    It must never OVERRIDE what the agent extracted. A label the agent
+    returned that this gazetteer does not recognise is kept verbatim and
+    merely title-cased: the gazetteer being incomplete is not evidence that
+    the agent is wrong. "Uzbekistan" is absent from the alias table, and
+    silently dropping it would be exactly the class of bug this whole module
+    exists to prevent.
+
+    Returns ``[]`` for empty input — meaning "no jurisdiction filter", which
+    is honest. It never invents a default.
+    """
+    if values is None:
+        return []
+    if isinstance(values, str):
+        raw_items = [values]
+    elif isinstance(values, (list, tuple, set)):
+        raw_items = [v for v in values]
+    else:
+        return []
+
+    out: list[str] = []
+    for item in raw_items:
+        if not isinstance(item, str):
+            continue
+        label = _strip_debris(item).strip(" ,;:-\"'")
+        if not label:
+            continue
+        # Alias lookup comes BEFORE the contentless check, deliberately.
+        # is_contentless() only counts words of 3+ letters, because it exists
+        # to reject query templates like "vendor comparison 2024". Applied to
+        # a geography label that logic discards every two-letter jurisdiction
+        # code: canonicalize_geographies("US") and ("EU") both returned []
+        # before this reordering, silently dropping the two most common
+        # jurisdictions in the gazetteer.
+        exact = _GEO_ALIASES.get(label.lower()) or _GEO_ALIASES.get(label.upper())
+        if exact:
+            if exact not in out:
+                out.append(exact)
+            continue
+        if is_contentless(label):
+            continue
+        # A sentence is not a geography label. LLMs occasionally answer
+        # "the question concerns India and its trade partners" — run the
+        # gazetteer over that prose instead of using it verbatim.
+        if len(label.split()) > 6 or any(ch in label for ch in ".?!"):
+            for hit in detect_geographies(label, limit=limit):
+                if hit not in out:
+                    out.append(hit)
+            continue
+        # Exact alias hit — the common case. Case-insensitive lookup is safe
+        # here because the agent asserted this string IS a geography; the
+        # pronoun ambiguity that forces case-sensitivity in free-text
+        # scanning cannot arise from a dedicated geography field.
+        canonical = _GEO_ALIASES.get(label.lower())
+        if canonical is None and label.upper() in _GEO_ALIASES:
+            canonical = _GEO_ALIASES[label.upper()]
+        if canonical is None:
+            # Try the gazetteer inside the phrase ("the Indian market").
+            hits = detect_geographies(label, limit=1)
+            canonical = hits[0] if hits else None
+        if canonical is None:
+            # Unknown to the gazetteer — trust the agent, do not drop it.
+            canonical = label if label.isupper() else label.title()
+        if canonical not in out:
+            out.append(canonical)
+
+    if len(out) > 1 and "Global" in out:
+        out = [g for g in out if g != "Global"] + ["Global"]
+    return out[:limit]
+
+
 def detect_geographies(*texts: str, limit: int = 4) -> list[str]:
     """Return canonical jurisdictions explicitly named in the given text.
+
+    This is the BACKSTOP path, not the primary one. Geography is extracted by
+    the Engagement Director's decomposition call (see
+    ``canonicalize_geographies``); this deterministic scan exists so that a
+    failed or partial LLM response still leaves the engagement anchored to a
+    country the user actually named.
 
     Returns ``[]`` when nothing is named — callers MUST treat that as
     "analyse without a jurisdiction filter", never as "assume US/EU".
