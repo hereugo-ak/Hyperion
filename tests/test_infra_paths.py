@@ -248,6 +248,98 @@ class TestObscuraConfiguration:
             f"{after.status}): a false reading is what makes users think they "
             f"must configure things by hand"
         )
+        assert before.detail == after.detail, (
+            f"obscura health detail changed with the CWD ({before.detail!r} → "
+            f"{after.detail!r})"
+        )
+
+    def test_health_uses_no_relative_path_literal(self):
+        """The actual mechanism of the CWD bug, checked structurally.
+
+        A behavioural before/after-chdir comparison cannot see this defect on
+        Linux: the old code looked for the extensionless `obscura-bin/obscura`,
+        which is absent from every directory, so it answered OFFLINE
+        consistently. The bug only *bites* on Windows, where
+        `Path("obscura-bin/obscura.exe")` resolves against the user's shell —
+        exactly the platform in the user's screenshots.
+
+        So assert the cause rather than a platform-specific symptom: no relative
+        path literal may be used to locate a binary.
+        """
+        from hyperion.infra.paths import project_root
+        from hyperion.obs import health
+
+        src = (project_root() / "hyperion" / "obs" / "health.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(src)
+
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            # Match `Path("...")` with a relative literal argument.
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "Path"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                literal = node.args[0].value
+                if literal and not Path(literal).is_absolute():
+                    offenders.append(f"line {node.lineno}: Path({literal!r})")
+
+        assert not offenders, (
+            f"health.py builds paths from relative literals {offenders}: these "
+            f"resolve against the user's shell CWD, so the health table reports "
+            f"a tool missing purely because of where HYPERION was launched"
+        )
+        assert health is not None
+
+    def test_health_reports_where_it_looked(self):
+        """A bare "not found" is undiagnosable; name the searched location.
+
+        The old detail strings were "obscura.exe not found" / "no Linux binary
+        found" — neither says *where*, which is why a present-but-unfound binary
+        looked like a configuration problem the user had to solve by hand.
+        """
+        from hyperion.config import get_settings
+        from hyperion.obs.health import _check_tool
+
+        detail = _check_tool("obscura", get_settings()).detail
+        assert detail, "obscura health reported no detail at all"
+        # Either the resolved binary, or the directory that was searched — but
+        # in both cases an absolute path the user can actually go and inspect.
+        assert any(part.startswith(os.sep) or ":" in part for part in detail.split()), (
+            f"obscura health detail {detail!r} names no absolute location, so a "
+            f"wrong answer cannot be diagnosed"
+        )
+
+    def test_health_distinguishes_absent_from_unrunnable(self):
+        """"Missing" and "present but wrong platform" need different answers.
+
+        The old code collapsed both into OFFLINE/"no Linux binary found", which
+        told the user to install something that was already installed.
+        """
+        from hyperion.config import get_settings
+        from hyperion.infra.paths import obscura_bin_dir
+        from hyperion.obs.health import _check_tool
+        from hyperion.tools.obscura import ObscuraClient
+
+        bin_dir = obscura_bin_dir()
+        if not bin_dir.exists() or not any(bin_dir.iterdir()):
+            pytest.skip("no obscura-bin/ in this checkout")
+
+        ObscuraClient._platform_supported_cache = None
+        health = _check_tool("obscura", get_settings())
+        resolved = ObscuraClient(settings=get_settings())._find_obscura()
+
+        if resolved and Path(resolved).is_file():
+            assert health.status in ("OK", "DEGRADED"), (
+                f"a binary exists at {resolved} but health says "
+                f"{health.status} ({health.detail}) — reporting an installed "
+                f"binary as absent sends the user to fix the wrong thing"
+            )
 
     def test_boot_reports_obscura(self):
         """A missing Obscura must be visible at boot, not discovered later."""
