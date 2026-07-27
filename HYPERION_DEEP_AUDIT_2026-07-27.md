@@ -680,7 +680,30 @@ progress, `[x]` = landed with proof.
 - [ ] **1.4** Purge intent-destroying words from `filler`; keep parentheticals as a variant
 - [ ] **1.5** Low-yield reformulation (<3 results → broaden → retry once)
 - [ ] **1.6** `resolve_subject` into `market_analyst`, `regulatory_analyst`, `risk_analyst`
-- [ ] **1.7** Fact Checker: drop internal agent name, ground the claim query
+- [x] **1.7** Fact Checker: drop internal agent name, ground the claim query
+  - `fact_checker.py:605` (`_search_for_verification`) previously built its
+    verification query as `claim.claim[:100]` then appended
+    `f"{query} {claim.agent.replace('_', ' ')}"` — a blind character slice
+    (could cut mid-word/mid-clause) with the internal agent role name
+    (`"market analyst"`, `"risk analyst"`) glued on, and it never called
+    `ground_query` at all (audit §4.9 Finding B-8).
+  - **Fixed**: `query = ground_query(claim.claim)` — grounds the claim's
+    own text directly, no agent-name suffix, no pre-truncation (`ground_query`
+    normalizes then truncates to 256 chars on its own, which lands on word
+    boundaries rather than cutting a token in half). If the claim grounds
+    to `""` (no subject at all, e.g. a bare `"18%"` with no engagement
+    focus), the web-search step is skipped rather than firing an empty or
+    junk query — falls through cleanly to whatever local-corpus sources
+    were already found for that claim.
+  - New `tests/test_fact_checker_query.py` (4 tests): asserts the outbound
+    query never contains `"analyst"`/the raw agent-name token; asserts a
+    long claim's query contains only well-formed word tokens (no mid-word
+    slice debris); asserts a thin claim (`"18%"`) still searches anchored
+    to the engagement subject/geography via grounding's rebuild path
+    rather than firing the bare unanchored original; asserts a genuinely
+    contentless claim skips the web-search call without raising.
+  - Full suite: **529 passed, 3 skipped** (was 525 passed, 3 skipped after
+    1.1/1.2; +4 new tests, zero regressions).
 
 ### Phase 2 — Extraction & evidence
 - [ ] **2.1** Collapse 3 extraction ladders into `UnifiedExtract`; wire consumers
