@@ -12,6 +12,17 @@ Per ARCHITECTURE.md §8.7.
 
 Implementation: a specialized Transcript that only accepts finding entries,
 keeping them separate from the main event log for focused review.
+
+Selection
+---------
+This widget subclasses :class:`~hyperion.tui.widgets.transcript.Transcript`
+rather than Textual's ``RichLog``, and that choice is load-bearing rather than
+cosmetic. ``RichLog.render_line`` never calls ``Strip.apply_offsets``, so the
+compositor cannot tell which *character* the pointer is over; the screen then
+falls through to its ``SELECT_ALL`` branch and every drag — however small —
+selects the entire widget, with no anchor to extend from when the pointer runs
+past an edge. Inheriting from ``Transcript`` gives the findings feed the same
+precise, scroll-past-the-edge selection as the main event log for free.
 """
 
 from __future__ import annotations
@@ -19,20 +30,14 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from textual.content import Content
-from textual.widgets import RichLog
-
-from hyperion.tui.content import build, line, span
+from hyperion.tui.content import build, span
 from hyperion.tui.theme import (
-    CLAY,
-    SAGE,
-    SIG_SUCCESS,
     TEXT_DIM,
     TEXT_GHOST,
     TEXT_PRIMARY,
-    TEXT_SECONDARY,
     badge_color,
 )
+from hyperion.tui.widgets.transcript import Transcript
 
 
 @dataclass
@@ -48,7 +53,7 @@ class FindingEntry:
     expanded: bool = False
 
 
-class FindingsStream(RichLog):
+class FindingsStream(Transcript):
     """Live, scrollable findings feed — separate from the main event log.
 
     Each finding is displayed as:
@@ -64,17 +69,20 @@ class FindingsStream(RichLog):
         scrollbar-background: #141413;
         background: #141413;
         padding: 0 2;
+        overflow-y: scroll;
     }
     """
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(
-            markup=False,
-            highlight=False,
-            wrap=True,
-            auto_scroll=True,
-            **kwargs,
-        )
+        # Transcript owns its own line buffer and wrapping, so the RichLog-only
+        # knobs (markup / highlight / wrap) no longer mean anything and must not
+        # be forwarded — passing them through would raise TypeError. They are
+        # dropped rather than rejected so existing call sites keep working.
+        kwargs.pop("markup", None)
+        kwargs.pop("highlight", None)
+        kwargs.pop("wrap", None)
+        kwargs.setdefault("auto_scroll", True)
+        super().__init__(**kwargs)
         self._findings: list[FindingEntry] = []
 
     def add_finding(
@@ -124,7 +132,6 @@ class FindingsStream(RichLog):
         if entry.sources > 0:
             detail_parts.append(f"sources: {entry.sources}")
         if entry.confidence:
-            conf_color = SAGE if entry.confidence.upper() == "HIGH" else CLAY
             detail_parts.append(f"confidence: {entry.confidence}")
 
         lines = [spans]
@@ -135,4 +142,6 @@ class FindingsStream(RichLog):
                 span(detail, TEXT_DIM),
             ])
 
-        self.write(build(lines), scroll_end=True)
+        self.write_block(build(lines))
+        if self.auto_scroll:
+            self.scroll_end(animate=False)
