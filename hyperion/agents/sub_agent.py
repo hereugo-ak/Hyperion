@@ -292,11 +292,36 @@ class SubAgentRunner:
 
         VIGIL-aligned fallback chain (§5.2 updated):
         - Search: SearxNG + Jina Search in parallel (discovery layer)
-        - Extract: Obscura → Scrapling → Jina Reader → Crawl4AI → FlareSolverr
+        - Extract: the single ``UnifiedExtract`` ladder (fix 2.1)
         - Historical: Wayback Machine
         - Financial: Alpha Vantage
         - Macro: FRED
         - Prior research: Second Brain
+
+        Fix 2.1 (§4.5 Finding B-4): extraction used to be a THIRD hand-rolled
+        ladder here, five tiers unrolled inline as five near-identical
+        ``for url in all_urls[:N]`` blocks (Obscura → Scrapling → Jina Reader →
+        Crawl4AI → FlareSolverr). It now delegates to
+        :meth:`UnifiedExtract.extract_ladder`, the single implementation. Four
+        specific defects of the inline version disappear with it:
+
+          * **No capability gating whatsoever.** Obscura ships as a Windows
+            binary; this ladder attempted it per URL, for every sub-agent of
+            every specialist, on every Linux/macOS run. The shared ladder probes
+            once per instance and names the skip.
+          * **Arbitrary, inconsistent per-tier URL budgets** (``[:6]``, ``[:6]``,
+            ``[:8]``, ``[:4]``, ``[:3]``): URLs 7–8 were reachable only by the
+            *third* tier, and URLs past 8 by none of them. A URL's chance of
+            being extracted depended on its rank in a merged search list, which
+            is not a retrieval policy anyone chose.
+          * **Tier-minor climbing**: an expensive browser tier could run for
+            URL A while URL B had not yet been attempted at the free tier.
+          * **Tiers the codebase already ships were unreachable from here**:
+            curl_cffi, the httpx+trafilatura workhorse, nodriver, camoufox and
+            wayback were all absent from this ladder.
+
+        The sub-agent's granted tool subset (§4.7) is still honoured: only tiers
+        backed by a tool in ``self.spec.tools`` are offered to the ladder.
         """
         raw_data: list[str] = []
         errors: list[str] = []
@@ -331,112 +356,11 @@ class SubAgentRunner:
         # Merge + dedup URLs from both search sources (preserves order)
         all_urls = list(dict.fromkeys(searxng_urls + jina_search_urls))
 
-        # ── EXTRACTION (VIGIL fallback chain) ───────────────────────────
-        # Obscura → Scrapling → Jina Reader → Crawl4AI → FlareSolverr
-        extracted_urls: set[str] = set()
-
-        # Tier 1: Obscura (stealth, fast, JS rendering)
-        if self._has_tool("obscura") and all_urls:
-            try:
-                obscura = self._get_tool("obscura")
-                for url in all_urls[:6]:
-                    if url in extracted_urls:
-                        continue
-                    try:
-                        fetch_result = await obscura.fetch(url)
-                        if fetch_result and (fetch_result.markdown or fetch_result.content):
-                            text = (fetch_result.markdown or fetch_result.content)[:15000]
-                            raw_data.append(f"Obscura content from {url}:\n{text}")
-                            extracted_urls.add(url)
-                    except Exception as url_err:
-                        # Fix 0.3: fail loud (debug-level; per-URL failures
-                        # in a fan-out loop are expected, but must be
-                        # observable, not silently discarded).
-                        logger.debug("Obscura fetch failed for %s: %s", url, url_err)
-                        continue
-            except Exception as e:
-                errors.append(f"Obscura: {e!s:.80}")
-
-        # Tier 2: Scrapling (adaptive, anti-bot, Playwright)
-        if self._has_tool("scrapling") and all_urls:
-            try:
-                scrapling = self._get_tool("scrapling")
-                for url in all_urls[:6]:
-                    if url in extracted_urls:
-                        continue
-                    try:
-                        scrape_result = await scrapling.fetch(url, stealth=True)
-                        if scrape_result and scrape_result.content:
-                            text = scrape_result.content[:15000]
-                            raw_data.append(f"Scrapling content from {url}:\n{text}")
-                            extracted_urls.add(url)
-                    except Exception as url_err:
-                        logger.debug("Scrapling fetch failed for %s: %s", url, url_err)
-                        continue
-            except Exception as e:
-                errors.append(f"Scrapling: {e!s:.80}")
-
-        # Tier 3: Jina Reader (fast, simple extraction)
-        if self._has_tool("jina") and all_urls:
-            try:
-                jina = self._get_tool("jina")
-                for url in all_urls[:8]:
-                    if url in extracted_urls:
-                        continue
-                    try:
-                        read_result = await jina.read(url)
-                        if read_result and (read_result.markdown or read_result.content):
-                            text = (read_result.markdown or read_result.content)[:15000]
-                            raw_data.append(f"Jina content from {url}:\n{text}")
-                            extracted_urls.add(url)
-                    except Exception as url_err:
-                        logger.debug("Jina read failed for %s: %s", url, url_err)
-                        continue
-            except Exception as e:
-                errors.append(f"Jina: {e!s:.80}")
-
-        # Tier 4: Crawl4AI (heavy extraction, PDFs)
-        if self._has_tool("crawl4ai") and all_urls:
-            try:
-                crawl4ai = self._get_tool("crawl4ai")
-                for url in all_urls[:4]:
-                    if url in extracted_urls:
-                        continue
-                    try:
-                        crawl_result = await crawl4ai.crawl(url)
-                        if crawl_result and (crawl_result.markdown or crawl_result.content):
-                            text = (crawl_result.markdown or crawl_result.content)[:15000]
-                            raw_data.append(f"Crawl4AI content from {url}:\n{text}")
-                            extracted_urls.add(url)
-                    except Exception as url_err:
-                        logger.debug("Crawl4AI crawl failed for %s: %s", url, url_err)
-                        continue
-            except Exception as e:
-                errors.append(f"Crawl4AI: {e!s:.80}")
-
-        # Tier 5: FlareSolverr (CAPTCHA-protected pages)
-        if self._has_tool("flaresolverr") and all_urls:
-            try:
-                from hyperion.tools.flaresolverr import FlareSolverrClient
-                flare = FlareSolverrClient()
-                for url in all_urls[:3]:
-                    if url in extracted_urls:
-                        continue
-                    try:
-                        flare_result = await flare.get(url)
-                        if flare_result and flare_result.success and flare_result.html:
-                            import re
-                            text = re.sub(r"<[^>]+>", " ", flare_result.html)
-                            text = re.sub(r"\s+", " ", text).strip()[:15000]
-                            if text and len(text) > 100:
-                                raw_data.append(f"FlareSolverr content from {url}:\n{text}")
-                                extracted_urls.add(url)
-                    except Exception as url_err:
-                        logger.debug("FlareSolverr get failed for %s: %s", url, url_err)
-                        continue
-                await flare.close()
-            except Exception as e:
-                errors.append(f"FlareSolverr: {e!s:.80}")
+        # ── EXTRACTION (fix 2.1: the single UnifiedExtract ladder) ──────
+        if all_urls:
+            extracted, extract_errors = await self._extract_urls(all_urls)
+            raw_data.extend(extracted)
+            errors.extend(extract_errors)
 
         # ── DATA SOURCES (unchanged) ────────────────────────────────────
 
@@ -795,6 +719,130 @@ class SubAgentRunner:
     # per sub-question") is met at roughly half the request cost of sending
     # every query down every leg.
     PLANNED_QUERIES_PER_LEG = 5
+
+    # fix 2.1 (audit §4.5 Finding B-4, §6 Phase 2 item 2.1) ──────────────────
+    #
+    # Extraction tier → the granted tool (§4.7 `spec.tools`) that backs it.
+    # A sub-agent may only use the tool subset its parent granted at spawn
+    # time, so the ladder offered to `UnifiedExtract` is filtered to tiers whose
+    # backing tool is present.
+    #
+    # Three tiers are deliberately absent from this table, and the reason
+    # differs in each case:
+    #   * `http` — httpx + trafilatura, keyless and browserless, with no
+    #     `ToolName` of its own. It is the cheapest *parsing* tier the codebase
+    #     ships, it cannot leak an API key or launch a browser, and the audit
+    #     names it "the keyless, browserless workhorse" (§4.6). Gating it behind
+    #     a tool grant nobody can express would make it permanently unreachable
+    #     from sub-agents, which is how it came to be missing from this path in
+    #     the first place. It is therefore ALWAYS offered.
+    #   * `curl_cffi` — likewise a plain HTTP fetch with a spoofed TLS
+    #     fingerprint. Always offered, same reasoning.
+    #   * `nodriver` / `camoufox` — real browser launches with no `ToolName`.
+    #     These are NOT auto-granted: the audit's §4.7 quota discipline exists
+    #     precisely so a junior agent cannot spend an expensive resource it was
+    #     never handed. They are reachable through `UnifiedExtract` elsewhere in
+    #     the system, just not by unilateral sub-agent decision.
+    EXTRACT_TIER_TOOLS: dict[str, str] = {
+        "jina": "jina",
+        "obscura": "obscura",
+        "crawl4ai": "crawl4ai",
+        "scrapling": "scrapling",
+        "flaresolverr": "flaresolverr",
+        "wayback": "wayback",
+    }
+
+    # Tiers offered regardless of the granted tool subset — see above.
+    ALWAYS_AVAILABLE_EXTRACT_TIERS: tuple[str, ...] = ("curl_cffi", "http")
+
+    # How many discovered URLs to attempt extraction on.
+    #
+    # The inline ladder this replaces used a DIFFERENT budget per tier
+    # (`[:6]`, `[:6]`, `[:8]`, `[:4]`, `[:3]`), which meant URLs 7-8 were
+    # reachable only by the third tier and URLs past 8 by no tier at all — a
+    # URL's chance of being extracted depended on its rank in a merged search
+    # list rather than on any deliberate policy. One budget, applied once,
+    # against the whole ladder.
+    MAX_EXTRACT_URLS = 10
+
+    def _extraction_tiers(self) -> list[str]:
+        """Extraction tiers this sub-agent is entitled to use, in ladder order.
+
+        Ordering is left to :class:`UnifiedExtract` — this returns a *set* of
+        permitted tiers, and the ladder normalises them back into its own
+        cheap-first order so a sub-agent cannot accidentally promote a browser
+        tier ahead of a free one.
+        """
+        tiers = list(self.ALWAYS_AVAILABLE_EXTRACT_TIERS)
+        tiers += [
+            tier
+            for tier, tool in self.EXTRACT_TIER_TOOLS.items()
+            if self._has_tool(tool)
+        ]
+        return tiers
+
+    async def _extract_urls(self, urls: list[str]) -> tuple[list[str], list[str]]:
+        """Extract discovered URLs via the single ladder (fix 2.1).
+
+        Returns ``(raw_data_blocks, errors)`` in the shape
+        :meth:`_gather_raw_data` already accumulates, so the delegation is
+        invisible to its caller.
+
+        Never raises. A ladder that returns nothing yields an ``errors`` entry
+        naming each tier that was tried and why it produced nothing — the
+        inline version it replaces could only append a single per-tier
+        ``f"Obscura: {e}"`` and lost the reason entirely when the failure was
+        "returned no usable content" rather than an exception.
+        """
+        from hyperion.config import get_settings
+        from hyperion.tools.unified_extract import UnifiedExtract
+
+        tiers = self._extraction_tiers()
+        targets = urls[: self.MAX_EXTRACT_URLS]
+        raw_data: list[str] = []
+        errors: list[str] = []
+
+        # Same settings source `_instantiate_tool` uses for every other tool, so
+        # the ladder's leaf clients see the identical configuration the granted
+        # tools would have seen.
+        extractor = UnifiedExtract(settings=get_settings())
+        try:
+            outcome = await extractor.extract_ladder(targets, tiers=tiers)
+        except Exception as e:
+            # The ladder documents a never-raises contract, but a sub-agent
+            # losing its entire research phase to an unexpected error here is
+            # exactly the class of silent total outage the audit's P0 was
+            # (§4.2). Report it and let the data-source blocks below still run.
+            logger.warning(
+                "Extraction ladder failed for %d URL(s): %s", len(targets), e, exc_info=True
+            )
+            return ([], [f"Extraction: {e!s:.80}"])
+        finally:
+            try:
+                await extractor.close()
+            except Exception as close_err:
+                logger.debug("Closing extraction ladder failed: %s", close_err)
+
+        for result in outcome.results:
+            text = result.markdown or result.content
+            if not text:
+                continue
+            raw_data.append(f"{result.tool_used} content from {result.url}:\n{text}")
+
+        if not outcome.results:
+            for tier, why in outcome.errors.items():
+                errors.append(f"{tier}: {why!s:.80}")
+            for tier, why in outcome.tiers_unavailable.items():
+                errors.append(f"{tier} unavailable: {why!s:.80}")
+
+        logger.info(
+            "SubAgent extraction: %d/%d URL(s) extracted via %s (tried: %s)",
+            len(outcome.results),
+            len(targets),
+            ", ".join(outcome.tools_used) or "none",
+            ", ".join(outcome.tools_tried) or "none",
+        )
+        return (raw_data, errors)
 
     async def _plan_queries(self, leg: str = "") -> list[str]:
         """Return the diversified query set for this sub-agent's question.

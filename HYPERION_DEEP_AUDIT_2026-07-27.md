@@ -1094,7 +1094,141 @@ progress, `[x]` = landed with proof.
     1.1/1.2; +4 new tests, zero regressions).
 
 ### Phase 2 — Extraction & evidence
-- [ ] **2.1** Collapse 3 extraction ladders into `UnifiedExtract`; wire consumers
+- [x] **2.1** Collapse 3 extraction ladders into `UnifiedExtract`; wire consumers
+  — **DONE.** Proof of fix:
+  - **Before state (the three ladders, and the proof the third was dead).**
+    `grep -rn "UnifiedExtract" hyperion/ --include=*.py` returned only its own
+    definition file and the `hyperion/tools/__init__.py` re-export (L27/108/109)
+    — **zero call sites**, confirming §4.5's finding. Meanwhile two *live*
+    ladders existed and had silently diverged:
+    - `sub_agent._gather_raw_data` — 5 unrolled inline `if tool in tools:` blocks
+      (jina → obscura → crawl4ai → scrapling → wayback), ~100 lines, no `http`
+      tier at all, no `curl_cffi`, no per-tier error reporting.
+    - `deep_search._extract_batch` — its own climb over
+      jina/obscura/crawl4ai/http/scrapling/flaresolverr, where `scrapling` was
+      *unreachable dead code* (never reached because the tier list ordering
+      short-circuited before it).
+    - `UnifiedExtract` — 586 lines of unrolled inline tier blocks covering
+      curl_cffi/jina/obscura/nodriver/camoufox/wayback, with **no callers**.
+  - **Design decision: UNION, not intersection.** The three ladders did not
+    cover the same tiers. `UnifiedExtract` alone knew `curl_cffi`, `nodriver`,
+    `camoufox`; `deep_search` alone knew `http` and `flaresolverr`; `scrapling`
+    was live only in `sub_agent`. Collapsing to the *intersection* would have
+    been a regression dressed as a cleanup — it would silently delete working
+    retrieval capability. The merged ladder therefore takes the union, 10 tiers,
+    ordered cheapest/least-detectable → most expensive:
+    `curl_cffi → jina → http → obscura → nodriver → crawl4ai → scrapling →
+    camoufox → flaresolverr → wayback`, with `NON_JS_TIERS = (curl_cffi, jina,
+    http)` so `force_js_render=True` can skip the tiers that cannot execute JS.
+  - **Table-driven, not unrolled.** The 3 × N inline blocks became one
+    `TIER_ORDER` tuple plus one `_extract_<tier>` coroutine per tier, dispatched
+    by `getattr(self, f"_extract_{tier}")`. The three divergent per-tier
+    quality gates (each tier previously decided for itself what "good enough"
+    meant) became a single `_finish()` gate applying `MIN_CONTENT_LENGTH = 100`
+    uniformly, so a 40-character stub can no longer pass at one tier and fail at
+    another.
+  - **Two drivers.** `extract()` climbs the ladder for one URL.
+    `extract_ladder()` climbs it for a batch and is **tier-major**: *every*
+    pending URL is attempted at tier N before *any* URL is attempted at tier
+    N+1. This is the property the old per-URL loops lacked — they would launch a
+    headless browser for URL A while URL B had not yet been tried against free
+    `curl_cffi`. It returns a `LadderOutcome(results, tools_used, tools_tried,
+    errors, tiers_unavailable)`.
+  - **The resolver seam — why the consumers keep their own `_extract_*`
+    methods.** A naive collapse (have `_extract_batch` simply call
+    `UnifiedExtract`'s tiers) would have quietly broken the *test* contract:
+    `tests/test_tool_capability_gating.py` monkeypatches
+    `client._extract_jina` / `._extract_obscura` / … as its substitution point,
+    and L720's assertion requires the literal string `f"_extract_{tier}"` to
+    remain in `deep_search`'s source. Under a naive collapse those 81 tests
+    would have kept passing while silently no longer exercising doubles — they'd
+    have been hitting real HTTP clients. So `extract_ladder` accepts a
+    `tier_resolver` callback: **the climb lives in one place, the per-tier calls
+    stay overridable per consumer.** All 81 pre-existing tests in
+    `test_tool_capability_gating.py` + `test_stealth_extract.py` +
+    `test_tools.py` pass **unmodified** (`81 passed`).
+  - **`raw` field for lossless delegation.** `deep_search` carries a
+    `published_date` that `UnifiedExtractResult` has no field for. Rather than
+    widen the shared schema for one consumer, `UnifiedExtractResult.raw: Any`
+    parks the consumer's native result object for it to read back. Deliberately
+    excluded from `to_dict()` so it never leaks into serialised output.
+  - **Semaphore reentrancy contract (documented in two docstrings).**
+    `deep_search`'s `_extract_<tier>(semaphore, url)` methods acquire the
+    concurrency semaphore *themselves*. `asyncio.Semaphore` is not reentrant, so
+    if the shared driver also acquired it every URL would need two permits and
+    the batch would deadlock. The contract is therefore: **the resolved callable
+    owns its own bounding; the driver must not wrap it.** `_default_resolver`
+    acquires (its `_extract_*` methods don't), `_resolve_extraction_tier`
+    doesn't (deep_search's do), and `extract_ladder` gathers bare.
+  - **`_normalize_tiers` — a restriction that cannot reorder.** Consumers pass
+    `tiers=` to request a subset. Passing a *list* risks a caller silently
+    reordering the cost ladder (e.g. putting `camoufox` first). Normalisation
+    therefore treats the argument as a **set** and re-projects it through
+    `TIER_ORDER`, so cost ordering is structurally unforgeable. Unknown tier
+    names are warned-and-ignored; an all-unknown request falls back to the full
+    ladder rather than extracting nothing.
+  - **Consumer 1 — `deep_search._extract_batch`.** Its climb is gone; it now
+    builds `UnifiedExtract` lazily (`_get_unified_extract()`) and calls
+    `extract_ladder(urls, concurrency=EXTRACTION_CONCURRENCY,
+    tiers=self.EXTRACTION_TIERS, tier_resolver=self._resolve_extraction_tier,
+    tier_available=self._tier_available)`. Its own gating and its human-facing
+    `TIER_LABELS` are preserved by mapping the outcome's tier names back through
+    the label table for `tools_used` / `tools_tried` / `errors`, so no
+    log-string or API surface changed. `close()` now also closes the ladder.
+  - **Consumer 2 — `sub_agent._gather_raw_data`.** The 5 unrolled blocks became
+    `await self._extract_urls(all_urls)`. This removed four defects at once:
+    (a) `http` and `curl_cffi` were entirely absent from the sub-agent path;
+    (b) failures were invisible — a tier that failed reported nothing;
+    (c) there was no URL cap, so a broad leg could fan out unboundedly
+    (`MAX_EXTRACT_URLS = 10`); (d) the climb was per-URL rather than tier-major.
+    The §4.7 tool-quota discipline is preserved by a **three-way** split, each
+    branch carrying its rationale in code: `curl_cffi`/`http` are always offered
+    (plain HTTP, no `ToolName` member exists for them, and gating them behind an
+    inexpressible grant is precisely how `http` came to be missing from this
+    path); `jina`/`obscura`/`crawl4ai`/`scrapling`/`flaresolverr`/`wayback` are
+    gated on the granted `ToolName`; `nodriver`/`camoufox` are **never**
+    auto-granted, because they launch real browsers. The whole call is wrapped
+    try/except/finally so a ladder failure can never lose the already-collected
+    data-source blocks.
+  - **Live verification** (not just unit tests) — three scripted runs against
+    stubbed tiers proved: (1) the climb is genuinely tier-major (invocation log
+    across a mixed batch shows all URLs at tier N before tier N+1); (2) a
+    12-URL `deep_search` batch delegates through the seam and returns
+    `published_date` intact via `raw`; (3) sub-agent tool-subset gating produces
+    exactly the expected tier list for a spec granted only `JINA`.
+  - **Tests: `tests/test_unified_extract_ladder.py`, 76 tests / 950 lines**, in
+    8 classes: `TestLadderIsSingleAndTableDriven` (asserts the duplicate ladders
+    are *gone*, not merely bypassed), `TestLadderCoversTheUnion` (10
+    parametrized — one per tier, so a future "cleanup" that drops a tier fails
+    loudly), `TestSingleUrlClimb`, `TestTierMajorBatchClimb`,
+    `TestTierRestriction`, `TestCapabilityGating`, `TestDeepSearchDelegates`,
+    `TestSubAgentDelegates`.
+  - **Mutation testing — 3 mutations, 2 initially SURVIVED and forced the tests
+    to be strengthened.** This is the part worth recording:
+    1. *Reorder the ladder* (move `wayback` before `camoufox`) → 3 failures.
+       Killed immediately.
+    2. *Disable the `if not pending: break` stop-when-done* → **SURVIVED.** The
+       invocation-log assertion alone still passed. Investigating the real
+       consequence: `tools_tried` becomes all 10 tiers and `errors` gains 9
+       spurious `"no usable content from 0 URL(s)"` entries — i.e. **dishonest
+       provenance for a batch that fully succeeded at the first tier**, which
+       would poison any yield metric built on it (cf. fix 2.6). Strengthened
+       with exact `tools_tried == ["curl_cffi"]` and `errors == {}` assertions
+       plus a standalone invariant test. Now killed.
+    3. *Make the driver double-acquire the semaphore* → **SURVIVED at
+       `concurrency=2`.** Probing 1/2/3 permits showed the deadlock is
+       deterministic **only at `concurrency=1`**; with ≥2 permits a single task
+       can hold both acquisitions and progress, so the batch merely serialises
+       invisibly. The test was parametrized over `[1, 2, 5]`, a dedicated
+       `test_resolved_callable_owns_its_own_bounding` was added, and the
+       `deep_search` counterpart now forces `EXTRACTION_CONCURRENCY = 1` via
+       monkeypatch. Now killed (2 failures, `TimeoutError`).
+  - Net diff: **1,055 insertions / 446 deletions** across
+    `unified_extract.py` (the single ladder), `deep_search.py` (consumer),
+    `sub_agent.py` (consumer).
+  - Full suite: **758 passed, 3 skipped** (was 682 passed, 3 skipped after
+    Phase 1; +76 new tests, **zero regressions**, zero pre-existing tests
+    modified).
 - [ ] **2.2** Chunk → rerank → top-k assembly replacing blind 15k head-slice
 - [ ] **2.3** `pdfplumber`/`camelot` table extraction → `chart_specs`
 - [ ] **2.4** Token-boundary relevance in `evidence_scorer`; recalibrate `MIN_RELEVANCE`

@@ -271,6 +271,9 @@ class DeepSearchClient:
         self._crawl4ai: Any | None = None
         self._flaresolverr: Any | None = None
         self._evidence_scorer: EvidenceScorer | None = None
+        # Fix 2.1: the single extraction ladder. This client no longer owns a
+        # copy of the climb — it owns the tier subset and the per-tier calls.
+        self._unified_extract: Any | None = None
 
         # In-memory cache: key → (result, timestamp)
         self._cache: dict[str, tuple[DeepSearchResult, float]] = {}
@@ -674,13 +677,88 @@ class DeepSearchClient:
     # Phase 2: Extraction (VIGIL Fallback Chain)
     # ─────────────────────────────────────────────────────────────────
 
+    def _get_unified_extract(self) -> Any:
+        """The single extraction ladder (fix 2.1). Lazy — only built if used."""
+        if self._unified_extract is None:
+            from hyperion.tools.unified_extract import UnifiedExtract
+
+            self._unified_extract = UnifiedExtract(settings=self.settings)
+        return self._unified_extract
+
+    def _resolve_extraction_tier(
+        self,
+        tier: str,
+        semaphore: asyncio.Semaphore,
+        *,
+        extract_tables: bool = True,
+        extract_links: bool = True,
+    ) -> Any:
+        """Adapt this client's ``_extract_<tier>`` methods for the shared driver.
+
+        Fix 2.1: the *ladder logic* now lives in exactly one place
+        (:meth:`UnifiedExtract.extract_ladder`), but the *substitution point*
+        stays here. That is deliberate, and it is what makes this a collapse of
+        three ladders into one rather than a fourth one:
+
+          * The climb — tier order, capability skipping, tier-major batching,
+            stop-when-done, honest ``tools_used``/``tools_tried``/``errors`` —
+            is no longer duplicated. Bug fixes to it now reach every consumer.
+          * The per-tier *calls* remain overridable methods on this class,
+            because ``tests/test_tool_capability_gating.py`` monkeypatches
+            ``client._extract_jina`` etc. to test ladder behaviour without a
+            network, and because ``deep_search`` needs its own
+            :class:`ExtractedContent` shape and 15,000-char budget applied at
+            the point of extraction.
+
+        The returned callable owns its concurrency bounding: the shared driver
+        must not wrap it, because ``asyncio.Semaphore`` is not reentrant and
+        this adapter's underlying ``_extract_<tier>(semaphore, url)`` methods
+        acquire it themselves.
+        """
+        from hyperion.tools.unified_extract import UnifiedExtractResult
+
+        extractor = getattr(self, f"_extract_{tier}", None)
+        if extractor is None:
+            return None
+
+        async def _call(url: str) -> UnifiedExtractResult:
+            content = await extractor(semaphore, url)
+            # Normalise this client's ExtractedContent into the driver's
+            # result shape. `content` truthiness IS this ladder's quality
+            # signal: `_extract_*` already applied `_is_quality_content`, and
+            # returns an empty-content sentinel on failure.
+            ok = bool(getattr(content, "content", ""))
+            result = UnifiedExtractResult(
+                url=getattr(content, "url", url),
+                title=getattr(content, "title", "") or "",
+                content=getattr(content, "content", "") or "",
+                markdown=getattr(content, "markdown", "") or "",
+                tool_used=getattr(content, "tool_used", "") or tier,
+                success=ok,
+                error="" if ok else f"no usable content from {url}",
+                # Carry the original through so the caller keeps published_date
+                # and the tier's own label rather than a lossy reconstruction.
+                raw=content,
+            )
+            return result
+
+        return _call
+
     async def _extract_batch(
         self,
         urls: list[str],
     ) -> tuple[list[ExtractedContent], list[str], list[str], dict[str, str]]:
         """Extract content from URLs using the VIGIL fallback chain.
 
-        For each URL, tries extraction tiers in :attr:`EXTRACTION_TIERS` order:
+        Fix 2.1 (§4.5 Finding B-4): this method no longer *implements* a
+        ladder. It declares which tiers it is entitled to
+        (:attr:`EXTRACTION_TIERS`), supplies its own per-tier extractors via
+        :meth:`_resolve_extraction_tier`, and delegates the climb to
+        :meth:`UnifiedExtract.extract_ladder` — the single implementation.
+        Before this fix there were three separately-maintained copies of the
+        climb, and the best-engineered one had no callers at all.
+
+        Tiers, in :attr:`EXTRACTION_TIERS` order:
           1. Jina Reader (fast, keyless, reliable — always works)
           2. HTTP Extract (httpx + trafilatura — keyless, browserless)
           3. Obscura (stealth, JS rendering — capability-gated)
@@ -691,59 +769,47 @@ class DeepSearchClient:
         Once a URL is successfully extracted it is not retried by lower tiers,
         and a tier that cannot run here is skipped rather than attempted.
 
-        Returns ``(extracted, tools_used, tools_tried, errors)``. The two extra
+        Returns ``(extracted, tools_used, tools_tried, errors)``, with tier
+        names mapped through :attr:`TIER_LABELS` so this client's public
+        provenance vocabulary is unchanged by the delegation. The two extra
         members exist so the caller can distinguish "every tier failed" from
         "nothing needed extracting" — previously both looked identical.
-
-        Uses a semaphore to limit concurrency.
         """
         if not urls:
             return ([], [], [], {})
 
+        outcome = await self._get_unified_extract().extract_ladder(
+            urls,
+            concurrency=self.EXTRACTION_CONCURRENCY,
+            tiers=self.EXTRACTION_TIERS,
+            tier_resolver=self._resolve_extraction_tier,
+            tier_available=self._tier_available,
+        )
+
+        def _label(tier: str) -> str:
+            return self.TIER_LABELS.get(tier, tier)
+
         extracted: list[ExtractedContent] = []
-        extracted_urls: set[str] = set()
-        tools_used: list[str] = []
-        tools_tried: list[str] = []
-        errors: dict[str, str] = {}
+        for result in outcome.results:
+            carried = result.raw
+            extracted.append(
+                carried
+                if isinstance(carried, ExtractedContent)
+                else ExtractedContent(
+                    url=result.url,
+                    title=result.title,
+                    content=result.content,
+                    markdown=result.markdown,
+                    tool_used=result.tool_used,
+                )
+            )
 
-        semaphore = asyncio.Semaphore(self.EXTRACTION_CONCURRENCY)
-
-        for tier in self.EXTRACTION_TIERS:
-            pending = [u for u in urls if u not in extracted_urls]
-            if not pending:
-                break  # everything already extracted — stop climbing the ladder
-            if not self._tier_available(tier):
-                continue
-
-            label = self.TIER_LABELS.get(tier, tier)
-            extractor = getattr(self, f"_extract_{tier}", None)
-            if extractor is None:  # pragma: no cover — guards a typo in the table
-                errors[label] = "no extractor implemented"
-                continue
-
-            tools_tried.append(label)
-            tasks = [extractor(semaphore, u) for u in pending]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            produced = 0
-            failures: list[str] = []
-            for result in results:
-                if isinstance(result, BaseException):
-                    failures.append(f"{type(result).__name__}: {result}")
-                    continue
-                if isinstance(result, ExtractedContent) and result.content:
-                    extracted.append(result)
-                    extracted_urls.add(result.url)
-                    produced += 1
-
-            if produced:
-                tools_used.append(label)
-            elif failures:
-                errors[label] = failures[0]
-            else:
-                errors[label] = f"no usable content from {len(pending)} URL(s)"
-
-        return (extracted, tools_used, tools_tried, errors)
+        return (
+            extracted,
+            [_label(t) for t in outcome.tools_used],
+            [_label(t) for t in outcome.tools_tried],
+            {_label(t): why for t, why in outcome.errors.items()},
+        )
 
     # ─────────────────────────────────────────────────────────────────
     # Per-tool extraction methods
@@ -910,6 +976,9 @@ class DeepSearchClient:
         if self._flaresolverr:
             await self._flaresolverr.close()
             self._flaresolverr = None
+        if self._unified_extract:
+            await self._unified_extract.close()
+            self._unified_extract = None
 
     async def __aenter__(self) -> DeepSearchClient:
         return self
