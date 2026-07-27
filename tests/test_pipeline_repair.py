@@ -839,6 +839,20 @@ class TestTypography:
         assert m, f"no CSS block for {selector!r}"
         return m.group(1)
 
+    def _css_code(self) -> str:
+        """CSS with /* ... */ comments stripped.
+
+        Required for any assertion of the form "token X must not appear".
+        The stylesheet documents its own bug history, so it legitimately quotes
+        the defective `{page}` placeholder inside a comment. Asserting against
+        the raw text confuses the fix's documentation with the defect itself —
+        the same trap that made an earlier regex-based geography guard flag
+        docstrings. Judge the declarations, not the prose.
+        """
+        import re
+
+        return re.sub(r"/\*.*?\*/", "", self._css(), flags=re.S)
+
     def test_body_is_not_monospace(self):
         """No consulting firm sets running prose in a monospace font: uniform
         character width destroys word-shape cues and reads as terminal output.
@@ -882,13 +896,266 @@ class TestTypography:
 
     def test_no_unresolved_palette_placeholders(self):
         """CSS_TEMPLATE is .format()-ed at import; a stray {token} would ship
-        as a literal brace in the stylesheet."""
+        as a literal brace in the stylesheet.
+
+        This test previously WHITELISTED {page} and {section_title}, on the
+        stated belief that they were "WeasyPrint running-element markers
+        deliberately escaped through to the output". That belief was wrong, and
+        the whitelist is what allowed the bug to survive: they are not markers
+        of any kind. Rendering the template to a real PDF and extracting the
+        text showed the literal characters "{page}" printed in the footer of
+        every page. There is no such thing as a brace placeholder in CSS —
+        page numbers come from counter(page). The whitelist is therefore gone
+        and NO leftover brace token is tolerated.
+        """
         import re
 
-        # {page} and {section_title} are WeasyPrint running-element markers,
-        # deliberately escaped through to the output.
-        leftovers = {
-            t for t in re.findall(r"\{[a-z_]+\}", self._css())
-            if t not in ("{page}", "{section_title}")
-        }
-        assert not leftovers, f"unresolved palette placeholders: {leftovers}"
+        leftovers = set(re.findall(r"\{[a-z_]+\}", self._css_code()))
+        assert not leftovers, f"unresolved placeholders in emitted CSS: {leftovers}"
+
+    def test_page_number_uses_css_counter_not_placeholder(self):
+        """Regression: the footer must use counter(page), never a brace token.
+
+        Guards the specific defect directly, so that reintroducing a
+        "{page}"-style placeholder fails with an explanatory message rather
+        than only tripping the generic leftover-token test.
+        """
+        css = self._css_code()
+        assert "counter(page)" in css, "footer does not use counter(page)"
+        assert "{page}" not in css, "literal {page} placeholder is back in the CSS"
+        assert "{section_title}" not in css, "literal {section_title} placeholder is back"
+
+    def test_running_header_is_fed_by_string_set(self):
+        """string(section-title) resolves to empty unless something sets it."""
+        css = self._css_code()
+        if "string(section-title)" in css:
+            assert "string-set: section-title" in css, (
+                "@top-center consumes string(section-title) but no rule sets it, "
+                "so every running header would render blank"
+            )
+
+    def test_kpi_labels_cannot_hyphenate(self):
+        """Short KPI descriptors must never break across lines.
+
+        The rendered PDF printed "KEY FIND-INGS" and "CONFID-ENCE": body-level
+        `hyphens: auto` is inherited, and a narrow KPI card triggers it.
+        """
+        for cls in ("kpi-card", "kpi-label"):
+            block = self._block(f".{cls}")
+            assert "hyphens: none" in block, (
+                f".{cls} does not disable hyphenation, so short labels can "
+                f"break mid-word (e.g. 'KEY FIND-INGS')"
+            )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Lifecycle: fresh initialisation on shell start, complete teardown on quit
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestServiceLifecycle:
+    """Everything HYPERION starts must be started fresh and stopped on quit.
+
+    The teardown was silently a no-op. `HyperionApp.on_unmount` was a SYNC
+    handler that did `asyncio.get_running_loop().run_until_complete(...)`.
+    Textual dispatches unmount from inside its own running loop, so that call
+    raises `RuntimeError: This event loop is already running`, and a bare
+    `except Exception: pass` swallowed it. Result: `stop_services` ran zero
+    times and every shell session leaked its SearxNG / FlareSolverr containers.
+    """
+
+    def test_quit_handlers_are_awaitable(self):
+        """A sync handler cannot await teardown from inside a running loop.
+
+        This is the root cause, asserted directly: if either handler is ever
+        made sync again, teardown silently stops happening.
+        """
+        import inspect
+
+        from hyperion.tui.app import HyperionApp
+
+        assert inspect.iscoroutinefunction(HyperionApp.action_quit), (
+            "action_quit must be async or teardown cannot be awaited"
+        )
+        assert inspect.iscoroutinefunction(HyperionApp.on_unmount), (
+            "on_unmount must be async or teardown cannot be awaited"
+        )
+
+    def test_no_run_until_complete_in_tui_shutdown(self):
+        """`run_until_complete` on Textual's own loop always raises.
+
+        Inspected via AST, not text search: the module's docstrings quote
+        `run_until_complete` while explaining this very bug, and a substring
+        match cannot tell the fix's documentation from the defect. Only actual
+        call nodes count.
+        """
+        import ast
+        import inspect
+
+        from hyperion.tui import app as app_mod
+
+        tree = ast.parse(inspect.getsource(app_mod))
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run_until_complete"
+        ]
+        assert not offenders, (
+            f"run_until_complete called in the TUI at line(s) {offenders}: it "
+            f"raises 'This event loop is already running' when invoked from a "
+            f"Textual handler, and teardown silently never runs"
+        )
+
+    async def test_teardown_runs_once_inside_a_running_loop(self, monkeypatch):
+        """The exact failing condition: teardown invoked from a live loop."""
+        from hyperion.tui import boot as boot_mod
+        from hyperion.tui.app import HyperionApp
+
+        calls = {"n": 0}
+
+        async def _fake_stop() -> None:
+            calls["n"] += 1
+
+        monkeypatch.setattr(boot_mod, "stop_services", _fake_stop)
+
+        app = HyperionApp.__new__(HyperionApp)  # no Textual runtime required
+        await app._shutdown_services()
+        assert calls["n"] == 1, "teardown did not run inside a running loop"
+
+        # A second quit must not tear down again: two concurrent `docker rm`
+        # calls race and make the failure look intermittent.
+        await app._shutdown_services()
+        assert calls["n"] == 1, "teardown ran twice"
+
+    async def test_teardown_never_raises(self, monkeypatch):
+        """Teardown runs on the exit path; raising there masks the real error."""
+        from hyperion.tui import boot as boot_mod
+        from hyperion.tui.app import HyperionApp
+
+        async def _boom() -> None:
+            raise RuntimeError("docker daemon unreachable")
+
+        monkeypatch.setattr(boot_mod, "stop_services", _boom)
+
+        app = HyperionApp.__new__(HyperionApp)
+        await app._shutdown_services()  # must not propagate
+
+    def test_cli_shell_guarantees_teardown(self):
+        """Ctrl+C / crash never reach Textual's handlers.
+
+        The CLI must therefore also stop services in a `finally`, otherwise an
+        interrupted boot leaves containers running.
+        """
+        import inspect
+
+        from hyperion import cli
+
+        src = inspect.getsource(cli.shell)
+        assert "finally" in src, "shell() has no finally block guaranteeing teardown"
+        assert "_ensure_services_stopped" in src
+        assert hasattr(cli, "_ensure_services_stopped")
+
+
+class TestFreshProcessState:
+    """A session must not inherit the previous engagement's global state.
+
+    Router, agent bus, search budget and the engagement focus are all
+    module-level singletons. Each shipped a `reset_*` helper documented as
+    "useful for testing" — and none was ever called by the application, so a
+    second engagement in one shell inherited the first one's provider
+    cooldowns, spent search budget and subject/geography focus.
+    """
+
+    def test_reset_process_state_clears_every_subsystem(self):
+        """Dirty the process the way a finished engagement would, then reset."""
+        import hyperion.agents.bus as bus_mod
+        import hyperion.router.router as router_mod
+        from hyperion.tools.query_utils import (
+            get_engagement_focus,
+            set_engagement_focus,
+        )
+        from hyperion.tools.search_budget import SearchBudget
+        from hyperion.tui.boot import reset_process_state
+
+        set_engagement_focus(subject="United States semiconductors", geography="US")
+        router_mod.get_router()
+        bus_mod.get_bus()
+        SearchBudget.current().used["bing"] = 42
+
+        count = reset_process_state()
+
+        assert count == 4, f"expected 4 subsystems reset, got {count}"
+        assert router_mod._router is None, "router singleton survived reset"
+        assert bus_mod._bus is None, "agent bus singleton survived reset"
+        assert not SearchBudget.current().used, "search budget was not zeroed"
+        assert not any(get_engagement_focus()), (
+            "stale engagement focus survived: a leftover geography is exactly "
+            "how one engagement's country leaks into the next report"
+        )
+
+    def test_boot_sequence_resets_state_before_anything_else(self):
+        """'initializing core systems' must do real work, not just sleep."""
+        import inspect
+
+        from hyperion.tui import boot as boot_mod
+
+        src = inspect.getsource(boot_mod.run_boot_sequence)
+        assert "reset_process_state()" in src, (
+            "boot sequence never resets process state, so a relaunch inherits "
+            "the previous engagement's singletons"
+        )
+
+    async def test_stop_services_is_idempotent(self, monkeypatch):
+        """Quit may be triggered more than once; teardown must tolerate it."""
+        from hyperion.tui import boot as boot_mod
+
+        async def _fake_subprocess(cmd, timeout=15.0):
+            return 0, "", ""
+
+        monkeypatch.setattr(boot_mod, "_run_subprocess", _fake_subprocess)
+
+        await boot_mod.stop_services()
+        await boot_mod.stop_services()
+
+    async def test_stop_services_removes_not_just_stops_containers(self, monkeypatch):
+        """A stopped-but-present container keeps its cached SearxNG results.
+
+        Fresh-on-start therefore requires `docker rm`, not only `docker stop`.
+        """
+        from hyperion.tui import boot as boot_mod
+
+        seen: list[list[str]] = []
+
+        async def _record(cmd, timeout=15.0):
+            seen.append(list(cmd))
+            return 0, "", ""
+
+        monkeypatch.setattr(boot_mod, "_run_subprocess", _record)
+        await boot_mod.stop_services()
+
+        for container in ("searxng", "flaresolverr"):
+            assert ["docker", "stop", container] in seen, f"{container} not stopped"
+            assert ["docker", "rm", container] in seen, f"{container} not removed"
+
+    async def test_stop_services_closes_llm_clients(self, monkeypatch):
+        """Provider httpx pools must be closed, or sockets outlive the shell."""
+        from hyperion.tui import boot as boot_mod
+
+        closed = {"n": 0}
+
+        class _FakeRouter:
+            async def close(self) -> None:
+                closed["n"] += 1
+
+        async def _fake_subprocess(cmd, timeout=15.0):
+            return 0, "", ""
+
+        monkeypatch.setattr(boot_mod, "_run_subprocess", _fake_subprocess)
+        monkeypatch.setattr(
+            "hyperion.router.router.get_router", lambda: _FakeRouter()
+        )
+
+        await boot_mod.stop_services()
+        assert closed["n"] == 1, "router.close() was not awaited on shutdown"

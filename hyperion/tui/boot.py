@@ -133,9 +133,17 @@ async def run_boot_sequence(
 
     # ── Step 1: Core ──────────────────────────────────────────────────────
     step = _start_step("BOOT", "initializing HYPERION core systems")
+    # Discard any in-process state left by a previous engagement in this same
+    # interpreter before anything else touches it. Without this, "initializing
+    # core systems" was a cosmetic sleep: the router, agent bus, search budget
+    # and engagement focus are module-level singletons, so a second engagement
+    # inherited the first one's provider health, cooldowns, spent search budget
+    # and — most damaging — its subject/geography focus, which is precisely the
+    # mechanism by which one engagement's geography can leak into the next.
+    reset_count = reset_process_state()
     await asyncio.sleep(0.4 if not reduced_motion else 0.1)
-    _finish_step(step, OK, "core systems initialized")
-    results["core"] = (OK, "core systems initialized")
+    _finish_step(step, OK, f"core systems initialized · {reset_count} subsystems reset")
+    results["core"] = (OK, f"core systems initialized · {reset_count} subsystems reset")
 
     # ── Step 2: Docker daemon ─────────────────────────────────────────────
     step = _start_step("DOCKER", "checking Docker daemon")
@@ -409,13 +417,98 @@ async def run_boot_sequence(
     return results
 
 
-async def stop_services() -> None:
-    """Stop all HYPERION services on shutdown.
+def reset_process_state() -> int:
+    """Drop every module-level singleton so a session starts genuinely clean.
 
-    Stops Docker containers (SearxNG, FlareSolverr) and closes any
-    globally accessible tool clients — mirroring the boot sequence.
+    HYPERION keeps the router, agent bus, search budget, settings and the
+    engagement focus as process-global singletons. Each module already shipped a
+    `reset_*` helper, but every one of them was documented as "useful for
+    testing" and none was ever called by the application. The consequence is
+    that a shell session which runs two engagements carries the first one's
+    provider cooldowns, spent search budget and — the dangerous one — its
+    subject/geography focus into the second.
+
+    Returns the number of subsystems successfully reset, so the boot transcript
+    can report a real number instead of an unverifiable "initialized".
+
+    Each reset is independent: one missing module must not prevent the rest.
     """
-    # Stop and remove Docker containers for a clean slate next boot
+    reset = 0
+
+    # Engagement focus first — a stale subject/geography is the failure mode
+    # that silently produces a report about the wrong country.
+    try:
+        from hyperion.tools.query_utils import clear_engagement_focus
+
+        clear_engagement_focus()
+        reset += 1
+    except Exception:
+        pass
+
+    try:
+        from hyperion.router.router import reset_router
+
+        reset_router()
+        reset += 1
+    except Exception:
+        pass
+
+    try:
+        from hyperion.agents.bus import reset_bus
+
+        reset_bus()
+        reset += 1
+    except Exception:
+        pass
+
+    try:
+        from hyperion.tools.search_budget import SearchBudget
+
+        # `start()` replaces the instance outright, zeroing per-engine spend.
+        SearchBudget.start()
+        reset += 1
+    except Exception:
+        pass
+
+    return reset
+
+
+async def stop_services() -> None:
+    """Terminate everything HYPERION started, in dependency order.
+
+    Called on shell quit (and from `hyperion consult`'s finally block). Must be
+    idempotent: `docker stop` / `docker rm` on an absent container is a no-op,
+    and the singleton resets are naturally idempotent, so running this twice is
+    harmless. It must also never raise — it runs on the exit path, where an
+    exception would mask whatever actually ended the session.
+
+    Order matters. LLM clients are closed BEFORE the containers they may be
+    mid-request against, so a in-flight HTTP call fails against a closed client
+    rather than a vanished container (the latter can hang until timeout).
+    """
+    # ── 1. Close LLM provider clients ────────────────────────────────────────
+    # Each provider holds a persistent httpx AsyncClient with a connection pool.
+    # Left open, those sockets and their reader tasks survive until GC, which is
+    # what "the LLMs did not terminate" looks like from outside.
+    try:
+        from hyperion.router.router import get_router, reset_router
+
+        router = get_router()
+        close_method = getattr(router, "close", None)
+        if callable(close_method):
+            result = close_method()
+            if asyncio.iscoroutine(result):
+                await result
+        # Drop the singleton so a relaunch in the same interpreter builds fresh
+        # clients rather than reusing ones whose transports are now closed.
+        reset_router()
+    except Exception:
+        pass
+
+    # ── 2. Stop and REMOVE the containers ────────────────────────────────────
+    # `rm` as well as `stop`: a stopped-but-present container keeps its cached
+    # SearxNG results, so the next boot is not actually a fresh instance. Both
+    # are attempted for every container even if an earlier one fails.
     for container in ("searxng", "flaresolverr"):
         try:
             await _run_subprocess(["docker", "stop", container], timeout=15)
@@ -426,16 +519,11 @@ async def stop_services() -> None:
         except Exception:
             pass
 
-    # Close any global tool clients (router, etc.)
+    # ── 3. Clear in-process state ────────────────────────────────────────────
+    # Mirrors the boot-time reset so quit leaves nothing behind even when the
+    # interpreter itself keeps running (embedded / test / REPL use).
     try:
-        from hyperion.router.router import get_router
-
-        router = get_router()
-        close_method = getattr(router, "close", None)
-        if callable(close_method):
-            result = close_method()
-            if asyncio.iscoroutine(result):
-                await result
+        reset_process_state()
     except Exception:
         pass
 

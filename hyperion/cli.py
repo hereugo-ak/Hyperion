@@ -82,13 +82,48 @@ def shell(
     """
     try:
         from hyperion.tui.app import HyperionApp
-
-        HyperionApp(reduced_motion=reduced_motion, demo=demo, mouse=not no_mouse).run(
-            mouse=not no_mouse
-        )
     except ImportError:
         console.print(f"[{ERROR}]Textual not installed. Run: pip install textual rich[/{ERROR}]")
         raise typer.Exit(code=1)
+
+    # Teardown is guaranteed here as well as inside the app.
+    #
+    # The TUI tears down in `action_quit` / `on_unmount`, which covers a normal
+    # quit. Neither runs if the process dies another way: Ctrl+C during the boot
+    # sequence, an unhandled exception in a screen, or a terminal that closes
+    # the pty. Those paths previously left `searxng` and `flaresolverr` running
+    # with no user-visible sign, and the user's requirement is that quitting the
+    # shell terminates everything.
+    #
+    # `stop_services` is idempotent (docker stop/rm of an absent container is a
+    # no-op) and the app marks itself stopped, so the common case does not pay
+    # for this twice.
+    try:
+        HyperionApp(reduced_motion=reduced_motion, demo=demo, mouse=not no_mouse).run(
+            mouse=not no_mouse
+        )
+    except KeyboardInterrupt:
+        console.print(f"[{DIM}]interrupted — shutting services down…[/{DIM}]")
+    finally:
+        _ensure_services_stopped()
+
+
+def _ensure_services_stopped() -> None:
+    """Best-effort synchronous teardown for the process-exit path.
+
+    Runs on its own event loop because by this point Textual's loop is gone.
+    Never raises: an exception escaping here would replace whatever error
+    actually terminated the shell, hiding the real cause.
+    """
+    try:
+        from hyperion.tui.boot import stop_services
+
+        asyncio.run(stop_services())
+    except Exception as exc:  # noqa: BLE001 - must not mask the original failure
+        console.print(
+            f"[{WARN}]warning: could not confirm service shutdown "
+            f"({type(exc).__name__}). Check `docker ps`.[/{WARN}]"
+        )
 
 
 @app.command()

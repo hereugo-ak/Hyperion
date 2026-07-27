@@ -177,18 +177,59 @@ class HyperionApp(App):
         except Exception:
             pass
 
-    def on_unmount(self) -> None:
-        """Stop all HYPERION services when the shell exits."""
-        try:
-            import asyncio
-            from hyperion.tui.boot import stop_services
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
+    async def action_quit(self) -> None:
+        """Tear down every service BEFORE the app exits.
+
+        Teardown must happen here rather than in `on_unmount`. `on_unmount` was
+        a *sync* handler that did:
+
+            loop = asyncio.get_running_loop()
             loop.run_until_complete(stop_services())
-        except Exception:
-            pass
+
+        Textual dispatches unmount from inside its own running event loop, so
+        `run_until_complete` on that same loop raises
+        `RuntimeError: This event loop is already running`. The bare
+        `except Exception: pass` swallowed it, so teardown reported no error and
+        did nothing: `stop_services` ran ZERO times. Every `hyperion shell`
+        session leaked its SearxNG and FlareSolverr containers, and the next
+        boot inherited warm containers holding stale cached SERPs.
+
+        `action_quit` is awaited by Textual, so the teardown genuinely
+        completes before the process ends. Ctrl+Q, the quit binding and
+        `App.exit()`-by-action all route through here.
+        """
+        await self._shutdown_services()
+        self.exit()
+
+    async def _shutdown_services(self) -> None:
+        """Run service teardown exactly once, even if quit is triggered twice.
+
+        Ctrl+Q during an already-running quit would otherwise start a second
+        `docker stop`, and the two racing removals make the failure look
+        intermittent.
+        """
+        if getattr(self, "_services_stopped", False):
+            return
+        self._services_stopped = True
+        try:
+            from hyperion.tui.boot import stop_services
+
+            await stop_services()
+        except Exception as exc:  # noqa: BLE001 - shutdown must never block exit
+            # Surfaced, not silently swallowed: a failed teardown leaves real
+            # containers running and the user needs to know.
+            try:
+                self.log(f"service teardown failed: {type(exc).__name__}: {exc}")
+            except Exception:
+                pass
+
+    async def on_unmount(self) -> None:
+        """Safety net for exits that do not pass through `action_quit`.
+
+        Async so it is awaited by Textual. Idempotent via `_shutdown_services`,
+        so the normal Ctrl+Q path does not tear down twice.
+        """
+        await self._shutdown_services()
 
 
 def run(
