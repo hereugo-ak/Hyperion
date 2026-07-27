@@ -55,7 +55,7 @@ from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
-from hyperion.tools.query_utils import detect_geographies
+from hyperion.tools.query_utils import detect_geographies, resolve_subject
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -402,15 +402,12 @@ class RiskAnalyst(BaseAgent):
         """
         urls: list[str] = []
         try:
-            from hyperion.tools.query_utils import get_engagement_focus
-
             searxng = self.get_tool(ToolName.SEARXNG)
-            _q, _subject, _geo = get_engagement_focus()
-            sector = (
-                self._context.get("industry")
-                or self._context.get("sector")
-                or _subject
-                or ""
+            # `industry` is not a parameter of this method — resolve the
+            # subject the same way `run()` does, so the discovery query is
+            # never subject-less.
+            sector = resolve_subject(
+                self._context, "industry", "sector", question=self._question
             )
             discovery = await searxng.search(
                 f"{jurisdiction} official government regulatory authority "
@@ -1123,8 +1120,18 @@ class RiskAnalyst(BaseAgent):
             f"Starting risk analysis: {self._question[:80]}",
         )
 
-        # Extract context
-        industry = self._context.get("industry", "")
+        # Extract context.
+        #
+        # Four-tier resolution (explicit context keys -> sector -> engagement
+        # subject -> the user's own question) rather than a bare
+        # `context.get("industry", "")`. An empty industry used to
+        # interpolate straight into `_search_known_risks`'s query templates
+        # (f"{industry} industry risks challenges" -> " industry risks
+        # challenges", a subject-less search) — this was one of the three
+        # specialists Finding B-9 named as missing `resolve_subject` entirely.
+        industry = resolve_subject(
+            self._context, "industry", "sector", question=self._question
+        )
         # Detected, never defaulted. This was `.get("jurisdiction", "US")`,
         # so an engagement about any other country was assessed against US
         # federal regulations and US sanctions lists.

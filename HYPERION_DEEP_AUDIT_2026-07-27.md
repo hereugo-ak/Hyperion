@@ -679,7 +679,72 @@ progress, `[x]` = landed with proof.
 - [ ] **1.3** LLM query planner — 5–10 diversified queries per sub-question
 - [ ] **1.4** Purge intent-destroying words from `filler`; keep parentheticals as a variant
 - [ ] **1.5** Low-yield reformulation (<3 results → broaden → retry once)
-- [ ] **1.6** `resolve_subject` into `market_analyst`, `regulatory_analyst`, `risk_analyst`
+- [x] **1.6** `resolve_subject` into `market_analyst`, `regulatory_analyst`, `risk_analyst`
+  - Confirmed via `grep -rln "resolve_subject" hyperion/agents/specialists/*.py`
+    that exactly 9 of 12 specialists already imported it and the 3 missing
+    were precisely the 3 the audit named — `market_analyst.py`,
+    `regulatory_analyst.py`, `risk_analyst.py` (§4.10 Finding B-9).
+  - **`market_analyst.py`**: `run()` used to hand `self._question` (the raw
+    user question) straight into `_spawn_data_collection_sub_agents`,
+    `_search_market_reports`, and `_scrape_dashboards` with no subject
+    resolution at all — those methods build queries like
+    `f"{market_query} market size TAM report"`, so the *question itself*
+    was silently doing double duty as the subject with no explicit
+    "market"/"segment"/"sector"/"industry" context ever consulted. Added
+    `market_query = resolve_subject(self._context, "market", "segment",
+    "sector", "industry", question=self._question) or self._question` right
+    after the opening `_transition`, and threaded `market_query` (not
+    `self._question`) into all three call sites. Behaviourally this is a
+    no-op when `self._context` carries no market-ish key (the `or
+    self._question` fallback preserves the pre-fix behaviour exactly), but
+    it means an explicit `context["market"]`/`context["segment"]` from the
+    Director's handover is now honoured instead of being silently ignored.
+  - **`regulatory_analyst.py`**: `run()` did
+    `industry = self._context.get("industry") or self._context.get("sector") or ""`
+    — a two-key OR chain with **no** further fallback, so a handover
+    naming neither key produced `industry = ""`, which
+    `_search_regulations`'s `f"{subject} regulations {jurisdiction}
+    compliance requirements"` template degraded straight through (it had
+    its own local `get_engagement_focus()`-based patch for this, but `run()`
+    itself, and the sibling `_scrape_government_portals`'s unmapped-
+    jurisdiction discovery search, did not). Replaced the `run()` extraction
+    with `resolve_subject(self._context, "industry", "sector",
+    question=self._question)`, and replaced both hand-rolled
+    `get_engagement_focus()`-based subject blocks inside
+    `_search_regulations` and `_scrape_government_portals` with the same
+    canonical `resolve_subject` call — removing the duplicated,
+    less-capable version (no label-sanity check, no question-mining
+    fallback) in favour of the shared helper everywhere in the file.
+  - **`risk_analyst.py`**: `run()` did the most literal version of the
+    finding — `industry = self._context.get("industry", "")` with zero
+    fallback of any kind. `_search_known_risks(industry, space)` then built
+    `f"{industry} industry risks challenges"`, `f"{space} startup failures
+    lessons"`, etc. — five query templates degrading to
+    `" industry risks challenges"` and worse. Replaced the `run()`
+    extraction with `resolve_subject(self._context, "industry", "sector",
+    question=self._question)`, and replaced the hand-rolled
+    `get_engagement_focus()` subject block inside
+    `_discover_regulatory_portals` with the same call.
+  - Verified live: `resolve_subject({}, "market", "segment", "sector",
+    "industry", question="Should India reduce its dependence on
+    semiconductor imports")` returns the full question text (never `""`
+    while the question has content), and an explicit
+    `{"market": "Indian semiconductor manufacturing"}` context returns
+    that label verbatim, confirming the four-tier order (explicit key >
+    question fallback) works as intended for all three new call sites.
+  - New `tests/test_specialist_resolve_subject.py` (10 tests): for each of
+    the 3 files, (a) asserts the module now imports `resolve_subject`, and
+    (b) exercises the real search-query-construction methods
+    (`_search_market_reports`, `_scrape_dashboards` /
+    `_search_regulations`, `_scrape_government_portals` /
+    `_search_known_risks`, `_discover_regulatory_portals`) with an
+    otherwise-empty `self._context`, asserting the outbound query is
+    anchored to the engagement subject/question rather than degrading to
+    the bare template fragment (`" regulations ... compliance
+    requirements"`, `"industry risks challenges"`, `"market size TAM
+    report"`) that the pre-fix code would have produced. All 10 pass.
+  - Full suite: **539 passed, 3 skipped** (was 529 passed, 3 skipped after
+    1.7; +10 new tests, zero regressions).
 - [x] **1.7** Fact Checker: drop internal agent name, ground the claim query
   - `fact_checker.py:605` (`_search_for_verification`) previously built its
     verification query as `claim.claim[:100]` then appended
