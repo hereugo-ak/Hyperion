@@ -1351,3 +1351,712 @@ class TestSectionOpenersAndExhibitAnatomy:
         assert ChartPlacement(chart_id="c1").note == "", (
             "note must default to empty so nothing is invented"
         )
+
+
+class TestSubjectResolutionIsExplicit:
+    """Specialists must resolve their subject, not read one hopeful key.
+
+    `self._context.get("sector", "")` yields "" whenever the engagement director
+    did not populate that key, and the query templates then interpolated the
+    empty string — producing searches like "carbon footprint emissions data"
+    with no subject at all, visible verbatim in the SearxNG logs. A query with
+    no subject cannot return anything relevant to the engagement.
+
+    `resolve_subject(context, *keys, question=...)` walks the named keys, then
+    the engagement subject, then the user's own question, so the subject is
+    always what the user actually asked about.
+
+    This is defence in depth: `ground_query` at the single SearxNG call site
+    already re-anchors any query that lost its subject. Making it explicit in
+    each specialist keeps the invariant local and readable.
+    """
+
+    SPECIALISTS = (
+        "competitive_intel.py",
+        "consumer_insights.py",
+        "innovation_analyst.py",
+        "ma_analyst.py",
+        "operations_analyst.py",
+        "strategy_analyst.py",
+        "financial_analyst.py",
+        "sustainability_analyst.py",
+        "technology_analyst.py",
+    )
+
+    @staticmethod
+    def _src(filename: str) -> str:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        return (root / "hyperion" / "agents" / "specialists" / filename).read_text(
+            encoding="utf-8"
+        )
+
+    @pytest.mark.parametrize("filename", SPECIALISTS)
+    def test_specialist_uses_resolve_subject(self, filename):
+        src = self._src(filename)
+        assert "resolve_subject(" in src, (
+            f"{filename} does not resolve its subject explicitly, so a missing "
+            f"context key yields an empty subject and subject-less queries"
+        )
+
+    @pytest.mark.parametrize("filename", SPECIALISTS)
+    def test_resolve_subject_is_imported(self, filename):
+        """Using the name without importing it is a runtime NameError on the
+        engagement's hot path — caught here rather than 30 minutes in."""
+        import ast
+
+        tree = ast.parse(self._src(filename))
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        }
+        if "resolve_subject(" in self._src(filename):
+            assert "resolve_subject" in imported, (
+                f"{filename} calls resolve_subject but never imports it"
+            )
+
+    @pytest.mark.parametrize("filename", SPECIALISTS)
+    def test_no_double_space_holes_in_query_templates(self, filename):
+        """An f-string with an empty interpolation leaves a doubled space.
+
+        f"top {sector} companies {geography}" becomes "top  companies" when both
+        are empty — a malformed query built from a template rather than from the
+        user's question.
+        """
+        import ast
+
+        src = self._src(filename)
+        tree = ast.parse(src)
+
+        # Only f-strings that look like SEARCH QUERIES matter. A display string
+        # such as f"- {m.name}: {m.value} {m.unit}" (a bullet built for an LLM
+        # prompt) has adjacent interpolations by design: an absent unit there is
+        # cosmetic, whereas an absent term in a query changes what is searched.
+        # The discriminator is whether the f-string carries query vocabulary.
+        QUERY_WORDS = (
+            "acquisition", "criteria", "market", "competitor", "companies",
+            "top", "best", "industry", "report", "analysis", "data",
+            "forecast", "benchmark", "trends", "news", "regulation",
+        )
+
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            literal = "".join(
+                v.value
+                for v in node.values
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+            ).lower()
+            if not any(word in literal for word in QUERY_WORDS):
+                continue
+            # Two interpolations separated only by a single space: if either is
+            # empty the result gains a doubled space or silently loses a term.
+            for i in range(len(node.values) - 2):
+                a, b, c = node.values[i], node.values[i + 1], node.values[i + 2]
+                if (
+                    isinstance(a, ast.FormattedValue)
+                    and isinstance(b, ast.Constant)
+                    and isinstance(b.value, str)
+                    and b.value == " "
+                    and isinstance(c, ast.FormattedValue)
+                ):
+                    offenders.append(node.lineno)
+        assert not offenders, (
+            f"{filename} builds queries with adjacent interpolations at line(s) "
+            f"{sorted(set(offenders))}: if either is empty the query gains a "
+            f"doubled space or loses a term. Join through a _q()-style helper "
+            f"that drops empty parts instead."
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CODEX REVIEW FINDING 1 — THE PRONOUN "us"
+#
+# Found by automated review of PR #9. The gazetteer added to stop wrong-country
+# analysis reintroduced it: the alias "us" was compiled case-insensitively, so
+# the English first-person plural pronoun matched. In "help us decide whether
+# to enter India" the pronoun sits at offset 5 and "India" at offset 38, so
+# detect_geographies returned ["US", "India"] and the PRIMARY geography — the
+# one published through set_engagement_focus and appended to every grounded
+# search — was the United States.
+#
+# That is verbatim the original failure of this system, arriving through a
+# convenience alias rather than a hardcoded default. These tests exist because
+# the defect class survived one fix already.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestPronounUsCannotAnchorGeography:
+    """The word "us" in ordinary English must not mean the United States."""
+
+    @pytest.mark.parametrize(
+        "question,expected_primary",
+        [
+            ("help us decide whether to enter India", "India"),
+            ("tell us about Brazil", "Brazil"),
+            ("give us a market entry plan for Vietnam", "Vietnam"),
+            ("can you help us understand China's EV subsidies", "China"),
+            ("show us how Germany regulates battery recycling", "Germany"),
+        ],
+    )
+    def test_pronoun_does_not_become_primary_geography(self, question, expected_primary):
+        """The country the user named must rank first, not the pronoun.
+
+        Regression: every one of these returned "US" as the primary geography,
+        which then anchored all grounded searches to the wrong country.
+        """
+        from hyperion.tools.query_utils import detect_geographies
+
+        geos = detect_geographies(question)
+        assert geos, f"no geography detected in {question!r}"
+        assert geos[0] == expected_primary, (
+            f"{question!r} -> {geos}; primary must be {expected_primary!r}. "
+            f"The pronoun 'us' must not be read as the United States."
+        )
+        assert "US" not in geos, (
+            f"{question!r} -> {geos}; the pronoun 'us' leaked in as a "
+            f"jurisdiction. Every grounded search would be anchored to the "
+            f"United States."
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "give us a plan",
+            "help us out",
+            "tell us what to do",
+            "it would cost us too much",
+            "thus we must decide",
+        ],
+    )
+    def test_pronoun_alone_detects_nothing(self, text):
+        """No geography at all is the correct answer for a bare pronoun.
+
+        Empty means "no jurisdiction filter", which is honest. Returning "US"
+        here is the failure mode: confident output about a country nobody
+        mentioned.
+        """
+        from hyperion.tools.query_utils import detect_geographies
+
+        assert detect_geographies(text) == [], (
+            f"{text!r} names no country; detection must return []."
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "US market entry strategy",
+            "the U.S. market for EVs",
+            "expansion into the USA",
+            "United States tariffs on imports",
+            "america's semiconductor policy",
+            "U.S.A. federal procurement rules",
+        ],
+    )
+    def test_genuine_united_states_references_still_detected(self, text):
+        """Fixing the pronoun must not stop detecting the actual country.
+
+        A fix that suppressed all US detection would trade one wrong-country
+        bug for another. Every real spelling must still resolve.
+        """
+        from hyperion.tools.query_utils import detect_geographies
+
+        assert "US" in detect_geographies(text), (
+            f"{text!r} names the United States explicitly; it must be detected."
+        )
+
+    def test_lowercase_us_alias_is_not_registered_case_insensitively(self):
+        """Pin the mechanism, not just the behaviour.
+
+        The alias table must not contain a lowercase "us" key, and the
+        compiled pattern for the US acronym must not carry IGNORECASE.
+        Someone re-adding `"us": "US"` for convenience reintroduces the bug.
+        """
+        import re
+
+        from hyperion.tools.query_utils import _GEO_ALIASES, _GEO_PATTERNS
+
+        assert "us" not in _GEO_ALIASES, (
+            "_GEO_ALIASES must not map lowercase 'us' — it is a pronoun. Use "
+            "the uppercase 'US' key, which is matched case-sensitively."
+        )
+        # Recover the alias from the compiled pattern. NOT via
+        # str.strip("()?<![A-Za-z0-9]") — a charset strip also eats the "a"
+        # off "usa", which made an earlier version of this test flag the
+        # perfectly correct USA pattern. Match the boundary wrapper instead.
+        wrapper = re.compile(
+            r"^\(\?<!\[A-Za-z0-9\]\)(?P<alias>.*)\(\?!\[A-Za-z0-9\]\)$"
+        )
+        for pattern, canonical in _GEO_PATTERNS:
+            match = wrapper.match(pattern.pattern)
+            if not match:
+                continue
+            alias = match.group("alias")
+            if alias != "US":
+                continue
+            assert not (pattern.flags & re.IGNORECASE), (
+                f"pattern {pattern.pattern!r} for US is case-insensitive; the "
+                f"two-letter acronym must be matched case-sensitively so the "
+                f"pronoun 'us' cannot match."
+            )
+            break
+        else:  # pragma: no cover - the alias must exist
+            pytest.fail(
+                "no pattern found for the uppercase 'US' alias; the United "
+                "States must still be detectable in its acronym form."
+            )
+
+    def test_india_question_still_resolves_to_india(self):
+        """The originating failure must stay fixed."""
+        from hyperion.tools.query_utils import detect_geographies
+
+        assert detect_geographies(INDIA_Q) == ["India"]
+
+
+class TestCanonicalizeGeographies:
+    """The gazetteer normalises the agent's answer; it does not overrule it."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("India", ["India"]),
+            ("bharat", ["India"]),
+            ("the Indian market", ["India"]),
+            ("united states", ["US"]),
+            ("US", ["US"]),
+            ("EU", ["EU"]),
+            ("uk", ["UK"]),
+            (["India", "China"], ["India", "China"]),
+        ],
+    )
+    def test_agent_labels_are_canonicalised(self, value, expected):
+        """Varied phrasings must collapse onto one canonical label.
+
+        Without this the jurisdiction filter and the report headers disagree.
+        """
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies(value) == expected
+
+    def test_two_letter_codes_survive_the_contentless_filter(self):
+        """`is_contentless` ignores tokens under three letters.
+
+        Found by running: applied before alias lookup it discarded "US" and
+        "EU" — the two most common jurisdictions in the gazetteer — because
+        neither contains a word of 3+ letters. Alias lookup must come first.
+        """
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies("US") == ["US"]
+        assert canonicalize_geographies("EU") == ["EU"]
+        assert canonicalize_geographies(["US", "EU"]) == ["US", "EU"]
+
+    def test_unknown_country_is_kept_not_dropped(self):
+        """An incomplete alias table is not evidence the agent is wrong.
+
+        "Uzbekistan" is absent from the gazetteer. Dropping it would silently
+        strip the engagement's only geography — the exact class of bug this
+        module exists to prevent.
+        """
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies("Uzbekistan") == ["Uzbekistan"]
+        assert canonicalize_geographies(["Uzbekistan", "India"]) == [
+            "Uzbekistan",
+            "India",
+        ]
+
+    @pytest.mark.parametrize("value", ["", None, "N/A", "none", [], 42, {}])
+    def test_empty_input_never_invents_a_geography(self, value):
+        """No input must never become a default jurisdiction."""
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies(value) == []
+
+    def test_prose_answer_is_scanned_not_used_verbatim(self):
+        """LLMs sometimes answer a geography field with a sentence."""
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        got = canonicalize_geographies(
+            "the question concerns India and its trade partners in Asia"
+        )
+        assert got == ["India"], got
+
+    def test_global_is_demoted_below_concrete_countries(self):
+        """"Global" is a weak signal next to a named country."""
+        from hyperion.tools.query_utils import canonicalize_geographies
+
+        assert canonicalize_geographies(["Global", "India"]) == ["India", "Global"]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CODEX REVIEW FINDING 2 — BARE B/M/T MAGNITUDE SUFFIXES
+#
+# _MAGNITUDES has always defined bare "b" and "m", but _NUM_RE's magnitude
+# alternation omitted them. So "$2.4B" — the single most common way an analyst
+# writes a large business figure — parsed as (2.4, "USD"). A $2.4B bar was
+# plotted 10^9 too short beside a "$88.9 billion" bar, and the abbreviated
+# series visually vanished from the exhibit.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestChartMagnitudeSuffixes:
+    """Abbreviated and spelled-out magnitudes must scale identically."""
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("$2.4B", 2.4e9),
+            ("$5M", 5e6),
+            ("$1.2T", 1.2e12),
+            ("$600M+", 600e6),
+            ("$2.4 billion", 2.4e9),
+            ("$88.9 billion", 88.9e9),
+            ("340 million", 340e6),
+            ("5 bn", 5e9),
+            ("10k", 10e3),
+            ("₹4.2 lakh", 4.2e5),
+            ("$5m", 5e6),
+        ],
+    )
+    def test_magnitude_is_applied(self, text, expected):
+        """Regression: bare B/M/T were dropped, understating by 10^6-10^12."""
+        from hyperion.output.chart_specs import _NUM_RE, _parse_number
+
+        match = _NUM_RE.search(text)
+        assert match is not None, f"{text!r} did not match _NUM_RE"
+        parsed = _parse_number(text, match)
+        assert parsed is not None, f"{text!r} parsed to None"
+        assert parsed[0] == pytest.approx(expected), (
+            f"{text!r} -> {parsed[0]:,.0f}, expected {expected:,.0f}"
+        )
+
+    def test_abbreviated_and_spelled_out_are_comparable(self):
+        """The actual chart defect: mixing spellings mis-scaled by 10^9.
+
+        A finding containing both "$2.4B" and "$88.9 billion" produced bars of
+        2.4 and 88,900,000,000 — the first invisible.
+        """
+        from hyperion.output.chart_specs import _NUM_RE, _parse_number
+
+        def value(text):
+            return _parse_number(text, _NUM_RE.search(text))[0]
+
+        assert value("$2.4B") == value("$2.4 billion")
+        assert value("$5M") == value("$5 million")
+        ratio = value("$88.9 billion") / value("$2.4B")
+        assert 30 < ratio < 40, (
+            f"ratio {ratio:.2e} — the two figures are not on the same scale, "
+            f"so one bar would be invisible in the exhibit."
+        )
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("45 t CO2e", 45.0),      # tonne, a unit — not 45 trillion
+            ("12 m of pipe", 12.0),   # metres — not 12 million
+            ("3.5 bps", 3.5),         # basis points — not 3.5 billion
+        ],
+    )
+    def test_lowercase_unit_symbols_are_not_magnitudes(self, text, expected):
+        """Lowercase t/m without a currency are SI units, not magnitudes.
+
+        This is why the single-letter forms are matched case-sensitively
+        (uppercase) or only after a currency symbol. Reading "45 t CO2e" as
+        45 trillion tonnes would be a far worse error than the one being fixed.
+        """
+        from hyperion.output.chart_specs import _NUM_RE, _parse_number
+
+        match = _NUM_RE.search(text)
+        parsed = _parse_number(text, match)
+        assert parsed is not None
+        assert parsed[0] == pytest.approx(expected), f"{text!r} -> {parsed}"
+
+    def test_magnitude_group_covers_every_defined_magnitude(self):
+        """Pin the mechanism: _MAGNITUDES and _NUM_RE must not drift apart.
+
+        The bug was precisely a divergence — the dict defined "b" and "m",
+        the regex could never capture them. Any future key added to the dict
+        must be matchable by the pattern.
+        """
+        from hyperion.output.chart_specs import _MAGNITUDES, _NUM_RE
+
+        unmatched = []
+        for key in _MAGNITUDES:
+            probe = f"${1} {key}" if len(key) > 1 else f"$1{key.upper()}"
+            match = _NUM_RE.search(probe)
+            if not match or (match.group("magnitude") or "").lower() != key.lower():
+                # Single letters are intentionally uppercase-or-after-currency;
+                # try the currency-prefixed lowercase form too.
+                match = _NUM_RE.search(f"$1{key}")
+                if not match or (match.group("magnitude") or "").lower() != key.lower():
+                    unmatched.append(key)
+        assert not unmatched, (
+            f"_MAGNITUDES defines {unmatched} but _NUM_RE cannot capture them, "
+            f"so those suffixes are silently ignored and the value is "
+            f"understated by orders of magnitude."
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE — THE DECOMPOSING AGENT OWNS THE SCOPE
+#
+# Geography used to be decided by a regex gazetteer at orchestrator.py:412,
+# while the Engagement Director — which already spends an LLM call decomposing
+# the very same question — was never asked. Specialist routing was likewise
+# decided by unconditional substring scans that ran BEFORE the LLM. Both are
+# now demoted to fallbacks behind the agent's judgement.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestDecompositionOwnsScope:
+    """The agent that breaks the question down decides what it is about."""
+
+    def test_dag_carries_geography_and_subject(self):
+        """The scope must travel on the DAG, not be re-derived downstream.
+
+        Without these fields every consumer re-guesses geography from the raw
+        text with its own heuristics, and they disagree with each other.
+        """
+        from hyperion.schemas.workflow import WorkflowDAG
+
+        fields = WorkflowDAG.model_fields
+        assert "geographies" in fields, (
+            "WorkflowDAG must carry the Director's extracted geographies."
+        )
+        assert "subject" in fields, (
+            "WorkflowDAG must carry the Director's extracted subject."
+        )
+        # Defaults must be empty — never an invented jurisdiction.
+        dag = WorkflowDAG(
+            engagement_id="e",
+            question="q",
+            question_type=list(WorkflowDAG.model_fields["question_type"].annotation)[0],
+            estimated_total_llm_calls=1,
+            estimated_total_tokens=1,
+            estimated_duration_minutes=1.0,
+        )
+        assert dag.geographies == []
+        assert dag.subject == ""
+
+    def test_decomposition_prompt_asks_for_geography_and_subject(self):
+        """The LLM cannot return scope it was never asked for.
+
+        Pins the contract: the prompt built by _classify_question_llm must
+        request both fields and must warn about the "us" pronoun, because that
+        is the trap a model is most likely to fall into on this task.
+        """
+        source = inspect.getsource(
+            __import__(
+                "hyperion.agents.engagement_director", fromlist=["x"]
+            ).EngagementDirector._classify_question_llm
+        )
+        assert "geographies" in source, (
+            "the decomposition prompt must ask for geographies"
+        )
+        assert "subject" in source, "the decomposition prompt must ask for subject"
+        assert "pronoun" in source.lower(), (
+            "the prompt must warn that 'us' is a pronoun, not the United States"
+        )
+
+    def test_keyword_triggers_are_not_used_on_the_happy_path(self):
+        """Word lists must not override the Director's roster.
+
+        Regression: MA_TRIGGERS / SUSTAINABILITY_TRIGGERS /
+        REGULATORY_TRIGGERS were scanned unconditionally and appended
+        specialists before the LLM was consulted, so a question mentioning
+        "green" got a sustainability analyst whether or not it was about
+        sustainability. They now live behind _trigger_fallback_agents, called
+        only when the decomposition fails or returns an empty roster.
+        """
+        from hyperion.agents import engagement_director as ed
+
+        source = inspect.getsource(ed.EngagementDirector._classify_question_llm)
+        for name in ("MA_TRIGGERS", "SUSTAINABILITY_TRIGGERS", "REGULATORY_TRIGGERS"):
+            assert name not in source, (
+                f"{name} is referenced directly in _classify_question_llm. "
+                f"Keyword scans must be confined to the failure path "
+                f"(_trigger_fallback_agents), not run alongside the LLM."
+            )
+
+    def test_trigger_fallback_still_works_for_degraded_mode(self):
+        """The fallback must remain functional — it is the safety net.
+
+        Demoting the keyword lists must not delete them: when all five
+        providers are unreachable, a roster from weak keywords beats none.
+        """
+        from hyperion.agents.engagement_director import EngagementDirector
+        from hyperion.schemas.agents import AgentName
+
+        director = EngagementDirector()
+        got = director._trigger_fallback_agents(
+            "should we acquire a green logistics firm"
+        )
+        assert AgentName.MA_ANALYST in got
+        assert AgentName.SUSTAINABILITY_ANALYST in got
+        assert director._trigger_fallback_agents(INDIA_Q) == []
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("electronics imports", "electronics imports"),
+            ("  EV batteries  ", "EV batteries"),
+            (["EV batteries", "x"], "EV batteries"),
+            ("The industry here is the broad electronics sector.", ""),
+            ("", ""),
+            ("N/A", ""),
+            (42, ""),
+            (None, ""),
+        ],
+    )
+    def test_subject_must_be_a_label_not_prose(self, value, expected):
+        """A sentence spliced into a search query is as useless as "".
+
+        The Director sometimes answers a "subject" field with a full sentence;
+        accepting it verbatim produced unusable queries.
+        """
+        from hyperion.agents.engagement_director import EngagementDirector
+
+        assert EngagementDirector._clean_subject(value) == expected
+
+
+class TestOrchestratorPrefersAgentScope:
+    """Precedence: agent decision > per-agent classifier > regex backstop."""
+
+    @staticmethod
+    def _engine():
+        from hyperion.orchestrator import WorkflowEngine
+
+        engine = WorkflowEngine.__new__(WorkflowEngine)
+        engine._engagement_context = None
+        engine._log = lambda *a, **k: None
+        return engine
+
+    @staticmethod
+    def _dag(question, geographies, subject=""):
+        from hyperion.schemas.workflow import QuestionType, WorkflowDAG
+
+        return WorkflowDAG(
+            engagement_id="e",
+            question=question,
+            question_type=QuestionType.GENERAL,
+            geographies=geographies,
+            subject=subject,
+            estimated_total_llm_calls=1,
+            estimated_total_tokens=1,
+            estimated_duration_minutes=1.0,
+        )
+
+    class _StubAgent:
+        async def _enrich_context(self, question):
+            return {}
+
+        def _enrich_context_regex(self, question):
+            return {}
+
+    async def test_agent_geography_wins_over_text_order(self):
+        """The Director's answer beats whatever the regex would have found.
+
+        "compare US tariffs when selling into Vietnam" mentions the US first,
+        so a text scan makes it primary. The Director understands Vietnam is
+        the subject market. The agent must win.
+        """
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(),
+            self._dag(
+                "compare US tariffs when selling into Vietnam",
+                ["Vietnam", "US"],
+                "consumer electronics",
+            ),
+        )
+        assert ctx["geography"] == "Vietnam", ctx
+        assert ctx["jurisdictions"] == ["Vietnam", "US"], ctx
+        assert ctx["industry"] == "consumer electronics", ctx
+
+    async def test_pronoun_question_scoped_by_agent_not_gazetteer(self):
+        """End-to-end guard on the Codex finding."""
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(),
+            self._dag("help us decide whether to enter India", ["India"], "retail"),
+        )
+        assert ctx["geography"] == "India", ctx
+
+    async def test_regex_backstop_used_when_agent_returned_nothing(self):
+        """A partial LLM object must not cost the engagement its anchor."""
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(), self._dag(INDIA_Q, [], "")
+        )
+        assert ctx["geography"] == "India", ctx
+        assert ctx.get("industry"), "a subject must always be derivable"
+
+    async def test_no_geography_anywhere_stays_empty(self):
+        """The governing invariant, at the integration level."""
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(), self._dag("how do we improve gross margin", [], "")
+        )
+        assert not ctx.get("geography"), (
+            f"geography={ctx.get('geography')!r} was invented; the question "
+            f"names no country, so no jurisdiction filter is correct."
+        )
+
+    async def test_agent_geography_unknown_to_gazetteer_is_preserved(self):
+        """Trust the agent over the completeness of the word list."""
+        engine = self._engine()
+        ctx = await engine._get_engagement_context(
+            self._StubAgent(), self._dag("market entry in Uzbekistan", ["Uzbekistan"])
+        )
+        assert ctx["geography"] == "Uzbekistan", ctx
+
+
+class TestMAFallbackCriteriaAreWellFormed:
+    """The LLM-failure fallback becomes a live search query."""
+
+    async def test_fallback_never_repeats_or_malforms(self):
+        """Regression: 'Acquisition criteria for semiconductors: semiconductors'.
+
+        With no acquirer in the handover the subject falls back to the sector,
+        and the naive join then emitted the same word twice in one query,
+        wasting the query's signal. Earlier still, an absent geography left a
+        doubled space and a dangling colon.
+        """
+        import re as _re
+
+        from hyperion.agents.specialists.ma_analyst import MAAnalyst
+
+        class _Failed:
+            success = False
+            content = ""
+
+        analyst = MAAnalyst()
+
+        async def _fail(**kwargs):
+            return _Failed()
+
+        analyst._llm_complete = _fail
+
+        contexts = [
+            {},
+            {"sector": "semiconductors"},
+            {"sector": "semiconductors", "geography": "India"},
+            {"acquirer": "Tata", "sector": "semiconductors", "geography": "India"},
+            {"acquirer": "Tata"},
+            {"geography": "India"},
+        ]
+        for context in contexts:
+            out = await analyst._define_acquisition_criteria("q", context)
+            assert "  " not in out, f"doubled space in {out!r} for {context}"
+            assert not _re.search(r":\s*$", out), f"dangling colon in {out!r}"
+            assert "None" not in out, f"literal None in {out!r}"
+            words = [w for w in _re.findall(r"[A-Za-z]{4,}", out.lower())
+                     if w not in {"acquisition", "criteria"}]
+            assert len(words) == len(set(words)), (
+                f"{out!r} repeats a term; the duplicate wastes query signal."
+            )
