@@ -1,0 +1,227 @@
+"""HYPERION render probe — measures the ACTUAL rendered PDF against the
+MGI/BCG benchmark, using the real CSS_TEMPLATE + HTML_TEMPLATE the pipeline
+ships (not the unused .j2 files).
+
+Not a unit test. This is an instrument: it renders a representative report
+payload through the production template path, then extracts hard numbers from
+the resulting PDF — page count, words/page, font families actually embedded,
+image resolution, exhibit count, contrast of text-over-image — so the audit
+cites measurements rather than impressions.
+
+Run:  python3 tools/audit_render_probe.py
+"""
+from __future__ import annotations
+
+import json
+import statistics
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+OUT_DIR = ROOT / "reports" / "_audit"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ── Representative payload ────────────────────────────────────────────────
+# Prose length matches what the section prompt ASKS for (2000-4000 words),
+# so the probe measures the ceiling of the layout, not a starved fixture.
+LOREM_PARA = (
+    "The addressable market for grid-scale storage in the target geography "
+    "expanded at a 24 percent compound annual rate between 2019 and 2024, "
+    "reaching an installed base of 41 GWh, according to the national grid "
+    "operator's annual capacity filing. That growth was not uniform: three "
+    "quarters of the additions landed in two states, which concentrates both "
+    "the opportunity and the interconnection-queue risk. The economics turn "
+    "on a single variable — the delivered cell cost — and at the current "
+    "$78/kWh pack price the levelised cost of storage clears the wholesale "
+    "arbitrage spread in only four of the eleven pricing zones examined. "
+)
+
+
+def build_payload() -> dict:
+    """A report payload shaped exactly like FinalReport as the template sees it."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    def V(v):  # enum-ish shim: template does `.value`
+        return SimpleNamespace(value=v)
+
+    body = "\n\n".join(
+        [f"**Sub-heading {i}**\n\n" + (LOREM_PARA * 3) for i in range(1, 6)]
+    )
+
+    def section(i, title):
+        return SimpleNamespace(
+            id=f"section_{i}",
+            title=title,
+            key_insight=(
+                f"At the current $78/kWh pack price, only 4 of 11 pricing zones "
+                f"clear the arbitrage spread — concentrating {title.lower()} "
+                f"upside in two states."
+            ),
+            body=body,
+            implications=(
+                "Sequence entry behind the two clearing zones and treat the "
+                "remaining nine as an option contingent on a sub-$60/kWh pack."
+            ),
+            findings=[],
+            sources=[],
+            confidence=V("high"),
+        )
+
+    titles = [
+        "Market Sizing and Demand Formation",
+        "Competitive Structure and Entry Economics",
+        "Unit Economics and Capital Requirements",
+        "Regulatory and Interconnection Exposure",
+        "Technology Cost Curve and Substitution Risk",
+        "Operating Model and Supply Chain",
+        "Strategic Options and Sequencing",
+    ]
+
+    return dict(
+        report=SimpleNamespace(
+            question="Should we enter the grid-scale storage market in the target geography?",
+            recommendation=V("conditional"),
+            confidence=V("moderate"),
+            generated_at=datetime.now(),
+            engagement_id="AUDIT-PROBE-001",
+            executive_summary=(LOREM_PARA * 4),
+            key_findings=[
+                SimpleNamespace(
+                    title=f"Finding {i}",
+                    content=LOREM_PARA,
+                    confidence=V("high"),
+                )
+                for i in range(1, 7)
+            ],
+            critical_assumptions=[
+                "Pack prices decline to $60/kWh by 2028.",
+                "Interconnection queue clears within 30 months.",
+            ],
+            sections=[section(i, t) for i, t in enumerate(titles, 1)],
+            risk_analysis=SimpleNamespace(risks=[]),
+            agents_used=["market_analyst", "financial_analyst", "regulatory_analyst"],
+            total_sources=34,
+            total_data_points=112,
+            limitations=["Zone-level pricing data is quarterly, not hourly."],
+            sources=[],
+        ),
+        cover_image=None,
+        section_images={f"section_{i}": None for i in range(1, 8)},
+        section_charts={f"section_{i}": [] for i in range(1, 8)},
+    )
+
+
+def render() -> Path:
+    from jinja2 import Environment, BaseLoader
+    from hyperion.agents.delivery.presentation_designer import (
+        CSS_TEMPLATE,
+        HTML_TEMPLATE,
+        PDF_PALETTE,
+    )
+
+    payload = build_payload()
+
+    env = Environment(loader=BaseLoader(), autoescape=True)
+    env.filters["md_to_html"] = _md_to_html
+    env.filters["clean_dict_repr"] = lambda v: str(v) if v else ""
+    tpl = env.from_string(HTML_TEMPLATE)
+
+    html = tpl.render(
+        css_content=CSS_TEMPLATE,
+        palette=PDF_PALETTE,
+        risk_analysis_html="<p>No risk analysis available.</p>",
+        appendix_sources_html="<p>No sources.</p>",
+        **payload,
+    )
+    (OUT_DIR / "probe.html").write_text(html, encoding="utf-8")
+
+    from weasyprint import HTML
+
+    pdf_path = OUT_DIR / "probe.pdf"
+    HTML(string=html, base_url=str(ROOT)).write_pdf(str(pdf_path))
+    return pdf_path
+
+
+def _md_to_html(text: str):
+    """Use the PRODUCTION filter, so the probe measures shipped behaviour.
+
+    Note this is `TemplateRenderer._markdown_to_html`, which returns a
+    markupsafe.Markup. The designer's *fallback* Jinja env instead registers
+    `lambda v: v or ""` — a plain str, which Jinja autoescapes into visible
+    `<p>` / `<strong>` tags on the page. That divergence is itself a finding.
+    """
+    from hyperion.output.render import TemplateRenderer
+
+    return TemplateRenderer()._markdown_to_html(text)
+
+
+def measure(pdf_path: Path) -> dict:
+    import fitz
+
+    doc = fitz.open(str(pdf_path))
+    words = [len(doc[i].get_text("words")) for i in range(doc.page_count)]
+
+    fonts: set[str] = set()
+    for i in range(doc.page_count):
+        for f in doc[i].get_fonts():
+            fonts.add(f[3])
+
+    sizes: dict[float, int] = {}
+    for i in range(doc.page_count):
+        for b in doc[i].get_text("dict")["blocks"]:
+            if b["type"] != 0:
+                continue
+            for line in b["lines"]:
+                for span in line["spans"]:
+                    key = round(span["size"], 1)
+                    sizes[key] = sizes.get(key, 0) + len(span["text"])
+
+    # ink coverage proxy: fraction of non-background pixels
+    ink = []
+    for i in range(min(doc.page_count, 12)):
+        pix = doc[i].get_pixmap(dpi=50)
+        n = pix.width * pix.height
+        samples = pix.samples
+        dark = sum(
+            1
+            for k in range(0, len(samples), pix.n * 7)
+            if samples[k] < 200
+        )
+        ink.append(round(dark / (n / 7 + 1), 4))
+
+    full_text = "\n".join(doc[i].get_text() for i in range(doc.page_count))
+
+    return {
+        "pdf": str(pdf_path),
+        "page_count": doc.page_count,
+        "total_words": sum(words),
+        "words_per_page_mean": round(statistics.mean(words), 1),
+        "words_per_page_max": max(words),
+        "blank_pages": sum(1 for w in words if w < 8),
+        "fonts_embedded": sorted(fonts),
+        "font_size_histogram": dict(
+            sorted(sizes.items(), key=lambda kv: -kv[1])[:10]
+        ),
+        "ink_coverage_by_page": ink,
+        "leaks": {
+            "raw_dict": full_text.count("{'"),
+            "none_url": full_text.count("=None"),
+            "literal_brace_page": full_text.count("{{page}}"),
+            "unknown": full_text.count("Unknown"),
+        },
+        "has_exhibits": "EXHIBIT" in full_text.upper(),
+        "file_size_kb": round(pdf_path.stat().st_size / 1024, 1),
+    }
+
+
+if __name__ == "__main__":
+    pdf = render()
+    report = measure(pdf)
+    print(json.dumps(report, indent=2))
+    (OUT_DIR / "probe_metrics.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )

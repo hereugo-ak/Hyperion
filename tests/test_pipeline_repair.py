@@ -1107,14 +1107,33 @@ class TestFreshProcessState:
             "the previous engagement's singletons"
         )
 
+    @staticmethod
+    def _fake_docker(monkeypatch, sink: list[list[str]] | None = None):
+        """Make the container layer runnable without a Docker daemon.
+
+        Teardown no longer issues its own subprocess calls — it delegates to
+        `hyperion.infra.services`, which owns the single implementation of
+        "run a docker command without ever raising on the exit path". Patching
+        there (rather than at `boot._run_subprocess`) is what makes these tests
+        exercise the code that actually runs.
+        """
+        from hyperion.infra import services as svc
+
+        async def _record(cmd, timeout=30.0):
+            if sink is not None:
+                sink.append(list(cmd))
+            return 0, "", ""
+
+        monkeypatch.setattr(svc, "run_command", _record)
+        # `docker_available()` shells out to shutil.which; force it True so the
+        # teardown path is not short-circuited on machines without Docker.
+        monkeypatch.setattr(svc, "docker_available", lambda: True)
+
     async def test_stop_services_is_idempotent(self, monkeypatch):
         """Quit may be triggered more than once; teardown must tolerate it."""
         from hyperion.tui import boot as boot_mod
 
-        async def _fake_subprocess(cmd, timeout=15.0):
-            return 0, "", ""
-
-        monkeypatch.setattr(boot_mod, "_run_subprocess", _fake_subprocess)
+        self._fake_docker(monkeypatch)
 
         await boot_mod.stop_services()
         await boot_mod.stop_services()
@@ -1127,17 +1146,36 @@ class TestFreshProcessState:
         from hyperion.tui import boot as boot_mod
 
         seen: list[list[str]] = []
-
-        async def _record(cmd, timeout=15.0):
-            seen.append(list(cmd))
-            return 0, "", ""
-
-        monkeypatch.setattr(boot_mod, "_run_subprocess", _record)
+        self._fake_docker(monkeypatch, seen)
         await boot_mod.stop_services()
 
         for container in ("searxng", "flaresolverr"):
-            assert ["docker", "stop", container] in seen, f"{container} not stopped"
-            assert ["docker", "rm", container] in seen, f"{container} not removed"
+            stopped = any(
+                cmd[:2] == ["docker", "stop"] and container in cmd for cmd in seen
+            )
+            removed = any(
+                cmd[:2] == ["docker", "rm"] and container in cmd for cmd in seen
+            )
+            assert stopped, f"{container} not stopped (saw {seen})"
+            assert removed, f"{container} not removed (saw {seen})"
+
+    async def test_stop_services_removal_is_forced(self, monkeypatch):
+        """`docker rm` without -f is a no-op on a container that failed to stop.
+
+        A container wedged in "Removal In Progress" or still running after a
+        stop timeout survives a plain `rm`, so the next boot inherits it — the
+        exact state the "always recreate" boot step claims to prevent.
+        """
+        from hyperion.tui import boot as boot_mod
+
+        seen: list[list[str]] = []
+        self._fake_docker(monkeypatch, seen)
+        await boot_mod.stop_services()
+
+        rm_calls = [cmd for cmd in seen if cmd[:2] == ["docker", "rm"]]
+        assert rm_calls, "no docker rm issued"
+        for cmd in rm_calls:
+            assert "-f" in cmd, f"docker rm is not forced: {cmd}"
 
     async def test_stop_services_closes_llm_clients(self, monkeypatch):
         """Provider httpx pools must be closed, or sockets outlive the shell."""
@@ -1149,10 +1187,7 @@ class TestFreshProcessState:
             async def close(self) -> None:
                 closed["n"] += 1
 
-        async def _fake_subprocess(cmd, timeout=15.0):
-            return 0, "", ""
-
-        monkeypatch.setattr(boot_mod, "_run_subprocess", _fake_subprocess)
+        self._fake_docker(monkeypatch)
         monkeypatch.setattr(
             "hyperion.router.router.get_router", lambda: _FakeRouter()
         )
@@ -1181,25 +1216,94 @@ class TestToolConfiguration:
         return (root / "docker-compose.yml").read_text(encoding="utf-8")
 
     def test_images_are_pinned_not_latest(self):
-        from hyperion.tui import boot
+        from hyperion.infra import services
 
         for name, image in (
-            ("SEARXNG_IMAGE", boot.SEARXNG_IMAGE),
-            ("FLARESOLVERR_IMAGE", boot.FLARESOLVERR_IMAGE),
+            ("SEARXNG_IMAGE", services.SEARXNG_IMAGE),
+            ("FLARESOLVERR_IMAGE", services.FLARESOLVERR_IMAGE),
         ):
             assert ":" in image, f"{name} has no tag, so it resolves to :latest"
             assert not image.endswith(":latest"), (
                 f"{name} is pinned to :latest, which is non-deterministic"
             )
 
+    def test_boot_reexports_the_canonical_pins(self):
+        """`boot` must not define its own pins — only re-export the real ones.
+
+        boot.py previously carried the literals itself, and its SearxNG pin
+        (`2024.12.10-a4d2a5f68`) had been reaped from Docker Hub. `docker run`
+        then failed before a container existed, which is the
+        "Unable to find image" error the user reported. Identity (not equality)
+        of the re-exported constants is what guarantees there is one pin.
+        """
+        from hyperion.infra import services
+        from hyperion.tui import boot
+
+        assert boot.SEARXNG_IMAGE is services.SEARXNG_IMAGE
+        assert boot.FLARESOLVERR_IMAGE is services.FLARESOLVERR_IMAGE
+        assert boot.SEARXNG_PORT is services.SEARXNG_PORT
+        assert boot.FLARESOLVERR_PORT is services.FLARESOLVERR_PORT
+
+    def test_aged_out_pin_is_gone(self):
+        """Regression guard for the exact tag in the user's screenshot."""
+        import inspect
+
+        from hyperion.infra import services
+
+        dead = "2024.12.10-a4d2a5f68"
+        for image in (
+            services.SEARXNG_IMAGE,
+            services.SEARXNG_IMAGE_FALLBACK,
+            services.SEARXNG_IMAGE_FLOATING,
+        ):
+            assert dead not in image, (
+                f"{image} still uses the tag that no longer exists in the "
+                f"registry — `docker run` fails before the container is created"
+            )
+        # The compose file must not resurrect it either. Check `image:`
+        # directives, not comments: the compose file documents this exact tag as
+        # the bug it fixes, and a test that forbids naming a bug forces the fix
+        # to be undocumented.
+        compose_images = [
+            line.strip()
+            for line in self._compose().splitlines()
+            if line.strip().startswith("image:")
+        ]
+        assert compose_images, "docker-compose.yml declares no images"
+        for line in compose_images:
+            assert dead not in line, f"dead tag still declared in compose: {line}"
+        # Mentioning it in a docstring as the bug being fixed is fine; using it
+        # in code is not. Check assignments only.
+        src = inspect.getsource(services)
+        code_lines = [
+            line for line in src.splitlines() if "=" in line and dead in line
+        ]
+        assert not code_lines, f"dead tag assigned in code: {code_lines}"
+
+    def test_every_image_has_a_fallback(self):
+        """A pin with no fallback turns registry retention into an outage.
+
+        SearxNG only keeps a rolling window of date-stamped tags, so any pin
+        eventually 404s. The launcher must be able to recover rather than fail.
+        """
+        from hyperion.infra import services
+
+        for spec in services.all_specs():
+            assert spec.image_fallback, f"{spec.name} has no fallback image"
+            assert spec.image_floating, f"{spec.name} has no floating image"
+            assert spec.image_fallback != spec.image, (
+                f"{spec.name} fallback equals the primary pin, so it cannot "
+                f"rescue an aged-out tag"
+            )
+
     def test_code_pins_match_docker_compose(self):
         """One pin, two places to change it — assert they agree."""
-        from hyperion.tui import boot
+        from hyperion.infra import services
 
         compose = self._compose()
         for name, image in (
-            ("SEARXNG_IMAGE", boot.SEARXNG_IMAGE),
-            ("FLARESOLVERR_IMAGE", boot.FLARESOLVERR_IMAGE),
+            ("SEARXNG_IMAGE", services.SEARXNG_IMAGE),
+            ("FLARESOLVERR_IMAGE", services.FLARESOLVERR_IMAGE),
         ):
             tag = image.rsplit(":", 1)[-1]
             assert tag in compose, (
@@ -1208,39 +1312,95 @@ class TestToolConfiguration:
             )
 
     def test_no_unpinned_image_literals_in_launchers(self):
-        """Both launchers must use the constants, not their own strings."""
+        """Both launchers must use the constants, not their own strings.
+
+        Scans *code* string constants only. The previous version walked every
+        `ast.Constant`, which includes docstrings — so documenting the bug being
+        fixed failed the test that guards it.
+        """
         import ast
         import inspect
 
         from hyperion import cli
+        from hyperion.infra import services
         from hyperion.tui import boot
+
+        allowed = {
+            services.SEARXNG_IMAGE,
+            services.SEARXNG_IMAGE_FALLBACK,
+            services.SEARXNG_IMAGE_FLOATING,
+            services.FLARESOLVERR_IMAGE,
+            services.FLARESOLVERR_IMAGE_FALLBACK,
+            services.FLARESOLVERR_IMAGE_FLOATING,
+            "flaresolverr",  # bare container name
+            "hyperion.tools.flaresolverr",  # module path for client teardown
+        }
+
+        def _docstring_nodes(tree: ast.AST) -> set[int]:
+            """id() of every Constant that is a docstring, so we can skip them."""
+            skip: set[int] = set()
+            for node in ast.walk(tree):
+                if isinstance(
+                    node,
+                    (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+                ):
+                    body = getattr(node, "body", [])
+                    if (
+                        body
+                        and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)
+                    ):
+                        skip.add(id(body[0].value))
+            return skip
 
         for module in (boot, cli):
             tree = ast.parse(inspect.getsource(module))
+            skip = _docstring_nodes(tree)
             bad = [
                 node.value
                 for node in ast.walk(tree)
                 if isinstance(node, ast.Constant)
                 and isinstance(node.value, str)
+                and id(node) not in skip
                 and ("searxng/searxng" in node.value or "flaresolverr" in node.value)
-                and node.value not in (boot.SEARXNG_IMAGE, boot.FLARESOLVERR_IMAGE)
-                and node.value != "flaresolverr"  # bare container name is fine
+                and node.value not in allowed
             ]
             assert not bad, (
                 f"{module.__name__} contains its own image literal(s) {bad}: "
-                f"use boot.SEARXNG_IMAGE / boot.FLARESOLVERR_IMAGE so the pin "
-                f"cannot drift between launchers"
+                f"import from hyperion.infra.services so the pin cannot drift "
+                f"between launchers"
             )
 
     def test_searxng_port_matches_client_default(self):
         """A published port that disagrees with the client's base URL means
         every search fails with a connection error, silently."""
-        from hyperion.tui import boot
+        from hyperion.infra import services
 
-        assert f":{boot.SEARXNG_PORT}" in self._compose(), (
-            f"SEARXNG_PORT {boot.SEARXNG_PORT} is not the port published by "
+        assert f":{services.SEARXNG_PORT}" in self._compose(), (
+            f"SEARXNG_PORT {services.SEARXNG_PORT} is not the port published by "
             f"docker-compose.yml"
         )
+
+    def test_settings_port_is_derived_from_the_configured_url(self):
+        """Health checks must track `searxng_url`, not a second hardcoded port.
+
+        obs/health.py parsed the port with `url.split(":")` and fell back to a
+        literal, so pointing HYPERION at a different SearxNG left the check
+        probing the old port — reporting OFFLINE for a service that was serving.
+        """
+        from hyperion.config import Settings
+
+        s = Settings(searxng_url="http://searx.internal:9999/search")
+        assert s.searxng_port == 9999
+        assert s.searxng_host == "searx.internal"
+
+        # Trailing slashes, missing scheme and default ports must all work.
+        assert Settings(searxng_url="localhost:8888").searxng_port == 8888
+        assert Settings(searxng_url="https://searx.example.com/").searxng_port == 443
+
+        # A malformed port must not raise out of a settings property.
+        assert Settings(searxng_url="http://host:notaport").searxng_port == 8888
 
     def test_consult_uses_the_shared_launcher(self):
         """The headless path must not re-implement container startup."""

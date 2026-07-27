@@ -24,8 +24,11 @@ that reads as a "blank screen".
     │  ❯ ▊                                                              │
     └────────────────────────────────────────────────────────────────────┘
 
-The transcript is a selectable RichLog, so drag-to-highlight + Ctrl+Shift+C
-copies anything on screen — logo, roster and events alike.
+The transcript is a selectable ScrollView built on a physical-line model, so
+drag-to-highlight keeps extending the selection while the view auto-scrolls —
+you are not limited to the lines currently on screen. Ctrl+Shift+C copies the
+whole highlighted range (logo, roster and events alike) and Ctrl+Shift+A
+selects the entire scrollback, including everything scrolled out of view.
 """
 
 from __future__ import annotations
@@ -82,9 +85,10 @@ class SessionScreen(Screen):
     #topbar > #hdr { height: 1; }
     #topbar > #hdr-rule { height: 1; }
     /* ONE full-width scroll surface. Everything — logo, roster, event log —
-       lives inside this single selectable RichLog, so the whole screen scrolls
-       together and every character is copyable. It fills the space between the
-       top header and the bottom footer group. */
+       lives inside this single selectable Transcript, so the whole screen
+       scrolls together and every character is copyable, including the lines
+       that have scrolled out of view. It fills the space between the top
+       header and the bottom footer group. */
     #log-stream { width: 100%; height: 1fr; }
     /* Bottom footer group: a single Vertical dock so its children stack
        correctly (status rule, live telemetry strip, prompt rule, prompt)
@@ -205,13 +209,28 @@ class SessionScreen(Screen):
         self._log().select_all()
 
     def selected_transcript_text(self) -> str:
+        """Return the transcript's own selected text.
+
+        This is the *fallback* path for ``App._gather_selection``, which has
+        already called ``screen.get_selected_text()`` and got nothing back.
+        Re-calling that identical helper here would be a tautology — same
+        method, same object, same empty answer — so the fallback could never
+        actually recover anything. Instead we go straight to the Transcript
+        widget and ask it for the text under its own selection, which keeps
+        copy working when the screen-level helper is absent or comes back
+        empty.
+        """
         try:
-            get_sel = getattr(self, "get_selected_text", None)
-            if callable(get_sel):
-                return get_sel() or ""
+            log = self._log()
         except Exception:
-            pass
-        return ""
+            return ""
+        try:
+            selection = log.text_selection
+            if selection is None:
+                return ""
+            return log.selected_text(selection) or ""
+        except Exception:
+            return ""
 
     # ── prompt handling ──────────────────────────────────────────────────────────
 

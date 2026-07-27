@@ -63,10 +63,16 @@ class StealthSearchClient:
     BING_URL = "https://www.bing.com/search?q={query}&count={num}"
     GOOGLE_LITE_URL = "https://www.google.com/search?q={query}&num={num}&hl=en&lite=1"
 
-    def __init__(self, headless: bool = False, settings: Any = None) -> None:
+    def __init__(self, headless: bool = True, settings: Any = None) -> None:
+        # Default headless. This used to default to False, so any orchestrator
+        # that reached this tier would pop a visible Chromium window onto the
+        # user's desktop in the middle of a TUI consultation — and on a headless
+        # host it would fail outright. Callers that genuinely want to watch the
+        # browser can still pass headless=False.
         self.headless = headless
         self._browser = None
         self._playwright = None
+        self._available: bool | None = None
 
         # P8 GAP-3: Stealth Layer 3 — config-gated proxy/UA rotation
         self._proxy_enabled = False
@@ -76,6 +82,25 @@ class StealthSearchClient:
             self._proxy_enabled = getattr(settings, "stealth_proxy_enabled", False)
             self._proxy_url = getattr(settings, "stealth_proxy_url", "")
             self._ua_rotation = getattr(settings, "stealth_ua_rotation", False)
+
+    def _check_available(self) -> bool:
+        """True when Playwright is importable, so this tier can actually run.
+
+        Matches the probe shape used by CurlCffiClient/NodriverClient so
+        orchestrators can gate this tier uniformly instead of paying a browser
+        launch failure to discover it is unusable.
+        """
+        if self._available is not None:
+            return self._available
+        try:
+            import playwright.async_api  # noqa: F401
+
+            self._available = True
+        except ImportError:
+            self._available = False
+        except Exception:
+            self._available = False
+        return self._available
 
     async def _launch_browser(self):
         """Launch Chromium with stealth patches."""
@@ -182,6 +207,10 @@ class StealthSearchClient:
         Returns:
             List of StealthSearchResult with title, url, snippet.
         """
+        if not self._check_available():
+            logger.debug("stealth search unavailable — playwright not installed")
+            return []
+
         page = None
         try:
             # Strategy 1: DuckDuckGo HTML (lightest, most reliable with stealth)

@@ -75,6 +75,8 @@ from typing import Any
 
 import httpx
 
+from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
+
 logger = logging.getLogger(__name__)
 
 
@@ -194,30 +196,40 @@ class ObscuraClient:
         self._serve_proc: asyncio.subprocess.Process | None = None
 
     def _find_obscura(self) -> str:
-        """Find the obscura binary."""
-        # Check configured path first
-        if self._obscura_path and os.path.exists(self._obscura_path):
-            return self._obscura_path
+        """Find the obscura binary.
 
-        # Check PATH
-        found = shutil.which("obscura")
-        if found:
-            return found
+        Resolution order — configured path, project ``obscura-bin/``, then PATH.
 
-        # On Windows, also try obscura.exe in PATH
-        if sys.platform == "win32":
-            found = shutil.which("obscura.exe")
+        The project directory is searched BEFORE ``PATH`` deliberately. The old
+        order checked PATH first, so an unrelated ``obscura`` earlier on PATH
+        shadowed the binary actually shipped with the checkout, and the version
+        that ran was whatever the machine happened to expose.
+
+        The project root comes from :mod:`hyperion.infra.paths` rather than
+        ``Path(__file__).resolve().parents[2]``. The positional walk silently
+        pointed at the wrong directory whenever the package was installed
+        (site-packages) rather than run from a checkout — ``parents[2]`` is then
+        site-packages itself, so ``obscura-bin/`` was never found and Obscura
+        reported "binary missing" on a machine where it was present.
+        """
+        # 1. Explicitly configured path always wins.
+        if self._obscura_path:
+            configured = Path(self._obscura_path).expanduser()
+            if configured.is_file():
+                return str(configured)
+
+        # 2. The binary shipped with this project.
+        bin_dir = obscura_bin_dir()
+        for name in obscura_binary_names():
+            candidate = bin_dir / name
+            if candidate.is_file():
+                return str(candidate)
+
+        # 3. Anything on PATH, platform-correct name first.
+        for name in obscura_binary_names():
+            found = shutil.which(name)
             if found:
                 return found
-
-        # Check local obscura-bin directory in project root
-        project_root = Path(__file__).resolve().parents[2]
-        for candidate in [
-            project_root / "obscura-bin" / "obscura.exe",
-            project_root / "obscura-bin" / "obscura",
-        ]:
-            if candidate.exists():
-                return str(candidate)
 
         return self._obscura_path  # Return configured path even if not found
 
@@ -253,7 +265,15 @@ class ObscuraClient:
         return supported
 
     def _probe_platform_support(self) -> bool:
-        """One-shot platform probe. Never raises."""
+        """One-shot platform probe. Never raises.
+
+        Verifies the binary EXECUTES, rather than that a file exists. Obscura
+        ships as a Windows ``.exe``; on Linux/macOS the same file is present in
+        ``obscura-bin/`` but produces an exec-format error, so an existence
+        check reports "available" for a binary that cannot run — and every
+        Obscura call then fails one at a time instead of the fallback chain
+        skipping it once.
+        """
         # Windows: the shipped .exe is native.
         if sys.platform == "win32":
             return True
@@ -266,11 +286,11 @@ class ObscuraClient:
             pass
 
         # Or a non-.exe binary in obscura-bin/ — but verify it truly executes
-        # rather than being the Windows .exe renamed.
+        # rather than being the Windows .exe renamed. Only the extensionless
+        # name is a candidate here: a `.exe` cannot run on this platform.
         try:
-            project_root = Path(__file__).resolve().parents[2]
-            native_binary = project_root / "obscura-bin" / "obscura"
-            if native_binary.exists():
+            native_binary = obscura_bin_dir() / "obscura"
+            if native_binary.is_file():
                 result = subprocess.run(
                     [str(native_binary), "--version"],
                     capture_output=True,

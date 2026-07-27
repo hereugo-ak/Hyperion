@@ -71,6 +71,22 @@ class DeepSearchResult:
     total_extracted: int = 0
     took_ms: int = 0
     cached: bool = False
+    # Every extraction tier we attempted, in ladder order. Distinct from
+    # ``tools_used``, which lists only tiers that produced usable content.
+    tools_tried: list[str] = field(default_factory=list)
+    # Why a tier or phase produced nothing. Discovery and extraction failures
+    # were previously only logged at debug/warning level, so a caller holding
+    # an empty DeepSearchResult had no way to distinguish "SearxNG is down"
+    # from "this query genuinely has no sources".
+    errors: dict[str, str] = field(default_factory=dict)
+    # Tiers skipped because they cannot run in this environment at all.
+    tiers_unavailable: dict[str, str] = field(default_factory=dict)
+    # Human-readable roll-up. Empty when results were found.
+    error: str = ""
+
+    @property
+    def success(self) -> bool:
+        return bool(self.ranked_results)
 
     def to_markdown(self) -> str:
         """Render the result as cited markdown for agent consumption.
@@ -128,6 +144,11 @@ class DeepSearchResult:
             "total_extracted": self.total_extracted,
             "took_ms": self.took_ms,
             "cached": self.cached,
+            "tools_tried": self.tools_tried,
+            "errors": self.errors,
+            "tiers_unavailable": self.tiers_unavailable,
+            "error": self.error,
+            "success": self.success,
         }
 
 
@@ -176,7 +197,9 @@ class DeepSearchClient:
     Pipeline:
       1. Parallel discovery (SearxNG + Jina Search)
       2. URL dedup + ranking by source credibility
-      3. Extraction (Obscura → Scrapling → Jina Reader → Crawl4AI → FlareSolverr)
+      3. Extraction, cheapest tier first (see EXTRACTION_TIERS):
+         Jina Reader → HTTP Extract → Obscura → Crawl4AI → Scrapling
+         → FlareSolverr. Tiers that cannot run here are skipped and named.
       4. Evidence scoring (support/conflict/neutral heuristic)
       5. Result ranking by relevance + evidence score + freshness
       6. Return ranked, cited markdown
@@ -210,6 +233,33 @@ class DeepSearchClient:
     # Minimum content length to consider extraction successful
     MIN_CONTENT_LENGTH = 100
 
+    # Extraction ladder order, cheapest first. Declared once so the ladder,
+    # the class docstring and availability reporting cannot disagree.
+    #
+    # NOTE `scrapling`: the docstring has always advertised Scrapling as part
+    # of the chain and `_extract_scrapling` has always existed, but
+    # `_extract_batch` never called it — an entire anti-bot tier was dead code.
+    # It sits after crawl4ai (both are Playwright-based) and before
+    # flaresolverr, which remains the last resort.
+    EXTRACTION_TIERS: tuple[str, ...] = (
+        "jina",
+        "http",
+        "obscura",
+        "crawl4ai",
+        "scrapling",
+        "flaresolverr",
+    )
+
+    # Ladder tier → the name reported in ``tools_used``.
+    TIER_LABELS: dict[str, str] = {
+        "jina": "jina-reader",
+        "http": "http-extract",
+        "obscura": "obscura",
+        "crawl4ai": "crawl4ai",
+        "scrapling": "scrapling",
+        "flaresolverr": "flaresolverr",
+    }
+
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
         self._searxng: Any | None = None
@@ -223,6 +273,80 @@ class DeepSearchClient:
 
         # In-memory cache: key → (result, timestamp)
         self._cache: dict[str, tuple[DeepSearchResult, float]] = {}
+
+        # Cached per-tier availability. Obscura's probe shells out, and the
+        # answer cannot change mid-run.
+        self._availability: dict[str, bool] = {}
+        self._skipped: dict[str, str] = {}
+
+    # ─────────────────────────────────────────────────────────────────
+    # Capability gating
+    # ─────────────────────────────────────────────────────────────────
+
+    def _tier_available(self, tier: str) -> bool:
+        """True when extraction tier ``tier`` can actually run here.
+
+        Tiers with no probe default to True: Jina and HTTP-extract are plain
+        HTTP, so their failure mode is a network error we can report rather
+        than an impossibility. Obscura is the one that must be gated — when the
+        binary is missing or not executable on this platform, attempting it can
+        only waste a round of concurrency and bury the real error.
+        """
+        cached = self._availability.get(tier)
+        if cached is not None:
+            return cached
+
+        available = True
+        detail = ""
+        try:
+            if tier == "obscura":
+                from hyperion.tools.obscura import ObscuraClient
+
+                client = ObscuraClient(settings=self.settings)
+                available = client._binary_available()
+                if not available:
+                    binary = client._find_obscura()
+                    detail = (
+                        f"binary present but not executable here ({binary})"
+                        if binary
+                        else "binary not found"
+                    )
+            elif tier == "scrapling":
+                from hyperion.tools.scrapling import ScraplingClient
+
+                probe = getattr(ScraplingClient(settings=self.settings), "_check_available", None)
+                if probe is not None:
+                    available = bool(probe())
+                    if not available:
+                        detail = "scrapling/playwright not installed"
+            elif tier == "crawl4ai":
+                from hyperion.tools.crawl4ai import Crawl4AIClient
+
+                probe = getattr(Crawl4AIClient(settings=self.settings), "_check_available", None)
+                if probe is not None:
+                    available = bool(probe())
+                    if not available:
+                        detail = "crawl4ai not installed"
+        except Exception:
+            # A probe that raises must not disable a tier outright — attempting
+            # it and failing is strictly better than skipping something usable.
+            available = True
+
+        self._availability[tier] = available
+        if not available:
+            self._skipped[tier] = detail or "not available in this environment"
+            logger.debug("extraction tier %s unavailable — skipping", tier)
+        return available
+
+    def available_tiers(self) -> list[str]:
+        """Extraction tiers that can run here, in ladder order."""
+        return [t for t in self.EXTRACTION_TIERS if self._tier_available(t)]
+
+    def unavailable_tiers(self) -> dict[str, str]:
+        """Extraction tiers that cannot run here, mapped to why."""
+        for tier in self.EXTRACTION_TIERS:
+            self._tier_available(tier)
+        return dict(self._skipped)
 
     # ─────────────────────────────────────────────────────────────────
     # Lazy tool initialization
@@ -328,12 +452,22 @@ class DeepSearchClient:
         num_sources = self.DEPTH_SOURCES.get(depth, 6)
         start_time = time.time()
         tools_used: list[str] = []
+        tools_tried: list[str] = []
+        errors: dict[str, str] = {}
 
         # Phase 1: Parallel discovery
-        discovered_urls, discovery_tools = await self._discover(query, geography, num_sources)
+        discovered_urls, discovery_tools, discovery_errors = await self._discover(
+            query, geography, num_sources
+        )
         tools_used.extend(discovery_tools)
+        errors.update(discovery_errors)
 
         if not discovered_urls:
+            # Discovery found nothing. Say why — a dead SearxNG container and a
+            # query with genuinely no sources produced identical empty results
+            # before, so callers could not tell a broken deployment from a
+            # legitimately obscure question.
+            detail = "; ".join(f"{k}: {v}" for k, v in errors.items())
             result = DeepSearchResult(
                 query=query,
                 depth=depth,
@@ -341,6 +475,11 @@ class DeepSearchClient:
                 total_discovered=0,
                 total_extracted=0,
                 took_ms=int((time.time() - start_time) * 1000),
+                tools_tried=list(dict.fromkeys(tools_tried)),
+                errors=errors,
+                tiers_unavailable=dict(self._skipped),
+                error=f"discovery found no URLs ({detail})" if detail
+                      else "discovery found no URLs",
             )
             self._set_cached(cache_key, result)
             return result
@@ -351,8 +490,12 @@ class DeepSearchClient:
         extraction_target = num_sources * self.EXTRACTION_MULTIPLIER
         urls_to_extract = discovered_urls[:extraction_target]
 
-        extracted, extraction_tools = await self._extract_batch(urls_to_extract)
+        extracted, extraction_tools, extraction_tried, extraction_errors = (
+            await self._extract_batch(urls_to_extract)
+        )
         tools_used.extend(extraction_tools)
+        tools_tried.extend(extraction_tried)
+        errors.update(extraction_errors)
 
         # Phase 3: Evidence scoring
         scorer = self._get_evidence_scorer()
@@ -370,6 +513,17 @@ class DeepSearchClient:
 
         took_ms = int((time.time() - start_time) * 1000)
 
+        unavailable = dict(self._skipped)
+        error = ""
+        if not ranked:
+            detail = "; ".join(f"{k}: {v}" for k, v in errors.items())
+            error = detail or (
+                f"discovered {len(discovered_urls)} URL(s) but no tier "
+                "extracted usable content"
+            )
+            if unavailable:
+                error += f" [tiers unavailable here: {', '.join(sorted(unavailable))}]"
+
         result = DeepSearchResult(
             query=query,
             depth=depth,
@@ -381,6 +535,10 @@ class DeepSearchClient:
             total_discovered=len(discovered_urls),
             total_extracted=len(extracted),
             took_ms=took_ms,
+            tools_tried=list(dict.fromkeys(tools_tried)),
+            errors=errors,
+            tiers_unavailable=unavailable,
+            error=error,
         )
 
         # Cache for 1 hour
@@ -396,11 +554,14 @@ class DeepSearchClient:
         query: str,
         geography: str | None,
         num_sources: int,
-    ) -> tuple[list[str], list[str]]:
+    ) -> tuple[list[str], list[str], dict[str, str]]:
         """Parallel discovery via SearxNG + Jina Search.
 
         Runs both search engines simultaneously, merges and deduplicates
-        URLs. Returns (deduplicated_urls, tools_used).
+        URLs. Returns ``(deduplicated_urls, tools_used, errors)``.
+
+        ``errors`` is new: discovery failures used to be logged and dropped, so
+        an empty URL list carried no explanation up to the caller.
 
         The number of results requested is scaled by the depth parameter
         so deeper searches discover more URLs.
@@ -408,40 +569,43 @@ class DeepSearchClient:
         # Request more results than needed — extraction will filter
         search_count = max(num_sources * 3, 15)
         tools_used: list[str] = []
+        errors: dict[str, str] = {}
 
-        # Build search tasks
-        search_tasks: list[Any] = []
-        if self._searxng is not None or True:  # Always try SearxNG
-            search_tasks.append(self._search_searxng(query, search_count, geography))
-        if self._jina is not None or True:  # Always try Jina
-            search_tasks.append(self._search_jina(query, search_count))
+        # Both engines are plain HTTP, so both are always worth attempting:
+        # their failure mode is a reportable network error, not impossibility.
+        search_tasks = [
+            self._search_searxng(query, search_count, geography),
+            self._search_jina(query, search_count),
+        ]
 
         # Run searches in parallel
         results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
         all_urls: list[str] = []
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning("Discovery search failed: %s", result)
+                errors["discovery"] = f"{type(result).__name__}: {result}"
                 continue
-            if isinstance(result, tuple):
-                urls, tool_name = result
-                if urls:
-                    all_urls.extend(urls)
+            urls, tool_name, detail = result
+            if urls:
+                all_urls.extend(urls)
                 if tool_name and tool_name not in tools_used:
                     tools_used.append(tool_name)
+            elif detail:
+                errors[tool_name or "discovery"] = detail
 
         # Deduplicate preserving order
         deduped = list(dict.fromkeys(all_urls))
-        return deduped, tools_used
+        return deduped, tools_used, errors
 
     async def _search_searxng(
         self,
         query: str,
         num_results: int,
         geography: str | None,
-    ) -> tuple[list[str], str]:
-        """Search via SearxNG. Returns (urls, tool_name)."""
+    ) -> tuple[list[str], str, str]:
+        """Search via SearxNG. Returns (urls, tool_name, error_detail)."""
         try:
             searxng = self._get_searxng()
             language = "en"
@@ -458,26 +622,26 @@ class DeepSearchClient:
             )
 
             urls = [r.url for r in response.results if r.url]
-            return (urls, "searxng" if urls else "")
+            return (urls, "searxng", "" if urls else "returned no results")
         except Exception as e:
             logger.warning("SearxNG discovery failed: %s", e)
-            return ([], "")
+            return ([], "searxng", f"{type(e).__name__}: {e}")
 
     async def _search_jina(
         self,
         query: str,
         num_results: int,
-    ) -> tuple[list[str], str]:
-        """Search via Jina s.jina.ai. Returns (urls, tool_name)."""
+    ) -> tuple[list[str], str, str]:
+        """Search via Jina s.jina.ai. Returns (urls, tool_name, error_detail)."""
         try:
             jina = self._get_jina()
             response = await jina.search(query=query, num_results=num_results)
 
             urls = [r.url for r in response.results if r.url]
-            return (urls, "jina" if urls else "")
+            return (urls, "jina", "" if urls else "returned no results")
         except Exception as e:
             logger.warning("Jina discovery failed: %s", e)
-            return ([], "")
+            return ([], "jina", f"{type(e).__name__}: {e}")
 
     # ─────────────────────────────────────────────────────────────────
     # Phase 2: Extraction (VIGIL Fallback Chain)
@@ -486,86 +650,73 @@ class DeepSearchClient:
     async def _extract_batch(
         self,
         urls: list[str],
-    ) -> tuple[list[ExtractedContent], list[str]]:
+    ) -> tuple[list[ExtractedContent], list[str], list[str], dict[str, str]]:
         """Extract content from URLs using the VIGIL fallback chain.
 
-        For each URL, tries extraction tools in order:
+        For each URL, tries extraction tiers in :attr:`EXTRACTION_TIERS` order:
           1. Jina Reader (fast, keyless, reliable — always works)
           2. HTTP Extract (httpx + trafilatura — keyless, browserless)
-          3. Obscura (stealth, JS rendering — platform-gated)
+          3. Obscura (stealth, JS rendering — capability-gated)
           4. Crawl4AI (heavy extraction, PDFs — browser-based)
-          5. FlareSolverr (CAPTCHA-protected pages — last resort)
+          5. Scrapling (adaptive anti-bot, Playwright)
+          6. FlareSolverr (CAPTCHA-protected pages — last resort)
 
-        Once a URL is successfully extracted, it's not retried by lower
-        tiers. Returns (extracted_contents, tools_used).
+        Once a URL is successfully extracted it is not retried by lower tiers,
+        and a tier that cannot run here is skipped rather than attempted.
+
+        Returns ``(extracted, tools_used, tools_tried, errors)``. The two extra
+        members exist so the caller can distinguish "every tier failed" from
+        "nothing needed extracting" — previously both looked identical.
 
         Uses a semaphore to limit concurrency.
         """
         if not urls:
-            return ([], [])
+            return ([], [], [], {})
 
         extracted: list[ExtractedContent] = []
         extracted_urls: set[str] = set()
-        tools_used: set[str] = set()
+        tools_used: list[str] = []
+        tools_tried: list[str] = []
+        errors: dict[str, str] = {}
 
         semaphore = asyncio.Semaphore(self.EXTRACTION_CONCURRENCY)
 
-        # Tier 1: Jina Reader (fast, keyless, reliable)
-        jina_urls = [u for u in urls if u not in extracted_urls]
-        if jina_urls:
-            tasks = [self._extract_jina(semaphore, u) for u in jina_urls]
+        for tier in self.EXTRACTION_TIERS:
+            pending = [u for u in urls if u not in extracted_urls]
+            if not pending:
+                break  # everything already extracted — stop climbing the ladder
+            if not self._tier_available(tier):
+                continue
+
+            label = self.TIER_LABELS.get(tier, tier)
+            extractor = getattr(self, f"_extract_{tier}", None)
+            if extractor is None:  # pragma: no cover — guards a typo in the table
+                errors[label] = "no extractor implemented"
+                continue
+
+            tools_tried.append(label)
+            tasks = [extractor(semaphore, u) for u in pending]
             results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            produced = 0
+            failures: list[str] = []
             for result in results:
+                if isinstance(result, BaseException):
+                    failures.append(f"{type(result).__name__}: {result}")
+                    continue
                 if isinstance(result, ExtractedContent) and result.content:
                     extracted.append(result)
                     extracted_urls.add(result.url)
-                    tools_used.add("jina-reader")
+                    produced += 1
 
-        # Tier 2: HTTP Extract (httpx + trafilatura, keyless, browserless)
-        http_urls = [u for u in urls if u not in extracted_urls]
-        if http_urls:
-            tasks = [self._extract_http(semaphore, u) for u in http_urls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, ExtractedContent) and result.content:
-                    extracted.append(result)
-                    extracted_urls.add(result.url)
-                    tools_used.add("http-extract")
+            if produced:
+                tools_used.append(label)
+            elif failures:
+                errors[label] = failures[0]
+            else:
+                errors[label] = f"no usable content from {len(pending)} URL(s)"
 
-        # Tier 3: Obscura (stealth, JS rendering — platform-gated by D14)
-        obscura_urls = [u for u in urls if u not in extracted_urls]
-        if obscura_urls:
-            tasks = [self._extract_obscura(semaphore, u) for u in obscura_urls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, ExtractedContent) and result.content:
-                    extracted.append(result)
-                    extracted_urls.add(result.url)
-                    tools_used.add("obscura")
-
-        # Tier 4: Crawl4AI (heavy extraction, PDFs — browser-based)
-        crawl4ai_urls = [u for u in urls if u not in extracted_urls]
-        if crawl4ai_urls:
-            tasks = [self._extract_crawl4ai(semaphore, u) for u in crawl4ai_urls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, ExtractedContent) and result.content:
-                    extracted.append(result)
-                    extracted_urls.add(result.url)
-                    tools_used.add("crawl4ai")
-
-        # Tier 5: FlareSolverr (CAPTCHA-protected pages — last resort)
-        flare_urls = [u for u in urls if u not in extracted_urls]
-        if flare_urls:
-            tasks = [self._extract_flaresolverr(semaphore, u) for u in flare_urls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, ExtractedContent) and result.content:
-                    extracted.append(result)
-                    extracted_urls.add(result.url)
-                    tools_used.add("flaresolverr")
-
-        return (extracted, list(tools_used))
+        return (extracted, tools_used, tools_tried, errors)
 
     # ─────────────────────────────────────────────────────────────────
     # Per-tool extraction methods

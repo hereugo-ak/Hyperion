@@ -5,10 +5,16 @@ A single-screen command bridge. The premium feel comes from the motion layer
 
 Copy support
 ------------
-Every visible surface is built on *selectable* Textual widgets (`Static`,
-`RichLog`), and `App.ALLOW_SELECT` is on, so a mouse click-drag highlights
-text and ``ctrl+shift+c`` copies the current selection to the system clipboard
-via OSC-52 (works in Windows Terminal, iTerm2, kitty, WezTerm, …).
+Every visible surface is built on *selectable* Textual widgets (`Static`, and
+the `ScrollView`-based `Transcript`), and `App.ALLOW_SELECT` is on, so a mouse
+click-drag highlights text and ``ctrl+shift+c`` copies the current selection to
+the system clipboard via OSC-52 (works in Windows Terminal, iTerm2, kitty,
+WezTerm, …).
+
+Because `Transcript.render_line` stamps precise per-cell content offsets and
+`ENABLE_SELECT_AUTO_SCROLL` is on, a drag that reaches the top or bottom edge
+keeps scrolling *and* keeps extending the selection — you are not limited to
+what is currently on screen. ``ctrl+shift+a`` selects the entire scrollback.
 
 For terminals where Textual's mouse capture prevents the *terminal's own*
 click-drag selection (classic conhost / some PowerShell setups), launch with
@@ -48,8 +54,14 @@ class HyperionApp(App):
     SUB_TITLE = "multi-agent consulting system"
 
     # Native drag-to-select is on everywhere. Custom widgets that paint their
-    # own cells are avoided in favour of Static/RichLog so selection works.
+    # own cells still stamp per-cell offsets (see Transcript.render_line) so a
+    # drag resolves to real character positions instead of collapsing to
+    # "select all".
     ALLOW_SELECT = True
+
+    # Let a drag that runs off the top/bottom edge keep scrolling *and* keep
+    # growing the selection, so users can highlight far more than one screenful.
+    ENABLE_SELECT_AUTO_SCROLL = True
 
     # Global copy bindings. ctrl+shift+c never collides with the prompt's
     # printable input, and works while the prompt has focus.
@@ -74,8 +86,11 @@ class HyperionApp(App):
         link-color: {CLAY};
     }}
     /* Textual paints drag-selection with the 'text-selection' theme colour
-       (set in on_mount) — make it a clay wash with cream text. */
-    RichLog {{
+       (set in on_mount) — make it a clay wash with cream text.
+       Both scrollback widgets must be listed: Transcript is a ScrollView now,
+       not a RichLog, so a bare `RichLog` rule would silently stop matching it
+       and long lines would clip instead of wrapping. */
+    Transcript, RichLog {{
         text-wrap: wrap;
     }}
     """
