@@ -91,6 +91,7 @@ from hyperion.schemas.models import (
     VRIOAssessment,
     VRIOResult,
 )
+from hyperion.tools.query_utils import resolve_subject
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1131,7 +1132,11 @@ class StrategyAnalyst(BaseAgent):
         )
 
         # Extract context
-        sector = self._context.get("sector", self._context.get("industry", ""))
+        # Four-tier resolution ending at the user's question, so the subject
+        # is always the thing the user actually asked about.
+        sector = resolve_subject(
+            self._context, "sector", "industry", question=self._question
+        )
         company = self._context.get("company", "")
 
         # Step 1: Search for strategic context
