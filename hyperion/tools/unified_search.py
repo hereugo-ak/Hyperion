@@ -1,5 +1,5 @@
 """
-HYPERION Unified Search — SearxNG → Jina → Obscura → DDG fallback chain.
+HYPERION Unified Search — SearxNG → Jina → Obscura fallback chain.
 
 This is NOT a generic "search multiple engines" wrapper. It implements
 the exact tool selection logic from §5.2:
@@ -18,17 +18,28 @@ The unified search chain:
 
 This is how agents get the best possible search results without
 wasting API calls on tools that aren't needed.
+
+Robustness contract (mirrors ``unified_search``'s sibling ``unified_extract``):
+
+* A tier that physically cannot run here is SKIPPED and NAMED, not attempted.
+* A tier that fails records WHY. Search returning nothing must never be
+  indistinguishable from search finding nothing.
+* ``tools_used`` lists tiers that actually contributed results; ``tools_tried``
+  lists every tier we attempted.
 """
 
 from __future__ import annotations
 
-import asyncio
+import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from hyperion.tools.jina import JinaClient, JinaSearchResult
 from hyperion.tools.obscura import ObscuraClient, ObscuraFetchResult
 from hyperion.tools.searxng import SearxNGClient, SearchResult, SearchResponse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,6 +55,21 @@ class UnifiedSearchResult:
     obscura_results: int = 0
     took_ms: int = 0
     cached: bool = False
+    # Every tier we actually attempted, in ladder order. Distinct from
+    # ``tools_used``, which lists only the tiers that contributed results.
+    tools_tried: list[str] = field(default_factory=list)
+    # Why each attempted tier produced nothing. Previously every failure was
+    # swallowed by `except (...): pass`, so a dead SearxNG container and a
+    # genuinely empty result set were indistinguishable to the caller.
+    errors: dict[str, str] = field(default_factory=dict)
+    # Tiers skipped because they cannot run in this environment at all.
+    tiers_unavailable: dict[str, str] = field(default_factory=dict)
+    # Human-readable roll-up. Empty when results were found.
+    error: str = ""
+
+    @property
+    def success(self) -> bool:
+        return bool(self.results)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,6 +82,11 @@ class UnifiedSearchResult:
             "obscura_results": self.obscura_results,
             "took_ms": self.took_ms,
             "cached": self.cached,
+            "tools_tried": self.tools_tried,
+            "errors": self.errors,
+            "tiers_unavailable": self.tiers_unavailable,
+            "error": self.error,
+            "success": self.success,
         }
 
 
@@ -71,17 +102,27 @@ class UnifiedSearch:
         result = await search.search("Indian SaaS market size 2024", min_results=5)
         for r in result.results:
             print(f"[{r['source']}] {r['title']} — {r['url']}")
+        if not result.success:
+            print(result.error)  # tells you which tier failed and why
     """
 
     MIN_RESULTS_THRESHOLD = 5  # If SearxNG returns fewer than this, try Jina
     JINA_MIN_RESULTS = 3       # If Jina also returns fewer than this, try Obscura
     OBSCURA_MAX_URLS = 3       # Max URLs to fetch with Obscura (expensive)
 
+    # Ladder order, cheapest first. Named so availability reporting and the
+    # ladder itself cannot disagree about which tiers exist.
+    TIER_ORDER: tuple[str, ...] = ("searxng", "jina", "obscura")
+
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
         self._searxng: SearxNGClient | None = None
         self._jina: JinaClient | None = None
         self._obscura: ObscuraClient | None = None
+        # Cached per-tier availability. Obscura's probe shells out, and the
+        # answer cannot change mid-run.
+        self._availability: dict[str, bool] = {}
+        self._skipped: dict[str, str] = {}
 
     async def _get_searxng(self) -> SearxNGClient:
         if self._searxng is None:
@@ -98,20 +139,81 @@ class UnifiedSearch:
             self._obscura = ObscuraClient(settings=self.settings)
         return self._obscura
 
+    def _tier_available(self, tool: str) -> bool:
+        """True when ``tool`` can actually run here.
+
+        Unknown tiers default to True: SearxNG and Jina are plain HTTP, so
+        "available" for them means "worth attempting" — their failure mode is a
+        network error we can report, not an impossibility. Obscura is different:
+        when the binary is absent or not executable on this platform, attempting
+        it can only ever waste time and bury the real error behind a bogus one.
+        """
+        cached = self._availability.get(tool)
+        if cached is not None:
+            return cached
+
+        available = True
+        detail = ""
+        try:
+            if tool == "obscura":
+                client = ObscuraClient(settings=self.settings)
+                available = client._binary_available()
+                if not available:
+                    binary = client._find_obscura()
+                    detail = (
+                        f"binary present but not executable here ({binary})"
+                        if binary
+                        else "binary not found"
+                    )
+        except Exception:
+            # A probe that raises must not disable a tier outright — attempting
+            # it and failing is strictly better than skipping something usable.
+            available = True
+
+        self._availability[tool] = available
+        if not available:
+            self._skipped[tool] = detail or "not available in this environment"
+            logger.debug("search tier %s unavailable — skipping", tool)
+        return available
+
+    def available_tiers(self) -> list[str]:
+        """Tiers that can run here, in ladder order. Useful for health output."""
+        return [t for t in self.TIER_ORDER if self._tier_available(t)]
+
+    def unavailable_tiers(self) -> dict[str, str]:
+        """Tiers that cannot run here, mapped to why."""
+        for tool in self.TIER_ORDER:
+            self._tier_available(tool)
+        return dict(self._skipped)
+
     def _deduplicate(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Deduplicate results by URL, merging source information."""
+        """Deduplicate results by URL, merging source information.
+
+        Merging is not just bookkeeping. The Obscura tier re-fetches URLs that
+        SearxNG/Jina already returned in order to add JS-rendered ``content``;
+        this method previously kept only the first-seen record and merged the
+        ``sources`` list, silently discarding that content. The expensive tier's
+        entire contribution was thrown away. We now promote any field the
+        incumbent record lacks.
+        """
         seen: dict[str, dict[str, Any]] = {}
         for result in results:
             url = result.get("url", "")
             if not url:
                 continue
             if url in seen:
-                # Merge sources
-                existing_sources = seen[url].get("sources", [])
+                incumbent = seen[url]
+                existing_sources = incumbent.get("sources", [])
                 new_source = result.get("source", "")
                 if new_source and new_source not in existing_sources:
                     existing_sources.append(new_source)
-                    seen[url]["sources"] = existing_sources
+                    incumbent["sources"] = existing_sources
+                # Promote richer values from the later (more expensive) tier
+                # instead of dropping them.
+                for key in ("title", "snippet", "content"):
+                    incoming = result.get(key) or ""
+                    if len(incoming) > len(incumbent.get(key) or ""):
+                        incumbent[key] = incoming
             else:
                 result["sources"] = [result.get("source", "")]
                 seen[url] = result
@@ -124,6 +226,7 @@ class UnifiedSearch:
         min_results: int = MIN_RESULTS_THRESHOLD,
         categories: str = "general",
         language: str = "en",
+        time_range: str = "",
         use_jina_fallback: bool = True,
         use_obscura_fallback: bool = True,
     ) -> UnifiedSearchResult:
@@ -135,68 +238,93 @@ class UnifiedSearch:
             min_results: Minimum results before trying fallback tools
             categories: SearxNG category filter
             language: Language code
+            time_range: Recency filter passed through to SearxNG ("day",
+                "week", "month", "year"). Empty means no restriction.
             use_jina_fallback: Whether to try Jina if SearxNG is insufficient
             use_obscura_fallback: Whether to try Obscura if Jina is insufficient
 
         Returns:
-            UnifiedSearchResult with merged, deduplicated results.
+            UnifiedSearchResult with merged, deduplicated results. When nothing
+            was found, ``errors`` and ``error`` explain which tier failed and
+            why, and ``tiers_unavailable`` names tiers that were skipped.
         """
+        started = time.monotonic()
         tools_used: list[str] = []
+        tools_tried: list[str] = []
+        errors: dict[str, str] = {}
         all_results: list[dict[str, Any]] = []
         searxng_count = 0
         jina_count = 0
         obscura_count = 0
 
         # Step 1: SearxNG (always try first — free, unlimited, fast)
-        try:
-            searxng = await self._get_searxng()
-            searxng_resp = await searxng.search(
-                query=query,
-                num_results=num_results,
-                categories=categories,
-                language=language,
-            )
-
-            for result in searxng_resp.results:
-                all_results.append({
-                    "title": result.title,
-                    "url": result.url,
-                    "snippet": result.snippet,
-                    "source": "searxng",
-                    "engine": result.engine,
-                    "score": result.score,
-                })
-            searxng_count = len(searxng_resp.results)
-            tools_used.append("searxng")
-
-        except (ConnectionError, RuntimeError, OSError):
-            pass
-
-        # Step 2: Jina (if SearxNG returned insufficient results)
-        if searxng_count < min_results and use_jina_fallback:
+        if self._tier_available("searxng"):
+            tools_tried.append("searxng")
             try:
-                jina = await self._get_jina()
-                jina_resp = await jina.search(query=query, num_results=num_results)
+                searxng = await self._get_searxng()
+                searxng_resp = await searxng.search(
+                    query=query,
+                    num_results=num_results,
+                    categories=categories,
+                    language=language,
+                    time_range=time_range,
+                )
 
-                for result in jina_resp.results:
+                for result in searxng_resp.results:
                     all_results.append({
                         "title": result.title,
                         "url": result.url,
                         "snippet": result.snippet,
-                        "source": "jina",
-                        "content": result.content,
+                        "source": "searxng",
+                        "engine": result.engine,
+                        "score": result.score,
                     })
-                jina_count = len(jina_resp.results)
-                tools_used.append("jina")
+                searxng_count = len(searxng_resp.results)
+                if searxng_count:
+                    tools_used.append("searxng")
+                else:
+                    errors["searxng"] = "returned no results"
 
-            except (ConnectionError, RuntimeError, OSError):
-                pass
+            except Exception as exc:  # noqa: BLE001 — recorded, not swallowed
+                errors["searxng"] = f"{type(exc).__name__}: {exc}"
+                logger.debug("searxng search failed: %s", exc)
 
-        # Step 3: Obscura (if Jina also returned insufficient results)
+        # Step 2: Jina (if SearxNG returned insufficient results)
+        if searxng_count < min_results and use_jina_fallback:
+            if self._tier_available("jina"):
+                tools_tried.append("jina")
+                try:
+                    jina = await self._get_jina()
+                    jina_resp = await jina.search(query=query, num_results=num_results)
+
+                    for result in jina_resp.results:
+                        all_results.append({
+                            "title": result.title,
+                            "url": result.url,
+                            "snippet": result.snippet,
+                            "source": "jina",
+                            "content": result.content,
+                        })
+                    jina_count = len(jina_resp.results)
+                    if jina_count:
+                        tools_used.append("jina")
+                    else:
+                        errors["jina"] = "returned no results"
+
+                except Exception as exc:  # noqa: BLE001
+                    errors["jina"] = f"{type(exc).__name__}: {exc}"
+                    logger.debug("jina search failed: %s", exc)
+
+        # Step 3: Obscura (if Jina also returned insufficient results).
+        # Obscura does not search — it re-fetches the URLs we already have with
+        # a real browser, to recover JS-rendered content the text tiers missed.
         if (searxng_count + jina_count) < min_results and use_obscura_fallback:
-            # Try fetching top URLs with Obscura for JS-rendered content
             top_urls = [r["url"] for r in all_results[:self.OBSCURA_MAX_URLS] if r.get("url")]
-            if top_urls:
+            if not top_urls:
+                # Nothing to enrich. Say so rather than looking like a success.
+                errors.setdefault("obscura", "no candidate URLs to render")
+            elif self._tier_available("obscura"):
+                tools_tried.append("obscura")
                 try:
                     obscura = await self._get_obscura()
                     scrape_result = await obscura.scrape(top_urls, concurrency=3)
@@ -214,9 +342,12 @@ class UnifiedSearch:
 
                     if obscura_count > 0:
                         tools_used.append("obscura")
+                    else:
+                        errors["obscura"] = "rendered no usable content"
 
-                except (ConnectionError, RuntimeError, OSError):
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    errors["obscura"] = f"{type(exc).__name__}: {exc}"
+                    logger.debug("obscura enrichment failed: %s", exc)
 
         # Deduplicate and sort
         all_results = self._deduplicate(all_results)
@@ -229,6 +360,14 @@ class UnifiedSearch:
         )
         all_results = all_results[:num_results]
 
+        unavailable = dict(self._skipped)
+        error = ""
+        if not all_results:
+            parts = [f"{tool}: {why}" for tool, why in errors.items()]
+            error = "; ".join(parts) or "no search tier produced results"
+            if unavailable:
+                error += f" [tiers unavailable here: {', '.join(sorted(unavailable))}]"
+
         return UnifiedSearchResult(
             query=query,
             results=all_results,
@@ -237,6 +376,11 @@ class UnifiedSearch:
             searxng_results=searxng_count,
             jina_results=jina_count,
             obscura_results=obscura_count,
+            took_ms=int((time.monotonic() - started) * 1000),
+            tools_tried=tools_tried,
+            errors=errors,
+            tiers_unavailable=unavailable,
+            error=error,
         )
 
     async def search_news(
@@ -245,14 +389,18 @@ class UnifiedSearch:
         num_results: int = 10,
         time_range: str = "",
     ) -> UnifiedSearchResult:
-        """Search for news articles with the fallback chain."""
-        result = await self.search(
+        """Search for news articles with the fallback chain.
+
+        Previously this forwarded ``time_range`` to :meth:`search`, which had no
+        such parameter — so every call raised TypeError and the method was dead
+        code. ``search`` now accepts and forwards it to SearxNG.
+        """
+        return await self.search(
             query=query,
             num_results=num_results,
             categories="news",
-            time_range=time_range if time_range else None,  # type: ignore
+            time_range=time_range,
         )
-        return result
 
     async def close(self) -> None:
         """Close all underlying clients."""
