@@ -98,12 +98,21 @@ def shell(
     # `stop_services` is idempotent (docker stop/rm of an absent container is a
     # no-op) and the app marks itself stopped, so the common case does not pay
     # for this twice.
+    #
+    # BaseException, not Exception: SystemExit and KeyboardInterrupt both inherit
+    # from BaseException, and a bare `except Exception` here let a SystemExit
+    # raised inside Textual skip straight past teardown. The `finally` covers it,
+    # but the explicit handler is what lets the user see *why* the shell ended
+    # before the (potentially slow) container teardown output appears.
     try:
         HyperionApp(reduced_motion=reduced_motion, demo=demo, mouse=not no_mouse).run(
             mouse=not no_mouse
         )
     except KeyboardInterrupt:
         console.print(f"[{DIM}]interrupted — shutting services down…[/{DIM}]")
+    except Exception as exc:  # noqa: BLE001 - report, then still tear down
+        console.print(f"[{ERROR}]shell error: {type(exc).__name__}: {exc}[/{ERROR}]")
+        raise
     finally:
         _ensure_services_stopped()
 
@@ -114,6 +123,10 @@ def _ensure_services_stopped() -> None:
     Runs on its own event loop because by this point Textual's loop is gone.
     Never raises: an exception escaping here would replace whatever error
     actually terminated the shell, hiding the real cause.
+
+    Reports what was actually torn down rather than staying silent, because the
+    user's complaint was precisely that containers outlived the shell — a claim
+    that is impossible to check without the shell saying what it did.
     """
     try:
         from hyperion.tui.boot import stop_services
@@ -124,6 +137,23 @@ def _ensure_services_stopped() -> None:
             f"[{WARN}]warning: could not confirm service shutdown "
             f"({type(exc).__name__}). Check `docker ps`.[/{WARN}]"
         )
+        return
+
+    # Verify rather than assume. If a container survived teardown, say so with
+    # the exact command to fix it instead of leaving it running silently.
+    try:
+        from hyperion.infra.services import docker_available, running_containers
+
+        if docker_available():
+            leftover = asyncio.run(running_containers())
+            if leftover:
+                names = " ".join(sorted(leftover))
+                console.print(
+                    f"[{WARN}]these containers are still running: {names} — "
+                    f"remove with `docker rm -f {names}`[/{WARN}]"
+                )
+    except Exception:  # noqa: BLE001 - verification is advisory only
+        pass
 
 
 @app.command()
@@ -179,17 +209,42 @@ def consult(
 
 async def _run_engagement(question: str, context: str, output_path: str) -> Any:
     from hyperion.orchestrator import WorkflowEngine
-    from hyperion.tui.boot import reset_process_state, start_services, stop_services
+    from hyperion.tui.boot import (
+        ensure_docker_ready,
+        reset_process_state,
+        start_services,
+        stop_services,
+    )
 
     # Fresh start, same as the shell.
     #
     # This function used to inline its own copy of the container launch: its own
-    # settings-path resolvers, its own `docker run` argv, its own image strings —
-    # and those strings had drifted to unpinned `:latest` while docker-compose.yml
+    # settings-path resolvers, its own run argv, its own image strings — and
+    # those strings had drifted to unpinned `:latest` while docker-compose.yml
     # and boot.py were pinned. `start_services()` is now the single launcher, so
     # a pin change cannot be applied to one entry point and missed by the other.
     reset_process_state()
-    await start_services()
+
+    # The headless path needs the engine started too. `consult` previously
+    # assumed a running daemon, so a scripted/CI run on a machine where the
+    # engine was idle produced an engagement with no search at all — reported
+    # only as thin sourcing, never as a startup error.
+    engine_ready = await ensure_docker_ready(
+        on_progress=lambda msg: console.print(f"[{DIM}]{msg}[/{DIM}]")
+    )
+    if engine_ready:
+        started = await start_services()
+        down = [name for name, ok in started.items() if not ok]
+        if down:
+            console.print(
+                f"[{WARN}]degraded: {', '.join(down)} did not come up — "
+                f"search coverage will be reduced[/{WARN}]"
+            )
+    else:
+        console.print(
+            f"[{WARN}]container engine unavailable — running with fallback "
+            f"search only[/{WARN}]"
+        )
 
     engine = WorkflowEngine()
     try:
@@ -288,7 +343,11 @@ def export(
         console.print(f"[{ERROR}]invalid format '{fmt}'. use: pdf | markdown | json[/{ERROR}]")
         raise typer.Exit(code=1)
 
-    reports = Path("reports")
+    # `Path("reports")` is relative to the shell's CWD, so `hyperion export`
+    # from any directory other than the project root reported "no engagement
+    # data found" for reports that plainly existed. Settings.reports_dir is
+    # absolutised at validation time, so this now finds them from anywhere.
+    reports = Path(get_settings().reports_dir)
     json_files = sorted(reports.glob("hyperion_report_*.json"), key=lambda p: p.stat().st_mtime, reverse=True) if reports.exists() else []
     if not json_files:
         console.print(f"[{DIM}]no engagement data found in reports/. run `hyperion consult` first.[/{DIM}]")

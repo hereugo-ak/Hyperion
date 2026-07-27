@@ -3,51 +3,103 @@
 Runs on shell init — each step streams into the transcript with a live spinner,
 then resolves to ✓ / ⚠ / ✗.  Steps:
 
-  1. CORE     — core systems init
-  2. DOCKER   — Docker daemon check (auto-start if installed but stopped)
-  3. SEARXNG  — SearxNG container check / start / create-and-run
-  3b.FLARE    — FlareSolverr container start (CAPTCHA-bypass headless Chromium)
+  1. CORE     — core systems init (drops every stale process singleton)
+  2. DOCKER   — Docker engine check, and **start it if it is not running**
+  3. SEARXNG  — SearxNG container: resolve image → run → wait until it serves
+  3b.FLARE    — FlareSolverr container (CAPTCHA-bypass headless Chromium)
+  3c.TOOLS    — data source readiness, including the Obscura binary
   4. PROVIDER — LLM provider health (NVIDIA, Cerebras, Groq, Mistral, Google)
   5. ROSTER   — specialist agent instantiation
   6. CONTEXT  — Second Brain vault prime
   7. READY    — all systems online
 
-Every step is a LogRow in the transcript with spinner=True while working,
-then updated to icon="✓" (or "⚠" / "✗") when done.  The MetricsRail shows
-a boot progress bar so the right-hand telemetry reflects each step in real time.
+WHAT CHANGED, AND WHY
+---------------------
+Three defects in this module produced the failure in the user's screenshots
+("✗ SearxNG failed to start: Unable to find image
+'searxng/searxng:2024.12.10-a4d2a5f68'", with FlareSolverr the only container in
+Docker Desktop):
+
+1. **Its own image pins.** This file carried ``SEARXNG_IMAGE`` /
+   ``FLARESOLVERR_IMAGE`` as literals. The SearxNG pin had been reaped from
+   Docker Hub, so ``docker run`` failed before a container existed, and there
+   was no recovery path. FlareSolverr's pin still resolved, which is why exactly
+   one container was up. Images now come from
+   :mod:`hyperion.infra.services`, which pulls a pinned tag *and* falls back
+   when the registry no longer has it.
+
+2. **Windows-only, single-path Docker autostart.** The old code probed exactly
+   ``%ProgramFiles%\\Docker\\Docker\\Docker Desktop.exe``. Per-user installs,
+   non-default drives, macOS and Linux all missed it, so the shell told the user
+   to start Docker by hand — which is precisely what they reported having to do.
+   :func:`hyperion.infra.services.ensure_docker_engine` probes every real
+   install location per platform and starts the Linux service.
+
+3. **``sleep(3)`` instead of a readiness check.** A cold container start is
+   longer than three seconds, so the step reported success while the app inside
+   was still booting. The first searches then failed against a service the
+   transcript had already called ready. Containers are now polled on their real
+   health endpoint.
+
+The vault step additionally read ``settings.second_brain_vault``, an attribute
+:class:`hyperion.config.Settings` does not define — so ``getattr`` returned
+None, the step took the "default path" branch and reported "vault ready" without
+ever looking at a directory. It now reads the real ``vault_path``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
-import shutil
-import subprocess
-from pathlib import Path
 from typing import Any
 
+from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
+from hyperion.infra.services import (
+    FLARESOLVERR_IMAGE,
+    FLARESOLVERR_PORT,
+    MANAGED_CONTAINERS,
+    SEARXNG_IMAGE,
+    SEARXNG_PORT,
+    ensure_container,
+    ensure_docker_engine,
+    flaresolverr_spec,
+    run_command,
+    searxng_spec,
+)
+from hyperion.infra.services import (
+    start_services as _infra_start_services,
+)
+from hyperion.infra.services import (
+    stop_services as _infra_stop_services,
+)
 from hyperion.tui.widgets.transcript import LogRow, Transcript
+
+__all__ = [
+    "FLARESOLVERR_IMAGE",
+    "FLARESOLVERR_PORT",
+    "MANAGED_CONTAINERS",
+    "SEARXNG_IMAGE",
+    "SEARXNG_PORT",
+    "BootStep",
+    "reset_process_state",
+    "run_boot_sequence",
+    "start_services",
+    "stop_searxng",
+    "stop_services",
+]
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
 async def _run_subprocess(cmd: list[str], timeout: float = 15.0) -> tuple[int, str, str]:
-    """Run a subprocess asynchronously, return (returncode, stdout, stderr)."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        return proc.returncode or 0, stdout_b.decode(errors="replace"), stderr_b.decode(errors="replace")
-    except asyncio.TimeoutError:
-        return 124, "", "timeout"
-    except FileNotFoundError:
-        return 127, "", "not found"
-    except OSError as e:
-        return 1, "", str(e)
+    """Run a subprocess asynchronously, return ``(returncode, stdout, stderr)``.
+
+    Retained as the module's subprocess entry point because
+    :mod:`hyperion.tui.screens.splash` imports it. It delegates to
+    :func:`hyperion.infra.services.run_command` so there is one implementation of
+    "run a command without ever raising on the startup path".
+    """
+    return await run_command(cmd, timeout=timeout)
 
 
 async def _run_powershell(script: str, timeout: float = 15.0) -> tuple[int, str, str]:
@@ -56,50 +108,6 @@ async def _run_powershell(script: str, timeout: float = 15.0) -> tuple[int, str,
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
         timeout=timeout,
     )
-
-
-# ── Container images: ONE source of truth ────────────────────────────────────
-#
-# CONFIGURATION DRIFT. docker-compose.yml pins both images to exact digests and
-# explains why:
-#
-#     # Pinned to a known-good tag for reproducibility. `latest` is
-#     # non-deterministic and a recent build made `default_doi_resolver`
-#     # mandatory (HTTP 500 without it).
-#
-# The code that actually starts the containers ignored those pins. `boot.py` ran
-# bare "searxng/searxng" (i.e. :latest) and "flaresolverr:latest", and `cli.py`
-# repeated the same unpinned strings a second time. So the documented reason for
-# pinning applied to `docker compose up` only, while every `hyperion shell`
-# pulled whatever `latest` happened to be — the exact failure the comment warns
-# about, with an HTTP 500 SearxNG presenting as "search returned no results".
-#
-# Defined once here and imported by both call sites, so a pin change cannot be
-# applied to one launcher and missed by the other. A test asserts these match
-# docker-compose.yml.
-SEARXNG_IMAGE = "searxng/searxng:2024.12.10-a4d2a5f68"
-FLARESOLVERR_IMAGE = "flaresolverr/flaresolverr:v3.3.21"
-
-# Host ports. Kept beside the images because SearxNGClient's default base URL
-# must agree with the published port; a mismatch here is invisible until every
-# search silently fails.
-SEARXNG_PORT = 8888
-FLARESOLVERR_PORT = 8191
-
-# Containers HYPERION owns and is therefore allowed to stop/remove.
-MANAGED_CONTAINERS = ("searxng", "flaresolverr")
-
-
-def _searxng_settings_path() -> str:
-    """Resolve the absolute path to searxng_settings.yml."""
-    # Walk up from this file to find the project root (where searxng_settings.yml lives).
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        candidate = parent / "searxng_settings.yml"
-        if candidate.exists():
-            return str(candidate)
-    # Fallback — best guess
-    return str(here.parents[2] / "searxng_settings.yml")
 
 
 # ── boot step result ─────────────────────────────────────────────────────────
@@ -132,11 +140,10 @@ async def run_boot_sequence(
 ) -> dict[str, Any]:
     """Execute the full boot sequence, streaming into the transcript.
 
-    Returns a dict with keys: docker, searxng, providers, agents, vault,
-    each mapping to (status_str, detail_str).
+    Returns a dict with keys: core, docker, searxng, flare, tools, providers,
+    agents, vault — each mapping to ``(status_str, detail_str)``.
     """
     results: dict[str, Any] = {}
-    total_steps = 9
     step_num = 0
 
     def _start_step(badge: str, label: str, spinner: bool = True) -> BootStep:
@@ -144,13 +151,30 @@ async def run_boot_sequence(
         step_num += 1
         step = BootStep(badge, label)
         step.row = log.add_entry(badge, label, spinner=spinner)
-        # Update metrics rail with progress
         try:
             metrics.set_phase("boot")
             metrics._repaint()
         except Exception:
             pass
         return step
+
+    def _progress_for(step: BootStep):
+        """Live sub-status callback for a long-running step.
+
+        The container and engine helpers report what they are doing
+        (``resolving image…``, ``waiting for Docker daemon… (42s left)``). Wiring
+        that into the row is what turns a 90-second wait from an apparent hang
+        into visible progress.
+        """
+
+        def _update(message: str) -> None:
+            if step.row is not None:
+                try:
+                    log.update_row(step.row, content=message, spinner=True)
+                except Exception:
+                    pass
+
+        return _update
 
     def _finish_step(step: BootStep, status: str = OK, detail: str = "") -> None:
         step.result = status
@@ -163,6 +187,9 @@ async def run_boot_sequence(
             else:
                 log.update_row(step.row, badge="ERROR", spinner=False, content=detail or step.label, icon="✗")
 
+    async def _pause(seconds: float) -> None:
+        await asyncio.sleep(seconds if not reduced_motion else min(seconds, 0.05))
+
     # ── Step 1: Core ──────────────────────────────────────────────────────
     step = _start_step("BOOT", "initializing HYPERION core systems")
     # Discard any in-process state left by a previous engagement in this same
@@ -173,133 +200,51 @@ async def run_boot_sequence(
     # and — most damaging — its subject/geography focus, which is precisely the
     # mechanism by which one engagement's geography can leak into the next.
     reset_count = reset_process_state()
-    await asyncio.sleep(0.4 if not reduced_motion else 0.1)
+    await _pause(0.4)
     _finish_step(step, OK, f"core systems initialized · {reset_count} subsystems reset")
     results["core"] = (OK, f"core systems initialized · {reset_count} subsystems reset")
 
-    # ── Step 2: Docker daemon ─────────────────────────────────────────────
-    step = _start_step("DOCKER", "checking Docker daemon")
-    await asyncio.sleep(0.3 if not reduced_motion else 0.05)
+    # ── Step 2: Docker engine ─────────────────────────────────────────────
+    # The user's requirement: "when we start hyperion shell docker should launch
+    # automatically". `ensure_docker_engine` starts the engine on Windows, macOS
+    # and Linux, then waits for the daemon to actually answer.
+    step = _start_step("DOCKER", "checking Docker engine")
+    await _pause(0.3)
 
-    docker_path = shutil.which("docker")
-    if docker_path is None:
-        _finish_step(step, WARN, "Docker CLI not found — SearxNG will be unavailable")
-        results["docker"] = (WARN, "not installed")
-    else:
-        rc, out, err = await _run_subprocess(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=10)
-        if rc == 0 and out.strip():
-            _finish_step(step, OK, f"Docker daemon ready · v{out.strip()[:20]}")
-            results["docker"] = (OK, f"v{out.strip()[:20]}")
-        else:
-            # Try to start Docker Desktop on Windows
-            step2_label = "starting Docker Desktop…"
-            if step.row:
-                log.update_row(step.row, content=step2_label, spinner=True)
+    docker_status = await ensure_docker_engine(on_progress=_progress_for(step))
+    _finish_step(step, docker_status.state, docker_status.detail)
+    results["docker"] = (docker_status.state, docker_status.detail)
 
-            docker_desktop = Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "Docker" / "Docker" / "Docker Desktop.exe"
-            if docker_desktop.exists():
-                try:
-                    subprocess.Popen([str(docker_desktop)], creationflags=subprocess.CREATE_NO_WINDOW)
-                except Exception:
-                    pass
-                # Wait up to 30s for daemon to come online
-                started = False
-                for _ in range(15):
-                    await asyncio.sleep(2.0)
-                    rc, out, err = await _run_subprocess(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=5)
-                    if rc == 0 and out.strip():
-                        started = True
-                        break
-                if started:
-                    _finish_step(step, OK, f"Docker daemon started · v{out.strip()[:20]}")
-                    results["docker"] = (OK, f"v{out.strip()[:20]}")
-                else:
-                    _finish_step(step, WARN, "Docker Desktop starting — SearxNG may need a manual start")
-                    results["docker"] = (WARN, "starting")
-            else:
-                _finish_step(step, WARN, "Docker daemon not running — start Docker Desktop manually")
-                results["docker"] = (WARN, "not running")
-
-    # ── Step 3: SearxNG — always restart to pick up config changes ──────
-    searxng_ok = False
-    if results.get("docker", (FAIL,))[0] == OK:
-        step = _start_step("SEARXNG", "restarting SearxNG search container")
-        await asyncio.sleep(0.3 if not reduced_motion else 0.05)
-
-        # Always stop and remove existing container so config changes are picked up
-        if step.row:
-            log.update_row(step.row, content="stopping existing SearxNG container…", spinner=True)
-        await _run_subprocess(["docker", "stop", "searxng"], timeout=15)
-        await _run_subprocess(["docker", "rm", "searxng"], timeout=10)
-
-        # Create and run fresh container with latest settings
-        if step.row:
-            log.update_row(step.row, content="creating SearxNG container with latest config…", spinner=True)
-        settings_path = _searxng_settings_path()
-        settings_path_docker = settings_path.replace("\\", "/")
-        limiter_path = str(Path(settings_path_docker).parent / "searxng-limiter.toml").replace("\\", "/")
-        rc3, out3, err3 = await _run_subprocess(
-            [
-                "docker", "run", "-d",
-                "--name", "searxng",
-                "-p", f"{SEARXNG_PORT}:8080",
-                "-v", f"{settings_path_docker}:/etc/searxng/settings.yml",
-                "-v", f"{limiter_path}:/etc/searxng/limiter.toml",
-                SEARXNG_IMAGE,
-            ],
-            timeout=60,
-        )
-        if rc3 == 0:
-            await asyncio.sleep(3.0)
-            _finish_step(step, OK, "SearxNG restarted · localhost:8888 → container:8080")
-            results["searxng"] = (OK, "restarted")
-            searxng_ok = True
-        else:
-            _finish_step(step, FAIL, f"SearxNG failed to start: {err3.strip()[:60]}")
-            results["searxng"] = (FAIL, err3.strip()[:80])
+    # ── Step 3: SearxNG ───────────────────────────────────────────────────
+    if docker_status.ok:
+        step = _start_step("SEARXNG", "starting SearxNG search container")
+        searx = await ensure_container(searxng_spec(), on_progress=_progress_for(step))
+        _finish_step(step, searx.state, f"SearxNG {searx.detail}")
+        results["searxng"] = (searx.state, searx.detail)
     else:
         step = _start_step("SEARXNG", "SearxNG — skipped (Docker unavailable)")
-        await asyncio.sleep(0.2 if not reduced_motion else 0.05)
-        _finish_step(step, WARN, "SearxNG unavailable — agents will use Jina fallback")
+        await _pause(0.2)
+        _finish_step(step, WARN, "SearxNG unavailable — agents will use the Jina fallback")
         results["searxng"] = (WARN, "skipped")
 
-    # ── Step 3b: FlareSolverr — CAPTCHA-bypass headless Chromium ──────
-    if results.get("docker", (FAIL,))[0] == OK:
+    # ── Step 3b: FlareSolverr ─────────────────────────────────────────────
+    if docker_status.ok:
         step = _start_step("FLARE", "starting FlareSolverr CAPTCHA-bypass container")
-        await asyncio.sleep(0.3 if not reduced_motion else 0.05)
-
-        # Always stop and remove existing container for a clean start
-        if step.row:
-            log.update_row(step.row, content="stopping existing FlareSolverr container…", spinner=True)
-        await _run_subprocess(["docker", "stop", "flaresolverr"], timeout=15)
-        await _run_subprocess(["docker", "rm", "flaresolverr"], timeout=10)
-
-        # Create and run fresh container
-        if step.row:
-            log.update_row(step.row, content="creating FlareSolverr container…", spinner=True)
-        rc_f3, _, err_f3 = await _run_subprocess(
-            ["docker", "run", "-d",
-             "--name", "flaresolverr",
-             "-p", f"{FLARESOLVERR_PORT}:8191",
-             FLARESOLVERR_IMAGE],
-            timeout=60,
-        )
-        if rc_f3 == 0:
-            await asyncio.sleep(3.0)
-            _finish_step(step, OK, "FlareSolverr started · localhost:8191 → CAPTCHA bypass ready")
-            results["flare"] = (OK, "started")
-        else:
-            _finish_step(step, WARN, f"FlareSolverr failed: {err_f3.strip()[:50]}")
-            results["flare"] = (WARN, "create failed")
+        flare = await ensure_container(flaresolverr_spec(), on_progress=_progress_for(step))
+        # A missing FlareSolverr degrades scraping but does not break the
+        # engagement, so a hard failure is still reported as a warning.
+        state = OK if flare.ok else WARN
+        _finish_step(step, state, f"FlareSolverr {flare.detail}")
+        results["flare"] = (state, flare.detail)
     else:
         step = _start_step("FLARE", "FlareSolverr — skipped (Docker unavailable)")
-        await asyncio.sleep(0.2 if not reduced_motion else 0.05)
+        await _pause(0.2)
         _finish_step(step, WARN, "FlareSolverr unavailable — stealth Bing fallback only")
         results["flare"] = (WARN, "skipped")
 
     # ── Step 3c: Data tools readiness ───────────────────────────────────
     step = _start_step("TOOLS", "checking data source tool readiness")
-    await asyncio.sleep(0.3 if not reduced_motion else 0.05)
+    await _pause(0.3)
 
     tools_ready: list[str] = []
     tools_warn: list[str] = []
@@ -322,13 +267,29 @@ async def run_boot_sequence(
             else:
                 tools_warn.append(f"{tool_name}(no key)")
 
+        # Obscura — a binary, not an API. Report whether it is actually present
+        # rather than assuming. The old boot sequence never mentioned Obscura at
+        # all, so a missing binary only surfaced as degraded scraping later.
+        if _obscura_present(settings):
+            tools_ready.append("obscura")
+        else:
+            tools_warn.append("obscura(binary not found)")
+
         # Tools that don't need API keys (free public APIs)
         free_tools = [
             "sec_edgar", "open_alex", "world_bank",
             "google_trends", "hackernews", "reddit",
-            "wayback", "searxng",
+            "wayback",
         ]
         tools_ready.extend(free_tools)
+
+        # SearxNG counts as ready only if its container actually came up — the
+        # old code listed it unconditionally, so the transcript claimed SearxNG
+        # was ready in the very same boot that failed to start it.
+        if results.get("searxng", (FAIL,))[0] == OK:
+            tools_ready.append("searxng")
+        else:
+            tools_warn.append("searxng(container not ready)")
 
     except Exception as e:
         _finish_step(step, WARN, f"tool check partial: {e!s:.50}")
@@ -344,7 +305,7 @@ async def run_boot_sequence(
 
     # ── Step 4: LLM providers ─────────────────────────────────────────────
     step = _start_step("PROVIDER", "checking LLM provider health")
-    await asyncio.sleep(0.3 if not reduced_motion else 0.05)
+    await _pause(0.3)
 
     provider_status: list[str] = []
     provider_warns: list[str] = []
@@ -384,7 +345,7 @@ async def run_boot_sequence(
 
     # ── Step 5: Agent roster ──────────────────────────────────────────────
     step = _start_step("ROSTER", "instantiating specialist agents")
-    await asyncio.sleep(0.3 if not reduced_motion else 0.05)
+    await _pause(0.3)
 
     try:
         from hyperion.tui.roster import ROSTER
@@ -398,33 +359,52 @@ async def run_boot_sequence(
 
     # ── Step 6: Second Brain vault ────────────────────────────────────────
     step = _start_step("CONTEXT", "priming Second Brain vault")
-    await asyncio.sleep(0.3 if not reduced_motion else 0.05)
+    await _pause(0.3)
 
     try:
         from hyperion.config import get_settings
 
         settings = get_settings()
-        vault_path = getattr(settings, "second_brain_vault", None)
-        if vault_path:
-            p = Path(vault_path)
-            if p.exists():
-                engagements = list((p / "engagements").glob("*.md")) if (p / "engagements").exists() else []
-                _finish_step(step, OK, f"vault primed · {len(engagements)} prior engagements")
+        # `vault_path` is the attribute Settings actually defines, and it is now
+        # absolutised at validation time, so this no longer depends on the
+        # directory the shell happened to be launched from. The old code read
+        # `second_brain_vault`, which does not exist — the step could therefore
+        # never fail and never told the truth.
+        vault = getattr(settings, "vault_path", None)
+        if vault is None:
+            _finish_step(step, WARN, "vault_path is not configured")
+            results["vault"] = (WARN, "unconfigured")
+        else:
+            from pathlib import Path
+
+            vault = Path(vault)
+            # Creating it is the correct behaviour: SecondBrainClient writes
+            # notes here, so a missing directory is a first-run condition, not
+            # an error.
+            try:
+                vault.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            if vault.exists():
+                engagements_dir = vault / "engagements"
+                engagements = (
+                    list(engagements_dir.glob("*.md")) if engagements_dir.exists() else []
+                )
+                _finish_step(
+                    step, OK, f"vault primed · {len(engagements)} prior engagements · {vault}"
+                )
                 results["vault"] = (OK, f"{len(engagements)} engagements")
             else:
-                _finish_step(step, WARN, f"vault path not found: {vault_path}")
+                _finish_step(step, WARN, f"vault path unavailable: {vault}")
                 results["vault"] = (WARN, "path missing")
-        else:
-            _finish_step(step, OK, "vault ready (default path)")
-            results["vault"] = (OK, "default")
     except Exception as e:
         _finish_step(step, WARN, f"vault check skipped: {e!s:.40}")
         results["vault"] = (WARN, str(e)[:60])
 
     # ── Step 7: READY ─────────────────────────────────────────────────────
-    await asyncio.sleep(0.2 if not reduced_motion else 0.05)
+    await _pause(0.2)
     all_ok = all(v[0] == OK for v in results.values())
-    has_warns = any(v[0] == WARN for v in results.values())
+    has_fails = any(v[0] == FAIL for v in results.values())
 
     if all_ok:
         log.add_entry(
@@ -432,7 +412,7 @@ async def run_boot_sequence(
             "all systems online · type a question to begin",
             aurora=True,
         )
-    elif has_warns:
+    elif not has_fails:
         warns = [k for k, v in results.items() if v[0] == WARN]
         log.add_entry(
             "READY",
@@ -440,86 +420,56 @@ async def run_boot_sequence(
             icon="⚠",
         )
     else:
+        fails = [k for k, v in results.items() if v[0] == FAIL]
         log.add_entry(
             "READY",
-            "core ready · some systems need attention — type /providers to check",
+            f"core ready · needs attention: {', '.join(fails)} — type /providers to check",
             icon="▸",
         )
 
     return results
 
 
-async def start_services() -> dict[str, bool]:
+def _obscura_present(settings: Any) -> bool:
+    """True when an Obscura binary can actually be located.
+
+    Mirrors :meth:`hyperion.tools.obscura.ObscuraClient._find_obscura` so the
+    boot report and the client cannot disagree.
+    """
+    import shutil
+    from pathlib import Path
+
+    configured = str(getattr(settings, "obscura_path", "") or "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.is_file():
+            return True
+
+    bin_dir = obscura_bin_dir()
+    for name in obscura_binary_names():
+        if (bin_dir / name).is_file():
+            return True
+        if shutil.which(name):
+            return True
+    return False
+
+
+async def start_services(*, on_progress: object = None) -> dict[str, bool]:
     """Recreate the managed containers from a clean slate. Headless entry point.
 
-    `hyperion consult` previously carried its own copy of this logic — its own
-    settings-path resolver, its own `docker run` argv, its own image strings.
-    Two copies of one launch sequence is how the version pins drifted: the
-    compose file was pinned, and the CLI copy kept pulling `:latest`. The TUI
-    boot sequence reports per-step progress so it keeps its own inline flow, but
-    both now source images, ports and container names from the constants above.
-
-    Returns a per-service dict so the caller can report what actually came up
-    rather than assuming success.
+    Delegates to :func:`hyperion.infra.services.start_services`, which owns the
+    image resolution, the ``docker run`` argv and the readiness probe. Keeping
+    the ``{name: bool}`` return shape preserves the existing callers while the
+    richer per-service detail stays available through the infra layer.
     """
-    started: dict[str, bool] = {"searxng": False, "flaresolverr": False}
+    statuses = await _infra_start_services(on_progress=on_progress)
+    return {name: status.ok for name, status in statuses.items()}
 
-    if shutil.which("docker") is None:
-        return started
 
-    # Fresh state is the whole point: stop AND remove, so a container created
-    # from an older image or an older settings file cannot survive into this run.
-    for container in MANAGED_CONTAINERS:
-        try:
-            await _run_subprocess(["docker", "stop", container], timeout=15)
-        except Exception:
-            pass
-        try:
-            await _run_subprocess(["docker", "rm", container], timeout=10)
-        except Exception:
-            pass
-
-    settings_path = _searxng_settings_path().replace("\\", "/")
-    limiter_path = str(
-        Path(settings_path).parent / "searxng-limiter.toml"
-    ).replace("\\", "/")
-
-    try:
-        rc, _, _ = await _run_subprocess(
-            [
-                "docker", "run", "-d",
-                "--name", "searxng",
-                "-p", f"{SEARXNG_PORT}:8080",
-                "-v", f"{settings_path}:/etc/searxng/settings.yml",
-                "-v", f"{limiter_path}:/etc/searxng/limiter.toml",
-                SEARXNG_IMAGE,
-            ],
-            timeout=60,
-        )
-        started["searxng"] = rc == 0
-    except Exception:
-        pass
-
-    try:
-        rc, _, _ = await _run_subprocess(
-            [
-                "docker", "run", "-d",
-                "--name", "flaresolverr",
-                "-p", f"{FLARESOLVERR_PORT}:8191",
-                FLARESOLVERR_IMAGE,
-            ],
-            timeout=60,
-        )
-        started["flaresolverr"] = rc == 0
-    except Exception:
-        pass
-
-    if any(started.values()):
-        # The containers accept TCP before their apps finish booting; querying
-        # immediately yields a connection error that looks like "search broken".
-        await asyncio.sleep(3.0)
-
-    return started
+async def ensure_docker_ready(*, on_progress: object = None) -> bool:
+    """Start the Docker engine if needed. True when the daemon is usable."""
+    status = await ensure_docker_engine(on_progress=on_progress)
+    return status.ok
 
 
 def reset_process_state() -> int:
@@ -588,7 +538,7 @@ async def stop_services() -> None:
     exception would mask whatever actually ended the session.
 
     Order matters. LLM clients are closed BEFORE the containers they may be
-    mid-request against, so a in-flight HTTP call fails against a closed client
+    mid-request against, so an in-flight HTTP call fails against a closed client
     rather than a vanished container (the latter can hang until timeout).
     """
     # ── 1. Close LLM provider clients ────────────────────────────────────────
@@ -612,25 +562,49 @@ async def stop_services() -> None:
 
     # ── 2. Stop and REMOVE the containers ────────────────────────────────────
     # `rm` as well as `stop`: a stopped-but-present container keeps its cached
-    # SearxNG results, so the next boot is not actually a fresh instance. Both
-    # are attempted for every container even if an earlier one fails.
-    for container in MANAGED_CONTAINERS:
-        try:
-            await _run_subprocess(["docker", "stop", container], timeout=15)
-        except Exception:
-            pass
-        try:
-            await _run_subprocess(["docker", "rm", container], timeout=10)
-        except Exception:
-            pass
+    # SearxNG results, so the next boot is not actually a fresh instance.
+    try:
+        await _infra_stop_services()
+    except Exception:
+        pass
 
-    # ── 3. Clear in-process state ────────────────────────────────────────────
+    # ── 3. Close shared tool HTTP clients ────────────────────────────────────
+    # SearxNG / FlareSolverr / Obscura clients hold their own httpx pools whose
+    # sockets point at containers that are, by this line, gone.
+    await _close_tool_clients()
+
+    # ── 4. Clear in-process state ────────────────────────────────────────────
     # Mirrors the boot-time reset so quit leaves nothing behind even when the
     # interpreter itself keeps running (embedded / test / REPL use).
     try:
         reset_process_state()
     except Exception:
         pass
+
+
+async def _close_tool_clients() -> None:
+    """Close module-level tool clients, if the modules expose a closer.
+
+    Best effort by design: this runs after the containers are already gone, so a
+    module that cannot be imported or has no closer is not a problem worth
+    reporting on the exit path.
+    """
+    for module_name, closer in (
+        ("hyperion.tools.searxng", "close_client"),
+        ("hyperion.tools.flaresolverr", "close_client"),
+        ("hyperion.tools.obscura", "close_client"),
+    ):
+        try:
+            import importlib
+
+            module = importlib.import_module(module_name)
+            fn = getattr(module, closer, None)
+            if callable(fn):
+                result = fn()
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception:
+            continue
 
 
 # Backward-compatible alias

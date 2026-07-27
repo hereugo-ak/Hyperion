@@ -648,6 +648,52 @@ class TypographyConfig(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# URL introspection — one parser, so clients and health checks cannot disagree
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _split_netloc(url: str) -> tuple[str, int | None]:
+    """Return ``(host, port_or_None)`` for a service URL.
+
+    Uses :mod:`urllib.parse` rather than ``url.split(":")``, which was the
+    previous approach in ``obs/health.py``. That naive split takes ``":"`` at
+    index 1 out of ``http://localhost:8888`` — i.e. ``"//localhost"`` — and
+    returned garbage for any URL with a path, a trailing slash, credentials or
+    an IPv6 host. It then fell back to a hardcoded port, so the health check
+    silently stopped tracking the configured URL.
+    """
+    from urllib.parse import urlsplit
+
+    text = (url or "").strip()
+    if not text:
+        return "", None
+    # urlsplit needs a scheme to populate hostname/port.
+    if "//" not in text:
+        text = f"http://{text}"
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname or ""
+        port = parts.port
+    except ValueError:
+        # Malformed port (e.g. "http://host:notaport") — treat as unspecified
+        # rather than raising out of a property on the settings object.
+        return "", None
+    if port is None and parts.scheme in ("http", "https"):
+        port = 80 if parts.scheme == "http" else 443
+    return host, port
+
+
+def _port_from_url(url: str, *, default: int) -> int:
+    _, port = _split_netloc(url)
+    return port if port is not None else default
+
+
+def _host_from_url(url: str, *, default: str) -> str:
+    host, _ = _split_netloc(url)
+    return host or default
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main Settings — loads from .env with HYPERION_ prefix
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -828,13 +874,55 @@ class Settings(BaseSettings):
         """Return all non-deprecated models across all providers for a given tier."""
         return [m for m in self.all_models if m.tier == tier]
 
+    # ── Derived ports ────────────────────────────────────────────────────────
+    # The container launcher publishes ports; the health checker verified them.
+    # Both used to hardcode their own numbers, so changing `searxng_url` moved
+    # the client without moving the check, and health reported OFFLINE for a
+    # service that was serving perfectly (or ONLINE for one that was not).
+    # Deriving the port from the configured URL makes that impossible.
+
+    @property
+    def searxng_port(self) -> int:
+        """Port from ``searxng_url``, or the documented default."""
+        return _port_from_url(self.searxng_url, default=8888)
+
+    @property
+    def flaresolverr_port(self) -> int:
+        """Port from ``flaresolverr_url``, or the documented default."""
+        return _port_from_url(self.flaresolverr_url, default=8191)
+
+    @property
+    def searxng_host(self) -> str:
+        return _host_from_url(self.searxng_url, default="localhost")
+
+    @property
+    def flaresolverr_host(self) -> str:
+        return _host_from_url(self.flaresolverr_url, default="localhost")
+
     @field_validator("vault_path", "reports_dir", "assets_dir", mode="before")
     @classmethod
     def validate_paths(cls, v: Any) -> Path:
-        """Ensure paths are Path objects."""
-        if isinstance(v, str):
-            return Path(v)
-        return v
+        """Coerce to an absolute Path anchored at the project root.
+
+        These defaulted to ``Path("./vault")`` etc. and were used as-is, which
+        makes them relative to whatever directory the shell was launched from.
+        Consequences, all observed:
+
+          * ``hyperion export`` from a subdirectory reported "no engagement data
+            found" for reports that existed.
+          * A vault written during one session was invisible to the next if the
+            user launched from elsewhere, so "prior engagements" was always 0.
+          * Reports were scattered across whatever directories the user happened
+            to `cd` into.
+
+        :func:`hyperion.infra.paths.resolve_path` anchors relative values at the
+        project root (the directory containing ``pyproject.toml``, overridable
+        with ``HYPERION_PROJECT_ROOT``), and leaves absolute values untouched so
+        an explicit ``HYPERION_VAULT_PATH=/data/vault`` still wins.
+        """
+        from hyperion.infra.paths import resolve_path
+
+        return resolve_path(v)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
