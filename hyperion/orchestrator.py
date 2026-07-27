@@ -41,6 +41,7 @@ from hyperion.agents.synthesis_lead import SynthesisLead
 from hyperion.obs import ArtifactStore, RunJournal, RunManifest, trace
 from hyperion.schemas.agents import AgentName, AgentState
 from hyperion.tools.query_utils import (
+    canonicalize_geographies,
     clear_engagement_focus,
     detect_geographies,
     set_engagement_focus,
@@ -392,21 +393,37 @@ class WorkflowEngine:
         except Exception:
             pass
 
-        # Derive jurisdictions from geography so the Regulatory Analyst can
-        # never silently fall back to ["US", "EU"] on a non-US question.
+        # ── Scope: prefer the decomposing agent's decision ──────────────────
         #
-        # Geography must not depend on the LLM classifier succeeding. That
-        # classifier is a network call to one of five providers and can return
-        # a partial object, time out, or be rate-limited — and when it did, the
-        # whole engagement lost its country anchor and every search went out
-        # unscoped. So if classification produced no geography, fall back to
-        # the deterministic gazetteer over the user's own words.
+        # The Engagement Director reads the question and breaks it down, so IT
+        # decides which country and industry the engagement is about. Its
+        # answer travels on the DAG (dag.geographies / dag.subject) and is
+        # authoritative here.
         #
-        # Note this DETECTS a geography the user named; it never supplies a
-        # default. detect_geographies() returning [] means the question names
-        # no country, and the correct behaviour then is to analyse without a
-        # jurisdiction filter. Inventing one would produce an answer that reads
-        # as authoritative about a country the user never asked about.
+        # This ordering is the fix for a genuine inversion. Geography used to
+        # be decided at THIS line by a regex gazetteer scanning the raw
+        # question, while the Director — already spending an LLM call on the
+        # same question — was never asked for it. The gazetteer then matched
+        # the English pronoun "us" in "help us decide whether to enter India"
+        # and anchored the whole engagement to the United States. The word
+        # list is now the third choice, not the first.
+        #
+        # Precedence, strongest signal first:
+        #   1. dag.geographies — the Director's extraction (an LLM that read
+        #      the sentence), canonicalised.
+        #   2. ctx from _enrich_context — the per-agent classifier.
+        #   3. detect_geographies — deterministic scan of the user's words,
+        #      for when both LLM calls failed.
+        #
+        # No step invents a default. If all three yield nothing, the question
+        # named no jurisdiction and the analysis runs without a jurisdiction
+        # filter — honest, and strictly better than a confident report about a
+        # country the user never mentioned.
+        dag_geos = canonicalize_geographies(getattr(dag, "geographies", None))
+        if dag_geos:
+            ctx["geography"] = dag_geos[0]
+            ctx["jurisdictions"] = dag_geos
+
         geo = ctx.get("geography") or ctx.get("jurisdiction")
         if not geo:
             detected = detect_geographies(dag.question or "")
@@ -420,11 +437,14 @@ class WorkflowEngine:
             if not ctx.get("jurisdictions"):
                 ctx["jurisdictions"] = [geo]
 
-        # Last-resort subject so f-string query templates are never empty.
-        # An empty {sector} produced real searches like "carbon footprint
-        # emissions data" with no subject — 34 minutes of useless traffic.
+        # Subject, same precedence: the Director's extraction first, then the
+        # per-agent classifier, then a deterministic derivation from the
+        # question. The last resort exists because an empty {sector} once
+        # interpolated into real searches like "carbon footprint emissions
+        # data" — grammatical, subject-less, and 34 minutes of useless traffic.
         subject = (
-            ctx.get("industry")
+            str(getattr(dag, "subject", "") or "").strip()
+            or ctx.get("industry")
             or ctx.get("sector")
             or ctx.get("space")
             or self._derive_subject_from_question(dag.question)
@@ -1313,12 +1333,18 @@ class WorkflowEngine:
         # Seed the search anchor from the raw question immediately, so any
         # search firing before classification completes is still on-topic.
         #
-        # The geography is seeded here too, from the deterministic gazetteer.
-        # It used to be passed as "" and only filled in later by
-        # _get_engagement_context, which meant every search issued during
-        # Stage 1 went out with no country anchor even though the user had
-        # named one in the question. Detected-only: [] stays "" rather than
-        # becoming an invented default.
+        # WHY THE GAZETTEER IS THE RIGHT TOOL *HERE* SPECIFICALLY. Everywhere
+        # else, geography is the Engagement Director's decision — it reads the
+        # question and breaks it down, so it scopes it. But this line runs
+        # BEFORE the Director has been invoked: there is no decomposition to
+        # consult yet, and a search fired during early boot would otherwise go
+        # out with no country anchor at all. A deterministic scan of the user's
+        # own words is the only signal available at this instant.
+        #
+        # It is a provisional anchor, and it is superseded: once the Director
+        # returns, _get_engagement_context re-publishes the focus from
+        # dag.geographies, which wins. Detected-only either way — [] stays ""
+        # rather than becoming an invented default.
         try:
             _early_geo = detect_geographies(question or "")
             set_engagement_focus(

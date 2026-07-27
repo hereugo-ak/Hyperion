@@ -67,6 +67,11 @@ from hyperion.schemas.agents import (
     ToolName,
 )
 from hyperion.schemas.models import KeyFinding, ConfidenceLevel
+from hyperion.tools.query_utils import (
+    canonicalize_geographies,
+    detect_geographies,
+    is_contentless,
+)
 from hyperion.schemas.workflow import (
     QuestionType,
     TaskNode,
@@ -272,12 +277,34 @@ QUESTION_TYPE_AGENTS: dict[QuestionType, list[AgentName]] = {
     ],
 }
 
-# M&A questions always include M&A + Regulatory
+# ── Keyword fallbacks — the LAST resort, never the decision ──────────────────
+#
+# These lists used to run UNCONDITIONALLY, forcing specialists onto the roster
+# before the LLM was even asked. That is backwards. The Director already makes
+# a real LLM call to decompose the question, and an LLM reading "should India
+# reduce its dependence on the imports" understands that this is a trade-policy
+# and regulatory question far better than a substring scan for "regulat" can.
+#
+# A keyword list cannot tell "we have no plans to acquire anyone" from "we are
+# evaluating an acquisition", and it silently misses every phrasing its author
+# did not think of — "tuck-in", "roll-up", "bolt-on", "carve-out" are all
+# ordinary M&A vocabulary and none of them contain "acqui" or "merger".
+#
+# They are therefore consulted ONLY when the LLM decomposition fails outright.
+# That call goes to one of five providers and can time out or be rate-limited,
+# and when it does a roster chosen by weak keywords beats no roster at all.
+# This is a degradation path with a knowingly inferior signal, and the code
+# now says so rather than presenting it as the primary mechanism.
 MA_TRIGGERS = ["acqui", "merger", "m&a", "buyout", "consolidat", "takeover"]
-# Sustainability questions always include Sustainability
 SUSTAINABILITY_TRIGGERS = ["esg", "sustainab", "carbon", "green", "climate", "environmental"]
-# Regulatory questions always include Regulatory
 REGULATORY_TRIGGERS = ["regulat", "compliance", "legal", "jurisdiction", "permit", "license"]
+
+# Which specialist each fallback list implies, when the LLM cannot answer.
+_TRIGGER_FALLBACKS: tuple[tuple[list[str], AgentName], ...] = (
+    (MA_TRIGGERS, AgentName.MA_ANALYST),
+    (SUSTAINABILITY_TRIGGERS, AgentName.SUSTAINABILITY_ANALYST),
+    (REGULATORY_TRIGGERS, AgentName.REGULATORY_ANALYST),
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -617,36 +644,72 @@ class EngagementDirector(BaseAgent):
 
         return types
 
-    async def _classify_question_llm(self, question: str) -> tuple[list[QuestionType], list[AgentName], str]:
-        """Use LLM to classify the question and select agents.
+    def _trigger_fallback_agents(self, question: str) -> list[AgentName]:
+        """Keyword-implied specialists — only for use when the LLM call fails.
 
-        This is the refined classification that combines the heuristic
-        with LLM reasoning. The LLM:
-        1. Classifies the question type(s)
-        2. Selects which specialists to spawn
-        3. Identifies the key question behind the question
+        See the note on MA_TRIGGERS. This is deliberately NOT called on the
+        happy path: substring matching cannot read intent, and running it
+        unconditionally meant a question mentioning "green" got a
+        sustainability analyst whether or not the question was about
+        sustainability.
+        """
+        q_lower = (question or "").lower()
+        out: list[AgentName] = []
+        for triggers, agent in _TRIGGER_FALLBACKS:
+            if any(t in q_lower for t in triggers) and agent not in out:
+                out.append(agent)
+        return out
+
+    async def _classify_question_llm(self, question: str) -> tuple[list[QuestionType], list[AgentName], str]:
+        """Decompose the question: classify it, scope it, and staff it.
+
+        THE DECOMPOSING AGENT OWNS THE SCOPE. This method is where the
+        question is first read and broken down, so it is also where the
+        question's *scope* — which country it concerns and which industry —
+        is established. Everything downstream consumes that decision instead
+        of re-deriving it.
+
+        This is a correction of a real architectural inversion. Geography used
+        to be decided further down the pipeline by a regex gazetteer scanning
+        the raw question, while the Director — which was already spending an
+        LLM call on this very question — was never asked. The gazetteer then
+        matched the English pronoun "us" in "help us decide whether to enter
+        India" and anchored the entire engagement to the United States. No
+        word list can be trusted with a judgement like that; a model that has
+        read the sentence can.
+
+        The LLM now returns, in one call:
+        1. question_types      — the classification
+        2. selected_agents     — the roster, INCLUDING any specialist implied
+                                 by the question's substance (M&A, ESG,
+                                 regulatory), which used to be forced on by
+                                 keyword scans that ran before it was asked
+        3. key_question        — the question behind the question
+        4. geographies         — jurisdictions the question is about, primary
+                                 first, or [] if it names none
+        5. subject             — the industry/sector/topic
+        6. research_domains    — the decomposition proper
+        7. critical_path       — sequencing
+
+        Geography and subject are recorded on ``self._llm_geographies`` and
+        ``self._llm_subject`` for ``_build_dag`` to publish on the DAG.
 
         Returns: (question_types, selected_agents, key_question)
         """
         heuristic_types = self._classify_question_heuristic(question)
         heuristic_str = ", ".join(qt.value for qt in heuristic_types)
 
-        # Check for special triggers
-        extra_agents: list[AgentName] = []
-        q_lower = question.lower()
-        if any(t in q_lower for t in MA_TRIGGERS):
-            extra_agents.append(AgentName.MA_ANALYST)
-        if any(t in q_lower for t in SUSTAINABILITY_TRIGGERS):
-            extra_agents.append(AgentName.SUSTAINABILITY_ANALYST)
-        if any(t in q_lower for t in REGULATORY_TRIGGERS):
-            extra_agents.append(AgentName.REGULATORY_ANALYST)
+        # Reset per-call so a failed decomposition cannot silently reuse the
+        # scope of the previous engagement — that is exactly the kind of leak
+        # that produces a confident report about the wrong country.
+        self._llm_geographies: list[str] = []
+        self._llm_subject: str = ""
 
         prompt = (
             f"You are the Engagement Director at HYPERION Consulting. "
             f"Classify this business question and select the right specialists.\n\n"
             f"Question: {question}\n\n"
-            f"Heuristic classification: {heuristic_str}\n"
-            f"Special triggers detected: {', '.join(a.value for a in extra_agents) or 'none'}\n\n"
+            f"Heuristic classification: {heuristic_str}\n\n"
             f"Available specialists (12):\n"
             f"  - market_analyst: market sizing, segmentation, growth drivers\n"
             f"  - competitive_intel: competitor profiling, moat assessment, positioning\n"
@@ -667,6 +730,19 @@ class EngagementDirector(BaseAgent):
             f"select ALL specialists that are relevant (typically 8-12 for a "
             f"comprehensive analysis; never fewer than 6)\n"
             f"  - key_question: the real question behind the question (1-2 sentences)\n"
+            f"  - geographies: array of the countries/regions this question is "
+            f"actually about, MOST IMPORTANT FIRST. Use canonical names "
+            f"(\"India\", \"US\", \"EU\", \"China\", \"Brazil\"). Include a country "
+            f"ONLY if the question is about it. Return [] if the question names "
+            f"no jurisdiction — [] is a correct and useful answer meaning "
+            f"\"analyse without a country filter\". NEVER guess or default to "
+            f"\"US\"/\"EU\": a wrong country makes the entire report wrong. "
+            f"Beware the English pronoun \"us\" (as in \"help us decide\") — that "
+            f"is NOT the United States.\n"
+            f"  - subject: the industry, sector or topic the question is about, "
+            f"as a short noun phrase of 1-5 words (e.g. \"electronics imports\", "
+            f"\"electric vehicles\", \"pharmaceutical manufacturing\"). Return \"\" "
+            f"if the question names no industry. Do NOT return a sentence.\n"
             f"  - research_domains: array of {{name, question, agent, priority}} objects "
             f"(8-12 domains, each with a specific question and assigned agent)\n"
             f"  - critical_path: which domain is on the critical path (must complete first)"
@@ -680,13 +756,12 @@ class EngagementDirector(BaseAgent):
         )
 
         if not response.success or not response.content:
-            # Fallback to heuristic
-            agents = QUESTION_TYPE_AGENTS.get(heuristic_types[0], QUESTION_TYPE_AGENTS[QuestionType.GENERAL])
-            agents = list(set(agents + extra_agents))
-            return heuristic_types, agents, question
+            return self._classification_fallback(question, heuristic_types)
 
         try:
             data = json.loads(response.content)
+            if not isinstance(data, dict):
+                raise ValueError("decomposition did not return a JSON object")
 
             # Parse question types
             qt_strs = data.get("question_types", [heuristic_types[0].value])
@@ -708,14 +783,20 @@ class EngagementDirector(BaseAgent):
                 except ValueError:
                     continue
 
-            # Merge with extra agents
-            for ea in extra_agents:
-                if ea not in selected_agents:
-                    selected_agents.append(ea)
-
-            # Fallback if no agents selected
+            # No unconditional keyword injection here. The roster is the
+            # Director's judgement; the prompt already tells it to include
+            # every relevant specialist. Forcing ma_analyst on because the
+            # word "consolidat" appeared somewhere overrode a decision the
+            # model was better placed to make.
+            #
+            # Keyword triggers only rescue an EMPTY roster, below.
             if not selected_agents:
-                selected_agents = QUESTION_TYPE_AGENTS.get(question_types[0], [])
+                selected_agents = list(
+                    QUESTION_TYPE_AGENTS.get(question_types[0], [])
+                )
+                for ea in self._trigger_fallback_agents(question):
+                    if ea not in selected_agents:
+                        selected_agents.append(ea)
 
             # Ensure minimum of 6 agents for comprehensive analysis
             MIN_AGENTS = 6
@@ -729,16 +810,88 @@ class EngagementDirector(BaseAgent):
 
             key_question = data.get("key_question", question)
 
+            # ── Scope: the decomposing agent's answer, canonicalised ──────
+            #
+            # canonicalize_geographies NORMALISES what the Director said; it
+            # does not second-guess it. "the Indian market" becomes "India",
+            # and a country the gazetteer has never heard of is kept verbatim
+            # rather than dropped, because an incomplete alias table is not
+            # evidence that the model is wrong.
+            #
+            # The deterministic scan is consulted ONLY if the Director
+            # returned nothing at all — a partial JSON object is common enough
+            # that losing the country anchor to it is a real risk. Even then
+            # it only DETECTS what the user wrote; [] stays [].
+            geographies = canonicalize_geographies(data.get("geographies"))
+            if not geographies:
+                geographies = canonicalize_geographies(
+                    data.get("geography") or data.get("jurisdictions")
+                )
+            if not geographies:
+                geographies = detect_geographies(question or "")
+            self._llm_geographies = geographies
+
+            subject = data.get("subject") or data.get("industry") or ""
+            self._llm_subject = self._clean_subject(subject)
+
             # Store research domains for DAG building
             self._llm_research_domains = data.get("research_domains", [])
             self._llm_critical_path = data.get("critical_path", "")
 
             return question_types, selected_agents, key_question
 
-        except (json.JSONDecodeError, ValueError):
-            agents = QUESTION_TYPE_AGENTS.get(heuristic_types[0], QUESTION_TYPE_AGENTS[QuestionType.GENERAL])
-            agents = list(set(agents + extra_agents))
-            return heuristic_types, agents, question
+        except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+            return self._classification_fallback(question, heuristic_types)
+
+    def _classification_fallback(
+        self, question: str, heuristic_types: list[QuestionType]
+    ) -> tuple[list[QuestionType], list[AgentName], str]:
+        """Staff and scope the engagement when the decomposition call fails.
+
+        Reached when the LLM is unreachable, rate-limited, or returns
+        unparseable content. Everything here is a knowingly weaker signal
+        than the model's judgement, which is precisely why it is confined to
+        this method instead of running alongside the happy path.
+
+        Geography still comes from the user's own words via the deterministic
+        gazetteer, never from a default. An engagement with no country anchor
+        searches without a jurisdiction filter — honest, and recoverable.
+        """
+        types = heuristic_types or [QuestionType.GENERAL]
+        agents = list(
+            QUESTION_TYPE_AGENTS.get(types[0], QUESTION_TYPE_AGENTS[QuestionType.GENERAL])
+        )
+        for ea in self._trigger_fallback_agents(question):
+            if ea not in agents:
+                agents.append(ea)
+
+        self._llm_geographies = detect_geographies(question or "")
+        self._llm_subject = ""
+        self._llm_research_domains = []
+        self._llm_critical_path = ""
+        return types, agents, question
+
+    @staticmethod
+    def _clean_subject(value: Any) -> str:
+        """Accept a subject only if it is a LABEL, not prose.
+
+        LLMs asked for "the industry" sometimes answer with a sentence. A
+        sentence spliced into a search query is as useless as an empty string,
+        so an over-long answer is rejected outright and the pipeline falls
+        back to deriving a subject from the question.
+        """
+        if isinstance(value, (list, tuple)):
+            value = next((v for v in value if isinstance(v, str) and v.strip()), "")
+        if not isinstance(value, str):
+            return ""
+        text = value.strip().strip("\"'").strip(" ,;:-")
+        if not text:
+            return ""
+        if len(text.split()) > 8 or any(ch in text for ch in ".?!"):
+            return ""
+        if is_contentless(text):
+            return ""
+        return text[:80]
 
     # ─────────────────────────────────────────────────────────────────────
     # DAG construction (Skills 2-6: workflow design, agent selection,
@@ -991,6 +1144,12 @@ class EngagementDirector(BaseAgent):
             question=question,
             question_type=question_types[0],
             tasks=tasks,
+            # Carry the scope the Director extracted onto the DAG, so every
+            # downstream consumer reads ONE decision made by the agent that
+            # read the question, instead of each re-deriving geography from
+            # the raw text with its own heuristics and disagreeing.
+            geographies=list(getattr(self, "_llm_geographies", []) or []),
+            subject=str(getattr(self, "_llm_subject", "") or ""),
             agents_selected=all_agents,
             estimated_total_llm_calls=total_llm_calls,
             estimated_total_tokens=total_tokens,
