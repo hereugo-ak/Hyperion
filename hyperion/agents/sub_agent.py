@@ -778,6 +778,122 @@ class SubAgentRunner:
     # answer. 3 matches the audit's own wording ("<3 scored results").
     LOW_YIELD_THRESHOLD = 3
 
+    # fix 1.3 (audit §4.4 Finding B-3, §7 item 1.3): how many of the
+    # planner's diversified queries each search leg actually dispatches.
+    #
+    # The planner produces 5-10 queries. Sending *all* of them to *both*
+    # SearxNG and Jina would be up to 20 near-duplicate requests per
+    # sub-question — that blows the search budget for almost no marginal
+    # recall, since both engines index largely the same open web.
+    #
+    # Instead the plan is **partitioned** across the two legs (see
+    # `_plan_queries(leg=...)`): SearxNG takes the even-indexed planner
+    # queries, Jina takes the odd-indexed ones. Because `_top_up` orders
+    # the plan angle-first, an alternating split gives *each* leg a
+    # diversified subset while the **union across legs is the whole plan** —
+    # so the audit's Phase 1 exit criterion (">=8 distinct grounded queries
+    # per sub-question") is met at roughly half the request cost of sending
+    # every query down every leg.
+    PLANNED_QUERIES_PER_LEG = 5
+
+    async def _plan_queries(self, leg: str = "") -> list[str]:
+        """Return the diversified query set for this sub-agent's question.
+
+        **fix 1.3 (audit §4.4 Finding B-3 / §7 Phase 1 item 1.3.)** Before
+        this, `grep -E "_llm_complete|generate.*quer|query.*llm"
+        hyperion/agents/sub_agent.py` returned *no matches* — there was no
+        reasoning step anywhere in the sub-agent path. Query construction
+        was a pure regex + stopword pipeline emitting **exactly one query
+        per tool**, where a human MBB associate given "should we enter now
+        or wait?" runs 8-15 differently angled searches.
+
+        This method calls `hyperion.tools.query_planner.plan_queries`, which:
+          - runs at **FAST** tier (never STRONG/DEEP — §4.7 quota rule),
+          - emits **5-10 schema-validated** queries across the
+            entity / metric / counter-thesis / regulatory / competitor /
+            time-series angles named in the audit,
+          - **caches by sub-question hash** so several specialists spawning
+            the same sub-question in one engagement cost one LLM call,
+          - and **never returns empty and never raises** — on any failure it
+            degrades to a deterministic angle-suffix plan, so a planner
+            outage can never reproduce the audit's P0 (a silent query-layer
+            failure zeroing out all research).
+
+        The result is merged with `_condense_query_variants` (fix 1.4) so the
+        deterministic entity-recovering variant is always present regardless
+        of what the planner returned — the planner *adds* angles, it does not
+        replace the proven regex path.
+
+        Args:
+            leg: which search leg is asking (``"searxng"``, ``"jina"``, or
+                ``""`` for "give me everything"). The deterministic
+                `_condense_query_variants` baseline is returned to **both**
+                legs unconditionally (it is the proven pre-1.3 behaviour and
+                must not depend on the split), while the *planner's* queries
+                are partitioned by parity so the two legs cover disjoint
+                angles rather than duplicating each other's requests. See
+                `PLANNED_QUERIES_PER_LEG`.
+        """
+        from hyperion.tools.query_planner import plan_queries
+        from hyperion.tools.query_utils import get_engagement_focus
+
+        # Deterministic baseline first — this is the pre-1.3 behaviour and
+        # must survive planner failure untouched.
+        baseline = self._condense_query_variants(self.spec.question)
+
+        _focus_q, subject, geography = get_engagement_focus()
+        try:
+            plan = await plan_queries(
+                self.spec.question,
+                router=self.router,
+                subject=subject,
+                geography=geography,
+                context=self.spec.context or {},
+                parent_agent=self.parent_agent,
+            )
+        except Exception as e:
+            # plan_queries is contractually non-raising, but a sub-agent
+            # must never die because query planning misbehaved.
+            logger.warning(
+                "SubAgent query planning failed for question=%r: %s",
+                self.spec.question[:120], e, exc_info=True,
+            )
+            return baseline
+
+        # Partition the planner's queries across the two search legs by
+        # index parity so their union is the full plan and neither leg pays
+        # for the other's requests. An unrecognised/empty `leg` gets the
+        # whole plan (used by tests and any future single-leg caller).
+        all_planned = plan.query_strings
+        if leg == "searxng":
+            planned = all_planned[0::2]
+        elif leg == "jina":
+            planned = all_planned[1::2]
+        else:
+            planned = all_planned
+        planned = planned[: self.PLANNED_QUERIES_PER_LEG]
+
+        merged: list[str] = []
+        seen: set[str] = set()
+        for q in baseline + planned:
+            q = (q or "").strip()
+            if not q:
+                continue
+            norm = " ".join(sorted(set(q.lower().split())))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            merged.append(q)
+
+        logger.debug(
+            "SubAgent query plan for %r leg=%r: %d queries (%d planner of %d, "
+            "%d baseline, angles=%s, degraded=%s, cached=%s)",
+            self.spec.question[:80], leg or "all", len(merged), len(planned),
+            len(all_planned), len(baseline), sorted(plan.angles_covered),
+            plan.degraded, plan.cached,
+        )
+        return merged or baseline
+
     async def _fan_out_search(
         self,
         search_fn: Any,
@@ -812,6 +928,12 @@ class SubAgentRunner:
     async def _search_searxng(self) -> tuple[str, list[str], str | None]:
         """Search via SearxNG. Returns (label, urls, formatted_results).
 
+        fix 1.3: the query set now comes from `_plan_queries()`, which fans
+        the sub-question out into the deterministic condensed variants
+        (fix 1.4, below) *plus* the LLM query planner's diversified
+        entity/metric/counter-thesis/regulatory/competitor/time-series
+        angles. Before 1.3 this leg dispatched one regex-built query.
+
         fix 1.4: runs the primary condensed query, and — when the question
         contained a parenthetical naming specific entities (e.g. "(Bitcoin,
         Ethereum)") — a second query that folds those entities back in, so
@@ -831,7 +953,7 @@ class SubAgentRunner:
         """
         try:
             searxng = self._get_tool("searxng")
-            queries = self._condense_query_variants(self.spec.question)
+            queries = await self._plan_queries(leg="searxng")
             all_results = await self._fan_out_search(searxng.search, queries, 15)
             if len(all_results) < self.LOW_YIELD_THRESHOLD:
                 yield_before = len(all_results)
@@ -872,6 +994,11 @@ class SubAgentRunner:
     async def _search_jina(self) -> tuple[str, list[str], str | None]:
         """Search via Jina s.jina.ai. Returns (label, urls, formatted_results).
 
+        fix 1.3: same planner-driven query set as `_search_searxng` — see
+        `_plan_queries`. The plan is cached by sub-question hash, so this
+        leg and the SearxNG leg share one planner LLM call rather than
+        paying for two.
+
         fix 1.4: same two-variant strategy as `_search_searxng` — see its
         docstring.
 
@@ -880,7 +1007,7 @@ class SubAgentRunner:
         """
         try:
             jina = self._get_tool("jina")
-            queries = self._condense_query_variants(self.spec.question)
+            queries = await self._plan_queries(leg="jina")
             all_results = await self._fan_out_search(jina.search, queries, 10)
             if len(all_results) < self.LOW_YIELD_THRESHOLD:
                 yield_before = len(all_results)

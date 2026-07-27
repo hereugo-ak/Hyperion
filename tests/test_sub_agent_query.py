@@ -294,6 +294,38 @@ def _n_results(n: int, prefix: str = "r") -> list[_FakeResult]:
     return [_FakeResult(f"{prefix}{i}", f"https://example.com/{prefix}{i}") for i in range(n)]
 
 
+def _disable_planner(runner: SubAgentRunner) -> None:
+    """Pin `runner._plan_queries` to the pure fix-1.4 deterministic variants.
+
+    **Why this exists (fix 1.3).** `_search_searxng`/`_search_jina` now build
+    their query set with `_plan_queries()`, which fans the sub-question out
+    through the LLM query planner (audit §7 item 1.3) on top of the fix-1.4
+    `_condense_query_variants` baseline. That is the correct production
+    behaviour and is tested directly in `tests/test_query_planner.py`.
+
+    But the two test classes below exist to pin *fix 1.4's variant fanout*
+    and *fix 1.5's low-yield retry* in isolation — both of which assert exact
+    `await_count` values on the search double. Leaving the planner engaged
+    would make those counts a function of how many angles the planner
+    happened to emit, i.e. it would silently convert "the fix-1.4 variant
+    fired" into "some number of queries fired", losing the property the
+    tests were written to protect (the same reasoning fix 1.5 applied when
+    it updated fix 1.4's mocks to return >= LOW_YIELD_THRESHOLD results).
+
+    So these tests hold the planner constant instead, exactly as they hold
+    the tool clients constant. The planner's own contribution is not
+    untested — it is covered end-to-end in `tests/test_query_planner.py`'s
+    `TestSubAgentUsesThePlanner`, including that both legs dispatch planner
+    queries and that the union across legs meets the audit's ">=8 distinct
+    grounded queries per sub-question" exit criterion.
+    """
+
+    async def _variants_only(leg: str = "") -> list[str]:
+        return SubAgentRunner._condense_query_variants(runner.spec.question)
+
+    runner._plan_queries = _variants_only  # type: ignore[method-assign]
+
+
 class TestSearchMethodsUseVariants:
     """fix 1.4: `_search_searxng`/`_search_jina` must actually fire the
     second (entity-preserving) query variant when the question contains a
@@ -317,6 +349,10 @@ class TestSearchMethodsUseVariants:
             findings_model="KeyFinding",
         )
         runner = SubAgentRunner(spec, bus=MagicMock(), router=MagicMock())
+        # fix 1.3: hold the LLM query planner constant so these tests keep
+        # measuring fix 1.4/1.5 behaviour rather than planner output. See
+        # `_disable_planner`'s docstring.
+        _disable_planner(runner)
         return runner
 
     def test_search_searxng_fires_both_variants_when_entity_parenthetical_present(self):
@@ -446,6 +482,10 @@ class TestLowYieldReformulation:
             findings_model="KeyFinding",
         )
         runner = SubAgentRunner(spec, bus=MagicMock(), router=MagicMock())
+        # fix 1.3: hold the LLM query planner constant so these tests keep
+        # measuring fix 1.4/1.5 behaviour rather than planner output. See
+        # `_disable_planner`'s docstring.
+        _disable_planner(runner)
         return runner
 
     def test_zero_results_triggers_one_broadened_retry(self):

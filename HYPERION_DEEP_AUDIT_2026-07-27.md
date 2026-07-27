@@ -676,7 +676,182 @@ progress, `[x]` = landed with proof.
   - Full suite after 1.1+1.2: **525 passed, 3 skipped** (was 509 passed,
     3 skipped pre-Phase-1; +16 net new tests, zero regressions after the
     `unified_search.py` revert described above).
-- [ ] **1.3** LLM query planner — 5–10 diversified queries per sub-question
+- [x] **1.3** LLM query planner — 5–10 diversified queries per sub-question
+  - **Before**: the audit's own grep — `grep -E "_llm_complete|generate.*quer|
+    query.*llm" hyperion/agents/sub_agent.py` → **no matches** (§4.4 Finding
+    B-3). There was no reasoning step anywhere in the sub-agent path. Query
+    construction was a pure regex + stopword pipeline producing **exactly one
+    query per tool**, where "a human MBB associate given *should we enter now
+    or wait?* runs 8–15 differently-angled searches."
+  - **New module `hyperion/tools/query_planner.py`** — deliberately a
+    separate module, not inline in `sub_agent.py`, so it is unit-testable
+    without spinning up a sub-agent and reusable by any future caller
+    (specialists, `deep_search`, the research librarian). Implements the four
+    properties §7 item 1.3 specifies, each pinned by tests:
+    1. **5–10 schema-validated queries.** `PlannedQuery` (Pydantic) validates
+       every query: the `angle` must be in the six-value `ANGLES` vocabulary
+       named verbatim in the audit (`entity`, `metric`, `counter_thesis`,
+       `regulatory`, `competitor`, `time_series`), with an alias table so a
+       model writing `"counter-thesis"`/`"timeseries"`/`"REGULATORY"`/
+       `"competitors"` doesn't lose an otherwise-perfect query to a
+       formatting nit; the `query` must carry ≥2 alphabetic tokens, which
+       rejects the exact contentless pattern (`"2024 2025 $100 50%"`) that
+       `query_utils.is_contentless` exists to catch — so the planner can
+       never *originate* one; length is capped at 120 chars (same rationale
+       as `_condense_query`). An individually-invalid query is dropped with a
+       DEBUG log rather than sinking the whole plan — a model returning 9
+       good queries and 1 malformed one yields 9, not 0. Near-duplicates are
+       collapsed on a sorted-token key, so `"Nigeria battery manufacturers"`
+       and `"manufacturers battery Nigeria"` count once. The set is clamped
+       to `[5, 10]`.
+    2. **Diversified across the six audit angles.** The system prompt names
+       and defines all six, requires ≥4 distinct angles, requires
+       keyword-style (not sentence/question) queries, and explicitly forbids
+       inventing entity names ("if you do not know the incumbents, write a
+       query that would FIND them, do not name a guess") — the same
+       no-fabrication discipline `chart_specs.mine_chart_specs` already
+       follows. `_top_up()` then fills **missing angles before filling raw
+       count**, so an under-delivering model (2 queries returned) is topped
+       back up to 8 *and* to full angle coverage rather than silently halving
+       research breadth; the LLM's own queries stay ranked first.
+    3. **FAST tier.** `PLANNER_TIER = ModelTier.FAST` is a **module
+       constant, not a caller argument** — no call site can accidentally
+       escalate query planning onto STRONG/DEEP quota (§4.7). Dispatched at
+       `TaskUrgency.LOW` with `response_format={"type": "json_object"}`.
+       Tested: the sub-agent itself runs MICRO and the planner call still
+       goes out as FAST, i.e. the tier is pinned, not inherited.
+    4. **Cached by sub-question hash.** `sub_question_hash()` normalizes
+       case/whitespace/trailing punctuation before hashing, so
+       `"Market size in Nigeria?"` and `"  market   SIZE in nigeria  "`
+       collapse to one entry — the common case when several specialists
+       independently spawn the same sub-question in one engagement. Subject
+       and geography participate in the key, so `"what is the regulatory
+       outlook?"` under a lithium engagement cannot reuse a plan built for an
+       offshore-wind one. Thread-safe LRU (`_PlanCache`, 512 entries) with
+       hit/miss counters exposed via `plan_cache_stats()` for the Phase 2.6
+       metrics surface.
+  - **Never-raises / never-empty contract.** This is the direct lesson of the
+    audit's P0 (a silent query-layer failure zeroed out all research).
+    `plan_queries()` catches every failure mode — router exception,
+    `success=False`, non-JSON response, empty `queries` list, all-queries-
+    invalid, no router available at all — logs each at **WARNING with
+    `exc_info`** (fix 0.3 discipline), and degrades to `deterministic_plan()`,
+    which builds 8 queries across all 6 angles from angle-keyword suffixes
+    with **no network and no LLM**. Every returned plan carries
+    `degraded: bool`, so a planner outage is *visible* in logs and metrics
+    instead of looking identical to success — the precise distinction whose
+    absence let the P0 hide. Degraded plans are still cached, so an outage
+    causes one failed call per sub-question rather than a retry storm.
+  - **Wired into `sub_agent.py`** via a new `_plan_queries(leg=...)` method
+    called by **both** `_search_searxng` and `_search_jina` (replacing the
+    direct `_condense_query_variants` call at each). Design points:
+    - **Strictly additive.** The fix-1.4 `_condense_query_variants` baseline
+      is prepended unconditionally and returned to *both* legs, so the proven
+      regex path (including the parenthetical-entity recovery) survives
+      untouched no matter what the planner returns. The planner *adds*
+      angles; it does not replace anything.
+    - **Partitioned across legs, not duplicated.** Sending all 10 queries to
+      both SearxNG and Jina would be up to 20 near-duplicate requests per
+      sub-question — blowing the search budget for almost no marginal recall,
+      since both engines index largely the same open web. Instead SearxNG
+      takes the even-indexed planner queries and Jina the odd-indexed ones
+      (`PLANNED_QUERIES_PER_LEG = 5`). Because `_top_up` orders the plan
+      angle-first, each leg gets a diversified subset while **the union
+      across legs is the whole plan** — the audit's ">=8 distinct grounded
+      queries per sub-question" exit criterion is met at roughly half the
+      request cost.
+    - **One planner call per sub-question**, not one per leg — the second leg
+      hits the hash cache. Verified live and asserted in tests.
+  - **Two real bugs found and fixed during live verification** (neither was
+    hypothesised from reading code — both surfaced from running it):
+    1. **`"market"` was being deleted from market-size queries.** The
+       agent-vocabulary sanitizer (guarding audit §4.9 Finding B-8: internal
+       agent names must never reach an outbound query) initially split
+       `parent_agent="market_analyst"` into tokens `{"market", "analyst"}`
+       and stripped each with token-boundary matching. Live run showed
+       `"Nigeria battery market size 2025 CAGR"` → `"Nigeria battery size
+       2025 CAGR"` — the sanitizer was destroying the very query it existed
+       to protect. **Fixed**: strip the full agent *phrase* (`"market
+       analyst"`) plus the unambiguous role nouns (`analyst`, `hyperion`,
+       `sub-agent`), never the phrase's individual tokens. Pinned by
+       `test_subject_word_market_is_not_stripped_as_agent_vocabulary`.
+    2. **Angle keywords were being truncated off the end of long queries.**
+       The first live run produced `"...lithium ion battery market wait?
+       regulation compliance requirements"` at 110 chars — and for a longer
+       sub-question the 120-char cap cut the angle suffix away entirely,
+       leaving a "regulatory" query with no regulatory keyword in it (i.e. not
+       a regulatory query at all, while still being counted as one). **Fixed**:
+       the anchor is pre-trimmed to reserve room for the longest angle
+       suffix before the suffix is appended, and interrogative punctuation is
+       stripped from the anchor (a `?` sitting mid-string once a suffix is
+       appended — `"... market wait? regulation compliance"` — is a broken
+       keyword query). Pinned by `test_angle_keywords_survive_truncation`
+       and `test_no_interrogative_punctuation_mid_query`.
+  - **Verified live (no mocks for the deterministic path, fake router for the
+    LLM path)**: `deterministic_plan(...)` → 8 queries covering all 6 angles,
+    `degraded=True`; a good LLM plan → 8 queries / 6 angles / `degraded=False`
+    with `tier=ModelTier.FAST` and `urgency=TaskUrgency.LOW` confirmed on the
+    captured router call; a plan containing a contentless query, an
+    out-of-vocabulary angle, and a duplicate → all three correctly rejected
+    while the 6 valid queries survived; a second call with different
+    case/whitespace → **0 additional router calls** (`stats={'entries': 1,
+    'hits': 1, 'misses': 1}`); a raising router → 8 queries, `degraded=True`,
+    WARNING logged with traceback. End-to-end through the real
+    `SubAgentRunner`: SearxNG leg dispatched 5 queries and Jina 5, **9
+    distinct queries across the union** (audit criterion ≥8) from **1 planner
+    LLM call**.
+  - **New `tests/test_query_planner.py` (105 tests)**:
+    `TestPlannedQuerySchema` (17: every documented angle accepted, 11-case
+    parametrized alias normalization, unknown angle rejected, contentless
+    query rejected, empty rejected, over-length rejected);
+    `TestSubQuestionHash` (6: determinism, case/whitespace/punctuation
+    normalization, distinct questions differ, subject and geography each
+    participate in the key); `TestDeterministicPlan` (11+9 parametrized:
+    count bounds, target count, all-6-angle coverage, `degraded=True`,
+    baseline-query preservation, length cap, **angle-keyword survival**,
+    **no mid-query `?`**, geography anchoring, distinctness, and the full
+    Phase-0 adversarial corpus run through it with never-raises assertions);
+    `TestPlanQueriesLLMPath` (12: count bounds, target, angle coverage,
+    `degraded=False`, **FAST tier**, **never escalates**, LOW urgency, JSON
+    response format, all six angles present in the prompt, subject/geography/
+    context reach the prompt); `TestPlanQueriesValidationHardening` (11:
+    invalid-angle drop without sinking the plan, contentless drop, exact- and
+    near-duplicate collapse, over-long truncation-not-drop, bare-string list
+    accepted, top-level list accepted, code-fenced JSON accepted, internal
+    agent vocabulary stripped, the `"market"`-preservation regression guard,
+    trailing `?` stripped); `TestPlanQueriesDegradation` (10: router
+    exception, `success=False`, non-JSON, empty list, all-invalid, WARNING is
+    actually logged, no-router, empty question, under-delivery topped up to
+    target *with* angle coverage *and* LLM queries ranked first,
+    over-delivery clamped); `TestPlanQueriesCache` (9: second call skips the
+    LLM, `cached` flag, identical queries returned, normalized variants share
+    one entry, different subject is a miss, `use_cache=False` bypass,
+    `clear_plan_cache`, stats, degraded plans cached so no retry storm);
+    `TestSubAgentUsesThePlanner` (12+5 parametrized: the audit's own grep now
+    comes back positive, multiple queries returned, fix-1.4 baseline still
+    present, **both legs dispatch planner queries**, **legs are partitioned
+    not duplicated**, **union ≥8 distinct queries**, **one planner call
+    shared via cache**, planner failure falls back to the fix-1.4 variants,
+    the search leg still returns URLs under total planner failure, FAST tier
+    pinned despite a MICRO sub-agent, and never-raises/never-empty over the
+    adversarial corpus).
+  - **Two pre-existing test classes updated, deliberately, with the reasoning
+    recorded in code.** `TestSearchMethodsUseVariants` (fix 1.4) and
+    `TestLowYieldReformulation` (fix 1.5) assert *exact* `await_count` values
+    to pin variant-fanout and retry behaviour in isolation. With the planner
+    engaged, those counts become a function of how many angles the planner
+    happened to emit — silently converting "the fix-1.4 variant fired" into
+    "some number of queries fired" and losing the property each test was
+    written to protect. Rather than weaken the assertions, both classes now
+    hold the planner constant via a new `_disable_planner()` helper (a
+    26-line docstring explains why, and points at
+    `TestSubAgentUsesThePlanner` as where the planner's own contribution *is*
+    covered) — exactly as they already hold the tool clients constant. This
+    mirrors the judgement call fix 1.5 made when it updated fix 1.4's mocks
+    to return ≥`LOW_YIELD_THRESHOLD` results.
+  - Full suite: **682 passed, 3 skipped** (was 577 passed, 3 skipped after
+    1.5; **+105 net new tests, zero regressions**).
+  - **Phase 1 is now complete** — 1.1 through 1.7 all landed.
 - [x] **1.4** Purge intent-destroying words from `filler`; keep parentheticals as a variant
   - **Before**: `sub_agent.py`'s `_condense_query` `filler` set (used by all 12
     specialists' 15 sub-agent search/scrape methods via
