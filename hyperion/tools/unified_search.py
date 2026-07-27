@@ -38,6 +38,7 @@ from typing import Any
 from hyperion.tools.jina import JinaClient, JinaSearchResult
 from hyperion.tools.obscura import ObscuraClient, ObscuraFetchResult
 from hyperion.tools.searxng import SearxNGClient, SearchResult, SearchResponse
+from hyperion.tools.stealth_search import StealthSearchClient
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class UnifiedSearchResult:
     searxng_results: int = 0
     jina_results: int = 0
     obscura_results: int = 0
+    stealth_results: int = 0
     took_ms: int = 0
     cached: bool = False
     # Every tier we actually attempted, in ladder order. Distinct from
@@ -80,6 +82,7 @@ class UnifiedSearchResult:
             "searxng_results": self.searxng_results,
             "jina_results": self.jina_results,
             "obscura_results": self.obscura_results,
+            "stealth_results": self.stealth_results,
             "took_ms": self.took_ms,
             "cached": self.cached,
             "tools_tried": self.tools_tried,
@@ -112,13 +115,20 @@ class UnifiedSearch:
 
     # Ladder order, cheapest first. Named so availability reporting and the
     # ladder itself cannot disagree about which tiers exist.
-    TIER_ORDER: tuple[str, ...] = ("searxng", "jina", "obscura")
+    #
+    # NOTE `stealth`: StealthSearchClient was exported from hyperion.tools but
+    # called by no orchestrator — a whole browser-based search capability that
+    # nothing could reach. It sits last because launching Chromium is by far the
+    # most expensive way to obtain a result, and it is the only tier that can
+    # still find sources when SearxNG is down and Jina is rate-limited.
+    TIER_ORDER: tuple[str, ...] = ("searxng", "jina", "obscura", "stealth")
 
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
         self._searxng: SearxNGClient | None = None
         self._jina: JinaClient | None = None
         self._obscura: ObscuraClient | None = None
+        self._stealth: StealthSearchClient | None = None
         # Cached per-tier availability. Obscura's probe shells out, and the
         # answer cannot change mid-run.
         self._availability: dict[str, bool] = {}
@@ -138,6 +148,12 @@ class UnifiedSearch:
         if self._obscura is None:
             self._obscura = ObscuraClient(settings=self.settings)
         return self._obscura
+
+    async def _get_stealth(self) -> StealthSearchClient:
+        if self._stealth is None:
+            # headless: never surface a browser window during a consultation.
+            self._stealth = StealthSearchClient(headless=True, settings=self.settings)
+        return self._stealth
 
     def _tier_available(self, tool: str) -> bool:
         """True when ``tool`` can actually run here.
@@ -165,6 +181,10 @@ class UnifiedSearch:
                         if binary
                         else "binary not found"
                     )
+            elif tool == "stealth":
+                available = StealthSearchClient(settings=self.settings)._check_available()
+                if not available:
+                    detail = "playwright not installed"
         except Exception:
             # A probe that raises must not disable a tier outright — attempting
             # it and failing is strictly better than skipping something usable.
@@ -229,6 +249,7 @@ class UnifiedSearch:
         time_range: str = "",
         use_jina_fallback: bool = True,
         use_obscura_fallback: bool = True,
+        use_stealth_fallback: bool = True,
     ) -> UnifiedSearchResult:
         """Search with the full fallback chain.
 
@@ -242,6 +263,8 @@ class UnifiedSearch:
                 "week", "month", "year"). Empty means no restriction.
             use_jina_fallback: Whether to try Jina if SearxNG is insufficient
             use_obscura_fallback: Whether to try Obscura if Jina is insufficient
+            use_stealth_fallback: Whether to try a stealth browser search when
+                every text tier came back empty
 
         Returns:
             UnifiedSearchResult with merged, deduplicated results. When nothing
@@ -256,6 +279,7 @@ class UnifiedSearch:
         searxng_count = 0
         jina_count = 0
         obscura_count = 0
+        stealth_count = 0
 
         # Step 1: SearxNG (always try first — free, unlimited, fast)
         if self._tier_available("searxng"):
@@ -349,6 +373,38 @@ class UnifiedSearch:
                     errors["obscura"] = f"{type(exc).__name__}: {exc}"
                     logger.debug("obscura enrichment failed: %s", exc)
 
+        # Step 4: Stealth browser search — last resort, and the only tier that
+        # can discover NEW sources when SearxNG is down and Jina is blocked.
+        # (Obscura above can only re-render URLs we already had, so without this
+        # tier a dead SearxNG plus a rate-limited Jina meant zero results with
+        # no recourse, even though a working fallback existed in the codebase.)
+        if not all_results and use_stealth_fallback:
+            if self._tier_available("stealth"):
+                tools_tried.append("stealth")
+                try:
+                    stealth = await self._get_stealth()
+                    stealth_results = await stealth.search(query, num_results=num_results)
+                    for sr in stealth_results:
+                        if not sr.url:
+                            continue
+                        all_results.append({
+                            "title": sr.title,
+                            "url": sr.url,
+                            "snippet": sr.snippet,
+                            "source": "stealth",
+                            "engine": sr.engine,
+                        })
+                        stealth_count += 1
+
+                    if stealth_count:
+                        tools_used.append("stealth")
+                    else:
+                        errors["stealth"] = "returned no results"
+
+                except Exception as exc:  # noqa: BLE001
+                    errors["stealth"] = f"{type(exc).__name__}: {exc}"
+                    logger.debug("stealth search failed: %s", exc)
+
         # Deduplicate and sort
         all_results = self._deduplicate(all_results)
         all_results.sort(
@@ -376,6 +432,7 @@ class UnifiedSearch:
             searxng_results=searxng_count,
             jina_results=jina_count,
             obscura_results=obscura_count,
+            stealth_results=stealth_count,
             took_ms=int((time.monotonic() - started) * 1000),
             tools_tried=tools_tried,
             errors=errors,
@@ -410,6 +467,8 @@ class UnifiedSearch:
             await self._jina.close()
         if self._obscura:
             await self._obscura.close()
+        if self._stealth:
+            await self._stealth.close()
 
     async def __aenter__(self) -> UnifiedSearch:
         return self
