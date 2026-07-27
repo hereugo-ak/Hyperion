@@ -542,7 +542,13 @@ def is_contentless(q: str) -> bool:
 # Grounding
 # ─────────────────────────────────────────────────────────────────────────────
 
-def ground_query(raw: str, subject: str = "", geography: str = "") -> str:
+def ground_query(
+    raw: str,
+    subject: str = "",
+    geography: str = "",
+    *,
+    drop_geography: bool = False,
+) -> str:
     """Anchor a search query to the engagement's real subject.
 
     Guarantees the returned query is about what the user actually asked.
@@ -550,10 +556,22 @@ def ground_query(raw: str, subject: str = "", geography: str = "") -> str:
 
     Returns "" only when there is genuinely nothing to search for — no
     usable template query AND no engagement subject.
+
+    Args:
+        drop_geography: fix 1.5 (audit §7 item 1.5, low-yield reformulation).
+            When True, the geography anchor is *never* applied — neither the
+            explicit ``geography`` argument nor the engagement-focus
+            fallback — regardless of whether either is set. This is the
+            "broaden" half of "if a query returns <3 scored results,
+            broaden (drop geography) and retry once": a jurisdiction anchor
+            that is too narrow for the live corpus (e.g. "Uzbekistan
+            semiconductor tariffs") should not be silently re-added by the
+            normal fallback path when a caller has deliberately asked to
+            search without it.
     """
     focus_q, focus_subject, focus_geo = _FOCUS.snapshot()
     subject = (subject or focus_subject or "").strip()
-    geography = (geography or focus_geo or "").strip()
+    geography = "" if drop_geography else (geography or focus_geo or "").strip()
 
     cleaned = normalize_query(raw or "")
 
@@ -617,6 +635,7 @@ def grounded_search_or_empty(
     *,
     logger: Any = None,
     tool_name: str = "search",
+    drop_geography: bool = False,
 ) -> tuple[str, Any | None]:
     """Shared choke point for "ground, or drop the query and return empty".
 
@@ -648,6 +667,9 @@ def grounded_search_or_empty(
             lines carry the right module name.
         tool_name: Short label used in log messages (e.g. "Jina", "SearxNG",
             "Stealth").
+        drop_geography: fix 1.5 — forwarded to :func:`ground_query`; see its
+            docstring. Lets a caller doing a low-yield-reformulation retry
+            broaden the search by dropping the geography anchor.
 
     Returns:
         ``(grounded_query, None)`` when grounding produced a usable query —
@@ -657,7 +679,9 @@ def grounded_search_or_empty(
     """
     log = logger or _module_logger
     original = raw
-    grounded = ground_query(raw, subject=subject, geography=geography)
+    grounded = ground_query(
+        raw, subject=subject, geography=geography, drop_geography=drop_geography
+    )
     if not grounded:
         log.warning(
             "Dropping contentless %s query (no subject after grounding): %r",

@@ -31,6 +31,7 @@ import pytest
 from hyperion.tools.query_utils import (
     ContentlessQueryError,
     clear_engagement_focus,
+    ground_query,
     ground_query_or_raise,
     grounded_search_or_empty,
     set_engagement_focus,
@@ -106,6 +107,63 @@ class TestGroundedSearchOrEmpty:
         assert calls == [1]  # called exactly once — query was dropped
 
 
+class TestDropGeography:
+    """fix 1.5 (audit §7 item 1.5 — low-yield reformulation): ``ground_query``
+    and ``grounded_search_or_empty`` accept ``drop_geography=True`` so a
+    caller doing a broadened retry can suppress the geography anchor
+    entirely, from either the explicit argument or the engagement focus."""
+
+    def test_drop_geography_omits_explicit_geography_argument(self):
+        grounded_with = ground_query("steel tariff exemptions", geography="India")
+        grounded_without = ground_query(
+            "steel tariff exemptions", geography="India", drop_geography=True
+        )
+        assert "india" in grounded_with.lower()
+        assert "india" not in grounded_without.lower()
+
+    def test_drop_geography_omits_engagement_focus_geography(self):
+        set_engagement_focus(
+            question="Should India reduce dependence on imports?",
+            subject="import dependence",
+            geography="India",
+        )
+        grounded_with = ground_query("steel tariff exemptions")
+        grounded_without = ground_query("steel tariff exemptions", drop_geography=True)
+        assert "india" in grounded_with.lower()
+        assert "india" not in grounded_without.lower()
+
+    def test_drop_geography_still_keeps_subject(self):
+        """Dropping geography must not also drop the subject anchor — only
+        the jurisdiction is broadened away, the topic stays intact."""
+        set_engagement_focus(
+            question="Should India reduce dependence on semiconductor imports?",
+            subject="semiconductor imports",
+            geography="India",
+        )
+        grounded = ground_query("tariff exemptions", drop_geography=True)
+        assert "india" not in grounded.lower()
+        assert "semiconductor" in grounded.lower()
+
+    def test_grounded_search_or_empty_forwards_drop_geography(self):
+        set_engagement_focus(
+            question="Should India reduce dependence on imports?",
+            subject="import dependence",
+            geography="India",
+        )
+        grounded, empty = grounded_search_or_empty(
+            "steel tariff exemptions", lambda: "SENTINEL",
+            tool_name="Test", drop_geography=True,
+        )
+        assert empty is None
+        assert "india" not in grounded.lower()
+
+    def test_drop_geography_never_raises_on_contentless_query(self):
+        # A contentless query with drop_geography=True must still degrade
+        # the same way as without it — either rebuilt from subject, or "".
+        got = ground_query(CONTENTLESS_QUERY, drop_geography=True)
+        assert isinstance(got, str)
+
+
 class TestGroundQueryOrRaise:
     def test_raises_on_contentless(self):
         with pytest.raises(ContentlessQueryError):
@@ -141,6 +199,38 @@ class TestSearxNGGrounding:
         assert result.results == []
         assert called == []
 
+    def test_drop_geography_kwarg_reaches_network_query_without_geography(self, monkeypatch):
+        """fix 1.5: ``SearxNGClient.search(..., drop_geography=True)`` must
+        actually suppress the geography anchor on the query that reaches
+        the network boundary, not just accept the kwarg and ignore it."""
+        from hyperion.tools.searxng import SearchResponse, SearxNGClient
+
+        set_engagement_focus(
+            question="Should India reduce dependence on imports?",
+            subject="import dependence",
+            geography="India",
+        )
+        client = SearxNGClient()
+        seen_queries: list[str] = []
+
+        async def fake_search_json(self_unused, query, **kwargs):
+            seen_queries.append(query)
+            return SearchResponse(query=query, results=[], total=0, engines_used=[])
+
+        async def fake_jina_fallback(**kwargs):
+            return None
+
+        monkeypatch.setattr(
+            SearxNGClient, "_search_searxng_json", fake_search_json, raising=True
+        )
+        monkeypatch.setattr(client, "_search_jina_fallback", fake_jina_fallback)
+
+        asyncio.run(client.search("steel tariff exemptions", drop_geography=True))
+        asyncio.run(client.search("steel tariff exemptions", drop_geography=False))
+
+        assert "india" not in seen_queries[0].lower()
+        assert "india" in seen_queries[1].lower()
+
 
 class TestJinaGrounding:
     def test_contentless_query_never_hits_network(self, monkeypatch):
@@ -159,6 +249,45 @@ class TestJinaGrounding:
         result = asyncio.run(client.search(CONTENTLESS_QUERY))
         assert result.results == []
         assert result.total == 0
+
+    def test_drop_geography_kwarg_reaches_network_query_without_geography(self, monkeypatch):
+        """fix 1.5: same guarantee as SearxNG's — ``JinaClient.search(...,
+        drop_geography=True)`` must suppress the geography anchor on the
+        (post-grounding) query used to build the outbound request, not
+        just accept the kwarg and ignore it. Captured via ``_cache_key``,
+        which JinaClient.search() calls with the already-grounded query —
+        the last observable point before the network boundary."""
+        from hyperion.tools.jina import JinaClient
+
+        set_engagement_focus(
+            question="Should India reduce dependence on imports?",
+            subject="import dependence",
+            geography="India",
+        )
+        client = JinaClient()
+        seen_queries: list[str] = []
+
+        async def fake_get_client(*args, **kwargs):
+            raise RuntimeError("stop before an actual HTTP call")
+
+        original_cache_key = client._cache_key
+
+        def spying_cache_key(*args, **kwargs):
+            # search() calls self._cache_key("search", query, num_results)
+            if args and args[0] == "search":
+                seen_queries.append(args[1])
+            return original_cache_key(*args, **kwargs)
+
+        monkeypatch.setattr(client, "_cache_key", spying_cache_key)
+        monkeypatch.setattr(client, "_get_client", fake_get_client)
+
+        with pytest.raises(RuntimeError):
+            asyncio.run(client.search("steel tariff exemptions", drop_geography=True))
+        with pytest.raises(RuntimeError):
+            asyncio.run(client.search("steel tariff exemptions", drop_geography=False))
+
+        assert "india" not in seen_queries[0].lower()
+        assert "india" in seen_queries[1].lower()
 
     def test_grounded_query_reaches_get_client(self, monkeypatch):
         """A subject-bearing query IS allowed through to the network

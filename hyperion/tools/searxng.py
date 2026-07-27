@@ -415,6 +415,7 @@ class SearxNGClient:
         engines: str = "",
         safesearch: int = 0,
         max_results: int | None = None,
+        drop_geography: bool = False,
     ) -> SearchResponse:
         """Search via SearXNG JSON API — the primary discovery engine.
 
@@ -433,6 +434,11 @@ class SearxNGClient:
             time_range: Time filter (day, week, month, year, or empty)
             engines: Comma-separated list of specific engines to use
             safesearch: Safe search level (0=off, 1=moderate, 2=strict)
+            drop_geography: fix 1.5 — skip the geography anchor entirely
+                (neither the explicit engagement geography nor any inferred
+                one is appended). Used by a caller's own low-yield
+                reformulation retry to broaden a query that returned too few
+                results anchored to a narrow jurisdiction.
 
         Returns:
             SearchResponse with deduplicated, scored results.
@@ -463,6 +469,7 @@ class SearxNGClient:
             lambda: SearchResponse(query=original_query, results=[], total=0, engines_used=[]),
             logger=logger,
             tool_name="SearxNG",
+            drop_geography=drop_geography,
         )
         if empty is not None:
             return empty

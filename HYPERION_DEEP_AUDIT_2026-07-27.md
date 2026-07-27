@@ -759,7 +759,74 @@ progress, `[x]` = landed with proof.
   - Full suite: **564 passed, 3 skipped** (was 563 passed, 3 skipped
     pre-1.4-polish-test, 539 passed/3 skipped after 1.6; +25 net new tests
     across this fix, zero regressions).
-- [ ] **1.5** Low-yield reformulation (<3 results → broaden → retry once)
+- [x] **1.5** Low-yield reformulation (<3 results → broaden → retry once)
+  - **Before**: `_search_searxng`/`_search_jina` in `sub_agent.py` ran their
+    (post-1.4) query variant(s) exactly once and accepted whatever came
+    back — 0, 1, or 2 results were treated identically to 20. A geography
+    anchor too narrow for the live corpus (a small/emerging market, a
+    niche multi-word regulatory topic) could starve every query built from
+    it, and the sub-agent would proceed to analysis with almost no raw
+    data and no attempt to recover.
+  - **Fixed — grounding layer plumbing**: added `drop_geography: bool =
+    False` (keyword-only) to `ground_query()` in `query_utils.py` — when
+    `True`, the geography anchor is skipped entirely (neither the explicit
+    argument nor the engagement-focus fallback is applied), while the
+    subject anchor is untouched, so broadening drops only the
+    jurisdiction, never the topic. Forwarded the same parameter through
+    `grounded_search_or_empty()` and from there into both
+    `SearxNGClient.search(..., drop_geography=...)` and
+    `JinaClient.search(..., drop_geography=...)`, so the "broaden" half of
+    the fix is available at the exact two network-boundary call sites
+    `sub_agent.py` uses (and any future caller can opt in the same way).
+  - **Fixed — retry logic**: added `SubAgentRunner.LOW_YIELD_THRESHOLD = 3`
+    (matches the audit's own "<3 scored results" wording) and a shared
+    `_fan_out_search()` helper that runs a list of query variants through a
+    given search callable and merges+dedups by URL — refactored out of the
+    duplicated loop bodies fix 1.4 had put in `_search_searxng`/
+    `_search_jina`, so the fix-1.5 retry uses the identical merge logic as
+    the fix-1.4 primary pass rather than a second, possibly-diverging copy.
+    Both `_search_searxng` and `_search_jina` now: run the primary pass; if
+    the merged result count is below `LOW_YIELD_THRESHOLD`, run the SAME
+    query variant(s) again with `drop_geography=True`; merge the broadened
+    results into the same dedup set (so a thin-but-nonzero primary result
+    keeps its original, more specific hits ranked first — broadening
+    *adds*, it does not replace); log at INFO when the retry actually grew
+    the result count. Wrapped in the same outer try/except as the rest of
+    the method, so a failure on the retry call degrades to the existing
+    "fail loud via `logger.warning`, return empty" behaviour rather than
+    raising past the caller.
+  - Verified live: `ground_query("steel tariff exemptions", geography=
+    "India")` → `"steel tariff exemptions India"`; the same call with
+    `drop_geography=True` → `"steel tariff exemptions"` (subject-only,
+    geography suppressed); confirmed the same holds when geography comes
+    from `set_engagement_focus(...)` instead of the explicit argument
+    (the more common real path, since specialists don't pass `geography=`
+    explicitly).
+  - New tests: 6 added to `tests/test_sub_agent_query.py`'s new
+    `TestLowYieldReformulation` class (zero-result retry fires with
+    `drop_geography=True` on the retry call only; a 2-result primary pass
+    still triggers the retry and the results merge to 4; a 3-result
+    primary pass — at the threshold — does NOT retry; retry results dedup
+    against primary results by URL; the Jina leg retries identically; a
+    retry whose broadened call also raises still degrades cleanly instead
+    of propagating). The 4 pre-existing `TestSearchMethodsUseVariants`
+    tests from fix 1.4 were updated to return ≥3 results from their mocks
+    (via a new `_n_results()` helper) specifically so they exercise the
+    fix-1.4 variant-fanout behaviour in isolation, without incidentally
+    tripping the new fix-1.5 retry path — each such test now also asserts
+    the exact `await_count` to make that isolation explicit and
+    regression-checked. 5 more added to `tests/test_search_grounding.py`'s
+    new `TestDropGeography` class (explicit-argument suppression,
+    engagement-focus-fallback suppression, subject preserved while
+    geography is dropped, `grounded_search_or_empty` forwards the flag,
+    never raises on an already-contentless query) plus 2 more verifying
+    `SearxNGClient.search`/`JinaClient.search` actually thread
+    `drop_geography` through to the query that reaches their respective
+    network boundaries (captured via a monkeypatched
+    `_search_searxng_json`/`_cache_key`), not just accept and drop the
+    kwarg. 13 net new tests across the two files.
+  - Full suite: **577 passed, 3 skipped** (was 564 passed, 3 skipped after
+    1.4's polish pass; +13 net new tests, zero regressions).
 - [x] **1.6** `resolve_subject` into `market_analyst`, `regulatory_analyst`, `risk_analyst`
   - Confirmed via `grep -rln "resolve_subject" hyperion/agents/specialists/*.py`
     that exactly 9 of 12 specialists already imported it and the 3 missing

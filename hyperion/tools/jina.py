@@ -207,6 +207,7 @@ class JinaClient:
         self,
         query: str,
         num_results: int = 10,
+        drop_geography: bool = False,
     ) -> JinaSearchResponse:
         """Search the web via Jina Search (s.jina.ai).
 
@@ -216,6 +217,10 @@ class JinaClient:
         Args:
             query: Search query string
             num_results: Maximum number of results to return
+            drop_geography: fix 1.5 — skip the geography anchor entirely.
+                See ``SearxNGClient.search``'s docstring for the same
+                parameter; used identically here for a low-yield
+                reformulation retry.
 
         Returns:
             JinaSearchResponse with structured results.
@@ -238,6 +243,7 @@ class JinaClient:
             lambda: JinaSearchResponse(query=original_query, results=[], total=0),
             logger=logger,
             tool_name="Jina",
+            drop_geography=drop_geography,
         )
         if empty is not None:
             return empty

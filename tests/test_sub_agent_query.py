@@ -277,10 +277,31 @@ class TestCondenseQueryVariants:
                 assert isinstance(v, str)
 
 
+class _FakeResult:
+    """Minimal stand-in for a SearxNG/Jina result object — just enough
+    attributes for `_search_searxng`/`_search_jina`'s formatting code."""
+
+    def __init__(self, title: str, url: str, snippet: str = "") -> None:
+        self.title = title
+        self.url = url
+        self.snippet = snippet
+
+
+def _n_results(n: int, prefix: str = "r") -> list[_FakeResult]:
+    """`n` distinct fake results — enough to clear `LOW_YIELD_THRESHOLD`
+    (3) on its own, so tests that aren't specifically about the fix-1.5
+    retry path don't accidentally trigger it."""
+    return [_FakeResult(f"{prefix}{i}", f"https://example.com/{prefix}{i}") for i in range(n)]
+
+
 class TestSearchMethodsUseVariants:
     """fix 1.4: `_search_searxng`/`_search_jina` must actually fire the
     second (entity-preserving) query variant when the question contains a
-    usable parenthetical, not just compute it and discard it."""
+    usable parenthetical, not just compute it and discard it.
+
+    Each mock here returns >= LOW_YIELD_THRESHOLD results so the fix-1.5
+    low-yield retry (tested separately in `TestLowYieldReformulation`)
+    never engages and cannot change these tests' call counts."""
 
     @staticmethod
     def _make_runner(question: str, tools: list) -> SubAgentRunner:
@@ -307,7 +328,7 @@ class TestSearchMethodsUseVariants:
         runner = self._make_runner(
             "Should we enter now or wait? (Bitcoin, Ethereum)", [ToolName.SEARXNG]
         )
-        spy_search = AsyncMock(return_value=[])
+        spy_search = AsyncMock(return_value=_n_results(3))
         runner._tools["searxng"] = type(
             "FakeSearxNG", (), {"search": spy_search}
         )()
@@ -327,7 +348,7 @@ class TestSearchMethodsUseVariants:
         runner = self._make_runner(
             "Find lithium battery cost data", [ToolName.SEARXNG]
         )
-        spy_search = AsyncMock(return_value=[])
+        spy_search = AsyncMock(return_value=_n_results(3))
         runner._tools["searxng"] = type(
             "FakeSearxNG", (), {"search": spy_search}
         )()
@@ -346,7 +367,7 @@ class TestSearchMethodsUseVariants:
             "Compare vendor pricing (Salesforce, HubSpot, Pipedrive)",
             [ToolName.JINA],
         )
-        spy_search = AsyncMock(return_value=[])
+        spy_search = AsyncMock(return_value=_n_results(3))
         runner._tools["jina"] = type("FakeJina", (), {"search": spy_search})()
 
         asyncio.run(runner._search_jina())
@@ -361,16 +382,14 @@ class TestSearchMethodsUseVariants:
 
         from hyperion.schemas.agents import ToolName
 
-        class _Result:
-            def __init__(self, title, url, snippet=""):
-                self.title = title
-                self.url = url
-                self.snippet = snippet
+        shared = _FakeResult("Shared", "https://example.com/shared")
+        only_in_second = _FakeResult("Second", "https://example.com/second")
+        # A third distinct result keeps the merged primary-pass count at
+        # LOW_YIELD_THRESHOLD (3) so the fix-1.5 retry does not engage —
+        # this test is about dedup, not the retry (covered separately).
+        third = _FakeResult("Third", "https://example.com/third")
 
-        shared = _Result("Shared", "https://example.com/shared")
-        only_in_second = _Result("Second", "https://example.com/second")
-
-        spy_search = AsyncMock(side_effect=[[shared], [shared, only_in_second]])
+        spy_search = AsyncMock(side_effect=[[shared], [shared, only_in_second, third]])
 
         runner = self._make_runner(
             "Should we enter now or wait? (Bitcoin, Ethereum)", [ToolName.SEARXNG]
@@ -382,6 +401,7 @@ class TestSearchMethodsUseVariants:
         label, urls, formatted = asyncio.run(runner._search_searxng())
 
         assert label == "searxng"
+        assert spy_search.await_count == 2  # confirms the retry did NOT fire
         # The shared URL must appear exactly once despite being returned by
         # both variant searches.
         assert urls.count("https://example.com/shared") == 1
@@ -402,6 +422,140 @@ class TestSearchMethodsUseVariants:
         )()
 
         label, urls, formatted = asyncio.run(runner._search_searxng())
+        assert label == "searxng"
+        assert urls == []
+        assert formatted is None
+
+
+class TestLowYieldReformulation:
+    """fix 1.5 (audit §7 item 1.5): a query returning fewer than
+    `LOW_YIELD_THRESHOLD` (3) scored results gets one broadened retry with
+    the geography anchor dropped, instead of being accepted as final."""
+
+    @staticmethod
+    def _make_runner(question: str, tools: list) -> SubAgentRunner:
+        from unittest.mock import MagicMock
+
+        from hyperion.schemas.agents import AgentName, ModelTier, SubAgentSpec
+
+        spec = SubAgentSpec(
+            question=question,
+            parent_agent=AgentName.MARKET_ANALYST,
+            model_tier=ModelTier.MICRO,
+            tools=tools,
+            findings_model="KeyFinding",
+        )
+        runner = SubAgentRunner(spec, bus=MagicMock(), router=MagicMock())
+        return runner
+
+    def test_zero_results_triggers_one_broadened_retry(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from hyperion.schemas.agents import ToolName
+
+        runner = self._make_runner("Find lithium battery cost data", [ToolName.SEARXNG])
+        # Primary pass (1 query, no parenthetical) returns nothing; the
+        # broadened retry (1 more query) returns 2 results.
+        spy_search = AsyncMock(side_effect=[[], _n_results(2)])
+        runner._tools["searxng"] = type("FakeSearxNG", (), {"search": spy_search})()
+
+        label, urls, formatted = asyncio.run(runner._search_searxng())
+
+        assert spy_search.await_count == 2
+        # The retry call must have asked for drop_geography=True.
+        assert spy_search.await_args_list[1].kwargs.get("drop_geography") is True
+        # And the primary call must NOT have (it should use the normal,
+        # geography-anchored path).
+        assert not spy_search.await_args_list[0].kwargs.get("drop_geography")
+        assert label == "searxng"
+        assert len(urls) == 2
+
+    def test_below_threshold_yield_triggers_retry_and_merges_results(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from hyperion.schemas.agents import ToolName
+
+        runner = self._make_runner("Find lithium battery cost data", [ToolName.SEARXNG])
+        # Primary pass returns 2 results (< 3 threshold) -> retry fires and
+        # contributes 2 more distinct results -> merged total is 4.
+        spy_search = AsyncMock(
+            side_effect=[_n_results(2, prefix="primary"), _n_results(2, prefix="broad")]
+        )
+        runner._tools["searxng"] = type("FakeSearxNG", (), {"search": spy_search})()
+
+        label, urls, formatted = asyncio.run(runner._search_searxng())
+
+        assert spy_search.await_count == 2
+        assert len(urls) == 4  # capped at [:8], well under the cap here
+
+    def test_at_or_above_threshold_yield_does_not_retry(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from hyperion.schemas.agents import ToolName
+
+        runner = self._make_runner("Find lithium battery cost data", [ToolName.SEARXNG])
+        spy_search = AsyncMock(return_value=_n_results(3))
+        runner._tools["searxng"] = type("FakeSearxNG", (), {"search": spy_search})()
+
+        asyncio.run(runner._search_searxng())
+
+        # Exactly 1 call — the primary query, no parenthetical, and no
+        # retry since 3 already meets the threshold.
+        assert spy_search.await_count == 1
+
+    def test_retry_deduplicates_against_primary_results(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from hyperion.schemas.agents import ToolName
+
+        runner = self._make_runner("Find lithium battery cost data", [ToolName.SEARXNG])
+        shared = _FakeResult("Shared", "https://example.com/shared")
+        new_one = _FakeResult("New", "https://example.com/new")
+        # Primary returns just `shared` (1 result, below threshold); the
+        # broadened retry returns `shared` again plus one genuinely new URL.
+        spy_search = AsyncMock(side_effect=[[shared], [shared, new_one]])
+        runner._tools["searxng"] = type("FakeSearxNG", (), {"search": spy_search})()
+
+        label, urls, formatted = asyncio.run(runner._search_searxng())
+
+        assert urls.count("https://example.com/shared") == 1
+        assert "https://example.com/new" in urls
+
+    def test_jina_low_yield_also_retries_with_drop_geography(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from hyperion.schemas.agents import ToolName
+
+        runner = self._make_runner("Find lithium battery cost data", [ToolName.JINA])
+        spy_search = AsyncMock(side_effect=[[], _n_results(3)])
+        runner._tools["jina"] = type("FakeJina", (), {"search": spy_search})()
+
+        label, urls, formatted = asyncio.run(runner._search_jina())
+
+        assert spy_search.await_count == 2
+        assert spy_search.await_args_list[1].kwargs.get("drop_geography") is True
+        assert label == "jina"
+        assert len(urls) == 3
+
+    def test_retry_never_raises_when_broadened_call_also_fails(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from hyperion.schemas.agents import ToolName
+
+        runner = self._make_runner("Find lithium battery cost data", [ToolName.SEARXNG])
+        spy_search = AsyncMock(side_effect=[[], RuntimeError("boom")])
+        runner._tools["searxng"] = type("FakeSearxNG", (), {"search": spy_search})()
+
+        label, urls, formatted = asyncio.run(runner._search_searxng())
+
+        # The whole method's try/except still catches the retry's failure —
+        # fail loud (logged), not silently propagate.
         assert label == "searxng"
         assert urls == []
         assert formatted is None

@@ -772,6 +772,43 @@ class SubAgentRunner:
 
         return [primary, variant]
 
+    # fix 1.5 (audit §7 item 1.5): a query yielding fewer than this many
+    # results is treated as "low yield" and gets one broadened retry with
+    # the geography anchor dropped, rather than being accepted as the final
+    # answer. 3 matches the audit's own wording ("<3 scored results").
+    LOW_YIELD_THRESHOLD = 3
+
+    async def _fan_out_search(
+        self,
+        search_fn: Any,
+        queries: list[str],
+        num_results: int,
+        *,
+        drop_geography: bool = False,
+    ) -> list[Any]:
+        """Run ``search_fn`` over each query variant, merging results and
+        deduplicating by URL (first-seen order preserved).
+
+        Shared by `_search_searxng`/`_search_jina` for both the normal pass
+        and the fix-1.5 low-yield broadened retry, so the two callers cannot
+        drift on how variants are merged.
+        """
+        merged: list[Any] = []
+        seen_urls: set[str] = set()
+        for query in queries:
+            kwargs: dict[str, Any] = {"num_results": num_results}
+            if drop_geography:
+                kwargs["drop_geography"] = True
+            variant_results = await search_fn(query, **kwargs)
+            for r in (variant_results or []):
+                url = getattr(r, "url", "") or ""
+                if url and url in seen_urls:
+                    continue
+                if url:
+                    seen_urls.add(url)
+                merged.append(r)
+        return merged
+
     async def _search_searxng(self) -> tuple[str, list[str], str | None]:
         """Search via SearxNG. Returns (label, urls, formatted_results).
 
@@ -780,21 +817,41 @@ class SubAgentRunner:
         Ethereum)") — a second query that folds those entities back in, so
         a named-entity comparison question isn't reduced to a single,
         entity-free search.
+
+        fix 1.5: if that combined pass yields fewer than
+        `LOW_YIELD_THRESHOLD` results, retry the same variants once more
+        with `drop_geography=True` — a jurisdiction anchor that is too
+        narrow for the live corpus (a small/emerging market, a niche
+        regulatory topic) can starve every query built from it, and simply
+        accepting "0-2 results" as final throws away whatever the general
+        (ungeo-anchored) corpus would have returned. The broadened results
+        are merged into the same dedup set, not returned instead of it, so
+        a query that was merely thin (not zero) keeps its original, more
+        specific hits ranked first.
         """
         try:
             searxng = self._get_tool("searxng")
             queries = self._condense_query_variants(self.spec.question)
-            all_results: list[Any] = []
-            seen_urls: set[str] = set()
-            for query in queries:
-                variant_results = await searxng.search(query, num_results=15)
-                for r in (variant_results or []):
+            all_results = await self._fan_out_search(searxng.search, queries, 15)
+            if len(all_results) < self.LOW_YIELD_THRESHOLD:
+                yield_before = len(all_results)
+                broadened = await self._fan_out_search(
+                    searxng.search, queries, 15, drop_geography=True
+                )
+                seen_urls = {getattr(r, "url", "") for r in all_results if getattr(r, "url", "")}
+                for r in broadened:
                     url = getattr(r, "url", "") or ""
                     if url and url in seen_urls:
                         continue
                     if url:
                         seen_urls.add(url)
                     all_results.append(r)
+                if len(all_results) > yield_before:
+                    logger.info(
+                        "SubAgent SearxNG low-yield retry for question=%r: "
+                        "%d -> %d results after dropping geography",
+                        self.spec.question[:120], yield_before, len(all_results),
+                    )
             if all_results:
                 formatted = "\n".join(
                     f"- {r.title}: {r.url}\n  {r.snippet[:500]}"
@@ -817,21 +874,33 @@ class SubAgentRunner:
 
         fix 1.4: same two-variant strategy as `_search_searxng` — see its
         docstring.
+
+        fix 1.5: same low-yield broadened retry as `_search_searxng` — see
+        its docstring.
         """
         try:
             jina = self._get_tool("jina")
             queries = self._condense_query_variants(self.spec.question)
-            all_results: list[Any] = []
-            seen_urls: set[str] = set()
-            for query in queries:
-                variant_results = await jina.search(query, num_results=10)
-                for r in (variant_results or []):
+            all_results = await self._fan_out_search(jina.search, queries, 10)
+            if len(all_results) < self.LOW_YIELD_THRESHOLD:
+                yield_before = len(all_results)
+                broadened = await self._fan_out_search(
+                    jina.search, queries, 10, drop_geography=True
+                )
+                seen_urls = {getattr(r, "url", "") for r in all_results if getattr(r, "url", "")}
+                for r in broadened:
                     url = getattr(r, "url", "") or ""
                     if url and url in seen_urls:
                         continue
                     if url:
                         seen_urls.add(url)
                     all_results.append(r)
+                if len(all_results) > yield_before:
+                    logger.info(
+                        "SubAgent Jina low-yield retry for question=%r: "
+                        "%d -> %d results after dropping geography",
+                        self.spec.question[:120], yield_before, len(all_results),
+                    )
             if all_results:
                 formatted = "\n".join(
                     f"- {r.title}: {r.url}\n  {r.snippet[:500]}"
