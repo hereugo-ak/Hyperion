@@ -42,6 +42,7 @@ Sub-agent lifecycle (§4.7):
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from typing import Any
@@ -53,6 +54,8 @@ from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import LLMRouter, get_router
 from hyperion.schemas.agents import SubAgentSpec
 from hyperion.schemas.models import KeyFinding
+
+logger = logging.getLogger(__name__)
 
 
 class SubAgentRunner:
@@ -345,7 +348,11 @@ class SubAgentRunner:
                             text = (fetch_result.markdown or fetch_result.content)[:15000]
                             raw_data.append(f"Obscura content from {url}:\n{text}")
                             extracted_urls.add(url)
-                    except Exception:
+                    except Exception as url_err:
+                        # Fix 0.3: fail loud (debug-level; per-URL failures
+                        # in a fan-out loop are expected, but must be
+                        # observable, not silently discarded).
+                        logger.debug("Obscura fetch failed for %s: %s", url, url_err)
                         continue
             except Exception as e:
                 errors.append(f"Obscura: {e!s:.80}")
@@ -363,7 +370,8 @@ class SubAgentRunner:
                             text = scrape_result.content[:15000]
                             raw_data.append(f"Scrapling content from {url}:\n{text}")
                             extracted_urls.add(url)
-                    except Exception:
+                    except Exception as url_err:
+                        logger.debug("Scrapling fetch failed for %s: %s", url, url_err)
                         continue
             except Exception as e:
                 errors.append(f"Scrapling: {e!s:.80}")
@@ -381,7 +389,8 @@ class SubAgentRunner:
                             text = (read_result.markdown or read_result.content)[:15000]
                             raw_data.append(f"Jina content from {url}:\n{text}")
                             extracted_urls.add(url)
-                    except Exception:
+                    except Exception as url_err:
+                        logger.debug("Jina read failed for %s: %s", url, url_err)
                         continue
             except Exception as e:
                 errors.append(f"Jina: {e!s:.80}")
@@ -399,7 +408,8 @@ class SubAgentRunner:
                             text = (crawl_result.markdown or crawl_result.content)[:15000]
                             raw_data.append(f"Crawl4AI content from {url}:\n{text}")
                             extracted_urls.add(url)
-                    except Exception:
+                    except Exception as url_err:
+                        logger.debug("Crawl4AI crawl failed for %s: %s", url, url_err)
                         continue
             except Exception as e:
                 errors.append(f"Crawl4AI: {e!s:.80}")
@@ -421,7 +431,8 @@ class SubAgentRunner:
                             if text and len(text) > 100:
                                 raw_data.append(f"FlareSolverr content from {url}:\n{text}")
                                 extracted_urls.add(url)
-                    except Exception:
+                    except Exception as url_err:
+                        logger.debug("FlareSolverr get failed for %s: %s", url, url_err)
                         continue
                 await flare.close()
             except Exception as e:
@@ -622,8 +633,14 @@ class SubAgentRunner:
         # Remove parenthetical asides: (e.g., Bitcoin, Ethereum)
         q = re.sub(r'\([^)]*\)', '', q)
 
-        # Remove em-dashes and everything after them (usually instructions)
-        q = re.sub(r'\s*[\u2014\u2013--]+\s*', ' ', q)
+        # Remove em-dashes, en-dashes, and hyphens used as separators.
+        # NOTE: hyphen MUST be last (or escaped) inside a character class —
+        # `\u2013--` was parsed as a character RANGE (\u2013 .. -), which is
+        # invalid and raised `re.PatternError` on every call under Python
+        # 3.13. That crash was swallowed by the callers' bare
+        # `except Exception: pass`, silently zeroing out all sub-agent
+        # search (see HYPERION_DEEP_AUDIT_2026-07-27.md §0 / finding B-1).
+        q = re.sub(r'\s*[\u2013\u2014-]+\s*', ' ', q)
 
         # Remove filler words
         filler = {
@@ -670,7 +687,13 @@ class SubAgentRunner:
                 urls = [r.url for r in results[:8] if r.url]
                 return ("searxng", urls, f"SearxNG results:\n{formatted}")
         except Exception as e:
-            pass
+            # Fix 0.3: fail loud, not silent — a swallowed exception here
+            # is exactly what hid the total sub-agent research outage in
+            # HYPERION_DEEP_AUDIT_2026-07-27.md §0 / Finding B-1.
+            logger.warning(
+                "SubAgent SearxNG search failed for question=%r: %s",
+                self.spec.question[:120], e, exc_info=True,
+            )
         return ("searxng", [], None)
 
     async def _search_jina(self) -> tuple[str, list[str], str | None]:
@@ -687,7 +710,11 @@ class SubAgentRunner:
                 urls = [r.url for r in results[:6] if r.url]
                 return ("jina", urls, f"Jina search results:\n{formatted}")
         except Exception as e:
-            pass
+            # Fix 0.3: fail loud, not silent — see note in _search_searxng.
+            logger.warning(
+                "SubAgent Jina search failed for question=%r: %s",
+                self.spec.question[:120], e, exc_info=True,
+            )
         return ("jina", [], None)
 
     def _has_tool(self, tool_name: str) -> bool:

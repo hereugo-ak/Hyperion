@@ -234,14 +234,54 @@ class ChartGenerator:
         )
 
         # Bar charts: y-axis starts at zero (always — §4.5 Agent 17 skill)
+        # Fix (audit follow-up to 0.4): `update_yaxis` (singular) is not a
+        # Plotly Figure method — it has always been `update_yaxes` (plural).
+        # This raised AttributeError on every bar/stacked_bar chart, and
+        # AttributeError is NOT in the `except (ValueError, RuntimeError,
+        # OSError, ImportError)` tuple in generate() below, so it propagated
+        # past all three fallback tiers (Plotly -> matplotlib -> data table)
+        # instead of degrading gracefully — a second, independent cause of
+        # `has_exhibits: false` for the most common chart type.
         if spec.chart_type in ("bar", "stacked_bar"):
-            fig.update_yaxis(rangemode="tozero")
+            fig.update_yaxes(rangemode="tozero")
 
-        # No 3D effects, no gradient fills (Tufte)
-        fig.update_traces(
-            marker_line_width=0,  # No bar outlines
-            opacity=0.95,
-        )
+        # No 3D effects, no gradient fills (Tufte).
+        # Fix (audit follow-up to 0.4): `marker_line_width` and `opacity` are
+        # not valid properties on every trace type — Sankey, Heatmap, and
+        # Waterfall traces reject `opacity`/`marker` at the trace level (only
+        # `Heatmap`/`Waterfall` support `opacity`; `Sankey` supports neither).
+        # This unconditional `update_traces()` raised `ValueError` for those
+        # three chart types on every single call, which (like the
+        # `update_yaxis` typo above) is NOT caught by the pre-fix exception
+        # tuple in `generate()` for AttributeError-class bugs but WAS already
+        # a `ValueError` here — meaning sankey/heatmap/waterfall have been
+        # silently falling through to the Tier 2 matplotlib fallback on
+        # every single call, never rendering via Plotly. Scope the update to
+        # trace types that actually support these properties.
+        try:
+            fig.update_traces(
+                selector=dict(type="bar"),
+                marker_line_width=0,
+                opacity=0.95,
+            )
+            fig.update_traces(
+                selector=lambda t: t.type in ("scatter", "scatterpolar", "histogram", "treemap"),
+                opacity=0.95,
+            )
+            fig.update_traces(
+                selector=dict(type="heatmap"),
+                opacity=0.95,
+            )
+            fig.update_traces(
+                selector=dict(type="waterfall"),
+                opacity=0.95,
+            )
+            # Sankey supports neither `marker` nor `opacity` at the trace
+            # level — deliberately not touched here.
+        except (ValueError, TypeError):
+            # Never let cosmetic styling break chart generation — the chart
+            # itself (data + colors) is already correct without this step.
+            pass
 
         # Add source citation as annotation at bottom
         if spec.source:
@@ -659,7 +699,13 @@ class ChartGenerator:
             result.dpi = 300
             return result
 
-        except (ValueError, RuntimeError, OSError, ImportError) as plotly_err:
+        except (ValueError, RuntimeError, OSError, ImportError, AttributeError, TypeError, KeyError) as plotly_err:
+            # Broadened from (ValueError, RuntimeError, OSError, ImportError):
+            # a plain `fig.update_yaxis()` typo (AttributeError) previously
+            # propagated straight past this handler and crashed the whole
+            # chart pipeline instead of degrading to Tier 2/3. Defense in
+            # depth — Tier 1 should degrade on any of its own coding errors,
+            # not just the environment-level errors originally anticipated.
             # Tier 2: matplotlib fallback
             mpl_result = self._generate_matplotlib(spec)
             if mpl_result.success:

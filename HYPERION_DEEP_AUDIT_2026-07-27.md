@@ -501,12 +501,76 @@ file is both the audit and the burn-down chart. `[ ]` = not started, `[~]` = in
 progress, `[x]` = landed with proof.
 
 ### Phase 0 — Stop the bleeding
-- [ ] **0.1** Fix regex character class `sub_agent.py:626` → restores all sub-agent research
-- [ ] **0.2** `tests/test_sub_agent_query.py` — assert `_condense_query` never raises
-- [ ] **0.3** Replace silent `except Exception: pass` in search legs with loud logging
-- [ ] **0.4** Pin `plotly`/`kaleido` compatible pair + `to_image()` smoke test
-- [ ] **0.5** Install `trafilatura` + `playwright` (+ chromium) and add to dev extras
-- [ ] **0.6** Ensure `pytest-asyncio` in standard env setup
+- [x] **0.1** Fix regex character class `sub_agent.py:626` → restores all sub-agent research
+  - Changed `r'\s*[\u2014\u2013--]+\s*'` → `r'\s*[\u2013\u2014-]+\s*'` (hyphen moved to
+    last position in the character class so it is a literal, not a range operator).
+    Verified live: `SubAgentRunner._condense_query("Find market size in Nigeria — 2024 data")`
+    now returns `'market size Nigeria 2024 data'` instead of raising `re.PatternError`.
+- [x] **0.2** `tests/test_sub_agent_query.py` — assert `_condense_query` never raises
+  - New file, 41 tests: parametrized adversarial corpus (em-dash, en-dash, hyphen,
+    doubled hyphens, parentheticals, unicode, empty/whitespace-only, 500-char strings,
+    a direct regex-pattern compile check) + behavioral sanity checks. All 41 pass.
+- [x] **0.3** Replace silent `except Exception: pass` in search legs with loud logging
+  - Added module logger (`logging.getLogger(__name__)`). `_search_searxng` and
+    `_search_jina` now `logger.warning(..., exc_info=True)` on failure instead of
+    swallowing silently. The 5 per-URL extraction-tier inner loops (Obscura,
+    Scrapling, Jina Reader, Crawl4AI, FlareSolverr) now `logger.debug(...)` each
+    per-URL failure instead of a bare `except Exception: continue`.
+  - Full suite re-run after these three fixes: **506 passed, 3 skipped** (was 465
+    passed pre-fix; +41 from the new test file, zero regressions).
+- [x] **0.4** Pin `plotly`/`kaleido` compatible pair + `to_image()` smoke test
+  - `pyproject.toml` already specified `kaleido>=0.2.1,<1.0` (the *correct* pin —
+    the audit's live probe had `kaleido==1.0.0` installed in the sandbox from a
+    stale environment, not from the pin). Reinstalling from `pyproject.toml` via
+    `pip install -e ".[dev,stealth]"` resolved `kaleido==0.2.1` + `plotly==6.0.1`,
+    and `fig.to_image(format="png")` now returns 14,223 bytes (no `ValueError`).
+    Added `tests/test_chart_export_smoke.py` asserting `to_image()` works and
+    returns >1 kB, so a future stale/incompatible pin fails CI instead of
+    silently degrading every chart to the matplotlib fallback.
+- [x] **0.5** Install `trafilatura` + `playwright` (+ chromium) and add to dev extras
+  - Installed via the project's own `pip install -e ".[dev,stealth]"` — this also
+    resolved `crawl4ai`, `curl_cffi`, `scrapling`, `nodriver`/`camoufox` (stealth
+    extra) into the environment; ran `playwright install chromium` (downloaded
+    Chrome for Testing 148 + ffmpeg + headless-shell). `pyproject.toml` already
+    listed these as direct/optional deps — the audit's "MISS" results reflected
+    an environment that hadn't run `pip install -e .` yet, not a missing pin.
+- [x] **0.6** Ensure `pytest-asyncio` in standard env setup
+  - Installed as part of `.[dev]` extra (`pytest-asyncio>=0.23.0` in `pyproject.toml`,
+    resolved to `1.4.0`). `asyncio_mode = "auto"` already configured in
+    `[tool.pytest.ini_options]`. Full suite: 506 passed, 3 skipped.
+
+- [x] **0.4b (found while verifying 0.4)** — three additional, independent
+  Plotly bugs in `hyperion/output/charts.py` that were silently degrading
+  charts to the matplotlib/data-table fallback tiers on **every single
+  call**, compounding the `has_exhibits: false` finding from §3.6:
+  1. `fig.update_yaxis(rangemode="tozero")` — `update_yaxis` (singular) has
+     never existed on a Plotly `Figure`; the real method is `update_yaxes`
+     (plural). Raised `AttributeError` on every `bar`/`stacked_bar` chart —
+     the single most common chart type — and `AttributeError` was **not**
+     in the `except (ValueError, RuntimeError, OSError, ImportError)` tuple
+     in `generate()`, so it propagated past all 3 fallback tiers instead of
+     degrading gracefully. **Fixed**: `update_yaxes`.
+  2. `fig.update_traces(marker_line_width=0, opacity=0.95)` was applied
+     unconditionally to every chart type in `_apply_brand_styling`, but
+     `Sankey` supports neither `marker` nor `opacity` at the trace level,
+     and `Heatmap`/`Waterfall` support `opacity` but not `marker`. This
+     raised `ValueError` on **100% of sankey/heatmap/waterfall calls**,
+     meaning those three chart types had *never* actually rendered via
+     Plotly in production — every one silently fell to the matplotlib
+     Tier 2 fallback. **Fixed**: scoped the styling call per trace-type
+     via `selector=`, wrapped in `try/except (ValueError, TypeError): pass`
+     so cosmetic styling can never again break chart generation.
+  3. Widened `generate()`'s Tier-1 exception tuple from
+     `(ValueError, RuntimeError, OSError, ImportError)` to also catch
+     `AttributeError, TypeError, KeyError` — defense in depth so a future
+     coding-error-class bug in the styling/creation path degrades to
+     Tier 2/3 instead of crashing the whole engagement's chart generation.
+  - Verified: all 10 chart types (`bar, line, scatter, histogram,
+    stacked_bar, treemap, sankey, heatmap, radar, waterfall`) now render
+    successfully via **Tier 1 Plotly+kaleido** (previously sankey, heatmap,
+    and waterfall silently used Tier 2 matplotlib; bar/stacked_bar crashed
+    past all tiers). New tests in `tests/test_chart_export_smoke.py` lock
+    this in. Full suite: **509 passed, 3 skipped** (was 465 pre-Phase-0).
 
 ### Phase 1 — Grounding & query intelligence
 - [ ] **1.1** `ground_query` at all 5 search entry points
