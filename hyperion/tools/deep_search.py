@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from hyperion.tools.evidence_scorer import EvidenceScorer, EvidenceSummary, ScoredResult
+from hyperion.tools.query_utils import grounded_search_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -442,6 +443,32 @@ class DeepSearchClient:
         """
         if not query or not query.strip():
             return DeepSearchResult(query=query, depth=depth)
+
+        # Fix 1.1/1.2 (HYPERION_DEEP_AUDIT_2026-07-27.md Finding B-2 +
+        # item 1.2): `deep_search.search()` is the entry point every
+        # specialist actually calls — `_discover()` below fans out to
+        # `_search_searxng` and `_search_jina` in parallel, and before this
+        # fix only the SearxNG leg was grounded internally (the Jina leg
+        # called `jina.search()` with the raw query). Grounding once HERE,
+        # before either leg runs, means the fan-out can never diverge again
+        # even if a leg's own client-level grounding is ever changed —
+        # this is the "single shared choke point" item 1.2 asked for at the
+        # orchestrator level, not just inside individual HTTP clients.
+        original_query = query
+        grounded, empty = grounded_search_or_empty(
+            query,
+            lambda: DeepSearchResult(
+                query=original_query,
+                depth=depth,
+                error="query has no subject after grounding",
+            ),
+            geography=geography or "",
+            logger=logger,
+            tool_name="DeepSearch",
+        )
+        if empty is not None:
+            return empty
+        query = grounded
 
         # Check cache
         cache_key = self._cache_key(query, depth, geography)

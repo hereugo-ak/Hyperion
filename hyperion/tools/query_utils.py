@@ -35,8 +35,12 @@ of them would be far more invasive and easier to get wrong.
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
+from typing import Any
+
+_module_logger = logging.getLogger(__name__)
 
 _INTERNAL_TOKENS = {
     "risk analyst", "technology analyst", "financial analyst", "market analyst",
@@ -579,6 +583,93 @@ def ground_query(raw: str, subject: str = "", geography: str = "") -> str:
         cleaned = f"{cleaned} {geography}"
 
     return cleaned.strip()[:256]
+
+
+class ContentlessQueryError(ValueError):
+    """Raised by :func:`ground_query_or_raise` when grounding yields nothing.
+
+    A distinct exception type (rather than returning "") lets a call site
+    that truly cannot proceed without a query fail loudly, while callers
+    that want the historical "drop and return empty results" behaviour can
+    catch it explicitly instead of accidentally treating "" as a query.
+    """
+
+
+def ground_query_or_raise(raw: str, subject: str = "", geography: str = "") -> str:
+    """``ground_query`` that raises instead of returning "".
+
+    Same anchoring rules as :func:`ground_query`. Use this at a call site
+    that should never silently proceed with a subject-less query.
+    """
+    grounded = ground_query(raw, subject=subject, geography=geography)
+    if not grounded:
+        raise ContentlessQueryError(
+            f"query has no subject after grounding: {raw[:120]!r}"
+        )
+    return grounded
+
+
+def grounded_search_or_empty(
+    raw: str,
+    empty_factory: Any,
+    subject: str = "",
+    geography: str = "",
+    *,
+    logger: Any = None,
+    tool_name: str = "search",
+) -> tuple[str, Any | None]:
+    """Shared choke point for "ground, or drop the query and return empty".
+
+    Fix 1.2 (HYPERION_DEEP_AUDIT_2026-07-27.md §7, item 1.2): every search
+    client independently re-implemented the same three lines — ground the
+    query, log+drop if it came back empty, log if it changed. Duplicating
+    that logic per-client is exactly how `jina.py`, `unified_search.py`,
+    `deep_search.py` and `stealth_search.py` ended up with `ground_query`
+    call counts of zero: a new search tool could be added without anyone
+    remembering to wire grounding in, because there was no single place
+    that *made* it happen.
+
+    This helper is now that single place. It does not by itself guarantee
+    every tool calls it — Python cannot enforce that structurally — but it
+    turns "add grounding" from "copy 12 lines correctly" into "call this
+    once at the top of your search() method", which is the intent of 1.2's
+    "shared decorator/guard" instruction.
+
+    Args:
+        raw: The caller's raw, possibly-ungrounded query.
+        empty_factory: Zero-arg callable that builds the "no results"
+            response object this client's ``search()`` should return
+            when the query is dropped (e.g. ``lambda: JinaSearchResponse(
+            query=raw, results=[], total=0)``).
+        subject: Optional explicit subject override (see ``ground_query``).
+        geography: Optional explicit geography override.
+        logger: The calling module's logger. Defaults to this module's
+            logger if omitted, but callers should pass their own so log
+            lines carry the right module name.
+        tool_name: Short label used in log messages (e.g. "Jina", "SearxNG",
+            "Stealth").
+
+    Returns:
+        ``(grounded_query, None)`` when grounding produced a usable query —
+        the caller should proceed with ``grounded_query``.
+        ``("", empty_response)`` when the query was contentless and dropped —
+        the caller should ``return empty_response`` immediately.
+    """
+    log = logger or _module_logger
+    original = raw
+    grounded = ground_query(raw, subject=subject, geography=geography)
+    if not grounded:
+        log.warning(
+            "Dropping contentless %s query (no subject after grounding): %r",
+            tool_name,
+            (original or "")[:120],
+        )
+        return "", empty_factory()
+    if grounded != original:
+        log.info(
+            "Grounded %s query: %r -> %r", tool_name, (original or "")[:100], grounded[:100]
+        )
+    return grounded, None
 
 
 def _extract_intent(raw: str) -> str:

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -49,6 +50,10 @@ from typing import Any
 
 import httpx
 from urllib.parse import quote_plus
+
+from hyperion.tools.query_utils import grounded_search_or_empty
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -215,6 +220,29 @@ class JinaClient:
         Returns:
             JinaSearchResponse with structured results.
         """
+        # Fix 1.1 (HYPERION_DEEP_AUDIT_2026-07-27.md Finding B-2): ground
+        # every outbound query against the engagement's subject/geography
+        # before it leaves this client. Before this fix, `unified_search`
+        # and `deep_search` both called `jina.search(query=query, ...)`
+        # with the RAW, ungrounded query — exactly half of every discovery
+        # fan-out (SearxNG was grounded via its own `search()`, Jina was
+        # not). A query that grounds to "" (no subject anywhere) is
+        # dropped rather than sent, matching SearxNGClient's behavior.
+        #
+        # Fix 1.2: routed through the shared `grounded_search_or_empty`
+        # choke point in query_utils.py rather than a hand-rolled copy of
+        # the same three lines, so this client cannot drift from SearxNG's.
+        original_query = query
+        grounded, empty = grounded_search_or_empty(
+            query,
+            lambda: JinaSearchResponse(query=original_query, results=[], total=0),
+            logger=logger,
+            tool_name="Jina",
+        )
+        if empty is not None:
+            return empty
+        query = grounded
+
         cache_key = self._cache_key("search", query, num_results)
         if cache_key in self._search_cache:
             timestamp, response = self._search_cache[cache_key]

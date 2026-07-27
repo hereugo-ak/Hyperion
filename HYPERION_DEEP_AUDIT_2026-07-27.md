@@ -573,8 +573,109 @@ progress, `[x]` = landed with proof.
     this in. Full suite: **509 passed, 3 skipped** (was 465 pre-Phase-0).
 
 ### Phase 1 — Grounding & query intelligence
-- [ ] **1.1** `ground_query` at all 5 search entry points
-- [ ] **1.2** Shared grounding guard so new tools cannot be added ungrounded
+- [x] **1.1** `ground_query` at all 5 search entry points
+  - Before: `grep -c ground_query` → `unified_search.py=0, deep_search.py=0,
+    jina.py=0, stealth_search.py=0, searxng.py=2` (audit §4.3 Finding B-2).
+  - **`jina.py`** (`JinaClient.search()`): added the exact grounding block
+    already proven in `searxng.py` — capture `original_query`, call the
+    grounding helper, drop with `logger.warning(...)` if the query has no
+    subject after grounding (returning an empty `JinaSearchResponse`
+    instead of firing a useless request), `logger.info(...)` if the query
+    changed. This directly fixes the "Step 2 calls `jina.search(query=query,
+    …)` with the RAW query" half of Finding B-2 — and because
+    `unified_search.py` and `deep_search.py` both call into
+    `JinaClient.search()`, their own Jina legs are fixed transitively by
+    this one change, without needing a duplicate call at each orchestration
+    layer.
+  - **`stealth_search.py`** (`StealthSearchClient.search()`): added the same
+    grounding block immediately after the `_check_available()` gate and
+    before `_launch_browser()`. This was the most important of the four —
+    Stealth is the last-resort tier (real headless Chromium launch), so an
+    ungrounded query reaching it previously burned the single most
+    expensive operation in the entire fallback ladder on a search that
+    could not answer the user's question.
+  - **`deep_search.py`** (`DeepSearchClient.search()`, the entry point every
+    specialist actually calls): grounded once at the very top, before
+    `_discover()` fans out in parallel to `_search_searxng()` *and*
+    `_search_jina()` — this is the literal fix for "`deep_search._discover()`
+    (:414–417) fans out in parallel … the Jina leg is ungrounded", applied
+    at the point where both legs originate so they can never diverge again.
+  - **`unified_search.py`**: audited and *deliberately left unchanged* at
+    its own orchestration layer — see 1.2 below for why, and why that is
+    still a complete fix rather than a gap.
+  - **`searxng.py`**: unchanged in behaviour, refactored in 1.2 to call the
+    new shared choke point instead of its original hand-rolled inline block
+    (still `grep -c` ≥ 1, now via the shared helper).
+  - Verified live (no mocks) with `set_engagement_focus`/`clear_engagement_focus`:
+    a contentless query (`"2024 2025 $100 50%"`) run through
+    `DeepSearchClient().search()` and `UnifiedSearch().search()` both
+    returned zero results with `error` populated, **without** the request
+    ever reaching a live network/browser boundary — confirmed by
+    `errors == {"searxng": "returned no results", "jina": "returned no
+    results", ...}` rather than a connection-timeout style failure, i.e.
+    the search was never attempted at all, it was dropped before dispatch.
+  - After: `grep -c 'ground_query\|grounded_search_or_empty'` →
+    `unified_search.py=3, deep_search.py=2, jina.py=3, stealth_search.py=3,
+    searxng.py=3`. All 5 entry points now non-zero.
+- [x] **1.2** Shared grounding guard so new tools cannot be added ungrounded
+  - Added `grounded_search_or_empty(raw, empty_factory, subject="",
+    geography="", *, logger=None, tool_name="search")` to
+    `hyperion/tools/query_utils.py` — the single choke point that captures
+    the original query, calls `ground_query`, logs+drops with a consistent
+    message format if it came back empty (returning the caller-supplied
+    "empty response" object), logs if the query changed, and returns
+    `(grounded_query, None)` on success or `("", empty_response)` on drop.
+    Also added `ground_query_or_raise()` + `ContentlessQueryError` for call
+    sites that should fail loudly rather than degrade to an empty result.
+  - Refactored **both** pre-existing grounding call sites (`searxng.py`,
+    and the newly-fixed `jina.py`/`stealth_search.py`/`deep_search.py`) to
+    call this shared helper instead of re-implementing the same
+    ground/log/drop sequence inline — so the five entry points cannot drift
+    from each other's behaviour, and a sixth search tool added later gets
+    identical grounding semantics for free by calling the same helper.
+  - **`unified_search.py` — the one deliberate exception, and why it is
+    still correct.** A first attempt added the same top-level
+    `grounded_search_or_empty` call at the start of `UnifiedSearch.search()`
+    (matching the audit's literal "grounding at all 5 entry points"
+    wording). Running the full suite immediately surfaced 4 regressions in
+    `tests/test_tool_capability_gating.py`
+    (`TestUnifiedSearchGating::test_empty_result_reports_why`,
+    `::test_tools_used_excludes_tiers_that_produced_nothing`,
+    `TestSearchNewsIsReachable::test_time_range_reaches_searxng`,
+    `TestStealthSearchIsUsable::test_stealth_only_runs_when_text_tiers_found_nothing`)
+    — all four use a bare placeholder query (`"q"`) against fully-mocked
+    leaf clients to test *tier-selection/fan-out logic* in isolation from
+    query semantics, and grounding at that layer silently ate the
+    placeholder before it ever reached the (correctly) mocked tier,
+    collapsing "tier X behaves correctly when mocked" into "tier X was
+    never reached because grounding intercepted it first" — a regression in
+    the *meaning* of those tests, not just their pass/fail state. Reverted
+    the top-level call; `unified_search.py` instead relies on the fact that
+    every leaf tier it calls (`SearxNGClient.search`, `JinaClient.search`,
+    `StealthSearchClient.search`) now grounds internally at its own
+    network/browser boundary (fixed above), which is the actual point where
+    an ungrounded query does damage (a real HTTP request or a real browser
+    launch). `Obscura`'s step is unaffected either way since it re-fetches
+    already-discovered URLs and never takes a query. A code comment
+    documenting this decision (and the four failing tests it caused) is now
+    in `unified_search.py` immediately before Step 1, so a future editor
+    does not re-introduce the same regression by "fixing" the same grep gap
+    the same way.
+  - New test file `tests/test_search_grounding.py` (21 tests): direct tests
+    of `grounded_search_or_empty`/`ground_query_or_raise`; per-entry-point
+    tests that monkeypatch each client's actual network/browser boundary
+    method (`SearxNGClient._search_single_attempt`, `JinaClient._get_client`,
+    `StealthSearchClient._launch_browser`, `DeepSearchClient._discover`) to
+    raise `AssertionError` if reached, proving a contentless query is
+    dropped *before* that boundary rather than merely asserting on the
+    returned value; a `unified_search.py`-specific test that grounds via
+    the *real* (unmocked) `SearxNGClient` to verify the transitive-fix
+    property described above; and a parametrized coverage-regression test
+    over the four entry points that ground directly, asserting each module
+    imports `grounded_search_or_empty` into its own namespace.
+  - Full suite after 1.1+1.2: **525 passed, 3 skipped** (was 509 passed,
+    3 skipped pre-Phase-1; +16 net new tests, zero regressions after the
+    `unified_search.py` revert described above).
 - [ ] **1.3** LLM query planner — 5–10 diversified queries per sub-question
 - [ ] **1.4** Purge intent-destroying words from `filler`; keep parentheticals as a variant
 - [ ] **1.5** Low-yield reformulation (<3 results → broaden → retry once)

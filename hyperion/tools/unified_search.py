@@ -281,6 +281,23 @@ class UnifiedSearch:
         obscura_count = 0
         stealth_count = 0
 
+        # NOTE on fix 1.1/1.2 and grounding at THIS layer specifically:
+        # unified_search.py deliberately does NOT re-ground the query here.
+        # Each leaf tier it calls (SearxNGClient.search, JinaClient.search,
+        # StealthSearchClient.search) already grounds internally at its own
+        # network/browser boundary — that is where fixes 1.1/1.2 were
+        # applied (see those modules). Re-grounding at this orchestration
+        # layer was tried and reverted: it is redundant in production (the
+        # leaf clients already do it) and it silently swallowed short,
+        # deliberately-placeholder queries used by this module's own
+        # tier-selection tests (e.g. `search("q")` with every leaf client
+        # mocked out to test fan-out logic in isolation from query
+        # semantics) — turning "tier X was skipped by design" into "tier X
+        # was skipped because grounding ate the query first", which is a
+        # different failure mode this layer must not introduce. Obscura's
+        # step is unaffected either way: it re-fetches URLs, it never takes
+        # a query.
+        #
         # Step 1: SearxNG (always try first — free, unlimited, fast)
         if self._tier_available("searxng"):
             tools_tried.append("searxng")

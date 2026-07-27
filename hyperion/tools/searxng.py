@@ -39,7 +39,7 @@ from urllib.parse import quote_plus
 import httpx
 
 from hyperion.tools.jina import JinaClient
-from hyperion.tools.query_utils import ground_query
+from hyperion.tools.query_utils import grounded_search_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -452,16 +452,20 @@ class SearxNGClient:
         # A query that still has no subject after grounding is dropped rather
         # than sent — a useless search costs 20s of timeout and pollutes the
         # findings with irrelevant sources.
+        #
+        # Fix 1.2 (HYPERION_DEEP_AUDIT_2026-07-27.md item 1.2): this now goes
+        # through the shared `grounded_search_or_empty` choke point in
+        # query_utils.py instead of re-implementing ground/log/drop inline,
+        # so every search client applies the identical rule.
         original_query = query
-        grounded = ground_query(query)
-        if not grounded:
-            logger.warning(
-                "Dropping contentless search query (no subject after grounding): %r",
-                original_query[:120],
-            )
-            return SearchResponse(query=original_query, results=[], total=0, engines_used=[])
-        if grounded != original_query:
-            logger.info("Grounded query: %r → %r", original_query[:100], grounded[:100])
+        grounded, empty = grounded_search_or_empty(
+            query,
+            lambda: SearchResponse(query=original_query, results=[], total=0, engines_used=[]),
+            logger=logger,
+            tool_name="SearxNG",
+        )
+        if empty is not None:
+            return empty
         query = grounded
 
         # Pick the engine set. An explicit `engines=` argument always wins.
