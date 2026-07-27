@@ -1268,3 +1268,86 @@ class TestToolConfiguration:
             f"consult still issues its own docker commands ({docker_literals}): "
             f"that duplicate is how the image pins drifted in the first place"
         )
+
+
+class TestSectionOpenersAndExhibitAnatomy:
+    """Sections must be announced, and exhibits must carry full provenance.
+
+    Sections previously began with a bare h2 straight into the key-insight box,
+    so starting a new section looked no different from a paragraph break. Both
+    benchmarks announce sections (MGI: a letterspaced "C H A P T E R  O N E"
+    eyebrow; BCG: a full-width opener with generous whitespace).
+    """
+
+    @staticmethod
+    def _html() -> str:
+        from hyperion.agents.delivery.presentation_designer import HTML_TEMPLATE
+
+        return HTML_TEMPLATE
+
+    @staticmethod
+    def _css() -> str:
+        from hyperion.agents.delivery.presentation_designer import CSS_TEMPLATE
+
+        return CSS_TEMPLATE
+
+    def test_sections_have_an_opener(self):
+        html = self._html()
+        assert 'class="section-opener"' in html, "sections are not announced"
+        assert 'class="section-eyebrow"' in html
+
+    def test_section_number_is_derived_not_authored(self):
+        """`loop.index` cannot disagree with the real section order; a
+        hand-written or model-supplied number can."""
+        html = self._html()
+        assert "Section {{ loop.index }}" in html, (
+            "section number is not derived from loop.index, so it can drift "
+            "out of step with the actual section order"
+        )
+
+    def test_opener_styles_exist(self):
+        css = self._css()
+        for selector in (".section-opener", ".section-eyebrow", ".section-rule"):
+            assert selector in css, f"{selector} has no styling"
+
+    def test_eyebrow_is_letterspaced(self):
+        """Wide tracking is what makes a short label read as a signpost."""
+        import re
+
+        m = re.search(r"\n\.section-eyebrow\s*\{(.*?)\n\}", self._css(), re.S)
+        assert m, "no .section-eyebrow block"
+        assert "letter-spacing" in m.group(1)
+
+    def test_exhibit_note_is_emitted(self):
+        """The .exhibit-note class existed in CSS but was never rendered."""
+        html = self._html()
+        assert 'class="exhibit-note"' in html, (
+            ".exhibit-note is styled but never emitted, so methodology "
+            "qualifiers can never appear under an exhibit"
+        )
+
+    def test_note_precedes_source(self):
+        """Benchmark order is 'Note: … Source: …'."""
+        html = self._html()
+        assert html.index('class="exhibit-note"') < html.index(
+            'class="exhibit-source"'
+        ), "source line is emitted before the note"
+
+    def test_note_and_source_are_conditional(self):
+        """A fabricated provenance line is as bad as a fabricated geography."""
+        html = self._html()
+        assert "{% if chart.note %}" in html, "note is emitted unconditionally"
+        assert "{% if chart.source_citation %}" in html, (
+            "source line is emitted unconditionally, so charts without a known "
+            "source would ship an empty or invented citation"
+        )
+
+    def test_chart_placement_has_a_note_field(self):
+        """The template reads chart.note; the model must actually define it,
+        otherwise the field can never be populated."""
+        from hyperion.schemas.models import ChartPlacement
+
+        assert "note" in ChartPlacement.model_fields
+        assert ChartPlacement(chart_id="c1").note == "", (
+            "note must default to empty so nothing is invented"
+        )

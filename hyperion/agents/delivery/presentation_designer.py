@@ -301,6 +301,43 @@ h2 {{
     string-set: section-title content();
 }}
 
+/* ── Section openers ───────────────────────────────────────────────────────
+   Sections previously began with a bare h2 immediately followed by the key
+   insight box, so a new section looked identical to a paragraph break. Both
+   benchmarks announce a section: MGI with a letterspaced "C H A P T E R  O N E"
+   eyebrow above the title, BCG with a full-width opener and generous space.
+
+   The eyebrow number comes from Jinja's `loop.index`, i.e. from the document
+   structure itself, so it can never disagree with the actual section order.
+
+   The generous `padding-bottom` is the point of the whole block: whitespace is
+   what signals a new movement in the document. It is set in cm rather than em
+   so it does not scale with heading size. */
+.section-opener {{
+    padding-bottom: 0.7cm;
+    margin-bottom: 0.5cm;
+    page-break-after: avoid;
+    break-after: avoid;
+}}
+.section-eyebrow {{
+    font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+    font-size: 7.5pt;
+    font-weight: 600;
+    text-transform: uppercase;
+    /* Wide tracking is what makes a short label read as a signpost rather than
+       as small body text. MGI spaces this out dramatically. */
+    letter-spacing: 0.22em;
+    color: {terracotta};
+    margin-bottom: 10pt;
+    hyphens: none;
+}}
+/* A hairline under the title, not a heavy divider: it closes the opener
+   without competing with the exhibit rules further down the page. */
+.section-rule {{
+    border-bottom: 0.5pt solid {warm_gray};
+    margin-top: 12pt;
+}}
+
 /* Subsection headers were 14pt BOLD MONOSPACE — visually a code comment.
    Now small-caps sans: it reads as a label, sits quietly under the serif h2,
    and establishes a third level without competing with it. */
@@ -884,7 +921,16 @@ HTML_TEMPLATE = """\
 {# ── Analysis Sections ── #}
 {% for section in report.sections %}
 <div class="page-break">
-    <h2>{{ section.title }}</h2>
+    {# Section opener. MGI sets a letterspaced "C H A P T E R  O N E" above the
+       chapter title; BCG gives each section a full-width opener with generous
+       whitespace. Neither drops the reader straight into body copy. The number
+       comes from `loop.index`, so it is derived from the document structure and
+       cannot disagree with the actual section order. #}
+    <div class="section-opener">
+        <div class="section-eyebrow">Section {{ loop.index }}</div>
+        <h2>{{ section.title }}</h2>
+        <div class="section-rule"></div>
+    </div>
 
     <div class="key-insight-box">
         {{ section.key_insight | clean_dict_repr }}
@@ -915,9 +961,16 @@ HTML_TEMPLATE = """\
         <div class="exhibit-figure">
             <img src="{{ chart.image_path }}" alt="{{ chart.caption }}">
         </div>
-        {% if chart.source_citation %}
+        {% if chart.source_citation or chart.note %}
         <figcaption class="exhibit-footer">
+            {# Note before source, as in both benchmarks ("Note: Based on
+               McKinsey Industry Classification… Source: …"). Each is emitted
+               only when present: an invented note or source line would be the
+               same class of defect as an invented geography. #}
+            {% if chart.note %}<p class="exhibit-note">{{ chart.note }}</p>{% endif %}
+            {% if chart.source_citation %}
             <p class="exhibit-source">{{ chart.source_citation }}</p>
+            {% endif %}
         </figcaption>
         {% endif %}
     </figure>
