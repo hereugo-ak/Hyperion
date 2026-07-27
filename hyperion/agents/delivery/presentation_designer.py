@@ -403,36 +403,73 @@ table, .kpi-value, .data-table, .chart-data-table {{
     font-size: 11pt;
 }}
 
-/* D27: Rich exec layout components */
+/* ── KPI strip (BCG convention) ────────────────────────────────────────────
+   BCG's sustainability report states a metric as a large number with a short
+   descriptor UNDER it ("$600M+" / "Invested in societal impact in 2024"). Two
+   properties make that work, and both were wrong here:
+
+   1. LEFT alignment. The old cards were centred, so with five cards the
+      numbers sat at five arbitrary horizontal positions and the eye had no
+      line to travel down. Left-aligning puts every figure on a shared axis.
+
+   2. NO hyphenation. `hyphens: auto` is inherited from body, and a centred
+      ~3cm card is narrow enough that it fired: the real PDF printed
+      "KEY FIND-INGS" and "CONFID-ENCE" — a word broken across two lines
+      inside a five-character label. Descriptors must never hyphenate, so
+      hyphens/overflow-wrap are explicitly disabled and the label is allowed
+      to wrap on whole words only.
+
+   The beige fill and 3px terracotta cap are replaced by a single hairline
+   rule above each figure. Filled boxes make a strip read as five buttons;
+   benchmark KPI rows are held together by alignment and a shared rule, which
+   is quieter and lets the numbers carry the emphasis. */
 .kpi-strip {{
     display: flex;
     gap: 0;
-    margin: 0.5cm 0 0.8cm 0;
+    margin: 0.5cm 0 0.9cm 0;
     page-break-inside: avoid;
     break-inside: avoid;
+    border-top: 0.5pt solid {warm_gray};
 }}
 .kpi-card {{
     flex: 1;
-    background-color: {beige};
-    border-top: 3px solid {terracotta};
-    padding: 10px 14px;
-    text-align: center;
+    padding: 9pt 12pt 0 0;
+    text-align: left;
+    /* Labels are short; a break inside one is always an error. */
+    hyphens: none;
+    -webkit-hyphens: none;
+    overflow-wrap: normal;
+    word-break: keep-all;
 }}
-.kpi-card + .kpi-card {{ margin-left: 2px; }}
+.kpi-card + .kpi-card {{
+    /* Separator between figures rather than around them. */
+    border-left: 0.5pt solid {beige};
+    padding-left: 12pt;
+    margin-left: 0;
+}}
 .kpi-value {{
-    font-family: "Instrument Serif", serif;
-    font-size: 20pt;
-    color: {warm_charcoal};
-    line-height: 1.1;
+    font-family: "Instrument Serif", Georgia, serif;
+    /* Up from 20pt: this is the one place in the document where a number is
+       the message, and the benchmarks set these very large relative to body. */
+    font-size: 26pt;
+    color: {terracotta};
+    line-height: 1.0;
     margin: 0;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    hyphens: none;
 }}
 .kpi-label {{
-    font-family: "Source Sans 3", sans-serif;
-    font-size: 8pt;
+    font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+    font-size: 7.5pt;
+    font-weight: 600;
     color: {warm_gray};
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-top: 4px;
+    letter-spacing: 0.07em;
+    line-height: 1.25;
+    margin-top: 5pt;
+    hyphens: none;
+    text-align: left;
 }}
 .callout {{
     background-color: {beige};
