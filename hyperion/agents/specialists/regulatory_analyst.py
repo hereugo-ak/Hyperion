@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from typing import Any
 
@@ -330,22 +331,42 @@ class RegulatoryAnalyst(BaseAgent):
         try:
             searxng = self.get_tool(ToolName.SEARXNG)
 
-            query_patterns = []
+            # Build the subject anchor from whatever the engagement actually
+            # gave us. `industry` is frequently "" (the classifier could not
+            # infer a sector), and an f-string like f"{industry} regulations"
+            # then degrades to " regulations" — a subject-less search that
+            # cannot answer the user's question. Falling back to the
+            # engagement subject keeps every query tied to what was asked.
+            from hyperion.tools.query_utils import get_engagement_focus
+
+            _q, _subject, _geo = get_engagement_focus()
+            subject = (industry or _subject or self._question or "").strip()
+
+            query_patterns: list[str] = []
             for jurisdiction in jurisdictions:
                 query_patterns.extend([
-                    f"{industry} regulations {jurisdiction} compliance requirements",
-                    f"{industry} regulatory framework {jurisdiction} 2024 2025",
-                    f"{industry} compliance cost {jurisdiction}",
-                    f"{industry} regulatory penalties {jurisdiction}",
+                    f"{subject} regulations {jurisdiction} compliance requirements",
+                    f"{subject} regulatory framework {jurisdiction} policy",
+                    f"{subject} compliance cost {jurisdiction}",
+                    f"{subject} regulatory penalties {jurisdiction}",
                 ])
 
-            # Add industry-specific regulatory searches
-            query_patterns.extend([
-                f"{industry} data protection regulations GDPR CCPA DPDP",
-                f"{industry} industry-specific regulations licensing permits",
-                f"{industry} labor regulations wage safety compliance",
-                f"{industry} environmental regulations emissions waste",
-            ])
+            # Cross-cutting regulatory themes. Deliberately NOT naming
+            # specific regimes: the old query hardcoded "GDPR CCPA DPDP",
+            # which forced European and Californian privacy law onto every
+            # engagement regardless of geography. Naming the *theme* lets the
+            # search engine surface whichever regime is actually in force for
+            # the jurisdiction under analysis.
+            themes = [
+                "data protection privacy law",
+                "licensing permits statutory requirements",
+                "labor law wage safety compliance",
+                "environmental regulations emissions waste",
+                "trade policy tariffs import export controls",
+            ]
+            geo_hint = jurisdictions[0] if jurisdictions else ""
+            for theme in themes:
+                query_patterns.append(f"{subject} {theme} {geo_hint}".strip())
 
             for pattern in query_patterns[:15]:  # Cap to avoid excessive searches
                 search_results = await searxng.search(pattern, max_results=6)
@@ -427,6 +448,48 @@ class RegulatoryAnalyst(BaseAgent):
             for jurisdiction in jurisdictions:
                 urls = portal_urls.get(jurisdiction, [])
                 urls_to_scrape.extend(urls)
+
+            # If we have jurisdictions but no curated portal URLs for them
+            # (this map only covers US/EU/India/UK), discover official sources
+            # by search instead of silently scraping nothing. Without this, a
+            # question about e.g. Vietnam or Brazil produced an empty
+            # government-data set with no explanation in the report.
+            unmapped = [j for j in jurisdictions if j not in portal_urls]
+            if unmapped:
+                try:
+                    searxng = self.get_tool(ToolName.SEARXNG)
+                    # `industry` is not a parameter of this method — read the
+                    # sector from context, falling back to the engagement
+                    # subject so the discovery query is never subject-less.
+                    from hyperion.tools.query_utils import get_engagement_focus
+
+                    _q, _subject, _geo = get_engagement_focus()
+                    sector = (
+                        self._context.get("industry")
+                        or self._context.get("sector")
+                        or _subject
+                        or ""
+                    )
+                    for jurisdiction in unmapped[:2]:
+                        discovery = await searxng.search(
+                            f"{jurisdiction} official government regulatory authority "
+                            f"regulations {sector}".strip(),
+                            max_results=4,
+                        )
+                        for r in (getattr(discovery, "results", None) or [])[:3]:
+                            url = getattr(r, "url", "")
+                            if url and url not in urls_to_scrape:
+                                urls_to_scrape.append(url)
+                    if urls_to_scrape:
+                        self._log(
+                            f"REGULATORY: discovered {len(urls_to_scrape)} official "
+                            f"source(s) by search for unmapped jurisdiction(s): {unmapped}"
+                        )
+                except Exception as e:
+                    self._log(
+                        f"REGULATORY: portal discovery search failed "
+                        f"({type(e).__name__}); continuing with curated portals only"
+                    )
 
             for url in urls_to_scrape[:8]:  # Cap to avoid excessive scraping
                 try:
@@ -532,7 +595,7 @@ class RegulatoryAnalyst(BaseAgent):
         prompt = (
             "You are the HYPERION Regulatory Analyst mapping regulations by jurisdiction.\n\n"
             f"Question: {question}\n\n"
-            f"Jurisdictions: {', '.join(jurisdictions)}\n\n"
+            f"Jurisdictions: {', '.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
             f"Search results:\n{search_summary}\n\n"
             f"Government portal data:\n{gov_summary}\n\n"
             "Map ALL applicable regulations across jurisdictions:\n"
@@ -730,7 +793,7 @@ class RegulatoryAnalyst(BaseAgent):
         prompt = (
             "You are the HYPERION Regulatory Analyst scanning the regulatory horizon.\n\n"
             f"Question: {question}\n\n"
-            f"Jurisdictions: {', '.join(jurisdictions)}\n\n"
+            f"Jurisdictions: {', '.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
             f"Current regulatory search results:\n{search_summary}\n\n"
             f"Historical regulatory evolution (Wayback Machine):\n{historical_summary or 'No historical data available'}\n\n"
             "Identify pending regulations, proposed rules, and regulatory trends (1-3 year horizon):\n"
@@ -915,6 +978,96 @@ class RegulatoryAnalyst(BaseAgent):
         return (lightest.jurisdiction, evolution)
 
     # ─────────────────────────────────────────────────────────────────────
+    # Jurisdiction resolution
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _resolve_jurisdictions(self) -> list[str]:
+        """Derive the jurisdictions to analyse from the engagement itself.
+
+        Resolution order, most authoritative first:
+
+          1. ``context["jurisdictions"]`` — set by the orchestrator's
+             engagement classification, or handed over by the Market Analyst.
+          2. ``context["jurisdiction"]`` / ``context["geography"]`` /
+             ``context["region"]`` / ``context["country"]`` — singular forms.
+          3. Geographies explicitly named in the user's question.
+          4. Geographies named in the engagement focus (question + subject).
+
+        Returns ``[]`` when the engagement names no geography.
+
+        WHY THIS METHOD EXISTS: this used to be
+        ``self._context.get("jurisdictions", ["US", "EU"])``. That hardcoded
+        default meant a question about INDIA was analysed under the US Buy
+        American Act, the Trade Agreements Act and the Berry Amendment,
+        yielding 119 confidently-worded findings about the wrong country.
+        A wrong jurisdiction is strictly worse than a missing one, because it
+        reads as authoritative. Returning [] makes the downstream analysis
+        jurisdiction-agnostic — honest rather than confidently wrong.
+        """
+        from hyperion.tools.query_utils import detect_geographies, get_engagement_focus
+
+        def _clean(values: Any) -> list[str]:
+            """Coerce arbitrary context values into short jurisdiction labels."""
+            if not values:
+                return []
+            if isinstance(values, str):
+                values = re.split(r"[,;/|]| and ", values)
+            if not isinstance(values, (list, tuple, set)):
+                return []
+            out: list[str] = []
+            for v in values:
+                if not isinstance(v, str):
+                    continue
+                v = v.strip().strip(".").strip()
+                # Handover payloads can be whole sentences ("Target markets
+                # include India and the UAE..."). Those are not labels — mine
+                # them for geographies instead of using them verbatim, or a
+                # 200-char sentence ends up interpolated into a search query.
+                if not v or len(v) > 40 or v.count(" ") > 3:
+                    for g in detect_geographies(v):
+                        if g not in out:
+                            out.append(g)
+                    continue
+                if v.lower() in {"none", "null", "n/a", "unknown", "not specified"}:
+                    continue
+                # Canonicalise so "indian"/"Bharat" and "India" don't both appear.
+                canonical = detect_geographies(v)
+                pick = canonical[0] if canonical else v
+                if pick not in out:
+                    out.append(pick)
+            return out
+
+        # 1 + 2: explicit context keys, in descending authority.
+        for key in ("jurisdictions", "jurisdiction", "geography", "geographies",
+                    "region", "regions", "country", "countries", "markets"):
+            resolved = _clean(self._context.get(key))
+            if resolved:
+                self._log(
+                    f"REGULATORY: jurisdictions from context['{key}']: {resolved}"
+                )
+                return resolved[:4]
+
+        # 3: mine the user's own question.
+        resolved = detect_geographies(self._question or "")
+        if resolved:
+            self._log(f"REGULATORY: jurisdictions derived from question: {resolved}")
+            return resolved
+
+        # 4: fall back to the engagement-wide focus anchor.
+        question, subject, geography = get_engagement_focus()
+        resolved = detect_geographies(geography, subject, question)
+        if resolved:
+            self._log(f"REGULATORY: jurisdictions from engagement focus: {resolved}")
+            return resolved
+
+        # No geography anywhere. Degrade honestly — do NOT invent one.
+        self._log(
+            "REGULATORY: no jurisdiction named in the engagement; running "
+            "jurisdiction-agnostic regulatory analysis (no hardcoded default)"
+        )
+        return []
+
+    # ─────────────────────────────────────────────────────────────────────
     # Sub-agent spawning for parallel regulatory research
     # ─────────────────────────────────────────────────────────────────────
 
@@ -1043,9 +1196,16 @@ class RegulatoryAnalyst(BaseAgent):
             f"Starting regulatory analysis: {self._question[:80]}",
         )
 
-        # Extract context
-        industry = self._context.get("industry", "")
-        jurisdictions = self._context.get("jurisdictions", ["US", "EU"])
+        # Extract context.
+        #
+        # CRITICAL: jurisdictions must be derived from the question, never
+        # defaulted to a hardcoded region. The previous default of
+        # ["US", "EU"] meant a question about INDIA was analysed under the
+        # US Buy American Act / Trade Agreements Act / Berry Amendment —
+        # 119 confidently-reported findings about the wrong country. A wrong
+        # jurisdiction is worse than a missing one: it looks authoritative.
+        industry = self._context.get("industry") or self._context.get("sector") or ""
+        jurisdictions = self._resolve_jurisdictions()
 
         # Spawn sub-agents for parallel regulatory research
         if jurisdictions and industry:

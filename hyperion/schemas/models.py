@@ -1983,6 +1983,21 @@ class FinalReport(BaseModel):
     quality_score: QualityScore | None = Field(default=None, description="Quality Gate score")
     fact_check_report: FactCheckReport | None = Field(default=None, description="Fact Checker report")
 
+    # Chart specifications for the Data Visualizer (§4.5, Agent 17).
+    #
+    # The orchestrator hands these to the Data Visualizer. This field used to
+    # be MISSING while the orchestrator did
+    #     if hasattr(final_report, "chart_specifications")
+    # which therefore always evaluated False — the Data Visualizer received
+    # None on every single run and reported "No chart specifications received",
+    # producing 0 charts in every report ever generated. Declaring the field
+    # closes that silent gap; it is populated either by the Synthesis Lead or
+    # by the deterministic miner in hyperion/output/chart_specs.py.
+    chart_specifications: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Chart specs (title/section/data_series/insight) for the Data Visualizer",
+    )
+
     # Metadata for methodology page (§6.1)
     agents_used: list[str] = Field(default_factory=list, description="Which agents were spawned")
     total_sources: int = Field(default=0, description="Total unique sources cited")

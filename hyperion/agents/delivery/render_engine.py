@@ -642,20 +642,42 @@ class RenderEngine(BaseAgent):
                 self._log(f"RENDER: PDFRenderer failed: {error_msg}")
                 return ""
 
-        except (ValueError, AttributeError, RuntimeError) as e:
+        except Exception as e:
+            # Catch BROADLY on purpose. WeasyPrint on Windows raises OSError /
+            # ImportError from missing GTK natives (libgobject-2.0), which the
+            # old narrow `(ValueError, AttributeError, RuntimeError)` tuple let
+            # escape — killing the whole delivery stage and leaving only a
+            # stray .css behind. Rendering must degrade, never explode.
             self._log(f"RENDER: WeasyPrint tool unavailable ({type(e).__name__}: {e!s:.100}), trying direct import")
-            # Fallback: try direct weasyprint import
+            # Fallback A: direct weasyprint import
             try:
                 from weasyprint import HTML
 
-                HTML(filename=html_path).write_pdf(
-                    self._pdf_path,
-                    dpi=300,
-                )
-                return self._pdf_path
-            except (ImportError, RuntimeError, OSError) as e2:
+                HTML(filename=html_path).write_pdf(self._pdf_path, dpi=300)
+                if os.path.exists(self._pdf_path) and os.path.getsize(self._pdf_path) > 0:
+                    return self._pdf_path
+            except Exception as e2:
                 self._log(f"RENDER: Direct WeasyPrint also failed: {type(e2).__name__}: {e2!s:.200}")
-                return ""
+
+            # Fallback B: Playwright Chromium. This is the path that actually
+            # works on Windows, so it must be reachable even when the tool
+            # registry itself failed to hand us a PDFRenderer.
+            try:
+                from hyperion.output.render import PDFRenderer
+
+                with open(html_path, "r", encoding="utf-8") as f:
+                    html_content = f.read()
+                if html_content:
+                    result = PDFRenderer(settings=self.settings).render_pdf(
+                        html=html_content, output_path=self._pdf_path
+                    )
+                    if result and result.success:
+                        self._log("RENDER: PDF produced via direct PDFRenderer fallback")
+                        return self._pdf_path
+            except Exception as e3:
+                self._log(f"RENDER: PDFRenderer fallback failed: {type(e3).__name__}: {e3!s:.200}")
+
+            return ""
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 5: Verify PDF — no blank pages, no orphaned images, fonts embedded

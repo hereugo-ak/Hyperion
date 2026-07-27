@@ -305,6 +305,12 @@ class EngagementDirector(BaseAgent):
         super().__init__(spec=ENGAGEMENT_DIRECTOR_SPEC, bus=bus, router=router)
         self._current_dag: WorkflowDAG | None = None
         self._escalation_count: int = 0
+        # Escalation storm defences. Each escalation evaluation is a
+        # STRONG-tier LLM call, so the Director must bound how many it will
+        # make and refuse to re-evaluate an issue it has already ruled on.
+        self._seen_escalations: set[str] = set()
+        self._escalations_evaluated: int = 0
+        self._max_escalation_evaluations: int = 12
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling — the Director is omniscient
@@ -353,11 +359,55 @@ class EngagementDirector(BaseAgent):
             f"Escalation from {agent_name}: {issue}"
         )
 
+        # ── Storm defence 1: never evaluate the same issue twice ──────────
+        # _evaluate_escalation() is an unconditional STRONG-tier LLM call.
+        # Identical escalations can only produce an identical adaptation, so
+        # re-evaluating them is pure waste of the scarcest quota we have.
+        # Agents already deduplicate locally (BaseAgent._escalate), but the
+        # Director must be independently safe: distinct agents can raise the
+        # same issue, and a retried/replanned agent starts with a clean set.
+        fingerprint = f"{agent_name}:{issue.strip().lower()[:160]}"
+        if fingerprint in self._seen_escalations:
+            self._log(
+                f"DIRECTOR: skipping duplicate escalation from {agent_name}: {issue[:100]}"
+            )
+            return
+        self._seen_escalations.add(fingerprint)
+
+        # ── Storm defence 2: hard cap on LLM evaluations ──────────────────
+        # Beyond the cap we still RECORD every escalation in the adaptation
+        # log (so nothing is lost from the audit trail) but stop paying for
+        # strategic re-planning. A run that escalates this much is degraded
+        # already; the right move is to finish and deliver, not to keep
+        # re-planning until the budget is gone and no PDF is produced.
+        if self._escalations_evaluated >= self._max_escalation_evaluations:
+            self._log(
+                f"DIRECTOR: escalation evaluation cap reached "
+                f"({self._max_escalation_evaluations}); logging without LLM "
+                f"re-planning: {issue[:100]}"
+            )
+            return
+        self._escalations_evaluated += 1
+
         # Use LLM to evaluate the escalation and determine adaptation
-        adaptation = await self._evaluate_escalation(issue, suggested_action)
+        try:
+            adaptation = await self._evaluate_escalation(issue, suggested_action)
+        except Exception as e:
+            # An escalation handler must never itself abort the engagement.
+            self._log(
+                f"DIRECTOR: escalation evaluation failed "
+                f"({type(e).__name__}: {e!s:.150}); continuing"
+            )
+            return
 
         if adaptation:
-            await self._apply_adaptation(adaptation)
+            try:
+                await self._apply_adaptation(adaptation)
+            except Exception as e:
+                self._log(
+                    f"DIRECTOR: applying adaptation failed "
+                    f"({type(e).__name__}: {e!s:.150}); continuing"
+                )
 
     async def _evaluate_escalation(self, issue: str, suggested_action: str) -> dict[str, Any] | None:
         """Use LLM to evaluate an escalation and determine the adaptation.

@@ -712,29 +712,93 @@ class PDFRenderer:
 
             return result
 
-        # ── Both methods failed: HARD FAIL ──
-        # Never leave a misleading, deliverable-looking HTML file behind. The
-        # ..._playwright.html / .html scratch files are debug artifacts, NOT the
-        # report. Shipping them is exactly why past output "looked like a website
-        # instead of a PDF". Remove them and fail explicitly so upstream cannot
-        # mistake a scratch file for the deliverable.
+        # ── Both PDF engines failed: emit a real HTML deliverable ──
+        #
+        # HISTORY — this is the code path that produced the user-visible
+        # disaster. Previously it DELETED the scratch HTML and returned
+        # html_path="", so a 34-minute engagement finished with nothing in
+        # output/ except a stray report.css. The reasoning was sound (an
+        # *unstyled* scratch file is not a deliverable and must not masquerade
+        # as one) but the conclusion was wrong: deleting the only surviving
+        # artifact turned a degraded result into a total loss.
+        #
+        # The correct behaviour is to promote the scratch file into a genuine
+        # fallback: inline the brand CSS so it is self-contained and styled,
+        # name it unmistakably (…_FALLBACK.html), and mark the result as
+        # degraded-but-delivered. The user gets something they can read, print
+        # to PDF from a browser, and inspect — never an empty folder.
         result.success = False
         result.pdf_path = ""
-        for scratch in (
-            output_path.replace(".pdf", "_playwright.html"),
-            html_path,
-        ):
+
+        fallback_path = output_path.replace(".pdf", "_FALLBACK.html")
+        fallback_written = False
+        try:
+            # Inline the (font-embedded) CSS so the file stands alone. The
+            # debug HTML written earlier links no stylesheet at all, which is
+            # precisely why it looked unusable.
+            standalone = full_html
+            if css_embedded:
+                style_block = f"<style>\n{css_embedded}\n</style>"
+                if "</head>" in standalone:
+                    standalone = standalone.replace("</head>", style_block + "\n</head>", 1)
+                elif "<body" in standalone:
+                    standalone = style_block + standalone
+                else:
+                    standalone = (
+                        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                        f"{style_block}</head><body>{standalone}</body></html>"
+                    )
+            banner = (
+                "<div style=\"background:#7A1F1F;color:#fff;padding:14px 18px;"
+                "font-family:Georgia,serif;font-size:13px;line-height:1.5;\">"
+                "<strong>DEGRADED OUTPUT — HTML fallback.</strong> PDF rendering "
+                "was unavailable on this machine, so the full report is provided "
+                "as self-contained HTML. Use your browser's "
+                "<em>Print &rarr; Save as PDF</em> (A4, margins on) to obtain a "
+                "print-ready file. Content and analysis are complete and unaltered."
+                "</div>"
+            )
+            if "<body" in standalone:
+                idx = standalone.find(">", standalone.find("<body"))
+                if idx != -1:
+                    standalone = standalone[: idx + 1] + banner + standalone[idx + 1 :]
+            else:
+                standalone = banner + standalone
+
+            with open(fallback_path, "w", encoding="utf-8") as f:
+                f.write(standalone)
+            fallback_written = os.path.getsize(fallback_path) > 0
+        except Exception as e:  # noqa: BLE001 - fallback must never raise
+            result.warnings.append(
+                f"Could not write HTML fallback: {type(e).__name__}: {e!s:.100}"
+            )
+
+        # Remove the unstyled scratch files so only the real fallback remains.
+        for scratch in (output_path.replace(".pdf", "_playwright.html"), html_path):
             try:
-                if os.path.exists(scratch):
+                if scratch != fallback_path and os.path.exists(scratch):
                     os.remove(scratch)
             except OSError:
                 pass
-        result.html_path = ""
-        result.error = (
-            f"PDF generation FAILED — WeasyPrint: {weasy_error!s:.80}; "
-            f"Playwright fallback also failed. No deliverable produced "
-            f"(debug HTML removed to avoid shipping a non-PDF artifact)."
-        )
+
+        if fallback_written:
+            result.html_path = fallback_path
+            result.file_size_bytes = os.path.getsize(fallback_path)
+            result.warnings.append(
+                "PDF engines unavailable — delivered self-contained HTML fallback"
+            )
+            result.error = (
+                f"PDF generation failed (WeasyPrint: {weasy_error!s:.80}; "
+                f"Playwright fallback also failed). Delivered styled HTML "
+                f"fallback instead: {fallback_path}"
+            )
+        else:
+            result.html_path = ""
+            result.error = (
+                f"PDF generation FAILED — WeasyPrint: {weasy_error!s:.80}; "
+                f"Playwright fallback also failed; HTML fallback could not be "
+                f"written. No deliverable produced."
+            )
         return result
 
     def render_from_template(

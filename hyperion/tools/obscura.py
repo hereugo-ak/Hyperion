@@ -175,6 +175,11 @@ class ObscuraClient:
     CDP_TIMEOUT = 30  # seconds for CDP commands
     MAX_RETRIES = 2
 
+    # Process-wide cache for the platform-support probe. The probe shells out
+    # to the binary, so it must run at most once per process rather than on
+    # every fetch()/scrape() call. None = not yet probed.
+    _platform_supported_cache: bool | None = None
+
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
         self._obscura_path = "obscura"
@@ -217,29 +222,55 @@ class ObscuraClient:
         return self._obscura_path  # Return configured path even if not found
 
     def _is_platform_supported(self) -> bool:
-        """Check if Obscura binary is supported on this platform.
+        """Check if the Obscura binary can actually run on this platform.
 
-        Obscura is distributed as a Windows binary (.exe). On non-Windows
-        platforms, it won't run even if the file exists in the project.
-        This guard prevents subprocess errors and lets the extraction
-        fallback chain proceed to the next tool.
+        Obscura ships as a Windows binary (.exe). On non-Windows platforms it
+        won't execute even though the file is present in obscura-bin/, so this
+        guard lets the extraction fallback chain move on to the next tool.
+
+        CACHED PROCESS-WIDE. The probe used to shell out via a *blocking*
+        `subprocess.run(..., timeout=5)` on every single call, from inside an
+        async module. Two consequences, both observed in production:
+          - it blocked the event loop for up to 5s per call, serialising work
+            that was supposed to be concurrent;
+          - agents call fetch()/scrape() dozens of times per engagement, so the
+            same doomed probe was repaid over and over.
+        The answer cannot change during a run, so we resolve it once.
         """
-        # Windows: always supported (binary is .exe)
+        cached = ObscuraClient._platform_supported_cache
+        if cached is not None:
+            return cached
+
+        supported = self._probe_platform_support()
+        ObscuraClient._platform_supported_cache = supported
+        if not supported:
+            logger.info(
+                "Obscura binary not runnable on platform %s — Obscura steps will "
+                "be skipped and the extraction fallback chain (Jina/SearxNG) "
+                "will be used instead",
+                sys.platform,
+            )
+        return supported
+
+    def _probe_platform_support(self) -> bool:
+        """One-shot platform probe. Never raises."""
+        # Windows: the shipped .exe is native.
         if sys.platform == "win32":
             return True
 
-        # Non-Windows: check if a platform-native binary exists in PATH
-        # (user may have compiled from source for Linux/macOS)
-        found = shutil.which("obscura")
-        if found:
-            return True
+        # Non-Windows: a native build may be on PATH (user compiled it).
+        try:
+            if shutil.which("obscura"):
+                return True
+        except Exception:
+            pass
 
-        # Check if the local obscura-bin has a non-.exe binary
-        project_root = Path(__file__).resolve().parents[2]
-        native_binary = project_root / "obscura-bin" / "obscura"
-        if native_binary.exists() and sys.platform != "win32":
-            # Verify it's actually executable (not the Windows .exe renamed)
-            try:
+        # Or a non-.exe binary in obscura-bin/ — but verify it truly executes
+        # rather than being the Windows .exe renamed.
+        try:
+            project_root = Path(__file__).resolve().parents[2]
+            native_binary = project_root / "obscura-bin" / "obscura"
+            if native_binary.exists():
                 result = subprocess.run(
                     [str(native_binary), "--version"],
                     capture_output=True,
@@ -247,22 +278,26 @@ class ObscuraClient:
                 )
                 if result.returncode == 0:
                     return True
-            except (subprocess.SubprocessError, OSError):
-                pass
+        except Exception:
+            # Exec format errors, permission errors, timeouts — all mean "no".
+            pass
 
-        logger.debug(
-            "Obscura binary not available on platform %s — skipping, "
-            "extraction fallback chain will use next tool",
-            sys.platform,
-        )
         return False
 
     def _binary_available(self) -> bool:
-        """Check if the Obscura binary exists and is platform-supported."""
-        if not self._is_platform_supported():
+        """Check if the Obscura binary exists and is platform-supported.
+
+        Never raises: a filesystem hiccup here must degrade to "unavailable",
+        not propagate into an agent's research step.
+        """
+        try:
+            if not self._is_platform_supported():
+                return False
+            obscura_bin = self._find_obscura()
+            return bool(obscura_bin) and os.path.exists(obscura_bin)
+        except Exception as e:
+            logger.debug("Obscura availability check failed: %s: %s", type(e).__name__, e)
             return False
-        obscura_bin = self._find_obscura()
-        return bool(obscura_bin) and os.path.exists(obscura_bin)
 
     # ─────────────────────────────────────────────────────────────────────
     # CLI Commands — one-shot operations
@@ -341,11 +376,18 @@ class ObscuraClient:
                 status_code=408,
                 error=f"Obscura fetch timed out after {self.CLI_TIMEOUT}s",
             )
-        except (OSError, FileNotFoundError) as e:
+        except Exception as e:
+            # Catch BROADLY. The old `(OSError, FileNotFoundError)` tuple missed
+            # NotImplementedError — which is exactly what asyncio raises when a
+            # subprocess is created on a Windows SelectorEventLoop — so the
+            # exception escaped and killed the calling agent's research step
+            # instead of degrading to the next tool in the fallback chain.
+            # A scraper being unavailable must never be fatal.
+            logger.debug("Obscura fetch failed for %s: %s: %s", url, type(e).__name__, e)
             return ObscuraFetchResult(
                 url=url,
                 status_code=500,
-                error=f"Obscura binary not found: {e}",
+                error=f"Obscura unavailable ({type(e).__name__}): {e}",
             )
 
     async def scrape(
@@ -452,9 +494,18 @@ class ObscuraClient:
                 total=len(urls),
                 failed=len(urls),
             )
-        except (OSError, FileNotFoundError) as e:
+        except Exception as e:
+            # Broad on purpose — see the matching comment in fetch(). Notably
+            # NotImplementedError (Windows SelectorEventLoop subprocesses) was
+            # escaping the old narrow tuple and aborting the agent step.
+            logger.debug("Obscura scrape failed: %s: %s", type(e).__name__, e)
             return ObscuraScrapeResult(
-                results=[ObscuraFetchResult(url=u, error=str(e)) for u in urls],
+                results=[
+                    ObscuraFetchResult(
+                        url=u, error=f"Obscura unavailable ({type(e).__name__}): {e}"
+                    )
+                    for u in urls
+                ],
                 total=len(urls),
                 failed=len(urls),
             )
@@ -506,8 +557,12 @@ class ObscuraClient:
                 await self.stop_serve()
                 return False
 
-        except (OSError, FileNotFoundError) as e:
-            logger.warning("Obscura serve failed to start: %s", e)
+        except Exception as e:
+            # Broad on purpose — see fetch(). A CDP server that won't start is
+            # a degraded capability, never a fatal engagement error.
+            logger.warning(
+                "Obscura serve failed to start (%s): %s", type(e).__name__, e
+            )
             self._serve_proc = None
             return False
 

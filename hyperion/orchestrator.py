@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -39,6 +40,11 @@ from hyperion.agents.engagement_director import EngagementDirector
 from hyperion.agents.synthesis_lead import SynthesisLead
 from hyperion.obs import ArtifactStore, RunJournal, RunManifest, trace
 from hyperion.schemas.agents import AgentName, AgentState
+from hyperion.tools.query_utils import (
+    clear_engagement_focus,
+    detect_geographies,
+    set_engagement_focus,
+)
 from hyperion.schemas.models import (
     FactCheckReport,
     FinalReport,
@@ -53,6 +59,8 @@ from hyperion.schemas.workflow import (
     TaskStatus,
     WorkflowDAG,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -240,6 +248,10 @@ class WorkflowEngine:
         self._all_findings: list[Any] = []  # collected from bus
         self._start_time: float = 0.0
         self._engagement_id: str = ""
+        # Engagement-scoped question classification (industry/geography/
+        # jurisdictions), computed once and shared by every specialist so all
+        # agents analyse the same market. None = not yet computed.
+        self._engagement_context: dict[str, Any] | None = None
         # P10: Durable execution — journal, artifact store, manifest
         self._journal: RunJournal | None = None
         self._artifacts: ArtifactStore | None = None
@@ -342,6 +354,131 @@ class WorkflowEngine:
             )
         return self._agent_instances[agent_name]
 
+    async def _get_engagement_context(self, agent: Any, dag: WorkflowDAG) -> dict[str, Any]:
+        """Classify the engagement question ONCE and reuse for every specialist.
+
+        Why this is engagement-scoped rather than task-scoped:
+
+        1. Correctness — the user's question holds the geography/industry
+           ("should India reduce its dependence on the imports"). Individual
+           task descriptions often don't, so classifying per task silently
+           dropped "India" and specialists fell back to hardcoded US/EU
+           defaults, producing a US-procurement-law analysis of an India
+           question. Classify the real question, once.
+        2. Consistency — all 12 specialists must analyse the SAME market.
+           Per-task classification let different agents disagree.
+        3. Cost — one MICRO call per engagement instead of one per task.
+
+        Guarantees a usable `geography`/`industry`/`jurisdictions` set even if
+        the LLM classifier is unavailable, so no downstream default can win.
+        """
+        if self._engagement_context is not None:
+            return self._engagement_context
+
+        ctx: dict[str, Any] = {}
+        try:
+            ctx = await agent._enrich_context(dag.question) or {}
+        except Exception:
+            ctx = {}
+
+        # Always union with the deterministic regex pass. The LLM sometimes
+        # returns a partial object; the regex reliably catches explicit
+        # country/industry mentions. Regex only fills gaps, never overrides.
+        try:
+            regex_ctx = agent._enrich_context_regex(dag.question) or {}
+            for k, v in regex_ctx.items():
+                if v not in (None, "", [], {}) and ctx.get(k) in (None, "", [], {}):
+                    ctx[k] = v
+        except Exception:
+            pass
+
+        # Derive jurisdictions from geography so the Regulatory Analyst can
+        # never silently fall back to ["US", "EU"] on a non-US question.
+        #
+        # Geography must not depend on the LLM classifier succeeding. That
+        # classifier is a network call to one of five providers and can return
+        # a partial object, time out, or be rate-limited — and when it did, the
+        # whole engagement lost its country anchor and every search went out
+        # unscoped. So if classification produced no geography, fall back to
+        # the deterministic gazetteer over the user's own words.
+        #
+        # Note this DETECTS a geography the user named; it never supplies a
+        # default. detect_geographies() returning [] means the question names
+        # no country, and the correct behaviour then is to analyse without a
+        # jurisdiction filter. Inventing one would produce an answer that reads
+        # as authoritative about a country the user never asked about.
+        geo = ctx.get("geography") or ctx.get("jurisdiction")
+        if not geo:
+            detected = detect_geographies(dag.question or "")
+            if detected:
+                geo = detected[0]
+                ctx["geography"] = geo
+                if len(detected) > 1 and not ctx.get("jurisdictions"):
+                    ctx["jurisdictions"] = detected
+        if geo:
+            ctx.setdefault("jurisdiction", geo)
+            if not ctx.get("jurisdictions"):
+                ctx["jurisdictions"] = [geo]
+
+        # Last-resort subject so f-string query templates are never empty.
+        # An empty {sector} produced real searches like "carbon footprint
+        # emissions data" with no subject — 34 minutes of useless traffic.
+        subject = (
+            ctx.get("industry")
+            or ctx.get("sector")
+            or ctx.get("space")
+            or self._derive_subject_from_question(dag.question)
+        )
+        if subject:
+            for key in ("industry", "sector", "space"):
+                ctx.setdefault(key, subject)
+
+        ctx.setdefault("question", dag.question)
+        self._engagement_context = ctx
+
+        # Publish the anchor to the search layer. Every outbound search query
+        # is grounded against this, so no specialist can issue a subject-less
+        # or off-geography search regardless of its hardcoded templates.
+        try:
+            set_engagement_focus(
+                question=dag.question,
+                subject=str(ctx.get("industry") or subject or ""),
+                geography=str(ctx.get("geography") or ""),
+            )
+        except Exception:
+            pass
+
+        self._log(
+            "CONTEXT: "
+            f"industry={ctx.get('industry') or '?'} · "
+            f"geography={ctx.get('geography') or '?'} · "
+            f"jurisdictions={ctx.get('jurisdictions') or '?'}"
+        )
+        return ctx
+
+    @staticmethod
+    def _derive_subject_from_question(question: str) -> str:
+        """Extract a usable search subject from the raw question.
+
+        Deterministic, no LLM. Strips interrogatives/stopwords and keeps the
+        content words so a query template always has a real subject to
+        interpolate, even when classification fails entirely.
+        """
+        import re
+
+        stop = {
+            "should", "would", "could", "do", "does", "did", "is", "are", "was",
+            "were", "can", "will", "the", "a", "an", "its", "it", "we", "our",
+            "us", "i", "my", "on", "in", "of", "to", "for", "and", "or", "but",
+            "if", "then", "than", "that", "this", "these", "those", "be", "been",
+            "have", "has", "had", "how", "what", "why", "when", "where", "which",
+            "who", "reduce", "increase", "there", "their", "from", "with", "by",
+            "at", "as", "so", "not", "no", "yes", "any", "all", "more", "most",
+        }
+        words = re.findall(r"[A-Za-z][A-Za-z\-]+", question or "")
+        keep = [w for w in words if w.lower() not in stop and len(w) > 2]
+        return " ".join(keep[:6])
+
     async def _execute_task(self, task: TaskNode, dag: WorkflowDAG) -> Any:
         """Execute a single task — instantiate the agent and call its run() method.
 
@@ -408,13 +545,26 @@ class WorkflowEngine:
                 AgentName.CONSUMER_INSIGHTS, AgentName.MA_ANALYST,
                 AgentName.INNOVATION_ANALYST, AgentName.STRATEGY_ANALYST,
             ):
-                # P7 GAP-2: Enrich context with MICRO LLM classifier to
-                # populate industry/geography/sector/etc. from the question
-                # so specialists' search queries are never empty.
+                # P7 GAP-2: Enrich context so specialists' search queries are
+                # never empty and never default to the wrong jurisdiction.
+                #
+                # Enrichment is computed ONCE per engagement from the USER'S
+                # question (dag.question), not per-task from task.description.
+                # task.description is an internal sub-goal like "How competitive
+                # are potential domestic substitutes..." which frequently omits
+                # the country/industry — that omission is what caused an INDIA
+                # question to be analysed under the US Buy American Act.
                 try:
-                    enriched = await agent._enrich_context(task.description or dag.question)
-                    if enriched:
-                        context.update(enriched)
+                    enriched = await self._get_engagement_context(agent, dag)
+                    for k, v in enriched.items():
+                        # Never let a null/blank classification overwrite a real
+                        # value, and never inject empty strings that would
+                        # interpolate into f-string queries as "" (that is what
+                        # produced searches like "carbon footprint emissions data"
+                        # with no subject at all).
+                        if v in (None, "", [], {}):
+                            continue
+                        context.setdefault(k, v)
                 except Exception:
                     pass
 
@@ -514,12 +664,48 @@ class WorkflowEngine:
                 )
 
             elif task.agent == AgentName.DATA_VISUALIZER:
-                # Data Visualizer needs chart specs from Presentation Designer
-                # or from the FinalReport's chart specifications
+                # Data Visualizer needs chart specs from the Synthesis Lead's
+                # FinalReport. If the Synthesis Lead did not emit any, mine them
+                # deterministically from the numbers the agents already found.
+                #
+                # HISTORY: `FinalReport` had no `chart_specifications` field, so
+                # the old `hasattr(...)` guard was always False and this branch
+                # silently passed chart_specs=None on EVERY run. The Data
+                # Visualizer then reported "No chart specifications received"
+                # and returned 0 charts — every report ever produced was
+                # text-only while a full Plotly/300-DPI/Pillow pipeline sat
+                # unused. The field now exists; the miner guarantees it is
+                # populated whenever the findings actually contain numbers.
                 final_report = self._get_output_by_agent(dag, AgentName.SYNTHESIS_LEAD)
                 chart_specs: list[dict[str, Any]] = []
-                if final_report and hasattr(final_report, "chart_specifications"):
-                    chart_specs = final_report.chart_specifications or []
+                if final_report is not None:
+                    chart_specs = list(getattr(final_report, "chart_specifications", None) or [])
+                    if not chart_specs:
+                        try:
+                            from hyperion.output.chart_specs import mine_chart_specs
+
+                            chart_specs = mine_chart_specs(
+                                final_report, question=dag.question
+                            )
+                            if chart_specs:
+                                logger.info(
+                                    "Mined %d chart spec(s) from report findings "
+                                    "(Synthesis Lead supplied none)",
+                                    len(chart_specs),
+                                )
+                                # Persist onto the report so the Presentation
+                                # Designer and Render Engine see the same specs.
+                                try:
+                                    final_report.chart_specifications = chart_specs
+                                except Exception:
+                                    pass
+                            else:
+                                logger.warning(
+                                    "No chartable numeric series found in findings; "
+                                    "report will be text-only"
+                                )
+                        except Exception as e:
+                            logger.warning("Chart spec mining failed: %s: %s", type(e).__name__, e)
                 result = await asyncio.wait_for(
                     agent.run(
                         question=dag.question,
@@ -1120,6 +1306,28 @@ class WorkflowEngine:
         """
         self._start_time = time.time()
         self._engagement_id = f"eng_{uuid.uuid4().hex[:12]}"
+        # Reset per-engagement question classification so a new question can
+        # never inherit the previous engagement's industry/geography.
+        self._engagement_context = None
+        clear_engagement_focus()
+        # Seed the search anchor from the raw question immediately, so any
+        # search firing before classification completes is still on-topic.
+        #
+        # The geography is seeded here too, from the deterministic gazetteer.
+        # It used to be passed as "" and only filled in later by
+        # _get_engagement_context, which meant every search issued during
+        # Stage 1 went out with no country anchor even though the user had
+        # named one in the question. Detected-only: [] stays "" rather than
+        # becoming an invented default.
+        try:
+            _early_geo = detect_geographies(question or "")
+            set_engagement_focus(
+                question=question,
+                subject=self._derive_subject_from_question(question),
+                geography=_early_geo[0] if _early_geo else "",
+            )
+        except Exception:
+            pass
 
         # P10: Durable execution — open journal, artifact store, manifest
         self._journal = RunJournal(self._engagement_id)
