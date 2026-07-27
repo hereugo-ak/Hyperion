@@ -1159,3 +1159,112 @@ class TestFreshProcessState:
 
         await boot_mod.stop_services()
         assert closed["n"] == 1, "router.close() was not awaited on shutdown"
+
+
+class TestToolConfiguration:
+    """Tool configuration must be consistent across every launcher.
+
+    docker-compose.yml pinned both images to exact tags and documented why:
+    "`latest` is non-deterministic and a recent build made
+    `default_doi_resolver` mandatory (HTTP 500 without it)". The code that
+    actually starts the containers ignored those pins — boot.py ran bare
+    "searxng/searxng" and cli.py had a SECOND unpinned copy — so every
+    `hyperion shell` pulled whatever `latest` happened to be. A SearxNG
+    returning HTTP 500 presents to the user as "search found nothing".
+    """
+
+    @staticmethod
+    def _compose() -> str:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        return (root / "docker-compose.yml").read_text(encoding="utf-8")
+
+    def test_images_are_pinned_not_latest(self):
+        from hyperion.tui import boot
+
+        for name, image in (
+            ("SEARXNG_IMAGE", boot.SEARXNG_IMAGE),
+            ("FLARESOLVERR_IMAGE", boot.FLARESOLVERR_IMAGE),
+        ):
+            assert ":" in image, f"{name} has no tag, so it resolves to :latest"
+            assert not image.endswith(":latest"), (
+                f"{name} is pinned to :latest, which is non-deterministic"
+            )
+
+    def test_code_pins_match_docker_compose(self):
+        """One pin, two places to change it — assert they agree."""
+        from hyperion.tui import boot
+
+        compose = self._compose()
+        for name, image in (
+            ("SEARXNG_IMAGE", boot.SEARXNG_IMAGE),
+            ("FLARESOLVERR_IMAGE", boot.FLARESOLVERR_IMAGE),
+        ):
+            tag = image.rsplit(":", 1)[-1]
+            assert tag in compose, (
+                f"{name} tag {tag!r} does not appear in docker-compose.yml: the "
+                f"compose file and the launcher would start different versions"
+            )
+
+    def test_no_unpinned_image_literals_in_launchers(self):
+        """Both launchers must use the constants, not their own strings."""
+        import ast
+        import inspect
+
+        from hyperion import cli
+        from hyperion.tui import boot
+
+        for module in (boot, cli):
+            tree = ast.parse(inspect.getsource(module))
+            bad = [
+                node.value
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and ("searxng/searxng" in node.value or "flaresolverr" in node.value)
+                and node.value not in (boot.SEARXNG_IMAGE, boot.FLARESOLVERR_IMAGE)
+                and node.value != "flaresolverr"  # bare container name is fine
+            ]
+            assert not bad, (
+                f"{module.__name__} contains its own image literal(s) {bad}: "
+                f"use boot.SEARXNG_IMAGE / boot.FLARESOLVERR_IMAGE so the pin "
+                f"cannot drift between launchers"
+            )
+
+    def test_searxng_port_matches_client_default(self):
+        """A published port that disagrees with the client's base URL means
+        every search fails with a connection error, silently."""
+        from hyperion.tui import boot
+
+        assert f":{boot.SEARXNG_PORT}" in self._compose(), (
+            f"SEARXNG_PORT {boot.SEARXNG_PORT} is not the port published by "
+            f"docker-compose.yml"
+        )
+
+    def test_consult_uses_the_shared_launcher(self):
+        """The headless path must not re-implement container startup."""
+        import inspect
+
+        from hyperion import cli
+
+        src = inspect.getsource(cli._run_engagement)
+        assert "start_services" in src, "consult does not use the shared launcher"
+
+        # Inspect string CONSTANTS, not the raw text: the function's comment
+        # explains the drift it fixes and therefore mentions "docker".
+        import ast
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(src))
+        docker_literals = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value.strip().startswith("docker")
+        ]
+        assert not docker_literals, (
+            f"consult still issues its own docker commands ({docker_literals}): "
+            f"that duplicate is how the image pins drifted in the first place"
+        )
