@@ -1,21 +1,38 @@
-version: "3.8"
-
+#
+# The image tags here MUST match hyperion/infra/services.py. A test asserts it.
+#
+# NOTE ON PINNING. The previous pin, `searxng/searxng:2024.12.10-a4d2a5f68`, was
+# chosen for reproducibility but SearxNG's registry keeps only a rolling window
+# of date-stamped tags. The tag was reaped, so `docker run` failed with
+# "Unable to find image" and SearxNG never started — the pin guaranteed the
+# failure it was meant to prevent. `hyperion shell` therefore resolves images
+# through hyperion/infra/services.py, which falls back to a second pin and
+# finally to `latest` when a pin has aged out, and reports which tag it used.
+#
+# This compose file is the manual path (`docker compose up`); it has no fallback
+# logic, so if a pin here stops resolving, refresh both files together.
+#
 services:
   searxng:
-    # Pinned to a known-good tag for reproducibility. `latest` is non-deterministic
-    # and a recent build made `default_doi_resolver` mandatory (HTTP 500 without it).
-    image: searxng/searxng:2024.12.10-a4d2a5f68
+    image: searxng/searxng:2026.7.19-6da6eee26
     container_name: searxng
     ports:
       - "8888:8080"
     volumes:
       - ./searxng_settings.yml:/etc/searxng/settings.yml:ro
+      - ./searxng-limiter.toml:/etc/searxng/limiter.toml:ro
     environment:
       - SEARXNG_BASE_URL=http://localhost:8888/
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   flaresolverr:
-    # Pinned for reproducibility (CAPTCHA-only fallback, not the primary SERP source).
+    # CAPTCHA-only fallback, not the primary SERP source.
     image: flaresolverr/flaresolverr:v3.3.21
     container_name: flaresolverr
     ports:
@@ -23,3 +40,9 @@ services:
     environment:
       - LOG_LEVEL=info
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8191/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
