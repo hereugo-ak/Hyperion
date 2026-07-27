@@ -150,9 +150,17 @@ class SearxNGClient:
 
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
-        self._base_url = "http://localhost:8888"
+        # The default is derived from the port the launcher actually publishes,
+        # not a literal. Two hardcoded copies of "8888" (here and in the
+        # container spec) meant a port change moved the container without moving
+        # the client, and every search then failed with a connection error that
+        # surfaced only as "search returned no results".
+        from hyperion.infra.services import SEARXNG_PORT
+
+        default_url = f"http://localhost:{SEARXNG_PORT}"
+        self._base_url = default_url
         if settings:
-            self._base_url = getattr(settings, "searxng_url", "http://localhost:8888")
+            self._base_url = getattr(settings, "searxng_url", "") or default_url
         self._base_url = self._base_url.rstrip("/")
         self._client: httpx.AsyncClient | None = None
         self._cache: dict[str, tuple[float, SearchResponse]] = {}

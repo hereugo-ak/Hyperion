@@ -158,10 +158,18 @@ class SecondBrainClient:
 
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
-        self._vault_path = Path("./vault")
-        if settings:
-            self._vault_path = Path(getattr(settings, "vault_path", "./vault"))
-        self._vault_path = Path(self._vault_path)
+        # Anchored at the project root, not the CWD.
+        #
+        # `Path("./vault")` is relative to wherever the shell was launched, so a
+        # vault written during one session was invisible to the next if the user
+        # started HYPERION from a different directory — and "prior engagements"
+        # was therefore always 0 while the notes sat in a stray ./vault folder.
+        from hyperion.infra.paths import resolve_path
+
+        self._vault_path = resolve_path(
+            getattr(settings, "vault_path", None) if settings else None,
+            default="vault",
+        )
         self._cache: dict[str, tuple[float, VaultSearchResult]] = {}
         self._ensure_vault_structure()
 

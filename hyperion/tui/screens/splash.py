@@ -19,6 +19,8 @@ roster init, vault prime) and transitions to the engagement screen when ready.
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 from typing import Any
 
 from textual.app import ComposeResult
@@ -197,46 +199,64 @@ class SplashScreen(Screen):
         await asyncio.sleep(0.2 if not self._reduced else 0.02)
 
         # ── SearxNG ─────────────────────────────────────────────────────────────
+        # The published port comes from the shared constant, not a literal. The
+        # splash used to say "running · localhost:8888" unconditionally, so
+        # changing the port left the splash confidently reporting the old one.
         searx = self.query_one("#stat-searxng", SplashStatus)
         try:
-            import shutil
-            docker_path = shutil.which("docker")
-            if docker_path is None:
+            from hyperion.infra.services import (
+                SEARXNG_PORT,
+                docker_available,
+                docker_engine_version,
+                run_command,
+            )
+
+            if not docker_available():
                 searx.set_status("Docker not installed — Jina fallback", ok=None)
             else:
                 searx.set_status("checking Docker…", ok=None)
-                from hyperion.tui.boot import _run_subprocess
-                rc, out, _ = await _run_subprocess(
-                    ["docker", "ps", "--filter", "name=searxng", "--format", "{{.Status}}"],
-                    timeout=8,
-                )
-                if rc == 0 and "Up" in out:
-                    searx.set_status("running · localhost:8888", ok=True)
+                if not await docker_engine_version():
+                    # Distinguish "engine down" from "container down": the boot
+                    # sequence starts the engine, so this is informational, not
+                    # an error the user must act on.
+                    searx.set_status("Docker engine idle — will auto-start", ok=None)
                 else:
-                    searx.set_status("container stopped — will auto-start", ok=None)
+                    rc, out, _ = await run_command(
+                        ["docker", "ps", "--filter", "name=searxng", "--format", "{{.Status}}"],
+                        timeout=8,
+                    )
+                    if rc == 0 and "Up" in out:
+                        searx.set_status(f"running · localhost:{SEARXNG_PORT}", ok=True)
+                    else:
+                        searx.set_status("container stopped — will auto-start", ok=None)
         except Exception:
             searx.set_status("check skipped", ok=None)
 
         await asyncio.sleep(0.2 if not self._reduced else 0.02)
 
         # ── Obscura ─────────────────────────────────────────────────────────────
+        # Ask the client that actually runs Obscura instead of re-deriving the
+        # answer here. This block used to walk parent directories looking for a
+        # NON-EMPTY obscura-bin/ and report "found" — so on Linux, where the
+        # directory contains only the Windows .exe, the splash reported Obscura
+        # available for a binary that cannot execute. Three code paths
+        # (splash, health, client) gave three different answers; now there is one.
         obs = self.query_one("#stat-obscura", SplashStatus)
         try:
-            import shutil
-            obscura_path = shutil.which("obscura")
-            if obscura_path:
-                obs.set_status(f"found · {obscura_path}", ok=True)
+            from hyperion.config import get_settings
+            from hyperion.tools.obscura import ObscuraClient
+
+            client = ObscuraClient(settings=get_settings())
+            resolved = client._find_obscura()
+            if client._binary_available():
+                obs.set_status(f"found · {resolved}", ok=True)
+            elif resolved and Path(resolved).is_file():
+                obs.set_status(
+                    f"present but not runnable on {sys.platform} — Jina fallback",
+                    ok=None,
+                )
             else:
-                # Check obscura-bin directory
-                from pathlib import Path
-                here = Path(__file__).resolve()
-                for parent in here.parents:
-                    candidate = parent / "obscura-bin"
-                    if candidate.exists() and any(candidate.iterdir()):
-                        obs.set_status(f"found · {candidate}", ok=True)
-                        break
-                else:
-                    obs.set_status("not in PATH (optional for JS pages)", ok=None)
+                obs.set_status("not found (optional for JS pages)", ok=None)
         except Exception:
             obs.set_status("check skipped", ok=None)
 

@@ -24,9 +24,13 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from hyperion.infra.paths import obscura_bin_dir
 
 
 @dataclass
@@ -61,29 +65,36 @@ def _check_tool(name: str, settings: Any) -> ToolHealth:
     h = ToolHealth(name=name)
 
     if name == "searxng":
-        url = getattr(settings, "searxng_url", "http://localhost:8888")
-        host = "localhost"
-        port = 8888
-        if "://" in url:
-            parts = url.split(":")
-            if len(parts) >= 3:
-                port = int(parts[2].rstrip("/"))
-                host = parts[1].lstrip("/")
+        # Host and port come from the configured URL via one shared parser.
+        #
+        # This used to be `url.split(":")` with `parts[2]` as the port, which
+        # breaks on every URL shape except the exact literal default: a trailing
+        # path made `int()` raise, and any URL without an explicit port silently
+        # fell back to a hardcoded 8888. Pointing HYPERION at a SearxNG on
+        # another port therefore probed the wrong port and reported OFFLINE for
+        # a service that was serving perfectly.
+        url = getattr(settings, "searxng_url", "") or "http://localhost:8888"
+        host = getattr(settings, "searxng_host", None) or "localhost"
+        port = getattr(settings, "searxng_port", None) or 8888
         if _check_port(host, port):
             h.status = "OK"
             h.detail = f"{url}"
         else:
             h.status = "OFFLINE"
-            h.detail = f"not reachable at {url}"
+            h.detail = f"not reachable at {host}:{port} ({url})"
 
     elif name == "flaresolverr":
-        url = getattr(settings, "flaresolverr_url", "http://localhost:8191/v1")
-        if _check_port("localhost", 8191):
+        # Was hardcoded to localhost:8191 regardless of `flaresolverr_url`, so
+        # the check and the client could point at different endpoints.
+        url = getattr(settings, "flaresolverr_url", "") or "http://localhost:8191/v1"
+        host = getattr(settings, "flaresolverr_host", None) or "localhost"
+        port = getattr(settings, "flaresolverr_port", None) or 8191
+        if _check_port(host, port):
             h.status = "OK"
             h.detail = f"{url}"
         else:
             h.status = "OFFLINE"
-            h.detail = "not reachable"
+            h.detail = f"not reachable at {host}:{port}"
 
     elif name == "jina":
         key = getattr(settings, "jina_api_key", "")
@@ -91,22 +102,34 @@ def _check_tool(name: str, settings: Any) -> ToolHealth:
         h.detail = "API key set" if key else "no API key (free tier only)"
 
     elif name == "obscura":
-        import sys
-        import shutil
-        from pathlib import Path
-        if sys.platform == "win32":
-            exe = Path("obscura-bin/obscura.exe")
-            h.status = "OK" if exe.exists() else "OFFLINE"
-            h.detail = str(exe) if exe.exists() else "obscura.exe not found"
-        else:
-            found = shutil.which("obscura")
-            native = Path("obscura-bin/obscura")
-            if found or (native.exists() and os.access(native, os.X_OK)):
+        # Delegate to the client, so health and runtime agree by construction.
+        #
+        # This branch previously used `Path("obscura-bin/obscura.exe")` — a
+        # CWD-relative path. Launching the shell from anywhere other than the
+        # project root made the file "missing", so health reported Obscura
+        # OFFLINE while the client (which walked to the project root) used it
+        # successfully. The two answers came from two different code paths, and
+        # health's was simply wrong. It also only checked existence, not
+        # executability, so on Linux the Windows .exe counted as available.
+        try:
+            from hyperion.tools.obscura import ObscuraClient
+
+            client = ObscuraClient(settings=settings)
+            resolved = client._find_obscura()
+            if client._binary_available():
                 h.status = "OK"
-                h.detail = found or str(native)
+                h.detail = resolved
+            elif resolved and Path(resolved).is_file():
+                # Present but not runnable here — the honest answer, and the
+                # reason the fallback chain skips Obscura on this platform.
+                h.status = "DEGRADED"
+                h.detail = f"{resolved} present but not executable on {sys.platform}"
             else:
                 h.status = "OFFLINE"
-                h.detail = "no Linux binary found"
+                h.detail = f"binary not found (looked in {obscura_bin_dir()} and PATH)"
+        except Exception as exc:
+            h.status = "OFFLINE"
+            h.detail = f"probe failed: {type(exc).__name__}: {exc}"[:80]
 
     elif name == "alpha_vantage":
         key = getattr(settings, "alpha_vantage_api_key", "")
