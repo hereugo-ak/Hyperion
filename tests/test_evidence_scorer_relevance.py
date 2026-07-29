@@ -206,3 +206,52 @@ class TestScoreIntegration:
     def test_never_raises_on_empty_or_none(self):
         assert scorer._score_relevance("", "content") == 0.0
         assert scorer._score_relevance("query", "") == 0.0
+
+
+# ── Fix 2.5: confidence capped under "insufficient" stance ──────────────────
+
+class TestConfidenceCapWhenInsufficient:
+    """Audit §4.8 Finding B-7 (last bullet) / §6 Phase 2 item 2.5:
+    'summarize() sets overall_stance = "insufficient" when total < 3, but
+    confidence is still computed and returned — a downstream consumer reading
+    confidence without checking overall_stance gets a misleadingly high
+    number.' Measured pre-fix: 0.82 for 2 high-credibility sources."""
+
+    def test_two_high_credibility_sources_capped(self):
+        from hyperion.tools.evidence_scorer import ScoredResult
+        results = [
+            ScoredResult(url="https://sec.gov/a", title="A", stance="support",
+                         credibility_score=0.95, relevance_score=0.9),
+            ScoredResult(url="https://imf.org/b", title="B", stance="support",
+                         credibility_score=0.95, relevance_score=0.9),
+        ]
+        s = scorer.summarize(results)
+        assert s.overall_stance == "insufficient"
+        assert s.confidence <= 0.3
+
+    def test_well_evidenced_support_not_capped(self):
+        from hyperion.tools.evidence_scorer import ScoredResult
+        results = [
+            ScoredResult(url=f"https://sec.gov/{i}", title=f"{i}", stance="support",
+                         credibility_score=0.95, relevance_score=0.9)
+            for i in range(10)
+        ]
+        s = scorer.summarize(results)
+        assert s.overall_stance == "supported"
+        assert s.confidence > 0.3
+
+    def test_all_neutral_results_capped(self):
+        from hyperion.tools.evidence_scorer import ScoredResult
+        results = [
+            ScoredResult(url=f"https://x.com/{i}", title=f"{i}", stance="neutral",
+                         credibility_score=0.9, relevance_score=0.9)
+            for i in range(10)
+        ]
+        s = scorer.summarize(results)
+        assert s.overall_stance == "insufficient"
+        assert s.confidence <= 0.3
+
+    def test_empty_results_stay_zero(self):
+        s = scorer.summarize([])
+        assert s.overall_stance == "insufficient"
+        assert s.confidence == 0.0

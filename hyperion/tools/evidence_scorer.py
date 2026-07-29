@@ -339,6 +339,17 @@ class EvidenceScorer:
         source_factor = min(total / 10.0, 1.0)  # 10+ sources = max confidence
         confidence = (avg_credibility * 0.4 + agreement * 0.4 + source_factor * 0.2)
 
+        # Fix 2.5 (audit §4.8 Finding B-7, last bullet): when the stance is
+        # "insufficient" (fewer than 3 scored results, or no support/conflict
+        # signal at all), the raw formula still returned a misleadingly HIGH
+        # confidence — measured: 2 sec.gov/imf.org supporting sources produced
+        # confidence=0.82 under overall_stance="insufficient". A downstream
+        # consumer reading `confidence` without checking `overall_stance`
+        # would treat an under-evidenced answer as near-certain. Cap it: an
+        # insufficient evidence base can never justify confidence above 0.3.
+        if overall_stance == "insufficient":
+            confidence = min(confidence, 0.3)
+
         # Top sources (top 5 by composite score)
         top_sources = [r.source for r in results[:5]]
 
