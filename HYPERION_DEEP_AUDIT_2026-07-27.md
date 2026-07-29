@@ -539,6 +539,20 @@ progress, `[x]` = landed with proof.
     resolved to `1.4.0`). `asyncio_mode = "auto"` already configured in
     `[tool.pytest.ini_options]`. Full suite: 506 passed, 3 skipped.
 
+- [x] **0.7 (found while re-verifying 0.5/0.6)** — `pyproject.toml` pinned
+  `pdfplumber>=1.0.0`, a release that **does not exist** (PyPI tops out at
+  `0.11.10`). The pin was added by fix 2.3. Its blast radius was much larger
+  than one optional feature: `pip install -e ".[dev]"` aborted the *entire*
+  install transaction with `No matching distribution found`, so on a clean
+  checkout `pydantic_settings` was never installed and **15 test modules failed
+  at collection** with `ModuleNotFoundError` — i.e. the suite could not run at
+  all, which is precisely the "green tests coexisting with a broken system"
+  failure mode this audit exists to eliminate (here inverted: a broken install
+  masquerading as broken tests). Corrected to `>=0.11.0`; install succeeds and
+  the suite collects and passes. A CI step that runs the documented install
+  command from a clean environment would have caught this at commit time —
+  folded into 5.1.
+
 - [x] **0.4b (found while verifying 0.4)** — three additional, independent
   Plotly bugs in `hyperion/output/charts.py` that were silently degrading
   charts to the matplotlib/data-table fallback tiers on **every single
@@ -1325,19 +1339,97 @@ progress, `[x]` = landed with proof.
   - Note: `deep_search.to_markdown()` retains a `[:MAX_CONTENT_CHARS]` cap. That
     is a render-time cap on *already-selected* content, not a selection, and is
     deliberately left in place.
-- [ ] **2.3** `pdfplumber`/`camelot` table extraction → `chart_specs`
-- [ ] **2.4** Token-boundary relevance in `evidence_scorer`; recalibrate `MIN_RELEVANCE`
-- [ ] **2.5** Cap `confidence` when `overall_stance == "insufficient"`
-- [ ] **2.6** Per-engagement extraction-yield metrics
+- [x] **2.3** `pdfplumber`/`camelot` table extraction → `chart_specs` (commit `c996c01`)
+- [x] **2.4** Token-boundary relevance in `evidence_scorer`; recalibrate `MIN_RELEVANCE` (commit `1ae1f38`)
+- [x] **2.5** Cap `confidence` when `overall_stance == "insufficient"` (commit `29a1ebe`)
+- [x] **2.6** Per-engagement extraction-yield metrics (commit `d8ad3be`)
 
 ### Phase 3 — Typography & visual architecture
-- [ ] **3.1** Vendor `.ttf` files into `assets/fonts/` — **requires a `.gitignore` change first** (see §3.8)
-- [ ] **3.2** Base64 `@font-face` injection into shipped `CSS_TEMPLATE` + embed assertion
-- [ ] **3.3** Collapse the dead-template fork — one template system
-- [ ] **3.4** Two-column body targeting 56 chars/line; exhibits `column-span: all`
-- [ ] **3.5** Fix `presentation_designer.py:1947` fallback filter (`Markup`)
-- [ ] **3.6** Section image target ≥2000 px wide (keep no-upscale rule)
-- [ ] **3.7** Wire exhibits end-to-end → `has_exhibits: true`, ≥1 per section
+- [x] **3.1** Vendor `.ttf` files into `assets/fonts/` + amend the `.gitignore` blocker (commit `a3060fd`)
+- [x] **3.2** Base64 `@font-face` injection into shipped `CSS_TEMPLATE` + embed assertion (commit `bd6443c`)
+- [x] **3.3** Collapse the dead-template fork — one template system (commit `9490c2e`)
+- [x] **3.4** Two-column body targeting 56 chars/line; exhibits `column-span: all` (commit `61deabb`)
+- [x] **3.5** Fix the fallback Jinja env's filter to return `Markup` (commit `3bdee90`)
+- [x] **3.6** Section image target ≥2000 px wide (keep no-upscale rule) (commit `a4afead`)
+- [x] **3.7** Wire exhibits end-to-end → `has_exhibits: true`, ≥1 per section
+  - The audit read `has_exhibits: false` as "charts are simply not being
+    populated". Measurement showed something worse: charts *were* being
+    generated at 300 DPI and then discarded, by **four independent breaks** in
+    the hand-off chain. Each was fixed at the one hop that owns it.
+  - **Break 1 — homeless specs (`chart_specs.py`).** `mine_chart_specs` paired
+    every `report.key_findings` finding with `section_id=""`. The template
+    iterates `section_charts[section.id]`, no section has the id `""`, and
+    Jinja returns `Undefined` (not an error) for a missing key — so those
+    charts were rendered by nobody, silently. Because `key_findings` holds the
+    *headline* findings, the most important exhibits in the document were
+    exactly the ones dropped. Fixed by homing each spec on the section whose
+    `agent` matches the finding's `agent` (an honest anchor: a market-sizing
+    finding lands in the market section), falling back to the first section.
+  - **Break 2 — the note field did not exist (`schemas/models.py`).**
+    `ChartPlacement.note` existed *and the template already rendered it*, but
+    `ChartSpecification` had no `note` field, so any methodology note was
+    dropped at the Data Visualizer hop. Every exhibit therefore shipped with a
+    three-part anatomy against the benchmark's four. Added the field, and had
+    `data_visualizer.py` copy it through.
+  - **Break 3 — unrenderable charts were still placed
+    (`presentation_designer.py`).** `_receive_chart_images` reproduced break 1
+    downstream *and* placed charts whose `image_path` was empty (failed
+    export). An empty path renders as a broken-image box under a real
+    "Exhibit N" label, and — because the number comes from a CSS counter over
+    placed exhibits — it also **consumed a number**, pushing every later
+    exhibit out of sequence. Both are now dropped/re-homed with a
+    `self._log(...)` line each: the audit's own lesson (§0.3) is that a silent
+    failure caused the outage, so these fail loud.
+  - **Break 4 — dead CSS label rules.** `.exhibit-note-label` and
+    `.exhibit-source-label` were defined in the shipped CSS and referenced by
+    **no markup** — so the italic `Note:` / `Source:` convention of both
+    benchmarks was never actually applied. The template now emits each label
+    as its own span and strips the prefix from the value, so the label appears
+    exactly once whether or not the producer pre-prefixed the string (the
+    deterministic miner does; an LLM-supplied spec may not).
+  - **The probe was measuring its own fixture, not the pipeline.**
+    `tools/audit_render_probe.py` passed `section_charts={"section_N": []}` —
+    every section empty. The exhibit branch of the template was therefore
+    never entered, so `has_exhibits: false` was a property of the fixture and
+    the probe *could not have detected an exhibit regression in either
+    direction*. It now generates real charts through the real `ChartGenerator`
+    and places real `ChartPlacement`s. Two new metrics were added
+    (`exhibit_count` from the rendered counter labels, `exhibit_note_count`,
+    `exhibit_source_count`) because `has_exhibits` is a weak assertion — it is
+    true if the word "Exhibit" appears anywhere, including in prose.
+    Note the counter reaches the PDF text layer as `EXHIBIT 1`
+    (`text-transform: uppercase`), so the extraction regex must be
+    case-insensitive; a case-sensitive one reported 0 exhibits on a PDF
+    carrying 7.
+  - **Measured after the fix** (`reports/_audit/probe_metrics.json`):
+    `has_exhibits: true` · `exhibit_count: 7` ·
+    `exhibit_numbers: [1,2,3,4,5,6,7]` (contiguous — no dropped or
+    double-counted figure) · `exhibit_note_count: 7` ·
+    `exhibit_source_count: 7` → **every one of the 7 sections carries exactly
+    one exhibit with the full four-part anatomy.** Previously 0/0/0. The
+    Phase-3 gains hold simultaneously: 54 chars/line (target 52–60),
+    2 column bands, brand fonts only (no DejaVu/Liberation), 0 blank pages,
+    0 template leaks.
+  - `tests/test_exhibit_pipeline.py` — 40 new tests pinning each break
+    *independently*, so a regression in any single hop fails a named test
+    rather than quietly reducing the exhibit count. Includes a check that the
+    exhibit-number element is empty (the number must come from `counter()`,
+    never from an agent, so it cannot be wrong) and a check that a dropped
+    chart does not consume an exhibit number.
+  - **Regression caught and corrected during this fix.** The first version also
+    skipped specs with no home section inside `mine_chart_specs`. That broke 9
+    pre-existing `TestChartMiner` tests, which legitimately exercise the miner
+    on section-less reports. The lesson is a scope one: *mining* ("is this
+    series chartable?") and *placement* ("which page renders it?") are separate
+    concerns. Enforcing renderability in both places made the miner claim a
+    report had no chartable data when it had plenty. The guard now lives only
+    at the placement hop, and the reasoning is recorded in both the module
+    comment and a test docstring so it is not "fixed" back.
+  - Full suite: **1,191 passed, 8 skipped** (was 1,151 passed / 8 skipped;
+    **+40 tests, zero regressions, zero pre-existing tests modified**).
+    `ruff` clean on the new test file; the 4 findings in `chart_specs.py` and
+    2 in `audit_render_probe.py` were verified byte-identical to `HEAD` before
+    the change and are left for 5.1/5.3.
 
 ### Phase 4 — Depth control & MBB exhibit vocabulary
 - [ ] **4.1** Explicit page budget → word budget → per-section allocation

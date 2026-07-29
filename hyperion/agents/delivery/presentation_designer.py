@@ -1109,9 +1109,20 @@ HTML_TEMPLATE = """\
                McKinsey Industry Classification… Source: …"). Each is emitted
                only when present: an invented note or source line would be the
                same class of defect as an invented geography. #}
-            {% if chart.note %}<p class="exhibit-note">{{ chart.note }}</p>{% endif %}
+            {# The "Note:" / "Source:" labels are italic in both benchmarks, and
+               .exhibit-note-label / .exhibit-source-label existed in the CSS
+               but were referenced by no markup — dead rules. The label is
+               emitted as its own span and the prefix stripped from the value,
+               so the label appears exactly once whether or not the producer
+               already prefixed the string (the deterministic miner does; an
+               LLM-supplied spec may not). #}
+            {% if chart.note %}
+            <p class="exhibit-note"><span class="exhibit-note-label">Note:</span>
+                {{ chart.note | trim | replace("Note:", "", 1) | trim }}</p>
+            {% endif %}
             {% if chart.source_citation %}
-            <p class="exhibit-source">{{ chart.source_citation }}</p>
+            <p class="exhibit-source"><span class="exhibit-source-label">Source:</span>
+                {{ chart.source_citation | trim | replace("Source:", "", 1) | trim }}</p>
             {% endif %}
         </figcaption>
         {% endif %}
@@ -1668,6 +1679,14 @@ class PresentationDesigner(BaseAgent):
             return placements
 
         for chart in self._visualization_output.charts:
+            # `section_id in chart.section` is a substring test, so an empty
+            # `chart.section` (the homeless-chart case, fix 3.7) used to match
+            # NO section here while `_receive_chart_images` happily filed it
+            # under "". Requiring a non-empty section keeps the two paths
+            # consistent; re-homing is handled centrally in
+            # `_receive_chart_images`, which is the path that feeds the template.
+            if not chart.section or not chart.image_path:
+                continue
             if chart.section == section_id or section_id in chart.section:
                 placement = ChartPlacement(
                     chart_id=chart.id,
@@ -1675,6 +1694,7 @@ class PresentationDesigner(BaseAgent):
                     image_path=chart.image_path,
                     caption=chart.caption or chart.title,
                     source_citation=chart.source_citation,
+                    note=getattr(chart, "note", "") or "",
                     width_percent=80,
                     placement="center",
                 )
@@ -1942,8 +1962,26 @@ class PresentationDesigner(BaseAgent):
     def _receive_chart_images(
         self,
         visualization_output: VisualizationOutput | None = None,
+        report: FinalReport | None = None,
     ) -> dict[str, list[ChartPlacement]]:
-        """Receive chart images from the Data Visualizer and organize by section."""
+        """Receive chart images from the Data Visualizer and organize by section.
+
+        Fix 3.7 — three defects in the original, all of which ended with a
+        300-DPI PNG on disk that no page ever displayed:
+
+        1. **Homeless charts were keyed by whatever string arrived.** A chart
+           mined from `report.key_findings` carries `section=""`. The template
+           iterates `section_charts[section.id]`, and no section has the id
+           `""`, so those charts were placed into the dict and then rendered by
+           nobody. Those are the *headline* exhibits. They are now re-homed
+           onto a real section (by authoring agent, then first section).
+        2. **Charts with no `image_path` were still placed.** A chart whose
+           export failed produced `<img src="">` — a broken-image box under a
+           real "Exhibit N" number, which also consumed a number and pushed
+           every later exhibit's numbering out by one. They are now dropped.
+        3. **The methodology note was never copied**, so the exhibit footer
+           shipped with a `Source:` line and no `Note:` line.
+        """
         if visualization_output:
             self._visualization_output = visualization_output
 
@@ -1951,14 +1989,59 @@ class PresentationDesigner(BaseAgent):
         if not self._visualization_output:
             return self._chart_placements
 
+        # Build the same agent -> section index the miner uses, so a re-homed
+        # chart lands in the section whose analyst produced its numbers rather
+        # than in an arbitrary one.
+        sections = list(getattr(report, "sections", None) or []) if report else []
+        valid_ids: set[str] = set()
+        first_id = ""
+        section_id_by_agent: dict[str, str] = {}
+        for section in sections:
+            sid = getattr(section, "id", "") or ""
+            if not sid:
+                continue
+            valid_ids.add(sid)
+            if not first_id:
+                first_id = sid
+            agent = (getattr(section, "agent", "") or "").strip()
+            if agent and agent not in section_id_by_agent:
+                section_id_by_agent[agent] = sid
+
         for chart in self._visualization_output.charts:
+            # Defect 2: an exhibit with no figure is not an exhibit.
+            if not chart.image_path:
+                self._log(
+                    f"DESIGNER: dropping chart {chart.id!r} — no image_path "
+                    f"(export failed); it would render as a broken image and "
+                    f"consume an exhibit number"
+                )
+                continue
+
             section_id = chart.section
+            # Defect 1: re-home anything that does not name a real section.
+            if valid_ids and section_id not in valid_ids:
+                agent = ""
+                for sec in sections:
+                    if getattr(sec, "id", "") == section_id:
+                        agent = getattr(sec, "agent", "") or ""
+                        break
+                rehomed = section_id_by_agent.get(agent) or first_id
+                self._log(
+                    f"DESIGNER: re-homing chart {chart.id!r} from "
+                    f"section {section_id!r} to {rehomed!r} — the original "
+                    f"section id matches no section, so the exhibit would "
+                    f"never have rendered"
+                )
+                section_id = rehomed
+
             placement = ChartPlacement(
                 chart_id=chart.id,
                 section_id=section_id,
                 image_path=chart.image_path,
                 caption=chart.caption or chart.title,
                 source_citation=chart.source_citation,
+                # Defect 3: carry the note so the footer is Note: + Source:.
+                note=getattr(chart, "note", "") or "",
                 width_percent=80,
                 placement="center",
             )
@@ -2368,7 +2451,10 @@ class PresentationDesigner(BaseAgent):
 
         # Step 5: Receive chart images from Data Visualizer
         await self._transition(AgentState.WORKING, "Step 5: Receiving chart images from Data Visualizer")
-        self._receive_chart_images(visualization_output)
+        # `report` is passed so homeless charts can be re-homed onto a section
+        # that actually exists (fix 3.7) — without it the headline exhibits
+        # mined from `key_findings` are rendered by nobody.
+        self._receive_chart_images(visualization_output, report=report)
 
         # Assign charts to pages
         for page in self._pages:

@@ -1805,6 +1805,15 @@ class ChartSpecification(BaseModel):
     annotations: list[ChartAnnotation] = Field(default_factory=list, description="Contextual annotations")
     source_citation: str = Field(default="", description="Data source citation for the chart")
     caption: str = Field(default="", description="Chart caption (below chart)")
+    # Fix 3.7: the methodology note that prints ABOVE the source line, matching
+    # the MGI/BCG exhibit anatomy ("Note: … Source: …"). `ChartPlacement`
+    # already had this field and the template already rendered it, but
+    # `ChartSpecification` did not — so a note mined from a finding was
+    # dropped the moment it passed through the Data Visualizer, and every
+    # exhibit shipped with a truncated three-part anatomy. Defaults empty and
+    # the template omits the line entirely when unset: an invented note is as
+    # misleading as an invented source.
+    note: str = Field(default="", description="Methodology note shown above the source line")
     image_path: str = Field(default="", description="Path to the generated PNG (300 DPI)")
     thumbnail_path: str = Field(default="", description="Path to a thumbnail version for TUI display")
     dpi: int = Field(default=300, description="Export DPI (always 300)")

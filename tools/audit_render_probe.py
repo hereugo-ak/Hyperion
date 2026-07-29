@@ -13,6 +13,7 @@ Run:  python3 tools/audit_render_probe.py
 from __future__ import annotations
 
 import json
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -111,8 +112,74 @@ def build_payload() -> dict:
         ),
         cover_image=None,
         section_images={f"section_{i}": None for i in range(1, 8)},
-        section_charts={f"section_{i}": [] for i in range(1, 8)},
+        # Fix 3.7: the probe used to hand the template `section_charts={...: []}`
+        # — every section empty. That made `has_exhibits: false` a property of
+        # the FIXTURE, not of the pipeline: the exhibit branch of the template
+        # was never entered, so the probe could not have detected an exhibit
+        # regression either way. It now generates real charts through the real
+        # ChartGenerator and places them as real ChartPlacements, so the
+        # measured exhibit count reflects the shipping exhibit path.
+        section_charts=_build_real_exhibits(range(1, 8)),
     )
+
+
+def _build_real_exhibits(section_range) -> dict:
+    """Generate real 300-DPI charts and wrap them as real ChartPlacements.
+
+    Uses the production `ChartGenerator` and the production `ChartPlacement`
+    model — no stand-ins — so a failure in either shows up as a missing
+    exhibit in the measured PDF rather than as a passing probe.
+    """
+    from hyperion.output.charts import ChartGenerator, ChartSpec
+    from hyperion.schemas.models import ChartPlacement
+
+    gen = ChartGenerator()
+    gen._output_dir = OUT_DIR / "charts"
+    gen._output_dir.mkdir(parents=True, exist_ok=True)
+    out: dict[str, list] = {}
+    for i in section_range:
+        sid = f"section_{i}"
+        result = gen.generate(
+            ChartSpec(
+                chart_type="bar" if i % 2 else "line",
+                title=f"Installed base by pricing zone, section {i}",
+                x_label="Zone",
+                y_label="GWh",
+                x_data=["Zone A", "Zone B", "Zone C", "Zone D"],
+                y_data=[[41, 78, 95, 112]],
+                series_names=["Installed base"],
+                source="National grid operator capacity filing, 2024",
+            )
+        )
+        if not result.success or not result.image_path:
+            # Fail loud: a probe that silently measures zero exhibits because
+            # chart export broke is exactly the blind spot the audit found.
+            print(
+                f"PROBE WARNING: chart generation failed for {sid}: "
+                f"{result.error or 'no image_path'}",
+                file=sys.stderr,
+            )
+            out[sid] = []
+            continue
+        out[sid] = [
+            ChartPlacement(
+                chart_id=f"chart_{i}",
+                section_id=sid,
+                image_path=result.image_path,
+                caption=(
+                    "Only four of eleven zones clear the arbitrage spread at "
+                    "the current pack price"
+                ),
+                note=(
+                    "Note: Values quoted as reported in the market analyst "
+                    "finding; not modelled or interpolated."
+                ),
+                source_citation=(
+                    "Source: National grid operator annual capacity filing, 2024"
+                ),
+            )
+        ]
+    return out
 
 
 def render() -> Path:
@@ -238,6 +305,27 @@ def measure(pdf_path: Path) -> dict:
             "unknown": full_text.count("Unknown"),
         },
         "has_exhibits": "EXHIBIT" in full_text.upper(),
+        # ── Fix 3.7 exit criteria ──
+        # `has_exhibits` alone is a weak assertion: it is true if the word
+        # "Exhibit" appears anywhere, including in prose. These count the
+        # actual four-part MGI/BCG anatomy so the exit criterion ("every
+        # section carries >=1 exhibit with Note: + Source:") is measurable.
+        #
+        # The number comes from a CSS counter, so it appears in the PDF text
+        # as "Exhibit 1", "Exhibit 2", … — counting distinct numbered labels
+        # is therefore an exact exhibit count, and a gap in the sequence would
+        # reveal a dropped or mis-numbered figure.
+        # Matched case-INSENSITIVELY: `.exhibit-number` sets
+        # `text-transform: uppercase`, so the counter reaches the PDF text
+        # layer as "EXHIBIT 1", not "Exhibit 1". A case-sensitive pattern
+        # reported 0 exhibits on a PDF that in fact carried 7.
+        "exhibit_numbers": sorted(
+            int(n) for n in set(re.findall(r"\bexhibit\s+(\d+)\b", full_text, re.I))
+        ),
+        "exhibit_count": len(set(re.findall(r"\bexhibit\s+(\d+)\b", full_text, re.I))),
+        "exhibit_note_count": len(re.findall(r"\bNote:", full_text)),
+        "exhibit_source_count": len(re.findall(r"\bSource:", full_text)),
+        "embedded_images": sum(len(doc[i].get_images()) for i in range(doc.page_count)),
         "file_size_kb": round(pdf_path.stat().st_size / 1024, 1),
     }
 
