@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -47,6 +48,8 @@ from typing import Any
 from urllib.parse import quote_plus
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -272,8 +275,36 @@ class UnsplashClient:
                 return result
 
             except (httpx.HTTPError, httpx.RequestError, KeyError, ValueError) as e:
+                # D5.1: ruff F841 flagged `as e` as never read, and pulling that
+                # thread exposed a broken retry loop underneath.
+                #
+                # The old body was:
+                #     if attempt < self.MAX_RETRIES - 1:
+                #         await asyncio.sleep(self.RETRY_DELAY)
+                #     return UnsplashSearchResult(query=query)
+                #
+                # The `return` is unconditional, so the function exited on the
+                # FIRST failure — after politely sleeping RETRY_DELAY first. The
+                # loop, the `attempt` guard and MAX_RETRIES were all decorative:
+                # a single transient 502 produced zero images, and the trailing
+                # `return ... "All retries exhausted"` line was unreachable.
+                # Silently, since the cause was dropped on the floor.
+                logger.debug(
+                    "Unsplash search attempt %d/%d failed for %r: %s",
+                    attempt + 1,
+                    self.MAX_RETRIES,
+                    query,
+                    e,
+                )
                 if attempt < self.MAX_RETRIES - 1:
                     await asyncio.sleep(self.RETRY_DELAY)
+                    continue  # actually retry
+                logger.warning(
+                    "Unsplash search exhausted all %d attempts for %r — no imagery. Last error: %s",
+                    self.MAX_RETRIES,
+                    query,
+                    e,
+                )
                 return UnsplashSearchResult(query=query)
 
         return UnsplashSearchResult(query=query)

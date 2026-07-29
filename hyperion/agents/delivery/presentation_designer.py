@@ -2517,23 +2517,72 @@ class PresentationDesigner(BaseAgent):
             return self.HTML_OUTPUT
 
     def _build_risk_analysis_html(self, report: FinalReport) -> str:
-        """Build the risk analysis HTML section."""
+        """Build the risk analysis HTML section.
+
+        Three defects fixed here (D5.1), all of the same family as the ones 4.5
+        fixed in the appendix builders — and all invisible for the same reason:
+
+        1. ``getattr(risk, "name", "Unknown")`` — **`Risk` has no `name` field.**
+           Its descriptive field is ``description``. So this expression could
+           never return anything but the literal string ``"Unknown"``, and the
+           Risk column of the top-risks table printed ``Unknown`` on every row of
+           every report ever produced. ``"Unknown"`` is one of the four tokens
+           ``tools/audit_render_probe.py`` counts as a **template leak**, which
+           §11 exit criterion 11 requires to be zero — so this single wrong field
+           name was silently breaking a headline Definition-of-Done metric.
+           The defensive third argument to ``getattr`` is exactly what hid it: a
+           direct ``risk.name`` would have raised ``AttributeError`` on the first
+           run. Now uses direct attribute access, per the ban 4.5 established.
+        2. Every cell was interpolated **unescaped**. Risk descriptions and
+           mitigations are LLM-authored prose that routinely contains ``&`` and
+           ``<`` (e.g. "margin < 10% & falling"), which would corrupt the table.
+        3. ``risk_score`` and the mitigation ``owner`` were not shown at all,
+           though both are populated — the table showed probability and impact
+           but not their product, which is the number the ranking is *by*.
+
+        The 5×5 matrix's zone counts are now rendered too: the agent computes
+        them (``_build_risk_matrix``) and, until D5.1, threw them away.
+        """
         if not report.risk_analysis:
             return "<p>No risk analysis available.</p>"
 
+        analysis = report.risk_analysis
         html_parts = ["<div class='risk-matrix no-break'>"]
+
+        # Zone summary — the 5x5 matrix's headline, previously discarded.
+        zone_counts = (analysis.risk_matrix or {}).get("zone_counts") or {}
+        if zone_counts:
+            red = int(zone_counts.get("red", 0))
+            yellow = int(zone_counts.get("yellow", 0))
+            green = int(zone_counts.get("green", 0))
+            html_parts.append(
+                "<p class='risk-zone-summary'>"
+                f"<strong>{red}</strong> in the red zone (mitigate now), "
+                f"<strong>{yellow}</strong> amber (plan mitigation), "
+                f"<strong>{green}</strong> green (monitor)."
+                "</p>"
+            )
+
         html_parts.append("<h3>Top Risks</h3>")
         html_parts.append("<table class='data-table'>")
-        html_parts.append("<tr><th>Risk</th><th>Probability</th><th>Impact</th><th>Mitigation</th></tr>")
+        html_parts.append(
+            "<tr><th>Risk</th><th>Category</th><th>P</th><th>I</th>"
+            "<th>Score</th><th>Mitigation</th><th>Owner</th></tr>"
+        )
 
-        risks = getattr(report.risk_analysis, "risks", [])
+        # Prefer the ranked list; fall back to the full list if ranking is absent.
+        risks = analysis.top_risks or analysis.risks
         for risk in risks[:10]:
-            name = getattr(risk, "name", "Unknown")
-            probability = getattr(risk, "probability", "N/A")
-            impact = getattr(risk, "impact", "N/A")
-            mitigation = getattr(risk, "mitigation", "N/A")
             html_parts.append(
-                f"<tr><td>{name}</td><td>{probability}</td><td>{impact}</td><td>{mitigation}</td></tr>"
+                "<tr>"
+                f"<td>{html_escape(risk.description)}</td>"
+                f"<td>{html_escape(risk.category.value.title())}</td>"
+                f"<td>{risk.probability}</td>"
+                f"<td>{risk.impact}</td>"
+                f"<td>{risk.risk_score}</td>"
+                f"<td>{html_escape(risk.mitigation)}</td>"
+                f"<td>{html_escape(risk.owner)}</td>"
+                "</tr>"
             )
 
         html_parts.append("</table></div>")

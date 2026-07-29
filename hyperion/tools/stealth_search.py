@@ -220,7 +220,12 @@ class StealthSearchClient:
         # reaching it would burn a real Chromium launch (the most expensive
         # tier in the whole ladder) on a search that cannot possibly answer
         # the user's question.
-        original_query = query
+        # D5.1: an `original_query = query` local sat here, unread (ruff F841).
+        # It is meaningful in `jina.py`, whose empty_factory echoes the caller's
+        # query back inside a `JinaSearchResponse`; stealth returns a bare list,
+        # so there is nothing to echo it into. Removed rather than "used" — a
+        # copy-paste remnant that suggests state which does not exist is worse
+        # than no local at all.
         grounded, empty = grounded_search_or_empty(
             query,
             lambda: [],

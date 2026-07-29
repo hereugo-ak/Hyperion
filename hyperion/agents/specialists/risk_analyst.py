@@ -1244,6 +1244,11 @@ class RiskAnalyst(BaseAgent):
             black_swan_scenarios=black_swans,
             residual_risk_summary=residual_summary,
             scenario_plan=scenario_plan,
+            # D5.1: both of these were computed above and then dropped on the
+            # floor. `monte_carlo` in particular cost a NORMAL-tier LLM call per
+            # engagement whose entire output was garbage-collected unread.
+            risk_matrix=risk_matrix,
+            monte_carlo=monte_carlo,
             confidence=confidence,
             sources=self._sources,
         )
@@ -1297,6 +1302,10 @@ class RiskAnalyst(BaseAgent):
                 "top_risk_count": len(top_10),
                 "black_swan_count": len(black_swans),
                 "residual_summary": residual_summary,
+                # D5.1: surface the zone counts on the bus so the Synthesis Lead
+                # and Quality Gate can see the shape of the risk profile without
+                # having to re-derive it from the risk list.
+                "risk_zone_counts": risk_matrix.get("zone_counts", {}),
                 "confidence": confidence.value,
             },
         )

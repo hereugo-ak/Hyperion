@@ -495,7 +495,11 @@ class ChartGenerator:
 
     def _create_waterfall(self, spec: ChartSpec, go: Any) -> Any:
         """Create a waterfall chart."""
-        colors = self._get_colors(spec)
+        # D5.1: a `colors = self._get_colors(spec)` local sat here unread (ruff
+        # F841). Waterfall traces colour themselves via `increasing`/`decreasing`/
+        # `totals` markers rather than a per-point colour list, so the palette
+        # genuinely does not apply — removed rather than wired in, which would
+        # have overridden the semantic up/down colouring with brand hues.
 
         # For waterfall, y_data[0] = values (positive/negative)
         values = spec.y_data[0] if spec.y_data else []

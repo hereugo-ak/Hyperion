@@ -1398,11 +1398,22 @@ class SynthesisLead(BaseAgent):
         self,
         matrix: dict[str, Any],
         contradictions: list[Contradiction],
+        prior_patterns: str = "",
     ) -> tuple[list[str], dict[str, Any]]:
         """Identify critical path AND draft recommendation in a single DEEP call.
 
         D5 fix: collapses former steps 5+6 into one LLM call to keep
         total DEEP calls ≤ 3 (combined + sections + quality-iteration).
+
+        D5.1: `prior_patterns` was previously fetched by `run()` — an awaited
+        Second Brain query, announced to the user as a pipeline step ("Querying
+        Second Brain for prior patterns") — and then assigned to a local nothing
+        read (ruff F841). The vault lookup ran, cost time, and its result was
+        garbage-collected before it could influence anything. That silently
+        voided the §12.8 design intent: "this pattern matching makes the system
+        smarter over time." It could not, because the patterns never reached a
+        prompt. They are now threaded into the one call that drafts the
+        recommendation, which is the only place they could change an outcome.
         """
         findings_summary = self._format_findings_for_llm()
 
@@ -1412,11 +1423,24 @@ class SynthesisLead(BaseAgent):
             for c in contradictions
         ) if contradictions else "No contradictions found."
 
+        # D5.1: prior-engagement patterns from the Second Brain vault. Presented
+        # as precedent, explicitly NOT as evidence — a pattern from a previous
+        # engagement must not be cited as a finding about this one, or the report
+        # would inherit conclusions it did not research.
+        patterns_block = (
+            f"Prior-engagement patterns from the vault (precedent, NOT evidence "
+            f"for this question — use to sharpen which assumptions to stress-test):\n"
+            f"{prior_patterns}\n\n"
+            if prior_patterns.strip()
+            else ""
+        )
+
         prompt = (
             "You are the Synthesis Lead. Do TWO things in one response:\n\n"
             f"Question: {self._question}\n\n"
             f"All findings:\n{findings_summary}\n\n"
             f"Contradictions:\n{contradictions_summary}\n\n"
+            f"{patterns_block}"
             "FIRST: Identify the 2-3 CRITICAL findings — the ones that, if they "
             "changed, would flip the recommendation.\n\n"
             "SECOND: Draft the recommendation as JSON with these fields:\n"
@@ -1610,7 +1634,7 @@ class SynthesisLead(BaseAgent):
         # Step 5+6: Identify critical path AND draft recommendation (single DEEP call)
         await self._transition(AgentState.WORKING, "Identifying critical path + drafting recommendation")
         critical_path, recommendation_data = await self._identify_and_draft(
-            matrix, resolved_contradictions,
+            matrix, resolved_contradictions, prior_patterns,
         )
 
         # Step 7: Calibrate confidence

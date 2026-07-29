@@ -412,6 +412,20 @@ class RiskAnalysis(BaseModel):
     black_swan_scenarios: list[Risk] = Field(default_factory=list, description="Low-probability, high-impact events")
     residual_risk_summary: str = Field(description="Risk profile after mitigations")
     scenario_plan: dict[str, Any] = Field(default_factory=dict, description="best/base/worst with triggers")
+    # D5.1: `_build_risk_matrix()` and `_run_monte_carlo()` were both computed by
+    # the Risk Analyst and then assigned to locals that nothing ever read — ruff
+    # F841 found them. The Monte Carlo is an LLM call, so every engagement paid
+    # for a simulation that was discarded before it could reach the report. The
+    # 5×5 matrix is the agent's headline exhibit ("risk_matrix" is literally
+    # declared in its own `outputs`). Both now have a home on the model.
+    risk_matrix: dict[str, Any] = Field(
+        default_factory=dict,
+        description="5x5 probability x impact matrix: zones, populated cells, zone counts",
+    )
+    monte_carlo: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Monte Carlo distribution: variables, P10/P50/P90, VaR-95, interpretation",
+    )
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 

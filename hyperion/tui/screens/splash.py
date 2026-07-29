@@ -174,7 +174,14 @@ class SplashScreen(Screen):
             up = [str(k).split(".")[-1].lower() for k, v in health.items() if v.get("available")]
             down = [str(k).split(".")[-1].lower() for k, v in health.items() if not v.get("available")]
             if up:
-                prov.set_status(f"online: {', '.join(up)}", ok=True)
+                # D5.1: `down` was computed and never displayed (ruff F841). A
+                # partial outage — 1 of 4 providers up — rendered identically to
+                # full health, so the boot screen actively concealed degradation
+                # at the one moment the operator is looking at it.
+                status = f"online: {', '.join(up)}"
+                if down:
+                    status += f" | offline: {', '.join(down)}"
+                prov.set_status(status, ok=True)
             else:
                 prov.set_status("no providers available — check API keys", ok=False)
         except Exception as e:

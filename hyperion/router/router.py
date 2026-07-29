@@ -254,7 +254,12 @@ class LLMRouter:
         2. Provider must have budget remaining (respecting reserve for non-HIGH urgency)
         3. Provider must have at least one non-deprecated model for the tier
         """
-        available: set[ProviderType] = set()
+        # D5.1: an `available: set[ProviderType] = set()` accumulator sat here
+        # and was never written to or read (ruff F841) — the function builds
+        # `models_by_provider` and delegates the actual filtering to the budget
+        # planner. Removed: an empty accumulator named `available` in a function
+        # named `_get_available_providers` reads like the return value, which
+        # makes the real `return budget_available` look like a bug.
 
         # Get models by provider for this tier
         models_by_provider: dict[ProviderType, list[ModelSpec]] = {}

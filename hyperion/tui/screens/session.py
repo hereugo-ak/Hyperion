@@ -185,7 +185,12 @@ class SessionScreen(Screen):
             from hyperion.tui.boot import run_boot_sequence
 
             metrics.start(phase="boot")
-            results = await run_boot_sequence(
+            # D5.1: the boot sequence's return value was assigned and never read
+            # (ruff F841). Boot reports per-check results; discarding them means a
+            # failed check is invisible here. Left unbound deliberately rather
+            # than renamed to `_`: see the log/metrics wiring below, which is the
+            # channel boot actually reports through.
+            await run_boot_sequence(
                 log=log,
                 metrics=metrics,
                 reduced_motion=self._reduced,

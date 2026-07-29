@@ -982,19 +982,18 @@ class EngagementDirector(BaseAgent):
         # Wave 5: Presentation Designer + Data Viz (depends on Quality Gate pass)
         # Wave 6: Render Engine (depends on Presentation Designer)
 
-        wave_0_agents = [
-            AgentName.MARKET_ANALYST,
-            AgentName.COMPETITIVE_INTEL,
-            AgentName.RISK_ANALYST,
-            AgentName.CONSUMER_INSIGHTS,
-            AgentName.TECHNOLOGY_ANALYST,
-            AgentName.OPERATIONS_ANALYST,
-            AgentName.REGULATORY_ANALYST,
-            AgentName.SUSTAINABILITY_ANALYST,
-            AgentName.INNOVATION_ANALYST,
-            AgentName.MA_ANALYST,
-            AgentName.STRATEGY_ANALYST,
-        ]
+        # D5.1: a `wave_0_agents = [...]` list of 11 AgentNames sat here,
+        # assigned and never read (ruff F841). It was not merely unused — it was
+        # actively *misleading*: it listed MA_ANALYST and STRATEGY_ANALYST as
+        # wave-0 (independent) agents, while the dependency edges built below
+        # give M&A a dependency on Financial and Strategy dependencies on Market
+        # and Competitive. So the dead list contradicted the live logic, and a
+        # reader trusting it would conclude the graph was wrong.
+        #
+        # Waves are not declared anywhere; they *emerge* from the `dependencies`
+        # edges assigned per task below, which is the correct design — one source
+        # of truth. The comment block above documents the resulting shape; this
+        # list pretended to implement it and did not.
 
         # Create tasks for each selected agent
         task_ids_by_agent: dict[AgentName, str] = {}
