@@ -54,10 +54,15 @@ never produces a blank page or an orphaned image.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import logging
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
@@ -275,6 +280,13 @@ body {{
 
 h1, h2, h3, h4 {{
     font-family: "Instrument Serif", Georgia, serif;
+    /* Instrument Serif ships Regular/Italic only — there is no bold weight
+       (and only those two faces are vendored, fix 3.1). The UA stylesheet
+       defaults headings to bold, which makes WeasyPrint SYNTHESIZE a
+       smeared fake-bold from the Regular face. Hierarchy here comes from
+       size (22–36pt display type), not weight — exactly how MGI/BCG set
+       their serif heads. */
+    font-weight: normal;
     color: {warm_charcoal};
     /* Headings are set tight: display type at 22-36pt needs negative
        tracking and sub-1.2 leading or it looks airy and amateur. */
@@ -743,6 +755,11 @@ table, .kpi-value, .data-table, .chart-data-table {{
     text-align: left;
     border-bottom: 2px solid {terracotta};
     font-family: "Instrument Serif", serif;
+    /* UA <th> defaults to bold; Instrument Serif has no bold face (see the
+       h1-h4 rule), so WeasyPrint would synthesize fake-bold here. The
+       header row is already distinguished by the beige fill + terracotta
+       rule, which is the benchmark (MGI/BCG) treatment. */
+    font-weight: normal;
     font-size: 12pt;
 }}
 
@@ -802,6 +819,79 @@ table, .kpi-value, .data-table, .chart-data-table {{
     page-break-inside: avoid;
 }}
 """.format(**PDF_PALETTE)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vendored brand fonts (fix 3.2 — @font-face embedding)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The audit (§3.2) found that the brand typography declared in CSS_TEMPLATE —
+# "Instrument Serif", "Source Sans 3", "JetBrains Mono" — was never actually
+# embedded in the shipped PDF: there were zero @font-face blocks, so every
+# render silently fell back to DejaVu (WeasyPrint's system default). The fonts
+# are vendored in assets/fonts/ (fix 3.1, OFL-licensed); here they are inlined
+# as base64 data-URIs so the PDF embeds the real typefaces on every machine,
+# with no network or system-font dependency.
+#
+# (family, weight, style, filename). The family strings MUST match the
+# font-family names used in CSS_TEMPLATE exactly, or @font-face will not bind.
+_VENDORED_FONTS: tuple[tuple[str, int, str, str], ...] = (
+    ("Instrument Serif", 400, "normal", "InstrumentSerif-Regular.ttf"),
+    ("Instrument Serif", 400, "italic", "InstrumentSerif-Italic.ttf"),
+    ("Source Sans 3", 400, "normal", "SourceSans3-Regular.ttf"),
+    ("Source Sans 3", 700, "normal", "SourceSans3-Bold.ttf"),
+    ("Source Sans 3", 400, "italic", "SourceSans3-Italic.ttf"),
+    ("JetBrains Mono", 400, "normal", "JetBrainsMono-Regular.ttf"),
+    ("JetBrains Mono", 700, "normal", "JetBrainsMono-Bold.ttf"),
+)
+
+_FONTS_DIR = Path(__file__).resolve().parents[3] / "assets" / "fonts"
+
+
+def _build_font_face_css(fonts_dir: Path = _FONTS_DIR) -> str:
+    """Build @font-face blocks with base64 data-URI sources for vendored fonts.
+
+    Data-URIs (not relative url() paths) because the CSS is inlined into the
+    HTML <style> element and rendered with base_url=cwd — relative paths from
+    an inline stylesheet resolve against cwd, not the package, and break the
+    moment a caller sets cwd elsewhere. Data-URIs make the HTML fully
+    self-contained: it renders identically regardless of working directory.
+
+    Never-raises (§0.3): a missing/unreadable font file is logged loudly and
+    skipped — the PDF then falls back for that face rather than sinking the
+    whole report build.
+    """
+    blocks: list[str] = []
+    for family, weight, style, filename in _VENDORED_FONTS:
+        font_path = fonts_dir / filename
+        try:
+            data = font_path.read_bytes()
+        except OSError:
+            logger.warning(
+                "Vendored font %s not readable at %s — "
+                "PDF will fall back to system fonts for this face",
+                filename,
+                font_path,
+                exc_info=True,
+            )
+            continue
+        b64 = base64.b64encode(data).decode("ascii")
+        blocks.append(
+            "@font-face {\n"
+            f'    font-family: "{family}";\n'
+            f"    font-style: {style};\n"
+            f"    font-weight: {weight};\n"
+            f'    src: url("data:font/ttf;base64,{b64}") format("truetype");\n'
+            "}"
+        )
+    return "\n\n".join(blocks)
+
+
+# Font blocks are appended AFTER str.format(**PDF_PALETTE) has run (line
+# above): the @font-face braces are therefore plain CSS braces, never seen by
+# the formatter. This sidesteps the doubled-brace trap documented at the top
+# of CSS_TEMPLATE.
+CSS_TEMPLATE = CSS_TEMPLATE + "\n\n" + _build_font_face_css() + "\n"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
