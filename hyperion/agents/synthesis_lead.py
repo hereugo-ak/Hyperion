@@ -56,6 +56,7 @@ from typing import Any
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
+from hyperion.output.page_budget import plan_budget
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
     AgentName,
@@ -1009,6 +1010,51 @@ class SynthesisLead(BaseAgent):
         def _section_title(agent: str) -> str:
             return AGENT_SECTION_TITLES.get(agent, agent.replace("_", " ").title())
 
+        # Fix 4.1: derive the per-section word allocation from the page contract
+        # instead of hardcoding it.
+        #
+        # This function previously restated "2000-4000 words" in four separate
+        # prompt strings, with no relationship to the 15-20 page deliverable
+        # target. Because the section count is `len(self._findings_by_agent)` —
+        # anywhere from 1 to 12 depending on which agents reported — the page
+        # count was an emergent accident: the audit measured 36 pages against a
+        # stated 20-page ceiling and nothing in the codebase noticed.
+        #
+        # `plan_budget` inverts that: the target page count is the input, and
+        # the words-per-section allocation is what falls out of it. A 3-agent
+        # engagement is now asked for long sections and a 10-agent engagement
+        # for short ones, so both land near the same page count.
+        budget = plan_budget(len(self._findings_by_agent))
+        word_clause = budget.prompt_clause()
+        # Rejection threshold, in characters, derived from the allocation rather
+        # than the old fixed `> 800`. 800 characters is ~130 words, so under the
+        # previous rule a section that answered a 2,000-word request with 130
+        # words was accepted silently. Half the allocation at ~6 chars/word is a
+        # threshold that actually tracks what was asked for; floored at 800 so
+        # this can only ever be stricter than the behaviour it replaces.
+        min_body_chars = max(800, int(budget.words_per_section * 6 * 0.5))
+
+        if budget.sections_over_capacity:
+            # Not silently absorbed: with this many sections the target page
+            # count is unreachable even at the minimum viable section length,
+            # so the operator should know the deliverable will run long.
+            logger.warning(
+                "Page budget over capacity: %d sections cannot fit %d pages; "
+                "each section pinned to %d words, projecting %d pages",
+                budget.section_count,
+                budget.target_pages,
+                budget.words_per_section,
+                budget.projected_pages,
+            )
+        else:
+            logger.info(
+                "Page budget: %d sections x %d words -> ~%d pages (target %d)",
+                budget.section_count,
+                budget.words_per_section,
+                budget.projected_pages,
+                budget.target_pages,
+            )
+
         async def _build_one_section(
             agent: str,
             findings: list[KeyFinding],
@@ -1061,7 +1107,8 @@ class SynthesisLead(BaseAgent):
                 f"Engagement question: {self._question}\n\n"
                 f"Findings from the {agent} analyst:\n{findings_digest}\n\n"
                 f"Sources:\n{sources_digest}\n\n"
-                "Write a comprehensive section body (2000-4000 words) that:\n"
+                f"{word_clause}\n\n"
+                "Write a comprehensive section body that:\n"
                 "1. Opens with context — why this dimension matters for the question\n"
                 "2. Presents key data points with specific numbers and sources cited inline\n"
                 "3. Interprets the data — what does it mean? What's the 'so what'?\n"
@@ -1075,7 +1122,8 @@ class SynthesisLead(BaseAgent):
                 "11. Ends with a clear 'so what' paragraph that connects to the engagement\n\n"
                 "Do NOT write bullet points. Write flowing analytical paragraphs.\n"
                 "Do NOT repeat the section title. Start directly with the narrative.\n"
-                "Do NOT write fewer than 2000 words. Depth is critical.\n"
+                f"Depth is critical: do not write fewer than "
+                f"{int(budget.words_per_section * 0.9)} words.\n"
             )
 
             section_body = "\n\n".join(f.content for f in findings)  # fallback
@@ -1088,10 +1136,11 @@ class SynthesisLead(BaseAgent):
                     system_prompt_override=(
                         "You are a senior consultant writing a report section. "
                         "Write analytical prose, not bullet points. "
-                        "Each section must be at least 2000 words of deep analysis."
+                        f"This section must be at least "
+                        f"{int(budget.words_per_section * 0.9)} words of deep analysis."
                     ),
                 )
-                if response.success and response.content and len(response.content) > 800:
+                if response.success and response.content and len(response.content) > min_body_chars:
                     section_body = response.content
                 elif response.success and response.content:
                     # Response too short — retry with stronger instruction
@@ -1101,7 +1150,8 @@ class SynthesisLead(BaseAgent):
                         f"{narrative_prompt}\n\n"
                         f"Previous attempt (DO NOT REPEAT — write something better):\n"
                         f"{response.content[:500]}\n\n"
-                        "Write the FULL section now. It must be at least 2000 words. "
+                        f"Write the FULL section now. It must be at least "
+                        f"{int(budget.words_per_section * 0.9)} words. "
                         "Do not stop early. Do not summarize. Write complete paragraphs."
                     )
                     retry_response = await self._llm_complete(
@@ -1110,10 +1160,15 @@ class SynthesisLead(BaseAgent):
                         temperature=0.4,
                         system_prompt_override=(
                             "You are a senior consultant. Your previous attempt was too short. "
-                            "Write a thorough, deep analytical section of at least 2000 words."
+                            "Write a thorough, deep analytical section of at least "
+                            f"{int(budget.words_per_section * 0.9)} words."
                         ),
                     )
-                    if retry_response.success and retry_response.content and len(retry_response.content) > 800:
+                    if (
+                        retry_response.success
+                        and retry_response.content
+                        and len(retry_response.content) > min_body_chars
+                    ):
                         section_body = retry_response.content
             except (ValueError, AttributeError, RuntimeError):
                 pass  # Use fallback concatenation

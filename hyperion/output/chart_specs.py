@@ -380,12 +380,57 @@ def mine_chart_specs(
 
     specs: list[dict[str, Any]] = []
 
+    # ── Section index, for homing every spec to a real section (fix 3.7) ──
+    #
+    # BUG HISTORY. Exec-summary findings used to be paired with `section_id=""`.
+    # `""` is not the `id` of any section, and the template iterates
+    # `section_charts[section.id]` — so every chart mined from `key_findings`
+    # was generated at 300 DPI, placed under the dict key `""`, and then
+    # rendered by nobody. Those are the *headline* findings, so the most
+    # important exhibits in the document were precisely the ones silently
+    # dropped. `_receive_chart_images` reproduced the same `""` key downstream.
+    #
+    # Every spec must therefore name a section that actually exists *whenever
+    # the report has sections*. A finding carries the `agent` that produced it
+    # and `AnalysisSection` carries the same `agent`, so the authoring agent is
+    # an honest, non-arbitrary anchor: a market-sizing finding lands in the
+    # market section. Failing that, the first section.
+    #
+    # SCOPE NOTE. When the report has NO sections, `section` stays `""` and the
+    # spec is still emitted. Mining ("is this series chartable?") and placement
+    # ("which page renders it?") are separate concerns, and the miner is also
+    # called on section-less reports — by `mine_chart_specs`' own callers and
+    # by the chart-mining tests — where returning `[]` would report a report
+    # with no chartable data when it has plenty. The renderability guard
+    # therefore lives at the single hop that owns placement,
+    # `PresentationDesigner._receive_chart_images`, which re-homes any spec
+    # whose section does not resolve. Enforcing it in both places once caused
+    # 9 chart-miner tests to fail for the wrong reason.
+    sections = list(getattr(report, "sections", None) or [])
+    section_ids: list[str] = []
+    section_id_by_agent: dict[str, str] = {}
+    for section in sections:
+        sid = getattr(section, "id", "") or getattr(section, "title", "")
+        if not sid:
+            continue
+        section_ids.append(sid)
+        agent = (getattr(section, "agent", "") or "").strip()
+        if agent and agent not in section_id_by_agent:
+            section_id_by_agent[agent] = sid
+
+    def _home_section(finding: Any) -> str:
+        """Pick the real section a homeless finding belongs to, or ''."""
+        agent = (getattr(finding, "agent", "") or "").strip()
+        if agent and agent in section_id_by_agent:
+            return section_id_by_agent[agent]
+        return section_ids[0] if section_ids else ""
+
     # Candidate pool: exec-summary findings first (most important), then each
     # section's own findings, so the earliest charts back the headline claims.
     candidates: list[tuple[Any, str]] = []
     for finding in (getattr(report, "key_findings", None) or []):
-        candidates.append((finding, ""))
-    for section in (getattr(report, "sections", None) or []):
+        candidates.append((finding, _home_section(finding)))
+    for section in sections:
         section_id = getattr(section, "id", "") or getattr(section, "title", "")
         for finding in (getattr(section, "findings", None) or []):
             candidates.append((finding, section_id))
@@ -436,6 +481,37 @@ def mine_chart_specs(
             values = [round(v / divisor, 4) for v in values]
             axis_unit = f"{axis_unit} {magnitude_suffix}"
 
+        # Fix 3.7: the "Note:" line of the MGI/BCG exhibit anatomy. Both
+        # benchmarks carry one under EVERY exhibit; HYPERION carried none, so
+        # every figure shipped with a truncated anatomy.
+        #
+        # It is assembled from facts that are already true and checkable, never
+        # from an LLM and never from a template with invented content — the
+        # figure's provenance is the last place a consulting deliverable can
+        # afford to guess. Two components, both derived from what actually
+        # happened during mining:
+        #   * how the series was obtained (values quoted verbatim from the named
+        #     analyst's finding — this is the honest description of what
+        #     `_extract_numbers` did, and it tells a reader the figures were not
+        #     modelled or interpolated by HYPERION), and
+        #   * the display rescaling, when one was applied, so a reader is never
+        #     left to guess whether a tick reading "67.2" means 67.2 or
+        #     67,200,000,000.
+        note_parts: list[str] = []
+        finding_agent = (getattr(finding, "agent", "") or "").strip()
+        if finding_agent:
+            note_parts.append(
+                f"Values quoted as reported in the {finding_agent.replace('_', ' ')} "
+                f"finding; not modelled or interpolated"
+            )
+        else:
+            note_parts.append("Values quoted as reported; not modelled or interpolated")
+        if divisor > 1.0:
+            note_parts.append(f"figures shown in {magnitude_suffix}")
+        if unit == "%":
+            note_parts.append("figures are percentages")
+        note = "Note: " + "; ".join(note_parts) + "."
+
         specs.append({
             "id": f"chart_{getattr(finding, 'id', len(specs)) or len(specs)}_{len(specs)}",
             "title": _title_from(getattr(finding, "title", ""), question),
@@ -450,6 +526,7 @@ def mine_chart_specs(
             "x_axis_label": "Period" if hint == "line" else "Category",
             "y_axis_label": axis_unit,
             "source_citation": citation,
+            "note": note,
             "caption": (getattr(finding, "implications", "") or "")[:180],
             "insight": (getattr(finding, "title", "") or "")[:140],
         })

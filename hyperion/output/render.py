@@ -32,6 +32,17 @@ the PDF renders identically on any system, regardless of installed fonts."
 
 Used by: Render Engine (WEASYPRINT + JINJA2 tools), Presentation Designer
 (JINJA2 tool) (§5.1)
+
+NOTE (fix 3.3 — dead-template fork collapsed): There is exactly ONE report
+template system — the inline `HTML_TEMPLATE` / `CSS_TEMPLATE` in
+`presentation_designer.py`. The former parallel system
+(`templates/report.html.j2`, `cover.html.j2`, `styles/hyperion.css`) was
+never shipped: `render_pdf` secretly layered the dead `hyperion.css` over
+the shipped inline CSS, and any fix applied to the `.j2` files had zero
+effect on output. Those files, the `FileSystemLoader` that served them,
+`_embed_fonts_in_css`, and the sync/async-broken `render_from_template`
+have been removed. Font embedding now lives where the shipped CSS lives:
+base64 `@font-face` data-URIs injected into `CSS_TEMPLATE` (fix 3.2).
 """
 
 from __future__ import annotations
@@ -88,31 +99,35 @@ class PDFRenderResult:
 
 
 class TemplateRenderer:
-    """Jinja2 template renderer for HYPERION reports.
+    """Jinja2 template-string renderer for HYPERION reports.
 
-    Renders the FinalReport Pydantic model into print-ready HTML using
-    Jinja2 templates with the HYPERION brand CSS.
+    Renders the shipped inline `HTML_TEMPLATE` (from
+    `presentation_designer.py`) with report context data. This is a
+    STRING renderer only — fix 3.3 removed the FileSystemLoader and the
+    dead `templates/*.j2` files so there can be no second, diverging
+    template system. `env.get_template` deliberately does not exist here:
+    the Environment has no loader, so any attempt to render by file name
+    fails loudly (TemplateNotFound is unreachable; there are no files).
 
     Usage:
         renderer = TemplateRenderer(settings=settings)
-        result = renderer.render_report(report_data=final_report_dict)
+        result = await renderer.render_template(
+            template_string=HTML_TEMPLATE, context={...}
+        )
         if result.success:
             print(f"Rendered {len(result.html)} chars of HTML")
     """
-
-    TEMPLATE_DIR = Path(__file__).parent / "templates"
 
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
         self._env: Any | None = None
 
     def _get_env(self) -> Any:
-        """Get or create the Jinja2 environment."""
+        """Get or create the Jinja2 environment (no loader — strings only)."""
         if self._env is None:
-            from jinja2 import Environment, FileSystemLoader, select_autoescape
+            from jinja2 import Environment, select_autoescape
 
             self._env = Environment(
-                loader=FileSystemLoader(str(self.TEMPLATE_DIR)),
                 autoescape=select_autoescape(["html", "xml"]),
                 trim_blocks=True,
                 lstrip_blocks=True,
@@ -290,14 +305,14 @@ class TemplateRenderer:
         context: dict[str, Any] | None = None,
         template_string: str = "",
     ) -> TemplateRenderResult:
-        """Render a Jinja2 template with context data.
+        """Render a Jinja2 template string with context data.
 
         Args:
-            template_name: Template filename (e.g., "report.html.j2")
-            context: Dictionary of data to pass to the template
-            template_string: Raw Jinja2 template string (alternative to
-                template_name — used by Presentation Designer which has
-                inline HTML templates)
+            template_name: Label for diagnostics only (e.g. "<inline>").
+                Kept for caller compatibility; no file is ever loaded.
+            context: Dictionary of data to pass to the template.
+            template_string: Raw Jinja2 template string — the only source
+                of templates (fix 3.3: the dead templates/*.j2 fork is gone).
 
         Returns:
             TemplateRenderResult with the rendered HTML.
@@ -305,87 +320,28 @@ class TemplateRenderer:
         env = self._get_env()
         context = context or {}
 
+        if not template_string:
+            # Loud, explicit failure — the old code silently fell through to
+            # env.get_template() against a FileSystemLoader of dead files.
+            return TemplateRenderResult(
+                template_name=template_name or "<inline>",
+                error="render_template requires template_string; file-based "
+                "templates were removed in fix 3.3 (dead-template fork)",
+            )
+
         try:
-            if template_string:
-                template = env.from_string(template_string)
-                html = template.render(**context)
-                return TemplateRenderResult(
-                    html=html,
-                    template_name=template_name or "<inline>",
-                    success=True,
-                )
-            else:
-                template = env.get_template(template_name)
-                html = template.render(**context)
-                return TemplateRenderResult(
-                    html=html,
-                    template_name=template_name,
-                    success=True,
-                )
+            template = env.from_string(template_string)
+            html = template.render(**context)
+            return TemplateRenderResult(
+                html=html,
+                template_name=template_name or "<inline>",
+                success=True,
+            )
         except (OSError, ValueError, RuntimeError, KeyError) as e:
             return TemplateRenderResult(
                 template_name=template_name or "<inline>",
                 error=str(e),
             )
-
-    async def render_report(
-        self,
-        report_data: dict[str, Any],
-        template_name: str = "report.html.j2",
-    ) -> TemplateRenderResult:
-        """Render the main report template with report data.
-
-        Args:
-            report_data: Dictionary containing the FinalReport data
-            template_name: Template filename (default: report.html.j2)
-
-        Returns:
-            TemplateRenderResult with the rendered HTML.
-        """
-        context = {
-            "report": report_data,
-            "generated_date": datetime.now().strftime("%B %d, %Y"),
-            "generated_timestamp": datetime.now().isoformat(),
-        }
-        return await self.render_template(template_name, context)
-
-    async def render_cover(
-        self,
-        cover_data: dict[str, Any],
-        template_name: str = "cover.html.j2",
-    ) -> TemplateRenderResult:
-        """Render the cover page template.
-
-        Args:
-            cover_data: Dictionary containing cover page data
-                       (title, subtitle, client, date, image_path)
-            template_name: Template filename (default: cover.html.j2)
-
-        Returns:
-            TemplateRenderResult with the rendered cover HTML.
-        """
-        context = {
-            "cover": cover_data,
-            "generated_date": datetime.now().strftime("%B %d, %Y"),
-        }
-        return await self.render_template(template_name, context)
-
-    async def render_section(
-        self,
-        section_data: dict[str, Any],
-        template_name: str = "section.html.j2",
-    ) -> TemplateRenderResult:
-        """Render a single section template.
-
-        Args:
-            section_data: Dictionary containing section data
-            template_name: Template filename
-
-        Returns:
-            TemplateRenderResult with the rendered section HTML.
-        """
-        context = {"section": section_data}
-        return await self.render_template(template_name, context)
 
 
 class PDFRenderer:
@@ -402,9 +358,15 @@ class PDFRenderer:
         )
         if result.success:
             print(f"PDF saved: {result.pdf_path} ({result.page_count} pages)")
-    """
 
-    CSS_PATH = Path(__file__).parent / "templates" / "styles" / "hyperion.css"
+    NOTE (fix 3.3): this renderer carries NO brand CSS of its own. The
+    former `CSS_PATH -> templates/styles/hyperion.css` was the dead fork —
+    render_pdf() silently layered it over the shipped inline CSS so a fix
+    to that file could fight the real stylesheet. CSS now arrives exactly
+    two ways: inline <style> in the HTML (the shipped CSS_TEMPLATE, which
+    embeds the brand fonts via base64 @font-face — fix 3.2), or the
+    `additional_css` escape hatch.
+    """
 
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
@@ -547,54 +509,6 @@ class PDFRenderer:
 
         return img_pattern.sub(replace_src, html)
 
-    def _embed_fonts_in_css(self, css_content: str) -> str:
-        """Convert @font-face src url() to base64 data URIs in CSS (D17 fix).
-
-        Ensures fonts are embedded when using the Playwright fallback,
-        which doesn't resolve relative url() references in CSS.
-        """
-        import re
-        import base64
-
-        # Match url("...") inside @font-face src declarations
-        url_pattern = re.compile(r'url\("([^"]+)"\)', re.IGNORECASE)
-
-        def replace_url(match: re.Match[str]) -> str:
-            url = match.group(1)
-
-            # Skip data URIs and remote URLs
-            if url.startswith("data:") or url.startswith("http"):
-                return match.group(0)
-
-            # Resolve relative to the CSS file location
-            font_path = self.CSS_PATH.parent / url
-            if not font_path.exists():
-                # Try relative to cwd
-                font_path = Path(url)
-                if not font_path.is_absolute():
-                    font_path = Path.cwd() / font_path
-
-            if not font_path.exists():
-                return match.group(0)
-
-            ext = font_path.suffix.lower()
-            mime_map = {
-                ".ttf": "font/ttf",
-                ".otf": "font/otf",
-                ".woff": "font/woff",
-                ".woff2": "font/woff2",
-            }
-            mime_type = mime_map.get(ext, "application/octet-stream")
-
-            try:
-                font_data = font_path.read_bytes()
-                b64 = base64.b64encode(font_data).decode("ascii")
-                return f'url("data:{mime_type};base64,{b64}")'
-            except (OSError, ValueError):
-                return match.group(0)
-
-        return url_pattern.sub(replace_url, css_content)
-
     def render_pdf(
         self,
         html: str,
@@ -612,7 +526,10 @@ class PDFRenderer:
             html: The rendered HTML content (body of the report)
             output_path: Path to save the PDF. If empty, auto-generated.
             cover_html: Optional cover page HTML (rendered separately, prepended)
-            additional_css: Optional additional CSS to append to the brand CSS
+            additional_css: Optional extra CSS appended as a stylesheet. The
+                shipped brand CSS is NOT loaded from disk (fix 3.3 removed the
+                dead templates/styles/hyperion.css fork) — it arrives inline
+                in `html`, already embedding the brand fonts (fix 3.2).
 
         Returns:
             PDFRenderResult with the PDF path and metadata.
@@ -624,15 +541,10 @@ class PDFRenderer:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = str(self._reports_dir / f"hyperion_report_{timestamp}.pdf")
 
-        # Load brand CSS
-        css_content = ""
-        if self.CSS_PATH.exists():
-            css_content = self.CSS_PATH.read_text(encoding="utf-8")
-        if additional_css:
-            css_content += "\n" + additional_css
-
-        # D17: Embed fonts as data URIs for Playwright fallback compatibility
-        css_embedded = self._embed_fonts_in_css(css_content)
+        # Fix 3.3: no brand CSS is loaded from disk. The only stylesheet this
+        # renderer adds beyond the inline <style> in `html` is an explicit
+        # caller-provided `additional_css` escape hatch.
+        css_embedded = additional_css or ""
 
         # Combine cover + body if cover is provided
         full_html = html
@@ -656,8 +568,9 @@ class PDFRenderer:
             # Create WeasyPrint HTML object
             html_obj = HTML(string=full_html, base_url=str(Path.cwd()))
 
-            # Create CSS object
-            css_obj = CSS(string=css_content) if css_content else None
+            # Extra stylesheet only when the caller explicitly passed one;
+            # the shipped brand CSS is inline in `full_html` already.
+            css_obj = CSS(string=css_embedded) if css_embedded else None
 
             # Render PDF
             if css_obj:
@@ -801,59 +714,37 @@ class PDFRenderer:
             )
         return result
 
-    def render_from_template(
+    def verify_pdf(
         self,
-        report_data: dict[str, Any],
-        cover_data: dict[str, Any] | None = None,
-        output_path: str = "",
-    ) -> PDFRenderResult:
-        """Render a complete PDF from report data using Jinja2 templates.
-
-        This is the main entry point for the Render Engine. It:
-        1. Renders the cover page template (if cover_data provided)
-        2. Renders the main report template
-        3. Combines them and renders to PDF via WeasyPrint
-
-        Args:
-            report_data: Dictionary containing the FinalReport data
-            cover_data: Optional dictionary containing cover page data
-            output_path: Path to save the PDF. If empty, auto-generated.
-
-        Returns:
-            PDFRenderResult with the PDF path and metadata.
-        """
-        # Step 1: Render cover page (if provided)
-        cover_html = ""
-        if cover_data:
-            template_renderer = TemplateRenderer(settings=self.settings)
-            cover_result = template_renderer.render_cover(cover_data)
-            if cover_result.success:
-                cover_html = cover_result.html
-            else:
-                # Continue without cover if template fails
-                pass
-
-        # Step 2: Render main report
-        template_renderer = TemplateRenderer(settings=self.settings)
-        report_result = template_renderer.render_report(report_data)
-        if not report_result.success:
-            return PDFRenderResult(error=f"Template rendering failed: {report_result.error}")
-
-        # Step 3: Render PDF
-        return self.render_pdf(
-            html=report_result.html,
-            output_path=output_path,
-            cover_html=cover_html,
-        )
-
-    def verify_pdf(self, pdf_path: str) -> dict[str, Any]:
+        pdf_path: str,
+        budget: Any | None = None,
+    ) -> dict[str, Any]:
         """Verify a PDF meets HYPERION quality standards.
 
         Checks (§6.5):
         - No blank pages
         - All fonts embedded
-        - Page count is reasonable (15-40 pages)
+        - Page count honours the delivery contract (fix 4.2)
         - File size is reasonable
+
+        NOTE (fix 4.2 — the page-count check used to be decorative): this method
+        previously recorded ``page_count_reasonable: 15 <= page_count <= 40`` and
+        then computed ``passed`` from blank pages and embedded fonts *only*. The
+        page count therefore could not fail a verification no matter what it was,
+        and the 25-page-wide window would not have distinguished a compliant
+        report from a 39-page one anyway. That is how the audit's §3.1 "36 pages
+        against a 15-20 target" row survived: the number was measured, written
+        down, and structurally ignored.
+
+        The band now comes from `page_budget`, so it moves with the contract
+        instead of being retyped here, and it participates in `passed`.
+
+        Args:
+            pdf_path: PDF to verify.
+            budget: The `PageBudget` the report was generated under, when the
+                caller knows it. Passing it lets the verdict distinguish a report
+                that is short because the word ceiling bound it from one that is
+                short because it is thin — see `page_count_verdict`.
         """
         try:
             import fitz
@@ -878,6 +769,10 @@ class PDFRenderer:
 
             file_size = os.path.getsize(pdf_path)
 
+            from hyperion.output.page_budget import page_count_verdict
+
+            verdict = page_count_verdict(page_count, budget)
+
             return {
                 "path": pdf_path,
                 "page_count": page_count,
@@ -886,8 +781,15 @@ class PDFRenderer:
                 "fonts_embedded": list(fonts),
                 "all_fonts_embedded": len(fonts) > 0,
                 "file_size_bytes": file_size,
-                "page_count_reasonable": 15 <= page_count <= 40,
-                "passed": len(blank_pages) == 0 and len(fonts) > 0,
+                "page_count_reasonable": verdict.passed,
+                "page_count_expected_min": verdict.expected_min,
+                "page_count_expected_max": verdict.expected_max,
+                "page_count_reason": verdict.reason,
+                # Page count is now load-bearing in the verdict. Before 4.2 it
+                # was computed and discarded.
+                "passed": (
+                    len(blank_pages) == 0 and len(fonts) > 0 and verdict.passed
+                ),
             }
 
         except (ImportError, OSError, ValueError) as e:

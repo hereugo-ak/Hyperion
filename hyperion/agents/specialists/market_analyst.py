@@ -64,6 +64,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.tools.query_utils import resolve_subject
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1304,16 +1305,28 @@ class MarketAnalyst(BaseAgent):
             f"Starting market analysis: {self._question[:80]}",
         )
 
+        # Resolve the market subject explicitly rather than feeding the raw
+        # question straight into every downstream query builder. Four-tier
+        # resolution (explicit "market"/"segment"/"sector"/"industry" context
+        # keys -> engagement subject -> the user's own question) means the
+        # search/scrape/sub-agent queries below are never built around an
+        # empty or off-topic subject even when the Director's handover omits
+        # a market-specific key.
+        market_query = resolve_subject(
+            self._context, "market", "segment", "sector", "industry",
+            question=self._question,
+        ) or self._question
+
         # Spawn sub-agents for parallel data collection
         await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning data collection sub-agents")
-        sub_findings = await self._spawn_data_collection_sub_agents(self._question)
+        sub_findings = await self._spawn_data_collection_sub_agents(market_query)
         self._sub_agent_findings = sub_findings
 
         await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
 
         # Step 1: Search for existing market reports
         await self._transition(AgentState.WORKING, "Step 1: Searching for market reports (SearxNG)")
-        self._search_results = await self._search_market_reports(self._question)
+        self._search_results = await self._search_market_reports(market_query)
 
         # Extract content from top URLs
         top_urls = [r["url"] for r in self._search_results if r.get("url")]
@@ -1324,7 +1337,7 @@ class MarketAnalyst(BaseAgent):
         # Step 2: Scrape interactive dashboards if search didn't find enough
         if len(self._search_results) < 5:
             await self._transition(AgentState.WORKING, "Step 2: Scraping dashboards (Obscura)")
-            self._scraped_data = await self._scrape_dashboards(self._question)
+            self._scraped_data = await self._scrape_dashboards(market_query)
 
         # Step 3: Pull macroeconomic context
         # Detected, never defaulted (was `or "US"`).

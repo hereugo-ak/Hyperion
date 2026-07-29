@@ -176,6 +176,9 @@ class EngagementResult:
     adaptation_count: int = 0
     escalation_count: int = 0
     quality_iterations: int = 0
+    # Fix 2.6 (audit §6 Phase 2): per-engagement extraction-yield metrics,
+    # populated at engagement completion from engagement_yield_report().
+    extraction_yield: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -189,6 +192,7 @@ class EngagementResult:
             "adaptation_count": self.adaptation_count,
             "escalation_count": self.escalation_count,
             "quality_iterations": self.quality_iterations,
+            "extraction_yield": self.extraction_yield,
             "quality_score": self.quality_score.model_dump() if self.quality_score else None,
             "final_report": self.final_report.model_dump() if self.final_report else None,
             "metadata": self.metadata.model_dump() if self.metadata else None,
@@ -744,6 +748,11 @@ class WorkflowEngine:
                         question=dag.question,
                         engagement_id=self._engagement_id,
                         layout_plan=layout_plan,
+                        # Fix 4.2: hand the Render Engine the same budget the
+                        # report was written under, so its page-count gate can
+                        # tell a report that is short because the word ceiling
+                        # bound it from one that is short because it is thin.
+                        page_budget=self._page_budget_for(dag),
                     ),
                     timeout=self.TASK_TIMEOUT_SECONDS,
                 )
@@ -838,6 +847,29 @@ class WorkflowEngine:
             if task.agent == agent_name and task.id in self._task_outputs:
                 return self._task_outputs[task.id]
         return None
+
+    def _page_budget_for(self, dag: WorkflowDAG) -> Any | None:
+        """Reconstruct the page budget the final report was written under (4.2).
+
+        Recomputed from the section count of the finished `FinalReport` rather
+        than carried as orchestrator state. `plan_budget` is a pure function of
+        the section count, so recomputation yields the identical budget while
+        avoiding a mutable field that the quality-iteration loop could leave
+        stale: that loop can revise the report — and therefore its section
+        count — several times before delivery, and a budget captured at synthesis
+        time would then describe a report that no longer exists.
+
+        Returns None when there is no report to measure, which the Render
+        Engine's gate treats as "judge against the flat contract band" rather
+        than "skip the check".
+        """
+        report = self._get_output_by_agent(dag, AgentName.SYNTHESIS_LEAD)
+        sections = getattr(report, "sections", None)
+        if not sections:
+            return None
+        from hyperion.output.page_budget import plan_budget
+
+        return plan_budget(len(sections))
 
     def _compute_step_hash(self, task: TaskNode, dag: WorkflowDAG) -> str:
         """P10: Compute a deterministic hash of a step's inputs.
@@ -1330,6 +1362,14 @@ class WorkflowEngine:
         # never inherit the previous engagement's industry/geography.
         self._engagement_context = None
         clear_engagement_focus()
+        # Fix 2.6 (audit §6 Phase 2): reset the extraction-yield accumulator
+        # so engagement_yield_report() covers THIS engagement only.
+        try:
+            from hyperion.tools.deep_search import reset_engagement_yield
+
+            reset_engagement_yield()
+        except Exception:
+            pass
         # Seed the search anchor from the raw question immediately, so any
         # search firing before classification completes is still on-topic.
         #
@@ -1566,6 +1606,28 @@ class WorkflowEngine:
             result.adaptation_count = len(dag.adaptation_log)
             result.escalation_count = self._director.get_escalation_count() if self._director else 0
             result.success = True
+
+            # Fix 2.6 (audit §6 Phase 2): surface the per-engagement
+            # extraction-yield metrics in the run report. This is the number
+            # the Phase 2 exit criterion ("extraction success >=60% of
+            # discovered URLs; every cited source >=500 chars retained") is
+            # computed from — before this fix it was unmeasurable per run.
+            try:
+                from hyperion.tools.deep_search import engagement_yield_report
+
+                result.extraction_yield = engagement_yield_report()
+                ym = result.extraction_yield
+                self._log(
+                    "EXTRACTION YIELD: "
+                    f"{ym['urls_extracted']}/{ym['urls_discovered']} URLs "
+                    f"({ym['extraction_yield']:.0%}) extracted, "
+                    f"{ym['chars_retained']} chars retained across "
+                    f"{ym['sources_cited']} cited sources "
+                    f"(avg {ym['avg_chars_per_source']:.0f} chars/source, "
+                    f"{ym['search_calls']} search calls)"
+                )
+            except Exception as e:
+                logger.warning("extraction-yield report failed: %s", e, exc_info=True)
 
             self._log(
                 f"ENGAGEMENT COMPLETE: success={result.success} "

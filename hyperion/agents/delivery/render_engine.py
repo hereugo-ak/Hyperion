@@ -311,6 +311,11 @@ class RenderEngine(BaseAgent):
         # Verification results
         self._verification_issues: list[str] = []
 
+        # Fix 4.2: the page budget this report was planned under, used to judge
+        # the rendered page count. Optional — see `_verify_pdf` check 5 for why
+        # a missing budget must still produce a real verdict rather than a skip.
+        self._page_budget: Any | None = None
+
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
     # ─────────────────────────────────────────────────────────────────────
@@ -876,6 +881,15 @@ class RenderEngine(BaseAgent):
         2. No orphaned images (images without adjacent text)
         3. All fonts embedded (Instrument Serif, JetBrains Mono)
         4. All images 300 DPI
+        5. Page count honours the delivery contract (fix 4.2)
+
+        Check 5 is new. The Render Engine's docstring has always claimed it is
+        "the last line of defense for quality" and that it "never ships a broken
+        PDF" — but page count was not among the things it could refuse. It was
+        measured two steps later, in `run()`, purely to put a number in a status
+        line. So the agent that owned the page-count contract was structurally
+        incapable of enforcing it, which is why a 36-page report against a 20-page
+        target reached the user with `verification_passed: True`.
 
         Returns (all_passed, issues, details).
         """
@@ -911,6 +925,28 @@ class RenderEngine(BaseAgent):
         if not all_300:
             issues.append("Some images are below 300 DPI.")
 
+        # Check 5 (fix 4.2): Page count honours the delivery contract.
+        #
+        # `self._page_budget` is the budget the Synthesis Lead planned this
+        # report under, when the orchestrator passed it through. It is optional
+        # by design: the verdict falls back to the flat contract band without it,
+        # so a caller that does not know the budget still gets a real check
+        # rather than a skipped one. A verification step that silently no-ops
+        # when its context is missing is how the previous check came to be
+        # decorative.
+        from hyperion.output.page_budget import page_count_verdict
+
+        verdict = page_count_verdict(
+            self._get_page_count(pdf_path), self._page_budget
+        )
+        details["page_count"] = verdict.page_count
+        details["page_count_within_contract"] = verdict.passed
+        details["page_count_expected_min"] = verdict.expected_min
+        details["page_count_expected_max"] = verdict.expected_max
+        details["page_count_reason"] = verdict.reason
+        if not verdict.passed:
+            issues.append(verdict.issue)
+
         all_passed = len(issues) == 0
         return (all_passed, issues, details)
 
@@ -928,6 +964,7 @@ class RenderEngine(BaseAgent):
         image_paths: list[str] | None = None,
         chart_paths: list[str] | None = None,
         layout_plan: LayoutPlan | None = None,
+        page_budget: Any | None = None,
     ) -> RenderOutput:
         """Execute the Render Engine's 7-step methodology.
 
@@ -936,12 +973,21 @@ class RenderEngine(BaseAgent):
         2. Receive image paths from Data Visualizer and Unsplash tool
         3. Process all images through Pillow pipeline
         4. Convert HTML → PDF with WeasyPrint at 300 DPI
-        5. Verify PDF: no blank pages, no orphaned images, all fonts embedded
+        5. Verify PDF: no blank pages, no orphaned images, all fonts embedded,
+           page count within the delivery contract (fix 4.2)
         6. Save to reports/ directory
         7. Return PDF path
+
+        Args:
+            page_budget: The `PageBudget` the Synthesis Lead planned the report
+                under. Optional: when absent, step 5 judges the page count
+                against the flat contract band instead of the budget-aware one.
         """
         # Subscribe to bus
         self.subscribe_to_bus()
+
+        if page_budget is not None:
+            self._page_budget = page_budget
 
         # Step 1: Receive HTML from Presentation Designer
         await self._transition(AgentState.WORKING, "Step 1: Receiving HTML from Presentation Designer")
@@ -1002,7 +1048,11 @@ class RenderEngine(BaseAgent):
             )
 
         # Step 5: Verify PDF
-        await self._transition(AgentState.WORKING, "Step 5: Verifying PDF — no blank pages, no orphaned images, fonts embedded")
+        await self._transition(
+            AgentState.WORKING,
+            "Step 5: Verifying PDF — no blank pages, no orphaned images, "
+            "fonts embedded, page count within contract",
+        )
         all_passed, issues, verify_details = self._verify_pdf(pdf_path)
 
         # Add any image processing issues
@@ -1011,8 +1061,11 @@ class RenderEngine(BaseAgent):
         # Step 6: Save to reports/ directory
         await self._transition(AgentState.WORKING, f"Step 6: PDF saved to {pdf_path}")
 
-        # Get metadata
-        page_count = self._get_page_count(pdf_path)
+        # Get metadata. Page count is read back from the verification details
+        # rather than re-measured, so the number reported to the operator is
+        # provably the same one the contract check judged. Re-measuring would
+        # allow the status line and the verdict to disagree.
+        page_count = verify_details.get("page_count") or self._get_page_count(pdf_path)
         file_size = self._get_file_size_mb(pdf_path)
         fonts_embedded = verify_details.get("embedded_fonts", [])
 

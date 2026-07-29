@@ -25,6 +25,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from hyperion.tools.query_utils import grounded_search_or_empty
+
 logger = logging.getLogger(__name__)
 
 
@@ -210,6 +212,24 @@ class StealthSearchClient:
         if not self._check_available():
             logger.debug("stealth search unavailable — playwright not installed")
             return []
+
+        # Fix 1.1 (HYPERION_DEEP_AUDIT_2026-07-27.md Finding B-2): this was
+        # the fourth of four search entry points with `ground_query = 0`.
+        # Stealth is the LAST-resort tier — reached only when SearxNG is
+        # down and Jina is blocked/rate-limited — so a subject-less query
+        # reaching it would burn a real Chromium launch (the most expensive
+        # tier in the whole ladder) on a search that cannot possibly answer
+        # the user's question.
+        original_query = query
+        grounded, empty = grounded_search_or_empty(
+            query,
+            lambda: [],
+            logger=logger,
+            tool_name="Stealth",
+        )
+        if empty is not None:
+            return empty
+        query = grounded
 
         page = None
         try:

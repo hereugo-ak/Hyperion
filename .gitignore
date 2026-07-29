@@ -29,6 +29,18 @@ assets/images/*
 assets/fonts/*
 !assets/fonts/.gitkeep
 !assets/fonts/README.md
+# Fix 3.1 (audit §3.8): the blanket `assets/fonts/*` ignore structurally
+# guaranteed the font pipeline could never be fixed — no .ttf could ever be
+# committed, so every report shipped in DejaVu. The brand fonts are now
+# VENDORED (fix 3.2 embeds them into the shipped CSS), so whitelist exactly
+# the files the pipeline needs while keeping future downloads ignored.
+!assets/fonts/InstrumentSerif-Regular.ttf
+!assets/fonts/InstrumentSerif-Italic.ttf
+!assets/fonts/SourceSans3-Regular.ttf
+!assets/fonts/SourceSans3-Bold.ttf
+!assets/fonts/SourceSans3-Italic.ttf
+!assets/fonts/JetBrainsMono-Regular.ttf
+!assets/fonts/JetBrainsMono-Bold.ttf
 
 # Vault content (accumulates over time — keep structure, ignore content)
 vault/engagements/*

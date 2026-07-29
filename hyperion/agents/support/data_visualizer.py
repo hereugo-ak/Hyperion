@@ -1103,6 +1103,11 @@ class DataVisualizer(BaseAgent):
                 x_axis_label=spec.get("x_axis_label", ""),
                 y_axis_label=spec.get("y_axis_label", ""),
                 source_citation=spec.get("source_citation", ""),
+                # Fix 3.7: carry the mined methodology note through to the
+                # placement. Without this the "Note:" half of the MGI/BCG
+                # exhibit footer was silently dropped at this hop, even though
+                # both `ChartPlacement` and the template already supported it.
+                note=spec.get("note", ""),
                 caption=spec.get("caption", ""),
                 annotations=[
                     ChartAnnotation(**ann) for ann in spec.get("annotations", [])

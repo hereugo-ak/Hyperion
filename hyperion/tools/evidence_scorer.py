@@ -190,7 +190,18 @@ class EvidenceScorer:
     # A result must clear this relevance floor to be kept. Below it, the result
     # is off-topic noise (SERP ad tiles, shopping results) and is dropped rather
     # than passed downstream where an agent would try to write around it.
-    MIN_RELEVANCE: float = 0.08
+    #
+    # HISTORY (fix 2.4, audit §4.8 Finding B-7): this floor was 0.08 under the
+    # old substring matcher, which was "extremely permissive — 1 keyword in 12
+    # passes". Worse, substring matching *inflated* scores systematically
+    # ("ai" matched "said"/"chain"/"maintain"), so the floor was doubly
+    # meaningless. After switching `_score_relevance` to token-boundary
+    # matching, the distribution was re-measured on a relevance-labelled
+    # corpus: genuinely-relevant pages score >=0.33, while the audit's own
+    # inflation traps score 0.000–0.100. 0.15 sits in the gap — it keeps
+    # every genuinely-relevant page in the corpus while rejecting the
+    # substring-inflation cases the old 0.08 waved through.
+    MIN_RELEVANCE: float = 0.15
 
     # Negation / conflict indicators
     CONFLICT_INDICATORS = [
@@ -328,6 +339,17 @@ class EvidenceScorer:
         source_factor = min(total / 10.0, 1.0)  # 10+ sources = max confidence
         confidence = (avg_credibility * 0.4 + agreement * 0.4 + source_factor * 0.2)
 
+        # Fix 2.5 (audit §4.8 Finding B-7, last bullet): when the stance is
+        # "insufficient" (fewer than 3 scored results, or no support/conflict
+        # signal at all), the raw formula still returned a misleadingly HIGH
+        # confidence — measured: 2 sec.gov/imf.org supporting sources produced
+        # confidence=0.82 under overall_stance="insufficient". A downstream
+        # consumer reading `confidence` without checking `overall_stance`
+        # would treat an under-evidenced answer as near-certain. Cap it: an
+        # insufficient evidence base can never justify confidence above 0.3.
+        if overall_stance == "insufficient":
+            confidence = min(confidence, 0.3)
+
         # Top sources (top 5 by composite score)
         top_sources = [r.source for r in results[:5]]
 
@@ -347,11 +369,64 @@ class EvidenceScorer:
             key_findings=key_findings,
         )
 
-    def _score_relevance(self, query: str, content: str) -> float:
-        """TF-IDF-like keyword overlap scoring.
+    # Tokeniser for content: lowercase alphanumeric tokens (2+ chars).
+    # Hyphenated compounds additionally contribute their parts, so the query
+    # token "lithium" matches content "lithium-ion" without substring matching
+    # ("lithium-ion" yields tokens {lithium, ion, lithium-ion}).
+    _TOKEN_RE = re.compile(r"[a-z0-9]{2,}(?:-[a-z0-9]+)*")
 
-        Extracts keywords from the query and checks how many appear
-        in the content, weighted by term frequency.
+    @staticmethod
+    def _stem(token: str) -> str:
+        """Crude morphological normaliser for comparison only.
+
+        Token-boundary matching alone makes "cost" ≠ "costs" and
+        "decline" ≠ "declined" — morphological variants of the SAME word
+        failing to match is the inverse failure of "ai" matching "said".
+        A full stemmer (Porter) is a dependency and over-stems ("university"
+        → "univers"); these three suffix rules cover plural and past/gerund
+        verb forms, the dominant variants in English business prose, with a
+        3-char floor so "as"/"is"/"this" can never be stemmed into each
+        other. Both query keywords and content tokens are stemmed, so the
+        comparison is symmetric.
+        """
+        for suffix in ("ing", "ed", "es", "s"):
+            if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+                # "ss" guard: "emissions" -> "emission" but "class" stays
+                # "class" (strip "s" from "class" gives "clas", a different
+                # token than "clas" from "classes" — avoid by not stemming
+                # tokens ending in ss at all).
+                if suffix == "s" and token.endswith("ss"):
+                    return token
+                return token[: -len(suffix)]
+        return token
+
+    @classmethod
+    def _tokenize(cls, text: str) -> set[str]:
+        tokens: set[str] = set()
+        for tok in cls._TOKEN_RE.findall(text.lower()):
+            tokens.add(tok)
+            if "-" in tok:
+                tokens.update(part for part in tok.split("-") if len(part) >= 2)
+        return tokens
+
+    @classmethod
+    def _stemmed_tokens(cls, text: str) -> set[str]:
+        return {cls._stem(tok) for tok in cls._tokenize(text)}
+
+    def _score_relevance(self, query: str, content: str) -> float:
+        """TF-IDF-like keyword overlap scoring — token-boundary, not substring.
+
+        Fix 2.4 (audit §4.8 Finding B-7): the old implementation checked
+        ``if word in content_lower`` — a SUBSTRING test. The audit's measured
+        consequence: the query keyword "ai" matched "said", "chain" and
+        "maintain", so a page about maintenance scheduling scored 0.400
+        against "AI adoption in supply chain management" — 5x the old 0.08
+        floor, cited as evidence for a claim it says nothing about.
+
+        Keywords are now matched against a TOKEN SET built from the content
+        (word boundaries), with hyphenated compounds contributing their
+        parts. "ai" no longer matches "said"; "lithium" still matches
+        "lithium-ion".
         """
         if not query or not content:
             return 0.0
@@ -362,13 +437,26 @@ class EvidenceScorer:
             return 0.0
 
         content_lower = content.lower()
-        content_words = set(content_lower.split())
+        content_tokens = self._tokenize(content_lower)
+        content_stems = {self._stem(tok) for tok in content_tokens}
 
-        # Count how many query keywords appear in content
-        matches = 0
-        for word in query_words:
-            if word in content_lower:
-                matches += 1
+        # Count how many query keywords appear in content AS WHOLE TOKENS
+        # (exact token or morphological stem — never substring).
+        matches = sum(
+            1
+            for word in query_words
+            if word in content_tokens or self._stem(word) in content_stems
+        )
+
+        # Minimum-evidence rule: a single keyword from a multi-keyword query
+        # is NOT topical evidence. Measured during fix 2.4: "chain of custody
+        # paperwork" matched exactly 1 of 5 keywords ("chain") of "AI adoption
+        # in supply chain management" and scored 0.200 — polysemy, not
+        # relevance. Requiring >=2 matches for queries with >=3 keywords
+        # drops that class while every genuinely-relevant page in the
+        # measurement corpus matched >=2 keywords.
+        if len(query_words) >= 3 and matches < 2:
+            return 0.0
 
         # Base score: ratio of matched keywords
         base_score = matches / len(query_words)
@@ -378,10 +466,12 @@ class EvidenceScorer:
         if query_lower in content_lower:
             base_score = min(base_score + 0.2, 1.0)
 
-        # Bonus for number matches (data points are high-value)
+        # Bonus for number matches (data points are high-value). Compared
+        # against content tokens so a query "2024" does not match "120240"
+        # inside an unrelated identifier.
         numbers_in_query = re.findall(r"\d+(?:\.\d+)?%?", query)
         for num in numbers_in_query:
-            if num in content:
+            if num in content_tokens or num in content:
                 base_score = min(base_score + 0.1, 1.0)
 
         return min(base_score, 1.0)

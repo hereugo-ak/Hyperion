@@ -54,14 +54,18 @@ never produces a blank page or an orphaned image.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import logging
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
+from hyperion.output.page_budget import PAGE_COUNT_MAX, PAGE_COUNT_MIN
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
     AgentName,
@@ -85,6 +89,12 @@ from hyperion.schemas.models import (
     QualityScore,
     VisualizationOutput,
 )
+
+# Declared after the imports, not between them. It previously sat above the
+# `hyperion.*` block, which made every one of those imports an E402 ("module
+# level import not at top of file") — 7 findings from one misplaced line. Adding
+# the page-budget import would have made it 8, so the line moved instead.
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,7 +217,15 @@ CSS_TEMPLATE = """\
 @page {{
     size: A4;
     dpi: 300;
-    margin: 25mm 25mm 25mm 40mm;  /* 15mm extra on left for binding */
+    /* Fix 3.4: was 25mm 25mm 25mm 40mm (15mm binding allowance). With the
+       two-column body that made each column 69mm ≈ 42 chars/line — far
+       short of the 52–60 benchmark band. The BCG benchmark itself measures
+       L 36pt · R 35pt margins (≈12.5mm): the wide-binding-margin page frame
+       was simply incompatible with the two-column measure. Now 19mm left
+       (4mm binding allowance over 15mm) · 15mm right → 176mm text width →
+       84.5mm columns ≈ 53 chars/line at 10pt Source Sans 3 (1.58mm/char
+       measured by the probe). */
+    margin: 25mm 15mm 25mm 19mm;
     @bottom-center {{
         content: "HYPERION · many minds. one reading. · "
                  counter(page) " / " counter(pages);
@@ -275,6 +293,13 @@ body {{
 
 h1, h2, h3, h4 {{
     font-family: "Instrument Serif", Georgia, serif;
+    /* Instrument Serif ships Regular/Italic only — there is no bold weight
+       (and only those two faces are vendored, fix 3.1). The UA stylesheet
+       defaults headings to bold, which makes WeasyPrint SYNTHESIZE a
+       smeared fake-bold from the Regular face. Hierarchy here comes from
+       size (22–36pt display type), not weight — exactly how MGI/BCG set
+       their serif heads. */
+    font-weight: normal;
     color: {warm_charcoal};
     /* Headings are set tight: display type at 22-36pt needs negative
        tracking and sub-1.2 leading or it looks airy and amateur. */
@@ -743,6 +768,11 @@ table, .kpi-value, .data-table, .chart-data-table {{
     text-align: left;
     border-bottom: 2px solid {terracotta};
     font-family: "Instrument Serif", serif;
+    /* UA <th> defaults to bold; Instrument Serif has no bold face (see the
+       h1-h4 rule), so WeasyPrint would synthesize fake-bold here. The
+       header row is already distinguished by the beige fill + terracotta
+       rule, which is the benchmark (MGI/BCG) treatment. */
+    font-weight: normal;
     font-size: 12pt;
 }}
 
@@ -798,10 +828,122 @@ table, .kpi-value, .data-table, .chart-data-table {{
     page-break-before: always;
 }}
 
+/* ── Two-column body (fix 3.4) ─────────────────────────────────────────────
+   The audit measured the shipped report at ~87 chars/line in a single
+   justified column; the BCG benchmark sits at a median of 56 chars/line in
+   a TWO-column layout. The page frame is 25mm/40mm margins on A4, so the
+   measure only resolves to the benchmark range with columns, not with
+   smaller type.
+
+   Only the prose body is columned. Visual anchors span the full width
+   (column-span: all) — an exhibit, KPI strip, insight or implication box
+   squeezed into a 68mm column would read as a sidebar, and both benchmarks
+   set their exhibits full-measure. Headings must never be orphaned at the
+   foot of a column, so they break-after: avoid and stay with their first
+   paragraph. */
+.section-body {{
+    column-count: 2;
+    column-gap: 7mm;
+    column-fill: auto;  /* balance columns on the final page of the section */
+}}
+
+.section-body h3, .section-body h4 {{
+    break-after: avoid;
+    page-break-after: avoid;
+}}
+
+.section-body p:first-of-type {{
+    margin-top: 0;
+}}
+
+/* Full-width anchors inside a two-column section. `column-span: all` is the
+   WeasyPrint-supported spell; the section image sits outside the columned
+   div in the HTML, so it is already full-measure. */
+.exhibit,
+.kpi-strip,
+.key-insight-box,
+.implication-box,
+.callout {{
+    column-span: all;
+}}
+
 .no-break {{
     page-break-inside: avoid;
 }}
 """.format(**PDF_PALETTE)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vendored brand fonts (fix 3.2 — @font-face embedding)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The audit (§3.2) found that the brand typography declared in CSS_TEMPLATE —
+# "Instrument Serif", "Source Sans 3", "JetBrains Mono" — was never actually
+# embedded in the shipped PDF: there were zero @font-face blocks, so every
+# render silently fell back to DejaVu (WeasyPrint's system default). The fonts
+# are vendored in assets/fonts/ (fix 3.1, OFL-licensed); here they are inlined
+# as base64 data-URIs so the PDF embeds the real typefaces on every machine,
+# with no network or system-font dependency.
+#
+# (family, weight, style, filename). The family strings MUST match the
+# font-family names used in CSS_TEMPLATE exactly, or @font-face will not bind.
+_VENDORED_FONTS: tuple[tuple[str, int, str, str], ...] = (
+    ("Instrument Serif", 400, "normal", "InstrumentSerif-Regular.ttf"),
+    ("Instrument Serif", 400, "italic", "InstrumentSerif-Italic.ttf"),
+    ("Source Sans 3", 400, "normal", "SourceSans3-Regular.ttf"),
+    ("Source Sans 3", 700, "normal", "SourceSans3-Bold.ttf"),
+    ("Source Sans 3", 400, "italic", "SourceSans3-Italic.ttf"),
+    ("JetBrains Mono", 400, "normal", "JetBrainsMono-Regular.ttf"),
+    ("JetBrains Mono", 700, "normal", "JetBrainsMono-Bold.ttf"),
+)
+
+_FONTS_DIR = Path(__file__).resolve().parents[3] / "assets" / "fonts"
+
+
+def _build_font_face_css(fonts_dir: Path = _FONTS_DIR) -> str:
+    """Build @font-face blocks with base64 data-URI sources for vendored fonts.
+
+    Data-URIs (not relative url() paths) because the CSS is inlined into the
+    HTML <style> element and rendered with base_url=cwd — relative paths from
+    an inline stylesheet resolve against cwd, not the package, and break the
+    moment a caller sets cwd elsewhere. Data-URIs make the HTML fully
+    self-contained: it renders identically regardless of working directory.
+
+    Never-raises (§0.3): a missing/unreadable font file is logged loudly and
+    skipped — the PDF then falls back for that face rather than sinking the
+    whole report build.
+    """
+    blocks: list[str] = []
+    for family, weight, style, filename in _VENDORED_FONTS:
+        font_path = fonts_dir / filename
+        try:
+            data = font_path.read_bytes()
+        except OSError:
+            logger.warning(
+                "Vendored font %s not readable at %s — "
+                "PDF will fall back to system fonts for this face",
+                filename,
+                font_path,
+                exc_info=True,
+            )
+            continue
+        b64 = base64.b64encode(data).decode("ascii")
+        blocks.append(
+            "@font-face {\n"
+            f'    font-family: "{family}";\n'
+            f"    font-style: {style};\n"
+            f"    font-weight: {weight};\n"
+            f'    src: url("data:font/ttf;base64,{b64}") format("truetype");\n'
+            "}"
+        )
+    return "\n\n".join(blocks)
+
+
+# Font blocks are appended AFTER str.format(**PDF_PALETTE) has run (line
+# above): the @font-face braces are therefore plain CSS braces, never seen by
+# the formatter. This sidesteps the doubled-brace trap documented at the top
+# of CSS_TEMPLATE.
+CSS_TEMPLATE = CSS_TEMPLATE + "\n\n" + _build_font_face_css() + "\n"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -941,7 +1083,12 @@ HTML_TEMPLATE = """\
     <p class="section-image-caption">{{ section_images[section.id].caption }}</p>
     {% endif %}
 
-    <div class="no-break">
+    {# The prose body is two-column (fix 3.4 — see .section-body in the CSS).
+       It was previously wrapped in .no-break, which tried to keep an entire
+       2000-word section body on one page — impossible, so WeasyPrint ignored
+       it, and it contradicted the column layout. The columns handle their own
+       break etiquette via orphans/widows on the body element. #}
+    <div class="section-body">
         {{ section.body | md_to_html }}
     </div>
 
@@ -967,9 +1114,20 @@ HTML_TEMPLATE = """\
                McKinsey Industry Classification… Source: …"). Each is emitted
                only when present: an invented note or source line would be the
                same class of defect as an invented geography. #}
-            {% if chart.note %}<p class="exhibit-note">{{ chart.note }}</p>{% endif %}
+            {# The "Note:" / "Source:" labels are italic in both benchmarks, and
+               .exhibit-note-label / .exhibit-source-label existed in the CSS
+               but were referenced by no markup — dead rules. The label is
+               emitted as its own span and the prefix stripped from the value,
+               so the label appears exactly once whether or not the producer
+               already prefixed the string (the deterministic miner does; an
+               LLM-supplied spec may not). #}
+            {% if chart.note %}
+            <p class="exhibit-note"><span class="exhibit-note-label">Note:</span>
+                {{ chart.note | trim | replace("Note:", "", 1) | trim }}</p>
+            {% endif %}
             {% if chart.source_citation %}
-            <p class="exhibit-source">{{ chart.source_citation }}</p>
+            <p class="exhibit-source"><span class="exhibit-source-label">Source:</span>
+                {{ chart.source_citation | trim | replace("Source:", "", 1) | trim }}</p>
             {% endif %}
         </figcaption>
         {% endif %}
@@ -1189,7 +1347,13 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         "- page-break-inside: avoid for images and charts.\n"
         "- page-break-before: always for new sections.\n"
         "- No blank pages. No orphaned images.\n"
-        "- 15-40 pages for a standard engagement.\n\n"
+        # Fix 4.2: this said "15-40 pages", contradicting the 15-20 delivery
+        # contract the page budget enforces. The Presentation Designer was being
+        # told a looser rule than the Render Engine verifies against, so the
+        # agent that lays out the pages had a different idea of the contract than
+        # the agent that checks it. Interpolated from the constants so the two
+        # cannot diverge again.
+        f"- {PAGE_COUNT_MIN}-{PAGE_COUNT_MAX} pages for a standard engagement.\n\n"
         "You run on STRONG tier. You do NOT spawn sub-agents.\n\n"
         "Your output is a LayoutPlan Pydantic model — page-by-page layout, "
         "image selections, chart placements, HTML template path, CSS path."
@@ -1526,6 +1690,14 @@ class PresentationDesigner(BaseAgent):
             return placements
 
         for chart in self._visualization_output.charts:
+            # `section_id in chart.section` is a substring test, so an empty
+            # `chart.section` (the homeless-chart case, fix 3.7) used to match
+            # NO section here while `_receive_chart_images` happily filed it
+            # under "". Requiring a non-empty section keeps the two paths
+            # consistent; re-homing is handled centrally in
+            # `_receive_chart_images`, which is the path that feeds the template.
+            if not chart.section or not chart.image_path:
+                continue
             if chart.section == section_id or section_id in chart.section:
                 placement = ChartPlacement(
                     chart_id=chart.id,
@@ -1533,6 +1705,7 @@ class PresentationDesigner(BaseAgent):
                     image_path=chart.image_path,
                     caption=chart.caption or chart.title,
                     source_citation=chart.source_citation,
+                    note=getattr(chart, "note", "") or "",
                     width_percent=80,
                     placement="center",
                 )
@@ -1643,8 +1816,10 @@ class PresentationDesigner(BaseAgent):
             if photo_id:
                 self._used_image_ids.add(photo_id)
 
-            # Download using the UnsplashClient's download_image method
-            local_path = await unsplash_tool.download_image(img, quality="regular")
+            # Download using the UnsplashClient's download_image method.
+            # Fix 3.6: full resolution — "regular" (1080px) can never pass
+            # the cover pipeline's 1920px no-upscale gate.
+            local_path = await unsplash_tool.download_image(img, quality="high")
 
             if not local_path or not os.path.exists(local_path):
                 return None
@@ -1765,7 +1940,10 @@ class PresentationDesigner(BaseAgent):
                 if photo_id:
                     self._used_image_ids.add(photo_id)
 
-                local_path = await unsplash_tool.download_image(img, quality="regular")
+                # Fix 3.6: full resolution — the section pipeline targets
+                # 2000px wide (print grade at 300 DPI), which a 1080px
+                # "regular" download can never pass under the no-upscale rule.
+                local_path = await unsplash_tool.download_image(img, quality="high")
 
                 if not local_path or not os.path.exists(local_path):
                     continue
@@ -1795,8 +1973,26 @@ class PresentationDesigner(BaseAgent):
     def _receive_chart_images(
         self,
         visualization_output: VisualizationOutput | None = None,
+        report: FinalReport | None = None,
     ) -> dict[str, list[ChartPlacement]]:
-        """Receive chart images from the Data Visualizer and organize by section."""
+        """Receive chart images from the Data Visualizer and organize by section.
+
+        Fix 3.7 — three defects in the original, all of which ended with a
+        300-DPI PNG on disk that no page ever displayed:
+
+        1. **Homeless charts were keyed by whatever string arrived.** A chart
+           mined from `report.key_findings` carries `section=""`. The template
+           iterates `section_charts[section.id]`, and no section has the id
+           `""`, so those charts were placed into the dict and then rendered by
+           nobody. Those are the *headline* exhibits. They are now re-homed
+           onto a real section (by authoring agent, then first section).
+        2. **Charts with no `image_path` were still placed.** A chart whose
+           export failed produced `<img src="">` — a broken-image box under a
+           real "Exhibit N" number, which also consumed a number and pushed
+           every later exhibit's numbering out by one. They are now dropped.
+        3. **The methodology note was never copied**, so the exhibit footer
+           shipped with a `Source:` line and no `Note:` line.
+        """
         if visualization_output:
             self._visualization_output = visualization_output
 
@@ -1804,14 +2000,59 @@ class PresentationDesigner(BaseAgent):
         if not self._visualization_output:
             return self._chart_placements
 
+        # Build the same agent -> section index the miner uses, so a re-homed
+        # chart lands in the section whose analyst produced its numbers rather
+        # than in an arbitrary one.
+        sections = list(getattr(report, "sections", None) or []) if report else []
+        valid_ids: set[str] = set()
+        first_id = ""
+        section_id_by_agent: dict[str, str] = {}
+        for section in sections:
+            sid = getattr(section, "id", "") or ""
+            if not sid:
+                continue
+            valid_ids.add(sid)
+            if not first_id:
+                first_id = sid
+            agent = (getattr(section, "agent", "") or "").strip()
+            if agent and agent not in section_id_by_agent:
+                section_id_by_agent[agent] = sid
+
         for chart in self._visualization_output.charts:
+            # Defect 2: an exhibit with no figure is not an exhibit.
+            if not chart.image_path:
+                self._log(
+                    f"DESIGNER: dropping chart {chart.id!r} — no image_path "
+                    f"(export failed); it would render as a broken image and "
+                    f"consume an exhibit number"
+                )
+                continue
+
             section_id = chart.section
+            # Defect 1: re-home anything that does not name a real section.
+            if valid_ids and section_id not in valid_ids:
+                agent = ""
+                for sec in sections:
+                    if getattr(sec, "id", "") == section_id:
+                        agent = getattr(sec, "agent", "") or ""
+                        break
+                rehomed = section_id_by_agent.get(agent) or first_id
+                self._log(
+                    f"DESIGNER: re-homing chart {chart.id!r} from "
+                    f"section {section_id!r} to {rehomed!r} — the original "
+                    f"section id matches no section, so the exhibit would "
+                    f"never have rendered"
+                )
+                section_id = rehomed
+
             placement = ChartPlacement(
                 chart_id=chart.id,
                 section_id=section_id,
                 image_path=chart.image_path,
                 caption=chart.caption or chart.title,
                 source_citation=chart.source_citation,
+                # Defect 3: carry the note so the footer is Note: + Source:.
+                note=getattr(chart, "note", "") or "",
                 width_percent=80,
                 placement="center",
             )
@@ -1943,9 +2184,22 @@ class PresentationDesigner(BaseAgent):
             # Fallback: render manually with Jinja2
             try:
                 from jinja2 import Environment, BaseLoader
+
+                from hyperion.output.render import TemplateRenderer
+
                 env = Environment(loader=BaseLoader(), autoescape=True)
-                env.filters["md_to_html"] = lambda v: v or ""
-                env.filters["clean_dict_repr"] = lambda v: str(v) if v else ""
+                # Fix 3.5: this fallback previously registered
+                #   md_to_html = lambda v: v or ""
+                # a plain-str passthrough. TemplateRenderer._markdown_to_html
+                # returns markupsafe.Markup; a plain str is autoescaped by
+                # Jinja, so every markdown-produced <p>/<strong> tag rendered
+                # as VISIBLE text on the page (audit §3.4 escaped-HTML
+                # divergence). The fallback must use the SAME real filter as
+                # the production JINJA2-tool path or it ships a different
+                # document.
+                _fallback_renderer = TemplateRenderer()
+                env.filters["md_to_html"] = _fallback_renderer._markdown_to_html
+                env.filters["clean_dict_repr"] = _fallback_renderer._clean_dict_repr
                 template = env.from_string(HTML_TEMPLATE)
                 html_str = template.render(
                     report=report,
@@ -2208,7 +2462,10 @@ class PresentationDesigner(BaseAgent):
 
         # Step 5: Receive chart images from Data Visualizer
         await self._transition(AgentState.WORKING, "Step 5: Receiving chart images from Data Visualizer")
-        self._receive_chart_images(visualization_output)
+        # `report` is passed so homeless charts can be re-homed onto a section
+        # that actually exists (fix 3.7) — without it the headline exhibits
+        # mined from `key_findings` are rendered by nobody.
+        self._receive_chart_images(visualization_output, report=report)
 
         # Assign charts to pages
         for page in self._pages:

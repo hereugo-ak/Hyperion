@@ -35,11 +35,19 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from hyperion.tools.content_selector import select_relevant_content
 from hyperion.tools.evidence_scorer import EvidenceScorer, EvidenceSummary, ScoredResult
+from hyperion.tools.query_utils import grounded_search_or_empty
 
 logger = logging.getLogger(__name__)
 
-# Content truncation — 15000 chars per source (Step 1.6)
+# Retained-content budget — 15000 chars per source (Step 1.6).
+#
+# Fix 2.2 (§4.7 Finding B-6) did NOT change this number. It changed how the
+# budget is *spent*: every tier below now calls `_fit_content`, which selects
+# the most relevant 15000 chars via chunk → rerank → top-k, instead of the
+# blind head-slice `content[:MAX_CONTENT_CHARS]` that retained a 60-page PDF's
+# title page and table of contents while discarding its tables and conclusions.
 MAX_CONTENT_CHARS = 15000
 
 # Cache TTL — 1 hour
@@ -49,6 +57,49 @@ CACHE_TTL_SECONDS = 3600
 # ─────────────────────────────────────────────────────────────────────────────
 # Data Models
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class YieldMetrics:
+    """Extraction-yield metrics for one deep-search call (fix 2.6).
+
+    Audit §6 Phase 2 item 2.6: "Log an extraction-yield metric per engagement
+    (``urls_discovered``, ``urls_extracted``, ``chars_retained``,
+    ``sources_cited``) and surface it in the run report." These four numbers
+    are what the Phase 2 exit criterion ("extraction success >=60% of
+    discovered URLs; every cited source has >=500 chars of retained, reranked
+    content") is computed FROM — before this fix they existed only
+    implicitly, scattered across three fields, so the criterion was
+    unmeasurable.
+    """
+
+    urls_discovered: int = 0
+    urls_extracted: int = 0
+    chars_retained: int = 0  # total retained content across cited sources
+    sources_cited: int = 0
+
+    @property
+    def extraction_yield(self) -> float:
+        """Fraction of discovered URLs that produced usable content."""
+        if self.urls_discovered == 0:
+            return 0.0
+        return self.urls_extracted / self.urls_discovered
+
+    @property
+    def avg_chars_per_source(self) -> float:
+        if self.sources_cited == 0:
+            return 0.0
+        return self.chars_retained / self.sources_cited
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "urls_discovered": self.urls_discovered,
+            "urls_extracted": self.urls_extracted,
+            "chars_retained": self.chars_retained,
+            "sources_cited": self.sources_cited,
+            "extraction_yield": round(self.extraction_yield, 3),
+            "avg_chars_per_source": round(self.avg_chars_per_source, 1),
+        }
 
 
 @dataclass
@@ -83,6 +134,8 @@ class DeepSearchResult:
     tiers_unavailable: dict[str, str] = field(default_factory=dict)
     # Human-readable roll-up. Empty when results were found.
     error: str = ""
+    # Fix 2.6: extraction-yield metrics for this call (audit §6 Phase 2).
+    yield_metrics: YieldMetrics = field(default_factory=YieldMetrics)
 
     @property
     def success(self) -> bool:
@@ -101,6 +154,11 @@ class DeepSearchResult:
         summary = self.evidence_summary
         lines.append(f"# Deep Search: {self.query}")
         lines.append(f"**Depth**: {self.depth} | **Sources**: {self.total_extracted} extracted / {self.total_discovered} discovered")
+        ym = self.yield_metrics
+        lines.append(
+            f"**Yield**: {ym.extraction_yield:.0%} of discovered URLs extracted | "
+            f"{ym.chars_retained} chars retained across {ym.sources_cited} cited sources"
+        )
         lines.append(f"**Evidence**: {summary.overall_stance} (support={summary.support_count}, conflict={summary.conflict_count}, neutral={summary.neutral_count}, confidence={summary.confidence:.2f})")
         lines.append("")
 
@@ -149,12 +207,72 @@ class DeepSearchResult:
             "tiers_unavailable": self.tiers_unavailable,
             "error": self.error,
             "success": self.success,
+            "yield_metrics": self.yield_metrics.to_dict(),
         }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Extracted Content — intermediate representation for scoring
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-engagement yield accumulator (fix 2.6) — the "run report" surface
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _EngagementYield:
+    """Aggregate extraction yield across every deep-search call in one run.
+
+    Specialists each spawn sub-agents that each issue deep searches; no
+    single ``DeepSearchResult`` can answer "how did retrieval perform on THIS
+    ENGAGEMENT?" — the number the audit's Phase 2 exit criterion is defined
+    on. This process-level accumulator is reset at engagement start
+    (:func:`reset_engagement_yield`) and read at run-report time
+    (:func:`engagement_yield_report`). Thread-safe: sub-agents search
+    concurrently.
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self._lock = threading.Lock()
+        self._totals = YieldMetrics()
+        self._calls = 0
+
+    def record(self, metrics: YieldMetrics) -> None:
+        with self._lock:
+            self._calls += 1
+            self._totals.urls_discovered += metrics.urls_discovered
+            self._totals.urls_extracted += metrics.urls_extracted
+            self._totals.chars_retained += metrics.chars_retained
+            self._totals.sources_cited += metrics.sources_cited
+
+    def report(self) -> dict[str, Any]:
+        with self._lock:
+            out = self._totals.to_dict()
+            out["search_calls"] = self._calls
+            return out
+
+    def reset(self) -> None:
+        with self._lock:
+            self._totals = YieldMetrics()
+            self._calls = 0
+
+
+_engagement_yield = _EngagementYield()
+
+
+def reset_engagement_yield() -> None:
+    """Reset the per-engagement accumulator (call at engagement start)."""
+    _engagement_yield.reset()
+
+
+def engagement_yield_report() -> dict[str, Any]:
+    """The run-report surface for fix 2.6: aggregate extraction yield across
+    all deep-search calls since the last reset, including the audit's four
+    named metrics plus derived yield ratio and per-call count."""
+    return _engagement_yield.report()
 
 
 @dataclass
@@ -270,6 +388,9 @@ class DeepSearchClient:
         self._crawl4ai: Any | None = None
         self._flaresolverr: Any | None = None
         self._evidence_scorer: EvidenceScorer | None = None
+        # Fix 2.1: the single extraction ladder. This client no longer owns a
+        # copy of the climb — it owns the tier subset and the per-tier calls.
+        self._unified_extract: Any | None = None
 
         # In-memory cache: key → (result, timestamp)
         self._cache: dict[str, tuple[DeepSearchResult, float]] = {}
@@ -278,6 +399,25 @@ class DeepSearchClient:
         # answer cannot change mid-run.
         self._availability: dict[str, bool] = {}
         self._skipped: dict[str, str] = {}
+
+        # Fix 2.2: the query the in-flight extraction batch is being performed
+        # for, so `_fit_content` can select the most *relevant* 15000 chars
+        # rather than the first 15000.
+        #
+        # Held as state rather than threaded through every `_extract_<tier>`
+        # signature on purpose: `tests/test_tool_capability_gating.py`
+        # monkeypatches `client._extract_jina(semaphore, url)` etc. to exercise
+        # ladder behaviour without a network, and `UnifiedExtract`'s
+        # `tier_resolver` contract is `(url) -> UnifiedExtractResult`. Adding a
+        # `query` parameter to those methods would break both, for no gain: the
+        # batch is single-query by construction (`search()` grounds one query,
+        # then extracts for it), so per-call threading would only pass the same
+        # value to every call.
+        self._active_query: str = ""
+        # Per-batch selection provenance, keyed by URL. Consumed by fix 2.6's
+        # extraction-yield metric; kept here so the metric reports what
+        # *actually* happened rather than re-deriving it.
+        self._selection_stats: dict[str, dict[str, Any]] = {}
 
     # ─────────────────────────────────────────────────────────────────
     # Capability gating
@@ -443,6 +583,32 @@ class DeepSearchClient:
         if not query or not query.strip():
             return DeepSearchResult(query=query, depth=depth)
 
+        # Fix 1.1/1.2 (HYPERION_DEEP_AUDIT_2026-07-27.md Finding B-2 +
+        # item 1.2): `deep_search.search()` is the entry point every
+        # specialist actually calls — `_discover()` below fans out to
+        # `_search_searxng` and `_search_jina` in parallel, and before this
+        # fix only the SearxNG leg was grounded internally (the Jina leg
+        # called `jina.search()` with the raw query). Grounding once HERE,
+        # before either leg runs, means the fan-out can never diverge again
+        # even if a leg's own client-level grounding is ever changed —
+        # this is the "single shared choke point" item 1.2 asked for at the
+        # orchestrator level, not just inside individual HTTP clients.
+        original_query = query
+        grounded, empty = grounded_search_or_empty(
+            query,
+            lambda: DeepSearchResult(
+                query=original_query,
+                depth=depth,
+                error="query has no subject after grounding",
+            ),
+            geography=geography or "",
+            logger=logger,
+            tool_name="DeepSearch",
+        )
+        if empty is not None:
+            return empty
+        query = grounded
+
         # Check cache
         cache_key = self._cache_key(query, depth, geography)
         cached = self._get_cached(cache_key)
@@ -490,8 +656,11 @@ class DeepSearchClient:
         extraction_target = num_sources * self.EXTRACTION_MULTIPLIER
         urls_to_extract = discovered_urls[:extraction_target]
 
+        # Fix 2.2: pass the grounded query down so every extraction tier fits
+        # its 15000-char budget by relevance to *this* question instead of by
+        # position in the document.
         extracted, extraction_tools, extraction_tried, extraction_errors = (
-            await self._extract_batch(urls_to_extract)
+            await self._extract_batch(urls_to_extract, query)
         )
         tools_used.extend(extraction_tools)
         tools_tried.extend(extraction_tried)
@@ -524,6 +693,17 @@ class DeepSearchClient:
             if unavailable:
                 error += f" [tiers unavailable here: {', '.join(sorted(unavailable))}]"
 
+        # Fix 2.6 (audit §6 Phase 2): the four audit-named yield metrics.
+        # ``chars_retained`` counts only CITED sources (the ranked cut), so
+        # "every cited source has >=500 chars" (Phase 2 exit criterion) is
+        # directly checkable via ``avg_chars_per_source``.
+        yield_metrics = YieldMetrics(
+            urls_discovered=len(discovered_urls),
+            urls_extracted=len(extracted),
+            chars_retained=sum(len(r.content or "") for r in ranked),
+            sources_cited=len(sources),
+        )
+
         result = DeepSearchResult(
             query=query,
             depth=depth,
@@ -539,7 +719,22 @@ class DeepSearchClient:
             errors=errors,
             tiers_unavailable=unavailable,
             error=error,
+            yield_metrics=yield_metrics,
         )
+
+        # Fix 2.6: log the per-call yield and accumulate into the
+        # per-engagement report. The audit's Phase 2 exit criterion
+        # (">=60% of discovered URLs extracted") is only checkable if this
+        # number exists in logs and in the run report.
+        logger.info(
+            "extraction yield: %d/%d URLs (%.0f%%), %d chars retained across %d cited sources",
+            yield_metrics.urls_extracted,
+            yield_metrics.urls_discovered,
+            yield_metrics.extraction_yield * 100,
+            yield_metrics.chars_retained,
+            yield_metrics.sources_cited,
+        )
+        _engagement_yield.record(yield_metrics)
 
         # Cache for 1 hour
         self._set_cached(cache_key, result)
@@ -647,13 +842,89 @@ class DeepSearchClient:
     # Phase 2: Extraction (VIGIL Fallback Chain)
     # ─────────────────────────────────────────────────────────────────
 
+    def _get_unified_extract(self) -> Any:
+        """The single extraction ladder (fix 2.1). Lazy — only built if used."""
+        if self._unified_extract is None:
+            from hyperion.tools.unified_extract import UnifiedExtract
+
+            self._unified_extract = UnifiedExtract(settings=self.settings)
+        return self._unified_extract
+
+    def _resolve_extraction_tier(
+        self,
+        tier: str,
+        semaphore: asyncio.Semaphore,
+        *,
+        extract_tables: bool = True,
+        extract_links: bool = True,
+    ) -> Any:
+        """Adapt this client's ``_extract_<tier>`` methods for the shared driver.
+
+        Fix 2.1: the *ladder logic* now lives in exactly one place
+        (:meth:`UnifiedExtract.extract_ladder`), but the *substitution point*
+        stays here. That is deliberate, and it is what makes this a collapse of
+        three ladders into one rather than a fourth one:
+
+          * The climb — tier order, capability skipping, tier-major batching,
+            stop-when-done, honest ``tools_used``/``tools_tried``/``errors`` —
+            is no longer duplicated. Bug fixes to it now reach every consumer.
+          * The per-tier *calls* remain overridable methods on this class,
+            because ``tests/test_tool_capability_gating.py`` monkeypatches
+            ``client._extract_jina`` etc. to test ladder behaviour without a
+            network, and because ``deep_search`` needs its own
+            :class:`ExtractedContent` shape and 15,000-char budget applied at
+            the point of extraction.
+
+        The returned callable owns its concurrency bounding: the shared driver
+        must not wrap it, because ``asyncio.Semaphore`` is not reentrant and
+        this adapter's underlying ``_extract_<tier>(semaphore, url)`` methods
+        acquire it themselves.
+        """
+        from hyperion.tools.unified_extract import UnifiedExtractResult
+
+        extractor = getattr(self, f"_extract_{tier}", None)
+        if extractor is None:
+            return None
+
+        async def _call(url: str) -> UnifiedExtractResult:
+            content = await extractor(semaphore, url)
+            # Normalise this client's ExtractedContent into the driver's
+            # result shape. `content` truthiness IS this ladder's quality
+            # signal: `_extract_*` already applied `_is_quality_content`, and
+            # returns an empty-content sentinel on failure.
+            ok = bool(getattr(content, "content", ""))
+            result = UnifiedExtractResult(
+                url=getattr(content, "url", url),
+                title=getattr(content, "title", "") or "",
+                content=getattr(content, "content", "") or "",
+                markdown=getattr(content, "markdown", "") or "",
+                tool_used=getattr(content, "tool_used", "") or tier,
+                success=ok,
+                error="" if ok else f"no usable content from {url}",
+                # Carry the original through so the caller keeps published_date
+                # and the tier's own label rather than a lossy reconstruction.
+                raw=content,
+            )
+            return result
+
+        return _call
+
     async def _extract_batch(
         self,
         urls: list[str],
+        query: str = "",
     ) -> tuple[list[ExtractedContent], list[str], list[str], dict[str, str]]:
         """Extract content from URLs using the VIGIL fallback chain.
 
-        For each URL, tries extraction tiers in :attr:`EXTRACTION_TIERS` order:
+        Fix 2.1 (§4.5 Finding B-4): this method no longer *implements* a
+        ladder. It declares which tiers it is entitled to
+        (:attr:`EXTRACTION_TIERS`), supplies its own per-tier extractors via
+        :meth:`_resolve_extraction_tier`, and delegates the climb to
+        :meth:`UnifiedExtract.extract_ladder` — the single implementation.
+        Before this fix there were three separately-maintained copies of the
+        climb, and the best-engineered one had no callers at all.
+
+        Tiers, in :attr:`EXTRACTION_TIERS` order:
           1. Jina Reader (fast, keyless, reliable — always works)
           2. HTTP Extract (httpx + trafilatura — keyless, browserless)
           3. Obscura (stealth, JS rendering — capability-gated)
@@ -664,63 +935,96 @@ class DeepSearchClient:
         Once a URL is successfully extracted it is not retried by lower tiers,
         and a tier that cannot run here is skipped rather than attempted.
 
-        Returns ``(extracted, tools_used, tools_tried, errors)``. The two extra
+        Returns ``(extracted, tools_used, tools_tried, errors)``, with tier
+        names mapped through :attr:`TIER_LABELS` so this client's public
+        provenance vocabulary is unchanged by the delegation. The two extra
         members exist so the caller can distinguish "every tier failed" from
         "nothing needed extracting" — previously both looked identical.
 
-        Uses a semaphore to limit concurrency.
+        Fix 2.2: ``query`` is what every tier's :meth:`_fit_content` call ranks
+        chunks against. It is optional and defaults to empty so the pre-existing
+        one-argument call signature keeps working — with an empty query the
+        selection honestly degrades to the old head-slice rather than silently
+        ranking against nothing.
         """
         if not urls:
             return ([], [], [], {})
 
+        self._active_query = query or ""
+        self._selection_stats = {}
+
+        outcome = await self._get_unified_extract().extract_ladder(
+            urls,
+            concurrency=self.EXTRACTION_CONCURRENCY,
+            tiers=self.EXTRACTION_TIERS,
+            tier_resolver=self._resolve_extraction_tier,
+            tier_available=self._tier_available,
+        )
+
+        def _label(tier: str) -> str:
+            return self.TIER_LABELS.get(tier, tier)
+
         extracted: list[ExtractedContent] = []
-        extracted_urls: set[str] = set()
-        tools_used: list[str] = []
-        tools_tried: list[str] = []
-        errors: dict[str, str] = {}
+        for result in outcome.results:
+            carried = result.raw
+            extracted.append(
+                carried
+                if isinstance(carried, ExtractedContent)
+                else ExtractedContent(
+                    url=result.url,
+                    title=result.title,
+                    content=result.content,
+                    markdown=result.markdown,
+                    tool_used=result.tool_used,
+                )
+            )
 
-        semaphore = asyncio.Semaphore(self.EXTRACTION_CONCURRENCY)
-
-        for tier in self.EXTRACTION_TIERS:
-            pending = [u for u in urls if u not in extracted_urls]
-            if not pending:
-                break  # everything already extracted — stop climbing the ladder
-            if not self._tier_available(tier):
-                continue
-
-            label = self.TIER_LABELS.get(tier, tier)
-            extractor = getattr(self, f"_extract_{tier}", None)
-            if extractor is None:  # pragma: no cover — guards a typo in the table
-                errors[label] = "no extractor implemented"
-                continue
-
-            tools_tried.append(label)
-            tasks = [extractor(semaphore, u) for u in pending]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            produced = 0
-            failures: list[str] = []
-            for result in results:
-                if isinstance(result, BaseException):
-                    failures.append(f"{type(result).__name__}: {result}")
-                    continue
-                if isinstance(result, ExtractedContent) and result.content:
-                    extracted.append(result)
-                    extracted_urls.add(result.url)
-                    produced += 1
-
-            if produced:
-                tools_used.append(label)
-            elif failures:
-                errors[label] = failures[0]
-            else:
-                errors[label] = f"no usable content from {len(pending)} URL(s)"
-
-        return (extracted, tools_used, tools_tried, errors)
+        return (
+            extracted,
+            [_label(t) for t in outcome.tools_used],
+            [_label(t) for t in outcome.tools_tried],
+            {_label(t): why for t, why in outcome.errors.items()},
+        )
 
     # ─────────────────────────────────────────────────────────────────
     # Per-tool extraction methods
     # ─────────────────────────────────────────────────────────────────
+
+    def _fit_content(self, content: str, url: str = "") -> str:
+        """Fit ``content`` into :data:`MAX_CONTENT_CHARS` **by relevance**.
+
+        Fix 2.2 (§4.7 Finding B-6). This method is the single replacement for
+        the six identical ``[:MAX_CONTENT_CHARS]`` head-slices that used to sit
+        in the six ``_extract_<tier>`` methods below.
+
+        Why one helper instead of six inline calls: the audit's §4.5 lesson is
+        that N copies of the same logic diverge (three extraction ladders, and
+        the archive-ordering fix landed only in the one with no callers). Six
+        copies of a truncation rule would drift the same way — and a tier that
+        kept the old head-slice would silently produce worse evidence than its
+        neighbours while reporting the same ``tool_used``.
+
+        Degrades safely: with no active query there is nothing to rank against,
+        so :func:`select_relevant_content` head-slices and says so. That keeps
+        this a strict improvement — never worse than the previous behaviour.
+        """
+        if not content:
+            return ""
+        selection = select_relevant_content(
+            content,
+            self._active_query,
+            budget_chars=MAX_CONTENT_CHARS,
+        )
+        if url:
+            self._selection_stats[url] = selection.to_dict()
+        if selection.degraded and selection.strategy != "empty":
+            logger.debug(
+                "DeepSearch: relevance selection degraded for %s (%s) — %s",
+                url or "<url unknown>",
+                selection.strategy,
+                selection.reason,
+            )
+        return selection.content
 
     def _is_quality_content(self, content: str) -> bool:
         """Check if extracted content meets quality thresholds."""
@@ -741,7 +1045,7 @@ class DeepSearchClient:
                 jina = self._get_jina()
                 result = await jina.read(url)
                 if result and (result.markdown or result.content):
-                    content = (result.markdown or result.content)[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.markdown or result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -761,7 +1065,7 @@ class DeepSearchClient:
                 http_extract = self._get_http_extract()
                 result = await http_extract.extract(url)
                 if result and result.success and result.content:
-                    content = result.content[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -781,7 +1085,7 @@ class DeepSearchClient:
                 obscura = self._get_obscura()
                 result = await obscura.fetch(url, output_format="markdown")
                 if result and (result.markdown or result.content):
-                    content = (result.markdown or result.content)[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.markdown or result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -801,7 +1105,7 @@ class DeepSearchClient:
                 scrapling = self._get_scrapling()
                 result = await scrapling.fetch(url, stealth=True)
                 if result and result.content:
-                    content = result.content[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -821,7 +1125,7 @@ class DeepSearchClient:
                 crawl4ai = self._get_crawl4ai()
                 result = await crawl4ai.crawl(url)
                 if result and (result.markdown or result.content):
-                    content = (result.markdown or result.content)[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.markdown or result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -843,7 +1147,7 @@ class DeepSearchClient:
                 if result and result.success and result.html:
                     # Strip HTML tags for basic text extraction
                     text = re.sub(r"<[^>]+>", " ", result.html)
-                    text = re.sub(r"\s+", " ", text).strip()[:MAX_CONTENT_CHARS]
+                    text = self._fit_content(re.sub(r"\s+", " ", text).strip(), url)
                     if self._is_quality_content(text):
                         return ExtractedContent(
                             url=url,
@@ -883,6 +1187,9 @@ class DeepSearchClient:
         if self._flaresolverr:
             await self._flaresolverr.close()
             self._flaresolverr = None
+        if self._unified_extract:
+            await self._unified_extract.close()
+            self._unified_extract = None
 
     async def __aenter__(self) -> DeepSearchClient:
         return self

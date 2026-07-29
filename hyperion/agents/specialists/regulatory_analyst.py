@@ -78,6 +78,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.tools.query_utils import resolve_subject
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -332,15 +333,15 @@ class RegulatoryAnalyst(BaseAgent):
             searxng = self.get_tool(ToolName.SEARXNG)
 
             # Build the subject anchor from whatever the engagement actually
-            # gave us. `industry` is frequently "" (the classifier could not
-            # infer a sector), and an f-string like f"{industry} regulations"
-            # then degrades to " regulations" — a subject-less search that
-            # cannot answer the user's question. Falling back to the
-            # engagement subject keeps every query tied to what was asked.
-            from hyperion.tools.query_utils import get_engagement_focus
-
-            _q, _subject, _geo = get_engagement_focus()
-            subject = (industry or _subject or self._question or "").strip()
+            # gave us. `industry` is resolved via `resolve_subject` in `run()`
+            # now, but this method is also reachable with a bare `industry`
+            # string from other callers, so re-resolve defensively rather
+            # than assume the caller already did it — an f-string like
+            # f"{industry} regulations" degrading to " regulations" is a
+            # subject-less search that cannot answer the user's question.
+            subject = resolve_subject(
+                self._context, "industry", "sector", question=self._question
+            ) or industry
 
             query_patterns: list[str] = []
             for jurisdiction in jurisdictions:
@@ -458,17 +459,11 @@ class RegulatoryAnalyst(BaseAgent):
             if unmapped:
                 try:
                     searxng = self.get_tool(ToolName.SEARXNG)
-                    # `industry` is not a parameter of this method — read the
-                    # sector from context, falling back to the engagement
-                    # subject so the discovery query is never subject-less.
-                    from hyperion.tools.query_utils import get_engagement_focus
-
-                    _q, _subject, _geo = get_engagement_focus()
-                    sector = (
-                        self._context.get("industry")
-                        or self._context.get("sector")
-                        or _subject
-                        or ""
+                    # `industry` is not a parameter of this method — resolve
+                    # the subject the same way `run()` does, so the discovery
+                    # query is never subject-less.
+                    sector = resolve_subject(
+                        self._context, "industry", "sector", question=self._question
                     )
                     for jurisdiction in unmapped[:2]:
                         discovery = await searxng.search(
@@ -1204,7 +1199,17 @@ class RegulatoryAnalyst(BaseAgent):
         # US Buy American Act / Trade Agreements Act / Berry Amendment —
         # 119 confidently-reported findings about the wrong country. A wrong
         # jurisdiction is worse than a missing one: it looks authoritative.
-        industry = self._context.get("industry") or self._context.get("sector") or ""
+        # Four-tier resolution (explicit context keys -> sector -> engagement
+        # subject -> the user's own question) rather than the two bare
+        # context keys this used to read. `industry` was frequently "" when
+        # the Director's handover omitted it, and every downstream query
+        # template (`_search_regulations`, `_scrape_government_portals`)
+        # interpolated that emptiness into a subject-less search — this was
+        # one of the three specialists Finding B-9 named as missing the
+        # shared `resolve_subject` helper entirely.
+        industry = resolve_subject(
+            self._context, "industry", "sector", question=self._question
+        )
         jurisdictions = self._resolve_jurisdictions()
 
         # Spawn sub-agents for parallel regulatory research

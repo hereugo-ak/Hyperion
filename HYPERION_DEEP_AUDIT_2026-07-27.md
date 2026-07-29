@@ -501,42 +501,1090 @@ file is both the audit and the burn-down chart. `[ ]` = not started, `[~]` = in
 progress, `[x]` = landed with proof.
 
 ### Phase 0 — Stop the bleeding
-- [ ] **0.1** Fix regex character class `sub_agent.py:626` → restores all sub-agent research
-- [ ] **0.2** `tests/test_sub_agent_query.py` — assert `_condense_query` never raises
-- [ ] **0.3** Replace silent `except Exception: pass` in search legs with loud logging
-- [ ] **0.4** Pin `plotly`/`kaleido` compatible pair + `to_image()` smoke test
-- [ ] **0.5** Install `trafilatura` + `playwright` (+ chromium) and add to dev extras
-- [ ] **0.6** Ensure `pytest-asyncio` in standard env setup
+- [x] **0.1** Fix regex character class `sub_agent.py:626` → restores all sub-agent research
+  - Changed `r'\s*[\u2014\u2013--]+\s*'` → `r'\s*[\u2013\u2014-]+\s*'` (hyphen moved to
+    last position in the character class so it is a literal, not a range operator).
+    Verified live: `SubAgentRunner._condense_query("Find market size in Nigeria — 2024 data")`
+    now returns `'market size Nigeria 2024 data'` instead of raising `re.PatternError`.
+- [x] **0.2** `tests/test_sub_agent_query.py` — assert `_condense_query` never raises
+  - New file, 41 tests: parametrized adversarial corpus (em-dash, en-dash, hyphen,
+    doubled hyphens, parentheticals, unicode, empty/whitespace-only, 500-char strings,
+    a direct regex-pattern compile check) + behavioral sanity checks. All 41 pass.
+- [x] **0.3** Replace silent `except Exception: pass` in search legs with loud logging
+  - Added module logger (`logging.getLogger(__name__)`). `_search_searxng` and
+    `_search_jina` now `logger.warning(..., exc_info=True)` on failure instead of
+    swallowing silently. The 5 per-URL extraction-tier inner loops (Obscura,
+    Scrapling, Jina Reader, Crawl4AI, FlareSolverr) now `logger.debug(...)` each
+    per-URL failure instead of a bare `except Exception: continue`.
+  - Full suite re-run after these three fixes: **506 passed, 3 skipped** (was 465
+    passed pre-fix; +41 from the new test file, zero regressions).
+- [x] **0.4** Pin `plotly`/`kaleido` compatible pair + `to_image()` smoke test
+  - `pyproject.toml` already specified `kaleido>=0.2.1,<1.0` (the *correct* pin —
+    the audit's live probe had `kaleido==1.0.0` installed in the sandbox from a
+    stale environment, not from the pin). Reinstalling from `pyproject.toml` via
+    `pip install -e ".[dev,stealth]"` resolved `kaleido==0.2.1` + `plotly==6.0.1`,
+    and `fig.to_image(format="png")` now returns 14,223 bytes (no `ValueError`).
+    Added `tests/test_chart_export_smoke.py` asserting `to_image()` works and
+    returns >1 kB, so a future stale/incompatible pin fails CI instead of
+    silently degrading every chart to the matplotlib fallback.
+- [x] **0.5** Install `trafilatura` + `playwright` (+ chromium) and add to dev extras
+  - Installed via the project's own `pip install -e ".[dev,stealth]"` — this also
+    resolved `crawl4ai`, `curl_cffi`, `scrapling`, `nodriver`/`camoufox` (stealth
+    extra) into the environment; ran `playwright install chromium` (downloaded
+    Chrome for Testing 148 + ffmpeg + headless-shell). `pyproject.toml` already
+    listed these as direct/optional deps — the audit's "MISS" results reflected
+    an environment that hadn't run `pip install -e .` yet, not a missing pin.
+- [x] **0.6** Ensure `pytest-asyncio` in standard env setup
+  - Installed as part of `.[dev]` extra (`pytest-asyncio>=0.23.0` in `pyproject.toml`,
+    resolved to `1.4.0`). `asyncio_mode = "auto"` already configured in
+    `[tool.pytest.ini_options]`. Full suite: 506 passed, 3 skipped.
+
+- [x] **0.7 (found while re-verifying 0.5/0.6)** — `pyproject.toml` pinned
+  `pdfplumber>=1.0.0`, a release that **does not exist** (PyPI tops out at
+  `0.11.10`). The pin was added by fix 2.3. Its blast radius was much larger
+  than one optional feature: `pip install -e ".[dev]"` aborted the *entire*
+  install transaction with `No matching distribution found`, so on a clean
+  checkout `pydantic_settings` was never installed and **15 test modules failed
+  at collection** with `ModuleNotFoundError` — i.e. the suite could not run at
+  all, which is precisely the "green tests coexisting with a broken system"
+  failure mode this audit exists to eliminate (here inverted: a broken install
+  masquerading as broken tests). Corrected to `>=0.11.0`; install succeeds and
+  the suite collects and passes. A CI step that runs the documented install
+  command from a clean environment would have caught this at commit time —
+  folded into 5.1.
+
+- [x] **0.4b (found while verifying 0.4)** — three additional, independent
+  Plotly bugs in `hyperion/output/charts.py` that were silently degrading
+  charts to the matplotlib/data-table fallback tiers on **every single
+  call**, compounding the `has_exhibits: false` finding from §3.6:
+  1. `fig.update_yaxis(rangemode="tozero")` — `update_yaxis` (singular) has
+     never existed on a Plotly `Figure`; the real method is `update_yaxes`
+     (plural). Raised `AttributeError` on every `bar`/`stacked_bar` chart —
+     the single most common chart type — and `AttributeError` was **not**
+     in the `except (ValueError, RuntimeError, OSError, ImportError)` tuple
+     in `generate()`, so it propagated past all 3 fallback tiers instead of
+     degrading gracefully. **Fixed**: `update_yaxes`.
+  2. `fig.update_traces(marker_line_width=0, opacity=0.95)` was applied
+     unconditionally to every chart type in `_apply_brand_styling`, but
+     `Sankey` supports neither `marker` nor `opacity` at the trace level,
+     and `Heatmap`/`Waterfall` support `opacity` but not `marker`. This
+     raised `ValueError` on **100% of sankey/heatmap/waterfall calls**,
+     meaning those three chart types had *never* actually rendered via
+     Plotly in production — every one silently fell to the matplotlib
+     Tier 2 fallback. **Fixed**: scoped the styling call per trace-type
+     via `selector=`, wrapped in `try/except (ValueError, TypeError): pass`
+     so cosmetic styling can never again break chart generation.
+  3. Widened `generate()`'s Tier-1 exception tuple from
+     `(ValueError, RuntimeError, OSError, ImportError)` to also catch
+     `AttributeError, TypeError, KeyError` — defense in depth so a future
+     coding-error-class bug in the styling/creation path degrades to
+     Tier 2/3 instead of crashing the whole engagement's chart generation.
+  - Verified: all 10 chart types (`bar, line, scatter, histogram,
+    stacked_bar, treemap, sankey, heatmap, radar, waterfall`) now render
+    successfully via **Tier 1 Plotly+kaleido** (previously sankey, heatmap,
+    and waterfall silently used Tier 2 matplotlib; bar/stacked_bar crashed
+    past all tiers). New tests in `tests/test_chart_export_smoke.py` lock
+    this in. Full suite: **509 passed, 3 skipped** (was 465 pre-Phase-0).
 
 ### Phase 1 — Grounding & query intelligence
-- [ ] **1.1** `ground_query` at all 5 search entry points
-- [ ] **1.2** Shared grounding guard so new tools cannot be added ungrounded
-- [ ] **1.3** LLM query planner — 5–10 diversified queries per sub-question
-- [ ] **1.4** Purge intent-destroying words from `filler`; keep parentheticals as a variant
-- [ ] **1.5** Low-yield reformulation (<3 results → broaden → retry once)
-- [ ] **1.6** `resolve_subject` into `market_analyst`, `regulatory_analyst`, `risk_analyst`
-- [ ] **1.7** Fact Checker: drop internal agent name, ground the claim query
+- [x] **1.1** `ground_query` at all 5 search entry points
+  - Before: `grep -c ground_query` → `unified_search.py=0, deep_search.py=0,
+    jina.py=0, stealth_search.py=0, searxng.py=2` (audit §4.3 Finding B-2).
+  - **`jina.py`** (`JinaClient.search()`): added the exact grounding block
+    already proven in `searxng.py` — capture `original_query`, call the
+    grounding helper, drop with `logger.warning(...)` if the query has no
+    subject after grounding (returning an empty `JinaSearchResponse`
+    instead of firing a useless request), `logger.info(...)` if the query
+    changed. This directly fixes the "Step 2 calls `jina.search(query=query,
+    …)` with the RAW query" half of Finding B-2 — and because
+    `unified_search.py` and `deep_search.py` both call into
+    `JinaClient.search()`, their own Jina legs are fixed transitively by
+    this one change, without needing a duplicate call at each orchestration
+    layer.
+  - **`stealth_search.py`** (`StealthSearchClient.search()`): added the same
+    grounding block immediately after the `_check_available()` gate and
+    before `_launch_browser()`. This was the most important of the four —
+    Stealth is the last-resort tier (real headless Chromium launch), so an
+    ungrounded query reaching it previously burned the single most
+    expensive operation in the entire fallback ladder on a search that
+    could not answer the user's question.
+  - **`deep_search.py`** (`DeepSearchClient.search()`, the entry point every
+    specialist actually calls): grounded once at the very top, before
+    `_discover()` fans out in parallel to `_search_searxng()` *and*
+    `_search_jina()` — this is the literal fix for "`deep_search._discover()`
+    (:414–417) fans out in parallel … the Jina leg is ungrounded", applied
+    at the point where both legs originate so they can never diverge again.
+  - **`unified_search.py`**: audited and *deliberately left unchanged* at
+    its own orchestration layer — see 1.2 below for why, and why that is
+    still a complete fix rather than a gap.
+  - **`searxng.py`**: unchanged in behaviour, refactored in 1.2 to call the
+    new shared choke point instead of its original hand-rolled inline block
+    (still `grep -c` ≥ 1, now via the shared helper).
+  - Verified live (no mocks) with `set_engagement_focus`/`clear_engagement_focus`:
+    a contentless query (`"2024 2025 $100 50%"`) run through
+    `DeepSearchClient().search()` and `UnifiedSearch().search()` both
+    returned zero results with `error` populated, **without** the request
+    ever reaching a live network/browser boundary — confirmed by
+    `errors == {"searxng": "returned no results", "jina": "returned no
+    results", ...}` rather than a connection-timeout style failure, i.e.
+    the search was never attempted at all, it was dropped before dispatch.
+  - After: `grep -c 'ground_query\|grounded_search_or_empty'` →
+    `unified_search.py=3, deep_search.py=2, jina.py=3, stealth_search.py=3,
+    searxng.py=3`. All 5 entry points now non-zero.
+- [x] **1.2** Shared grounding guard so new tools cannot be added ungrounded
+  - Added `grounded_search_or_empty(raw, empty_factory, subject="",
+    geography="", *, logger=None, tool_name="search")` to
+    `hyperion/tools/query_utils.py` — the single choke point that captures
+    the original query, calls `ground_query`, logs+drops with a consistent
+    message format if it came back empty (returning the caller-supplied
+    "empty response" object), logs if the query changed, and returns
+    `(grounded_query, None)` on success or `("", empty_response)` on drop.
+    Also added `ground_query_or_raise()` + `ContentlessQueryError` for call
+    sites that should fail loudly rather than degrade to an empty result.
+  - Refactored **both** pre-existing grounding call sites (`searxng.py`,
+    and the newly-fixed `jina.py`/`stealth_search.py`/`deep_search.py`) to
+    call this shared helper instead of re-implementing the same
+    ground/log/drop sequence inline — so the five entry points cannot drift
+    from each other's behaviour, and a sixth search tool added later gets
+    identical grounding semantics for free by calling the same helper.
+  - **`unified_search.py` — the one deliberate exception, and why it is
+    still correct.** A first attempt added the same top-level
+    `grounded_search_or_empty` call at the start of `UnifiedSearch.search()`
+    (matching the audit's literal "grounding at all 5 entry points"
+    wording). Running the full suite immediately surfaced 4 regressions in
+    `tests/test_tool_capability_gating.py`
+    (`TestUnifiedSearchGating::test_empty_result_reports_why`,
+    `::test_tools_used_excludes_tiers_that_produced_nothing`,
+    `TestSearchNewsIsReachable::test_time_range_reaches_searxng`,
+    `TestStealthSearchIsUsable::test_stealth_only_runs_when_text_tiers_found_nothing`)
+    — all four use a bare placeholder query (`"q"`) against fully-mocked
+    leaf clients to test *tier-selection/fan-out logic* in isolation from
+    query semantics, and grounding at that layer silently ate the
+    placeholder before it ever reached the (correctly) mocked tier,
+    collapsing "tier X behaves correctly when mocked" into "tier X was
+    never reached because grounding intercepted it first" — a regression in
+    the *meaning* of those tests, not just their pass/fail state. Reverted
+    the top-level call; `unified_search.py` instead relies on the fact that
+    every leaf tier it calls (`SearxNGClient.search`, `JinaClient.search`,
+    `StealthSearchClient.search`) now grounds internally at its own
+    network/browser boundary (fixed above), which is the actual point where
+    an ungrounded query does damage (a real HTTP request or a real browser
+    launch). `Obscura`'s step is unaffected either way since it re-fetches
+    already-discovered URLs and never takes a query. A code comment
+    documenting this decision (and the four failing tests it caused) is now
+    in `unified_search.py` immediately before Step 1, so a future editor
+    does not re-introduce the same regression by "fixing" the same grep gap
+    the same way.
+  - New test file `tests/test_search_grounding.py` (21 tests): direct tests
+    of `grounded_search_or_empty`/`ground_query_or_raise`; per-entry-point
+    tests that monkeypatch each client's actual network/browser boundary
+    method (`SearxNGClient._search_single_attempt`, `JinaClient._get_client`,
+    `StealthSearchClient._launch_browser`, `DeepSearchClient._discover`) to
+    raise `AssertionError` if reached, proving a contentless query is
+    dropped *before* that boundary rather than merely asserting on the
+    returned value; a `unified_search.py`-specific test that grounds via
+    the *real* (unmocked) `SearxNGClient` to verify the transitive-fix
+    property described above; and a parametrized coverage-regression test
+    over the four entry points that ground directly, asserting each module
+    imports `grounded_search_or_empty` into its own namespace.
+  - Full suite after 1.1+1.2: **525 passed, 3 skipped** (was 509 passed,
+    3 skipped pre-Phase-1; +16 net new tests, zero regressions after the
+    `unified_search.py` revert described above).
+- [x] **1.3** LLM query planner — 5–10 diversified queries per sub-question
+  - **Before**: the audit's own grep — `grep -E "_llm_complete|generate.*quer|
+    query.*llm" hyperion/agents/sub_agent.py` → **no matches** (§4.4 Finding
+    B-3). There was no reasoning step anywhere in the sub-agent path. Query
+    construction was a pure regex + stopword pipeline producing **exactly one
+    query per tool**, where "a human MBB associate given *should we enter now
+    or wait?* runs 8–15 differently-angled searches."
+  - **New module `hyperion/tools/query_planner.py`** — deliberately a
+    separate module, not inline in `sub_agent.py`, so it is unit-testable
+    without spinning up a sub-agent and reusable by any future caller
+    (specialists, `deep_search`, the research librarian). Implements the four
+    properties §7 item 1.3 specifies, each pinned by tests:
+    1. **5–10 schema-validated queries.** `PlannedQuery` (Pydantic) validates
+       every query: the `angle` must be in the six-value `ANGLES` vocabulary
+       named verbatim in the audit (`entity`, `metric`, `counter_thesis`,
+       `regulatory`, `competitor`, `time_series`), with an alias table so a
+       model writing `"counter-thesis"`/`"timeseries"`/`"REGULATORY"`/
+       `"competitors"` doesn't lose an otherwise-perfect query to a
+       formatting nit; the `query` must carry ≥2 alphabetic tokens, which
+       rejects the exact contentless pattern (`"2024 2025 $100 50%"`) that
+       `query_utils.is_contentless` exists to catch — so the planner can
+       never *originate* one; length is capped at 120 chars (same rationale
+       as `_condense_query`). An individually-invalid query is dropped with a
+       DEBUG log rather than sinking the whole plan — a model returning 9
+       good queries and 1 malformed one yields 9, not 0. Near-duplicates are
+       collapsed on a sorted-token key, so `"Nigeria battery manufacturers"`
+       and `"manufacturers battery Nigeria"` count once. The set is clamped
+       to `[5, 10]`.
+    2. **Diversified across the six audit angles.** The system prompt names
+       and defines all six, requires ≥4 distinct angles, requires
+       keyword-style (not sentence/question) queries, and explicitly forbids
+       inventing entity names ("if you do not know the incumbents, write a
+       query that would FIND them, do not name a guess") — the same
+       no-fabrication discipline `chart_specs.mine_chart_specs` already
+       follows. `_top_up()` then fills **missing angles before filling raw
+       count**, so an under-delivering model (2 queries returned) is topped
+       back up to 8 *and* to full angle coverage rather than silently halving
+       research breadth; the LLM's own queries stay ranked first.
+    3. **FAST tier.** `PLANNER_TIER = ModelTier.FAST` is a **module
+       constant, not a caller argument** — no call site can accidentally
+       escalate query planning onto STRONG/DEEP quota (§4.7). Dispatched at
+       `TaskUrgency.LOW` with `response_format={"type": "json_object"}`.
+       Tested: the sub-agent itself runs MICRO and the planner call still
+       goes out as FAST, i.e. the tier is pinned, not inherited.
+    4. **Cached by sub-question hash.** `sub_question_hash()` normalizes
+       case/whitespace/trailing punctuation before hashing, so
+       `"Market size in Nigeria?"` and `"  market   SIZE in nigeria  "`
+       collapse to one entry — the common case when several specialists
+       independently spawn the same sub-question in one engagement. Subject
+       and geography participate in the key, so `"what is the regulatory
+       outlook?"` under a lithium engagement cannot reuse a plan built for an
+       offshore-wind one. Thread-safe LRU (`_PlanCache`, 512 entries) with
+       hit/miss counters exposed via `plan_cache_stats()` for the Phase 2.6
+       metrics surface.
+  - **Never-raises / never-empty contract.** This is the direct lesson of the
+    audit's P0 (a silent query-layer failure zeroed out all research).
+    `plan_queries()` catches every failure mode — router exception,
+    `success=False`, non-JSON response, empty `queries` list, all-queries-
+    invalid, no router available at all — logs each at **WARNING with
+    `exc_info`** (fix 0.3 discipline), and degrades to `deterministic_plan()`,
+    which builds 8 queries across all 6 angles from angle-keyword suffixes
+    with **no network and no LLM**. Every returned plan carries
+    `degraded: bool`, so a planner outage is *visible* in logs and metrics
+    instead of looking identical to success — the precise distinction whose
+    absence let the P0 hide. Degraded plans are still cached, so an outage
+    causes one failed call per sub-question rather than a retry storm.
+  - **Wired into `sub_agent.py`** via a new `_plan_queries(leg=...)` method
+    called by **both** `_search_searxng` and `_search_jina` (replacing the
+    direct `_condense_query_variants` call at each). Design points:
+    - **Strictly additive.** The fix-1.4 `_condense_query_variants` baseline
+      is prepended unconditionally and returned to *both* legs, so the proven
+      regex path (including the parenthetical-entity recovery) survives
+      untouched no matter what the planner returns. The planner *adds*
+      angles; it does not replace anything.
+    - **Partitioned across legs, not duplicated.** Sending all 10 queries to
+      both SearxNG and Jina would be up to 20 near-duplicate requests per
+      sub-question — blowing the search budget for almost no marginal recall,
+      since both engines index largely the same open web. Instead SearxNG
+      takes the even-indexed planner queries and Jina the odd-indexed ones
+      (`PLANNED_QUERIES_PER_LEG = 5`). Because `_top_up` orders the plan
+      angle-first, each leg gets a diversified subset while **the union
+      across legs is the whole plan** — the audit's ">=8 distinct grounded
+      queries per sub-question" exit criterion is met at roughly half the
+      request cost.
+    - **One planner call per sub-question**, not one per leg — the second leg
+      hits the hash cache. Verified live and asserted in tests.
+  - **Two real bugs found and fixed during live verification** (neither was
+    hypothesised from reading code — both surfaced from running it):
+    1. **`"market"` was being deleted from market-size queries.** The
+       agent-vocabulary sanitizer (guarding audit §4.9 Finding B-8: internal
+       agent names must never reach an outbound query) initially split
+       `parent_agent="market_analyst"` into tokens `{"market", "analyst"}`
+       and stripped each with token-boundary matching. Live run showed
+       `"Nigeria battery market size 2025 CAGR"` → `"Nigeria battery size
+       2025 CAGR"` — the sanitizer was destroying the very query it existed
+       to protect. **Fixed**: strip the full agent *phrase* (`"market
+       analyst"`) plus the unambiguous role nouns (`analyst`, `hyperion`,
+       `sub-agent`), never the phrase's individual tokens. Pinned by
+       `test_subject_word_market_is_not_stripped_as_agent_vocabulary`.
+    2. **Angle keywords were being truncated off the end of long queries.**
+       The first live run produced `"...lithium ion battery market wait?
+       regulation compliance requirements"` at 110 chars — and for a longer
+       sub-question the 120-char cap cut the angle suffix away entirely,
+       leaving a "regulatory" query with no regulatory keyword in it (i.e. not
+       a regulatory query at all, while still being counted as one). **Fixed**:
+       the anchor is pre-trimmed to reserve room for the longest angle
+       suffix before the suffix is appended, and interrogative punctuation is
+       stripped from the anchor (a `?` sitting mid-string once a suffix is
+       appended — `"... market wait? regulation compliance"` — is a broken
+       keyword query). Pinned by `test_angle_keywords_survive_truncation`
+       and `test_no_interrogative_punctuation_mid_query`.
+  - **Verified live (no mocks for the deterministic path, fake router for the
+    LLM path)**: `deterministic_plan(...)` → 8 queries covering all 6 angles,
+    `degraded=True`; a good LLM plan → 8 queries / 6 angles / `degraded=False`
+    with `tier=ModelTier.FAST` and `urgency=TaskUrgency.LOW` confirmed on the
+    captured router call; a plan containing a contentless query, an
+    out-of-vocabulary angle, and a duplicate → all three correctly rejected
+    while the 6 valid queries survived; a second call with different
+    case/whitespace → **0 additional router calls** (`stats={'entries': 1,
+    'hits': 1, 'misses': 1}`); a raising router → 8 queries, `degraded=True`,
+    WARNING logged with traceback. End-to-end through the real
+    `SubAgentRunner`: SearxNG leg dispatched 5 queries and Jina 5, **9
+    distinct queries across the union** (audit criterion ≥8) from **1 planner
+    LLM call**.
+  - **New `tests/test_query_planner.py` (105 tests)**:
+    `TestPlannedQuerySchema` (17: every documented angle accepted, 11-case
+    parametrized alias normalization, unknown angle rejected, contentless
+    query rejected, empty rejected, over-length rejected);
+    `TestSubQuestionHash` (6: determinism, case/whitespace/punctuation
+    normalization, distinct questions differ, subject and geography each
+    participate in the key); `TestDeterministicPlan` (11+9 parametrized:
+    count bounds, target count, all-6-angle coverage, `degraded=True`,
+    baseline-query preservation, length cap, **angle-keyword survival**,
+    **no mid-query `?`**, geography anchoring, distinctness, and the full
+    Phase-0 adversarial corpus run through it with never-raises assertions);
+    `TestPlanQueriesLLMPath` (12: count bounds, target, angle coverage,
+    `degraded=False`, **FAST tier**, **never escalates**, LOW urgency, JSON
+    response format, all six angles present in the prompt, subject/geography/
+    context reach the prompt); `TestPlanQueriesValidationHardening` (11:
+    invalid-angle drop without sinking the plan, contentless drop, exact- and
+    near-duplicate collapse, over-long truncation-not-drop, bare-string list
+    accepted, top-level list accepted, code-fenced JSON accepted, internal
+    agent vocabulary stripped, the `"market"`-preservation regression guard,
+    trailing `?` stripped); `TestPlanQueriesDegradation` (10: router
+    exception, `success=False`, non-JSON, empty list, all-invalid, WARNING is
+    actually logged, no-router, empty question, under-delivery topped up to
+    target *with* angle coverage *and* LLM queries ranked first,
+    over-delivery clamped); `TestPlanQueriesCache` (9: second call skips the
+    LLM, `cached` flag, identical queries returned, normalized variants share
+    one entry, different subject is a miss, `use_cache=False` bypass,
+    `clear_plan_cache`, stats, degraded plans cached so no retry storm);
+    `TestSubAgentUsesThePlanner` (12+5 parametrized: the audit's own grep now
+    comes back positive, multiple queries returned, fix-1.4 baseline still
+    present, **both legs dispatch planner queries**, **legs are partitioned
+    not duplicated**, **union ≥8 distinct queries**, **one planner call
+    shared via cache**, planner failure falls back to the fix-1.4 variants,
+    the search leg still returns URLs under total planner failure, FAST tier
+    pinned despite a MICRO sub-agent, and never-raises/never-empty over the
+    adversarial corpus).
+  - **Two pre-existing test classes updated, deliberately, with the reasoning
+    recorded in code.** `TestSearchMethodsUseVariants` (fix 1.4) and
+    `TestLowYieldReformulation` (fix 1.5) assert *exact* `await_count` values
+    to pin variant-fanout and retry behaviour in isolation. With the planner
+    engaged, those counts become a function of how many angles the planner
+    happened to emit — silently converting "the fix-1.4 variant fired" into
+    "some number of queries fired" and losing the property each test was
+    written to protect. Rather than weaken the assertions, both classes now
+    hold the planner constant via a new `_disable_planner()` helper (a
+    26-line docstring explains why, and points at
+    `TestSubAgentUsesThePlanner` as where the planner's own contribution *is*
+    covered) — exactly as they already hold the tool clients constant. This
+    mirrors the judgement call fix 1.5 made when it updated fix 1.4's mocks
+    to return ≥`LOW_YIELD_THRESHOLD` results.
+  - Full suite: **682 passed, 3 skipped** (was 577 passed, 3 skipped after
+    1.5; **+105 net new tests, zero regressions**).
+  - **Phase 1 is now complete** — 1.1 through 1.7 all landed.
+- [x] **1.4** Purge intent-destroying words from `filler`; keep parentheticals as a variant
+  - **Before**: `sub_agent.py`'s `_condense_query` `filler` set (used by all 12
+    specialists' 15 sub-agent search/scrape methods via
+    `SubAgentRunner._condense_query`, audit §4.4 Finding B-3) included
+    `'not'`, `'should'`, `'how'`, `'why'`, `'what'`, `'which'`, `'most'`,
+    `'more'` — every one of these is intent-carrying, not grammatical
+    filler: stripping `'not'` inverts a negated question into its opposite
+    (`"Should we NOT enter this market?"` → after stripping `not`, the
+    condensed query reads as an unqualified *enter-market* search, the
+    literal opposite of what was asked); stripping `'should'`/`'how'`/
+    `'why'`/`'what'`/`'which'` deletes the interrogative that tells a
+    search engine what KIND of answer is wanted; stripping `'most'`/
+    `'more'` deletes superlative/comparative scope (`"the most affected
+    sectors"` → `"affected sectors"`, silently broadening the intended
+    scope). Separately, `_condense_query` unconditionally deleted
+    parenthetical asides (`r'\([^)]*\)'`) with no recovery path, so a
+    question like `"Should we enter now or wait? (Bitcoin, Ethereum)"`
+    lost the only tokens naming the actual subject entities.
+  - **Fixed — filler set**: removed all 8 words above from `filler` (verified
+    live: `SubAgentRunner._condense_query("Should we NOT enter this
+    market?")` now retains `"Should NOT enter market?"`-equivalent tokens
+    instead of silently dropping the negation/interrogative/modal).
+  - **Fixed — parentheticals**: added a new classmethod
+    `_condense_query_variants(question, max_len=120) -> list[str]` that
+    keeps `_condense_query`'s existing parenthetical-stripping contract
+    unchanged for its primary output (zero behavioural change for the 11
+    other call sites — Wayback, Alpha Vantage, FRED, SEC EDGAR, Semantic
+    Scholar, OpenAlex, Google Trends, HackerNews, Reddit, Second Brain —
+    which still call the single-query `_condense_query` directly and are
+    therefore unaffected), and additionally returns a **second** variant
+    that folds the parenthetical's content back in — but only when the
+    parenthetical looks like a real entity list rather than an
+    instructional aside (`"(see above)"`, bare `"(e.g.)"`/`"(etc.)"`
+    alone are filtered out as trivial). A leading `"e.g."`/`"i.e."`/
+    `"etc."` label *inside* an otherwise-real entity parenthetical (e.g.
+    `"(e.g. Salesforce, HubSpot)"`) is stripped from the variant so the
+    literal abbreviation token doesn't ride along into the search query —
+    verified live: `_condense_query_variants("Compare vendor pricing (e.g.
+    Salesforce, HubSpot)")` → `["Compare vendor pricing", "Compare vendor
+    pricing Salesforce, HubSpot"]`. Only wired into the two callers that
+    already fan out in parallel and can afford a second search leg without
+    doubling every tool call in the whole pipeline: `_search_searxng` and
+    `_search_jina` now loop over `_condense_query_variants(...)`, run each
+    variant, and merge+dedup results by URL (first-seen order preserved)
+    before formatting — so a named-entity comparison question fires one
+    query anchored on the general topic and one anchored on the named
+    entities, instead of the entities being silently discarded.
+  - Verified live (no mocks): confirmed the exact filler-word removal via
+    inline `_condense_query` calls on words `not/should/how/why/what/
+    which/most/more`, and confirmed `_condense_query_variants` recovers
+    `"Bitcoin, Ethereum"` as a second variant from
+    `"Should we enter now or wait? (Bitcoin, Ethereum)"` while the primary
+    variant stays entity-free (preserving `_condense_query`'s existing
+    contract) — also confirmed trivial parentheticals (`"(see above)"`,
+    `"(etc.)"`) correctly produce only 1 variant, and the `max_len` cap is
+    respected on both variants independently.
+  - New tests added to `tests/test_sub_agent_query.py` (24 net new,
+    41 → 65 → 66 after one follow-up regression test): `TestCondenseQuery
+    IntentPreservation` (7 tests: parametrized survival check for all 8
+    removed filler words, explicit negation/superlative/comparative/
+    interrogative semantic-preservation assertions, one control test
+    confirming genuine grammatical filler — `"the"`, `"of"`, `"in"` — is
+    still stripped); `TestCondenseQueryVariants` (7 tests: single-variant
+    when no parenthetical, never-empty-list guarantee, entity parenthetical
+    → 2 variants with entities isolated to the second, the `"(e.g.
+    Salesforce, HubSpot)"` label-stripping regression test added during
+    this fix's polish pass, trivial-parenthetical → 1 variant, `max_len`
+    respected on both variants, and the full adversarial-input corpus from
+    Phase 0 run through the new method with never-raises/never-empty
+    assertions); `TestSearchMethodsUseVariants` (5 tests, real
+    `SubAgentRunner` instances with mocked `searxng`/`jina` tool clients:
+    both search methods fire exactly 2 awaited calls when an entity
+    parenthetical is present and exactly 1 when it isn't, the Jina variant
+    call is confirmed to carry the entity text, cross-variant URL
+    deduplication is confirmed via a shared URL appearing in both mocked
+    variant responses but only once in the final `urls` list, and a tool
+    exception on the primary call is confirmed to be caught and logged
+    rather than propagating — `_search_searxng` still returns
+    `("searxng", [], None)` cleanly).
+  - Full suite: **564 passed, 3 skipped** (was 563 passed, 3 skipped
+    pre-1.4-polish-test, 539 passed/3 skipped after 1.6; +25 net new tests
+    across this fix, zero regressions).
+- [x] **1.5** Low-yield reformulation (<3 results → broaden → retry once)
+  - **Before**: `_search_searxng`/`_search_jina` in `sub_agent.py` ran their
+    (post-1.4) query variant(s) exactly once and accepted whatever came
+    back — 0, 1, or 2 results were treated identically to 20. A geography
+    anchor too narrow for the live corpus (a small/emerging market, a
+    niche multi-word regulatory topic) could starve every query built from
+    it, and the sub-agent would proceed to analysis with almost no raw
+    data and no attempt to recover.
+  - **Fixed — grounding layer plumbing**: added `drop_geography: bool =
+    False` (keyword-only) to `ground_query()` in `query_utils.py` — when
+    `True`, the geography anchor is skipped entirely (neither the explicit
+    argument nor the engagement-focus fallback is applied), while the
+    subject anchor is untouched, so broadening drops only the
+    jurisdiction, never the topic. Forwarded the same parameter through
+    `grounded_search_or_empty()` and from there into both
+    `SearxNGClient.search(..., drop_geography=...)` and
+    `JinaClient.search(..., drop_geography=...)`, so the "broaden" half of
+    the fix is available at the exact two network-boundary call sites
+    `sub_agent.py` uses (and any future caller can opt in the same way).
+  - **Fixed — retry logic**: added `SubAgentRunner.LOW_YIELD_THRESHOLD = 3`
+    (matches the audit's own "<3 scored results" wording) and a shared
+    `_fan_out_search()` helper that runs a list of query variants through a
+    given search callable and merges+dedups by URL — refactored out of the
+    duplicated loop bodies fix 1.4 had put in `_search_searxng`/
+    `_search_jina`, so the fix-1.5 retry uses the identical merge logic as
+    the fix-1.4 primary pass rather than a second, possibly-diverging copy.
+    Both `_search_searxng` and `_search_jina` now: run the primary pass; if
+    the merged result count is below `LOW_YIELD_THRESHOLD`, run the SAME
+    query variant(s) again with `drop_geography=True`; merge the broadened
+    results into the same dedup set (so a thin-but-nonzero primary result
+    keeps its original, more specific hits ranked first — broadening
+    *adds*, it does not replace); log at INFO when the retry actually grew
+    the result count. Wrapped in the same outer try/except as the rest of
+    the method, so a failure on the retry call degrades to the existing
+    "fail loud via `logger.warning`, return empty" behaviour rather than
+    raising past the caller.
+  - Verified live: `ground_query("steel tariff exemptions", geography=
+    "India")` → `"steel tariff exemptions India"`; the same call with
+    `drop_geography=True` → `"steel tariff exemptions"` (subject-only,
+    geography suppressed); confirmed the same holds when geography comes
+    from `set_engagement_focus(...)` instead of the explicit argument
+    (the more common real path, since specialists don't pass `geography=`
+    explicitly).
+  - New tests: 6 added to `tests/test_sub_agent_query.py`'s new
+    `TestLowYieldReformulation` class (zero-result retry fires with
+    `drop_geography=True` on the retry call only; a 2-result primary pass
+    still triggers the retry and the results merge to 4; a 3-result
+    primary pass — at the threshold — does NOT retry; retry results dedup
+    against primary results by URL; the Jina leg retries identically; a
+    retry whose broadened call also raises still degrades cleanly instead
+    of propagating). The 4 pre-existing `TestSearchMethodsUseVariants`
+    tests from fix 1.4 were updated to return ≥3 results from their mocks
+    (via a new `_n_results()` helper) specifically so they exercise the
+    fix-1.4 variant-fanout behaviour in isolation, without incidentally
+    tripping the new fix-1.5 retry path — each such test now also asserts
+    the exact `await_count` to make that isolation explicit and
+    regression-checked. 5 more added to `tests/test_search_grounding.py`'s
+    new `TestDropGeography` class (explicit-argument suppression,
+    engagement-focus-fallback suppression, subject preserved while
+    geography is dropped, `grounded_search_or_empty` forwards the flag,
+    never raises on an already-contentless query) plus 2 more verifying
+    `SearxNGClient.search`/`JinaClient.search` actually thread
+    `drop_geography` through to the query that reaches their respective
+    network boundaries (captured via a monkeypatched
+    `_search_searxng_json`/`_cache_key`), not just accept and drop the
+    kwarg. 13 net new tests across the two files.
+  - Full suite: **577 passed, 3 skipped** (was 564 passed, 3 skipped after
+    1.4's polish pass; +13 net new tests, zero regressions).
+- [x] **1.6** `resolve_subject` into `market_analyst`, `regulatory_analyst`, `risk_analyst`
+  - Confirmed via `grep -rln "resolve_subject" hyperion/agents/specialists/*.py`
+    that exactly 9 of 12 specialists already imported it and the 3 missing
+    were precisely the 3 the audit named — `market_analyst.py`,
+    `regulatory_analyst.py`, `risk_analyst.py` (§4.10 Finding B-9).
+  - **`market_analyst.py`**: `run()` used to hand `self._question` (the raw
+    user question) straight into `_spawn_data_collection_sub_agents`,
+    `_search_market_reports`, and `_scrape_dashboards` with no subject
+    resolution at all — those methods build queries like
+    `f"{market_query} market size TAM report"`, so the *question itself*
+    was silently doing double duty as the subject with no explicit
+    "market"/"segment"/"sector"/"industry" context ever consulted. Added
+    `market_query = resolve_subject(self._context, "market", "segment",
+    "sector", "industry", question=self._question) or self._question` right
+    after the opening `_transition`, and threaded `market_query` (not
+    `self._question`) into all three call sites. Behaviourally this is a
+    no-op when `self._context` carries no market-ish key (the `or
+    self._question` fallback preserves the pre-fix behaviour exactly), but
+    it means an explicit `context["market"]`/`context["segment"]` from the
+    Director's handover is now honoured instead of being silently ignored.
+  - **`regulatory_analyst.py`**: `run()` did
+    `industry = self._context.get("industry") or self._context.get("sector") or ""`
+    — a two-key OR chain with **no** further fallback, so a handover
+    naming neither key produced `industry = ""`, which
+    `_search_regulations`'s `f"{subject} regulations {jurisdiction}
+    compliance requirements"` template degraded straight through (it had
+    its own local `get_engagement_focus()`-based patch for this, but `run()`
+    itself, and the sibling `_scrape_government_portals`'s unmapped-
+    jurisdiction discovery search, did not). Replaced the `run()` extraction
+    with `resolve_subject(self._context, "industry", "sector",
+    question=self._question)`, and replaced both hand-rolled
+    `get_engagement_focus()`-based subject blocks inside
+    `_search_regulations` and `_scrape_government_portals` with the same
+    canonical `resolve_subject` call — removing the duplicated,
+    less-capable version (no label-sanity check, no question-mining
+    fallback) in favour of the shared helper everywhere in the file.
+  - **`risk_analyst.py`**: `run()` did the most literal version of the
+    finding — `industry = self._context.get("industry", "")` with zero
+    fallback of any kind. `_search_known_risks(industry, space)` then built
+    `f"{industry} industry risks challenges"`, `f"{space} startup failures
+    lessons"`, etc. — five query templates degrading to
+    `" industry risks challenges"` and worse. Replaced the `run()`
+    extraction with `resolve_subject(self._context, "industry", "sector",
+    question=self._question)`, and replaced the hand-rolled
+    `get_engagement_focus()` subject block inside
+    `_discover_regulatory_portals` with the same call.
+  - Verified live: `resolve_subject({}, "market", "segment", "sector",
+    "industry", question="Should India reduce its dependence on
+    semiconductor imports")` returns the full question text (never `""`
+    while the question has content), and an explicit
+    `{"market": "Indian semiconductor manufacturing"}` context returns
+    that label verbatim, confirming the four-tier order (explicit key >
+    question fallback) works as intended for all three new call sites.
+  - New `tests/test_specialist_resolve_subject.py` (10 tests): for each of
+    the 3 files, (a) asserts the module now imports `resolve_subject`, and
+    (b) exercises the real search-query-construction methods
+    (`_search_market_reports`, `_scrape_dashboards` /
+    `_search_regulations`, `_scrape_government_portals` /
+    `_search_known_risks`, `_discover_regulatory_portals`) with an
+    otherwise-empty `self._context`, asserting the outbound query is
+    anchored to the engagement subject/question rather than degrading to
+    the bare template fragment (`" regulations ... compliance
+    requirements"`, `"industry risks challenges"`, `"market size TAM
+    report"`) that the pre-fix code would have produced. All 10 pass.
+  - Full suite: **539 passed, 3 skipped** (was 529 passed, 3 skipped after
+    1.7; +10 new tests, zero regressions).
+- [x] **1.7** Fact Checker: drop internal agent name, ground the claim query
+  - `fact_checker.py:605` (`_search_for_verification`) previously built its
+    verification query as `claim.claim[:100]` then appended
+    `f"{query} {claim.agent.replace('_', ' ')}"` — a blind character slice
+    (could cut mid-word/mid-clause) with the internal agent role name
+    (`"market analyst"`, `"risk analyst"`) glued on, and it never called
+    `ground_query` at all (audit §4.9 Finding B-8).
+  - **Fixed**: `query = ground_query(claim.claim)` — grounds the claim's
+    own text directly, no agent-name suffix, no pre-truncation (`ground_query`
+    normalizes then truncates to 256 chars on its own, which lands on word
+    boundaries rather than cutting a token in half). If the claim grounds
+    to `""` (no subject at all, e.g. a bare `"18%"` with no engagement
+    focus), the web-search step is skipped rather than firing an empty or
+    junk query — falls through cleanly to whatever local-corpus sources
+    were already found for that claim.
+  - New `tests/test_fact_checker_query.py` (4 tests): asserts the outbound
+    query never contains `"analyst"`/the raw agent-name token; asserts a
+    long claim's query contains only well-formed word tokens (no mid-word
+    slice debris); asserts a thin claim (`"18%"`) still searches anchored
+    to the engagement subject/geography via grounding's rebuild path
+    rather than firing the bare unanchored original; asserts a genuinely
+    contentless claim skips the web-search call without raising.
+  - Full suite: **529 passed, 3 skipped** (was 525 passed, 3 skipped after
+    1.1/1.2; +4 new tests, zero regressions).
 
 ### Phase 2 — Extraction & evidence
-- [ ] **2.1** Collapse 3 extraction ladders into `UnifiedExtract`; wire consumers
-- [ ] **2.2** Chunk → rerank → top-k assembly replacing blind 15k head-slice
-- [ ] **2.3** `pdfplumber`/`camelot` table extraction → `chart_specs`
-- [ ] **2.4** Token-boundary relevance in `evidence_scorer`; recalibrate `MIN_RELEVANCE`
-- [ ] **2.5** Cap `confidence` when `overall_stance == "insufficient"`
-- [ ] **2.6** Per-engagement extraction-yield metrics
+- [x] **2.1** Collapse 3 extraction ladders into `UnifiedExtract`; wire consumers
+  — **DONE.** Proof of fix:
+  - **Before state (the three ladders, and the proof the third was dead).**
+    `grep -rn "UnifiedExtract" hyperion/ --include=*.py` returned only its own
+    definition file and the `hyperion/tools/__init__.py` re-export (L27/108/109)
+    — **zero call sites**, confirming §4.5's finding. Meanwhile two *live*
+    ladders existed and had silently diverged:
+    - `sub_agent._gather_raw_data` — 5 unrolled inline `if tool in tools:` blocks
+      (jina → obscura → crawl4ai → scrapling → wayback), ~100 lines, no `http`
+      tier at all, no `curl_cffi`, no per-tier error reporting.
+    - `deep_search._extract_batch` — its own climb over
+      jina/obscura/crawl4ai/http/scrapling/flaresolverr, where `scrapling` was
+      *unreachable dead code* (never reached because the tier list ordering
+      short-circuited before it).
+    - `UnifiedExtract` — 586 lines of unrolled inline tier blocks covering
+      curl_cffi/jina/obscura/nodriver/camoufox/wayback, with **no callers**.
+  - **Design decision: UNION, not intersection.** The three ladders did not
+    cover the same tiers. `UnifiedExtract` alone knew `curl_cffi`, `nodriver`,
+    `camoufox`; `deep_search` alone knew `http` and `flaresolverr`; `scrapling`
+    was live only in `sub_agent`. Collapsing to the *intersection* would have
+    been a regression dressed as a cleanup — it would silently delete working
+    retrieval capability. The merged ladder therefore takes the union, 10 tiers,
+    ordered cheapest/least-detectable → most expensive:
+    `curl_cffi → jina → http → obscura → nodriver → crawl4ai → scrapling →
+    camoufox → flaresolverr → wayback`, with `NON_JS_TIERS = (curl_cffi, jina,
+    http)` so `force_js_render=True` can skip the tiers that cannot execute JS.
+  - **Table-driven, not unrolled.** The 3 × N inline blocks became one
+    `TIER_ORDER` tuple plus one `_extract_<tier>` coroutine per tier, dispatched
+    by `getattr(self, f"_extract_{tier}")`. The three divergent per-tier
+    quality gates (each tier previously decided for itself what "good enough"
+    meant) became a single `_finish()` gate applying `MIN_CONTENT_LENGTH = 100`
+    uniformly, so a 40-character stub can no longer pass at one tier and fail at
+    another.
+  - **Two drivers.** `extract()` climbs the ladder for one URL.
+    `extract_ladder()` climbs it for a batch and is **tier-major**: *every*
+    pending URL is attempted at tier N before *any* URL is attempted at tier
+    N+1. This is the property the old per-URL loops lacked — they would launch a
+    headless browser for URL A while URL B had not yet been tried against free
+    `curl_cffi`. It returns a `LadderOutcome(results, tools_used, tools_tried,
+    errors, tiers_unavailable)`.
+  - **The resolver seam — why the consumers keep their own `_extract_*`
+    methods.** A naive collapse (have `_extract_batch` simply call
+    `UnifiedExtract`'s tiers) would have quietly broken the *test* contract:
+    `tests/test_tool_capability_gating.py` monkeypatches
+    `client._extract_jina` / `._extract_obscura` / … as its substitution point,
+    and L720's assertion requires the literal string `f"_extract_{tier}"` to
+    remain in `deep_search`'s source. Under a naive collapse those 81 tests
+    would have kept passing while silently no longer exercising doubles — they'd
+    have been hitting real HTTP clients. So `extract_ladder` accepts a
+    `tier_resolver` callback: **the climb lives in one place, the per-tier calls
+    stay overridable per consumer.** All 81 pre-existing tests in
+    `test_tool_capability_gating.py` + `test_stealth_extract.py` +
+    `test_tools.py` pass **unmodified** (`81 passed`).
+  - **`raw` field for lossless delegation.** `deep_search` carries a
+    `published_date` that `UnifiedExtractResult` has no field for. Rather than
+    widen the shared schema for one consumer, `UnifiedExtractResult.raw: Any`
+    parks the consumer's native result object for it to read back. Deliberately
+    excluded from `to_dict()` so it never leaks into serialised output.
+  - **Semaphore reentrancy contract (documented in two docstrings).**
+    `deep_search`'s `_extract_<tier>(semaphore, url)` methods acquire the
+    concurrency semaphore *themselves*. `asyncio.Semaphore` is not reentrant, so
+    if the shared driver also acquired it every URL would need two permits and
+    the batch would deadlock. The contract is therefore: **the resolved callable
+    owns its own bounding; the driver must not wrap it.** `_default_resolver`
+    acquires (its `_extract_*` methods don't), `_resolve_extraction_tier`
+    doesn't (deep_search's do), and `extract_ladder` gathers bare.
+  - **`_normalize_tiers` — a restriction that cannot reorder.** Consumers pass
+    `tiers=` to request a subset. Passing a *list* risks a caller silently
+    reordering the cost ladder (e.g. putting `camoufox` first). Normalisation
+    therefore treats the argument as a **set** and re-projects it through
+    `TIER_ORDER`, so cost ordering is structurally unforgeable. Unknown tier
+    names are warned-and-ignored; an all-unknown request falls back to the full
+    ladder rather than extracting nothing.
+  - **Consumer 1 — `deep_search._extract_batch`.** Its climb is gone; it now
+    builds `UnifiedExtract` lazily (`_get_unified_extract()`) and calls
+    `extract_ladder(urls, concurrency=EXTRACTION_CONCURRENCY,
+    tiers=self.EXTRACTION_TIERS, tier_resolver=self._resolve_extraction_tier,
+    tier_available=self._tier_available)`. Its own gating and its human-facing
+    `TIER_LABELS` are preserved by mapping the outcome's tier names back through
+    the label table for `tools_used` / `tools_tried` / `errors`, so no
+    log-string or API surface changed. `close()` now also closes the ladder.
+  - **Consumer 2 — `sub_agent._gather_raw_data`.** The 5 unrolled blocks became
+    `await self._extract_urls(all_urls)`. This removed four defects at once:
+    (a) `http` and `curl_cffi` were entirely absent from the sub-agent path;
+    (b) failures were invisible — a tier that failed reported nothing;
+    (c) there was no URL cap, so a broad leg could fan out unboundedly
+    (`MAX_EXTRACT_URLS = 10`); (d) the climb was per-URL rather than tier-major.
+    The §4.7 tool-quota discipline is preserved by a **three-way** split, each
+    branch carrying its rationale in code: `curl_cffi`/`http` are always offered
+    (plain HTTP, no `ToolName` member exists for them, and gating them behind an
+    inexpressible grant is precisely how `http` came to be missing from this
+    path); `jina`/`obscura`/`crawl4ai`/`scrapling`/`flaresolverr`/`wayback` are
+    gated on the granted `ToolName`; `nodriver`/`camoufox` are **never**
+    auto-granted, because they launch real browsers. The whole call is wrapped
+    try/except/finally so a ladder failure can never lose the already-collected
+    data-source blocks.
+  - **Live verification** (not just unit tests) — three scripted runs against
+    stubbed tiers proved: (1) the climb is genuinely tier-major (invocation log
+    across a mixed batch shows all URLs at tier N before tier N+1); (2) a
+    12-URL `deep_search` batch delegates through the seam and returns
+    `published_date` intact via `raw`; (3) sub-agent tool-subset gating produces
+    exactly the expected tier list for a spec granted only `JINA`.
+  - **Tests: `tests/test_unified_extract_ladder.py`, 76 tests / 950 lines**, in
+    8 classes: `TestLadderIsSingleAndTableDriven` (asserts the duplicate ladders
+    are *gone*, not merely bypassed), `TestLadderCoversTheUnion` (10
+    parametrized — one per tier, so a future "cleanup" that drops a tier fails
+    loudly), `TestSingleUrlClimb`, `TestTierMajorBatchClimb`,
+    `TestTierRestriction`, `TestCapabilityGating`, `TestDeepSearchDelegates`,
+    `TestSubAgentDelegates`.
+  - **Mutation testing — 3 mutations, 2 initially SURVIVED and forced the tests
+    to be strengthened.** This is the part worth recording:
+    1. *Reorder the ladder* (move `wayback` before `camoufox`) → 3 failures.
+       Killed immediately.
+    2. *Disable the `if not pending: break` stop-when-done* → **SURVIVED.** The
+       invocation-log assertion alone still passed. Investigating the real
+       consequence: `tools_tried` becomes all 10 tiers and `errors` gains 9
+       spurious `"no usable content from 0 URL(s)"` entries — i.e. **dishonest
+       provenance for a batch that fully succeeded at the first tier**, which
+       would poison any yield metric built on it (cf. fix 2.6). Strengthened
+       with exact `tools_tried == ["curl_cffi"]` and `errors == {}` assertions
+       plus a standalone invariant test. Now killed.
+    3. *Make the driver double-acquire the semaphore* → **SURVIVED at
+       `concurrency=2`.** Probing 1/2/3 permits showed the deadlock is
+       deterministic **only at `concurrency=1`**; with ≥2 permits a single task
+       can hold both acquisitions and progress, so the batch merely serialises
+       invisibly. The test was parametrized over `[1, 2, 5]`, a dedicated
+       `test_resolved_callable_owns_its_own_bounding` was added, and the
+       `deep_search` counterpart now forces `EXTRACTION_CONCURRENCY = 1` via
+       monkeypatch. Now killed (2 failures, `TimeoutError`).
+  - Net diff: **1,055 insertions / 446 deletions** across
+    `unified_extract.py` (the single ladder), `deep_search.py` (consumer),
+    `sub_agent.py` (consumer).
+  - Full suite: **758 passed, 3 skipped** (was 682 passed, 3 skipped after
+    Phase 1; +76 new tests, **zero regressions**, zero pre-existing tests
+    modified).
+- [x] **2.2** Chunk → rerank → top-k assembly replacing blind 15k head-slice
+  - **The defect (§4.7 / B-6), reproduced live before fixing.** `MAX_CONTENT_CHARS
+    = 15000` was applied as `content[:15000]` at **6 call sites**. On a
+    10,936-char fixture whose evidence sits in the back half (as it does in every
+    real report — tables and conclusions are never in the front matter), against
+    a 4,000-char budget:
+    - head-slice retained **0 of 4** evidence markers, and *did* retain
+      `"Copyright"`;
+    - chunk→rerank→top-k retained **4 of 4**.
+    - Ranking diagnostic: the evidence chunk scores `bm25=19.611`, the foreword
+      `bm25=0.000`. The budget is **unchanged** — only how it is *spent*.
+  - **New module `hyperion/tools/content_selector.py`** (828 lines): `tokenize`,
+    `chunk_content` (structure-aware: headings → blank lines → sentences),
+    `rerank_chunks`, `select_relevant_content` → `SelectionResult`,
+    `select_content` (string-in/string-out, the literal one-line head-slice
+    swap), `Chunk`/`SelectionResult` dataclasses carrying provenance.
+  - **BM25 hand-implemented** (Robertson/Sparck-Jones, `k1=1.5`, `b=0.75`, IDF
+    within the document's own chunk set). Not a dependency: `rank-bm25` is
+    present only *transitively* via crawl4ai and is not declared in
+    `pyproject.toml`, so importing it would have been an undeclared-dependency
+    landmine.
+  - **Selection is by score; output is by document order** — a relevance-sorted
+    jumble contains the identical characters but is measurably worse input for
+    the LLM that consumes it.
+  - **Wired into all 6 sites**, threading the grounded query end-to-end:
+    `deep_search.py` (`_fit_content`, `_extract_batch(query)`, `search()`),
+    `http_extract.py` (`extract`/`extract_batch`, both `content` and `markdown` —
+    selected independently because markdown retains table markup),
+    `unified_extract.py` (`_fit` hooked into `_finish`, **only when `ok`** so the
+    quality gate still sees pre-selection text — a selection bug must not read as
+    an extraction failure and send the ladder to a browser tier),
+    `sub_agent.py` (`_extract_urls(query)`, SEC-filing path).
+  - **Never-raises / never-empty contract.** On any internal failure the result
+    is the old head-slice with `degraded=True` and a WARNING with `exc_info=True`
+    (fix 0.3 discipline). A bug here can cost retrieval *quality*; it can never
+    zero retrieval — the failure mode that produced the audit's P0.
+  - **6 real implementation bugs caught by the new tests and fixed in the
+    implementation, never by weakening a test:**
+    1. Short titled sections (`## Conclusions`) were absorbed into the previous
+       chunk, **deleting the heading label** — precisely the short, high-value
+       closing section a consulting report most wants. Fixed with
+       `_is_titled_section()`.
+    2. Budget **under-filled**: 200 of 1,000 chars on a boundary-less document.
+       An 80% unspent budget is an 80% smaller evidence base than the caller
+       asked for — quietly *worse* than the head-slice being replaced. Fixed
+       with a top-up pass (`MIN_TOPUP_CHARS = 150`; threshold, not always, or
+       every selection ends mid-sentence for a fragment too short to carry a
+       fact).
+    3. A **table of contents** scored `bm25=0.000` but `boost=0.600` on pure
+       numeral density, beating genuinely-scored chunks. `_evidence_boost` was
+       documented as a tie-breaker but applied unconditionally; now gated on
+       `base > 0`. Generalises to stock-ticker sidebars, date lists, pagination,
+       footnote runs, cookie banners.
+    4. `_is_titled_section("# H1\n\n## H2")` returned True (an H2 counts as "text
+       under H1"), emitting a 12-char pure-label chunk. Fixed by excluding
+       heading lines from the body check.
+    5. **The greedy fill pass had no relevance gate** — only the top-up did. At a
+       900-char budget the 1,618-char lead chunk does not fit, so assembly began
+       empty, correctly took the three evidence chunks (673 chars), then spent
+       the remaining 227 on a **121-char table of contents** (one of six
+       identical copies; at score 0.0 all zeros tie and the lowest index wins).
+       The front matter §4.7 complains about walked back in through the side
+       door. Both passes now share one gate: a zero-scoring chunk is admitted
+       only when the document has no scored chunk *anywhere*. Post-fix, budget
+       900 keeps `[0, 15, 16, 17]` — all 4 evidence markers, no ToC, no
+       acknowledgements, 900/900 chars spent.
+    6. A **relevance-blind selection reported itself as clean.** When BM25
+       matches no query term in any chunk, the reranker ran but had nothing to
+       rank on, so the output is a head-slice in all but name; it returned
+       `degraded=False`. Now flagged with a reason, because fix 2.6 reports
+       extraction yield off these flags — an unflagged relevance-blind selection
+       tells the operator "15,000 chars, reranked, clean" for a source that
+       contributed nothing topical, which is the exact shape of the audit's P0:
+       a healthy-looking metric over a silent quality failure. Deliberately
+       does **not** flag a prefix-cut top-up on its own — a cut chunk is a
+       *boundary* artefact, not a relevance failure, and firing on every normal
+       budget-edge trim would make the flag worthless.
+  - **Invariants proved, not assumed**, before being pinned as tests: lossless
+    chunking across 6 document shapes (markdown, blank-line-only, no boundaries,
+    one huge sentence, tabs/tables, CRLF); never-raises across 13 content × 4
+    query combinations; budget respected at 300/1,000/5,000/15,000 including 0
+    and negative; determinism across 5 runs; token-boundary matching
+    (`tokenize("said chain maintain")` does **not** yield `"ai"` — the §4.8 defect
+    fix 2.4 will address in `evidence_scorer`).
+  - `tests/test_content_selector.py`: **+271 tests** (`TestTheAuditsActualComplaint`,
+    `TestChunking`, `TestReranking`, `TestTokenization`, `TestAssemblyContract`,
+    `TestNeverRaisesNeverSilentlyEmpty`).
+  - Net diff: **1,684 insertions / 20 deletions** across 7 files.
+  - Full suite: **1,029 passed, 8 skipped** (was 758 passed, 3 skipped after
+    2.1; **+271 new tests, zero regressions, zero pre-existing tests
+    modified**). `ruff` clean on both new files; the 28 pre-existing `ruff`
+    findings in the touched consumers were verified pre-existing at HEAD and are
+    left for fixes 5.1/5.3.
+  - Note: `deep_search.to_markdown()` retains a `[:MAX_CONTENT_CHARS]` cap. That
+    is a render-time cap on *already-selected* content, not a selection, and is
+    deliberately left in place.
+- [x] **2.3** `pdfplumber`/`camelot` table extraction → `chart_specs` (commit `c996c01`)
+- [x] **2.4** Token-boundary relevance in `evidence_scorer`; recalibrate `MIN_RELEVANCE` (commit `1ae1f38`)
+- [x] **2.5** Cap `confidence` when `overall_stance == "insufficient"` (commit `29a1ebe`)
+- [x] **2.6** Per-engagement extraction-yield metrics (commit `d8ad3be`)
 
 ### Phase 3 — Typography & visual architecture
-- [ ] **3.1** Vendor `.ttf` files into `assets/fonts/` — **requires a `.gitignore` change first** (see §3.8)
-- [ ] **3.2** Base64 `@font-face` injection into shipped `CSS_TEMPLATE` + embed assertion
-- [ ] **3.3** Collapse the dead-template fork — one template system
-- [ ] **3.4** Two-column body targeting 56 chars/line; exhibits `column-span: all`
-- [ ] **3.5** Fix `presentation_designer.py:1947` fallback filter (`Markup`)
-- [ ] **3.6** Section image target ≥2000 px wide (keep no-upscale rule)
-- [ ] **3.7** Wire exhibits end-to-end → `has_exhibits: true`, ≥1 per section
+- [x] **3.1** Vendor `.ttf` files into `assets/fonts/` + amend the `.gitignore` blocker (commit `a3060fd`)
+- [x] **3.2** Base64 `@font-face` injection into shipped `CSS_TEMPLATE` + embed assertion (commit `bd6443c`)
+- [x] **3.3** Collapse the dead-template fork — one template system (commit `9490c2e`)
+- [x] **3.4** Two-column body targeting 56 chars/line; exhibits `column-span: all` (commit `61deabb`)
+- [x] **3.5** Fix the fallback Jinja env's filter to return `Markup` (commit `3bdee90`)
+- [x] **3.6** Section image target ≥2000 px wide (keep no-upscale rule) (commit `a4afead`)
+- [x] **3.7** Wire exhibits end-to-end → `has_exhibits: true`, ≥1 per section
+  - The audit read `has_exhibits: false` as "charts are simply not being
+    populated". Measurement showed something worse: charts *were* being
+    generated at 300 DPI and then discarded, by **four independent breaks** in
+    the hand-off chain. Each was fixed at the one hop that owns it.
+  - **Break 1 — homeless specs (`chart_specs.py`).** `mine_chart_specs` paired
+    every `report.key_findings` finding with `section_id=""`. The template
+    iterates `section_charts[section.id]`, no section has the id `""`, and
+    Jinja returns `Undefined` (not an error) for a missing key — so those
+    charts were rendered by nobody, silently. Because `key_findings` holds the
+    *headline* findings, the most important exhibits in the document were
+    exactly the ones dropped. Fixed by homing each spec on the section whose
+    `agent` matches the finding's `agent` (an honest anchor: a market-sizing
+    finding lands in the market section), falling back to the first section.
+  - **Break 2 — the note field did not exist (`schemas/models.py`).**
+    `ChartPlacement.note` existed *and the template already rendered it*, but
+    `ChartSpecification` had no `note` field, so any methodology note was
+    dropped at the Data Visualizer hop. Every exhibit therefore shipped with a
+    three-part anatomy against the benchmark's four. Added the field, and had
+    `data_visualizer.py` copy it through.
+  - **Break 3 — unrenderable charts were still placed
+    (`presentation_designer.py`).** `_receive_chart_images` reproduced break 1
+    downstream *and* placed charts whose `image_path` was empty (failed
+    export). An empty path renders as a broken-image box under a real
+    "Exhibit N" label, and — because the number comes from a CSS counter over
+    placed exhibits — it also **consumed a number**, pushing every later
+    exhibit out of sequence. Both are now dropped/re-homed with a
+    `self._log(...)` line each: the audit's own lesson (§0.3) is that a silent
+    failure caused the outage, so these fail loud.
+  - **Break 4 — dead CSS label rules.** `.exhibit-note-label` and
+    `.exhibit-source-label` were defined in the shipped CSS and referenced by
+    **no markup** — so the italic `Note:` / `Source:` convention of both
+    benchmarks was never actually applied. The template now emits each label
+    as its own span and strips the prefix from the value, so the label appears
+    exactly once whether or not the producer pre-prefixed the string (the
+    deterministic miner does; an LLM-supplied spec may not).
+  - **The probe was measuring its own fixture, not the pipeline.**
+    `tools/audit_render_probe.py` passed `section_charts={"section_N": []}` —
+    every section empty. The exhibit branch of the template was therefore
+    never entered, so `has_exhibits: false` was a property of the fixture and
+    the probe *could not have detected an exhibit regression in either
+    direction*. It now generates real charts through the real `ChartGenerator`
+    and places real `ChartPlacement`s. Two new metrics were added
+    (`exhibit_count` from the rendered counter labels, `exhibit_note_count`,
+    `exhibit_source_count`) because `has_exhibits` is a weak assertion — it is
+    true if the word "Exhibit" appears anywhere, including in prose.
+    Note the counter reaches the PDF text layer as `EXHIBIT 1`
+    (`text-transform: uppercase`), so the extraction regex must be
+    case-insensitive; a case-sensitive one reported 0 exhibits on a PDF
+    carrying 7.
+  - **Measured after the fix** (`reports/_audit/probe_metrics.json`):
+    `has_exhibits: true` · `exhibit_count: 7` ·
+    `exhibit_numbers: [1,2,3,4,5,6,7]` (contiguous — no dropped or
+    double-counted figure) · `exhibit_note_count: 7` ·
+    `exhibit_source_count: 7` → **every one of the 7 sections carries exactly
+    one exhibit with the full four-part anatomy.** Previously 0/0/0. The
+    Phase-3 gains hold simultaneously: 54 chars/line (target 52–60),
+    2 column bands, brand fonts only (no DejaVu/Liberation), 0 blank pages,
+    0 template leaks.
+  - `tests/test_exhibit_pipeline.py` — 40 new tests pinning each break
+    *independently*, so a regression in any single hop fails a named test
+    rather than quietly reducing the exhibit count. Includes a check that the
+    exhibit-number element is empty (the number must come from `counter()`,
+    never from an agent, so it cannot be wrong) and a check that a dropped
+    chart does not consume an exhibit number.
+  - **Regression caught and corrected during this fix.** The first version also
+    skipped specs with no home section inside `mine_chart_specs`. That broke 9
+    pre-existing `TestChartMiner` tests, which legitimately exercise the miner
+    on section-less reports. The lesson is a scope one: *mining* ("is this
+    series chartable?") and *placement* ("which page renders it?") are separate
+    concerns. Enforcing renderability in both places made the miner claim a
+    report had no chartable data when it had plenty. The guard now lives only
+    at the placement hop, and the reasoning is recorded in both the module
+    comment and a test docstring so it is not "fixed" back.
+  - Full suite: **1,191 passed, 8 skipped** (was 1,151 passed / 8 skipped;
+    **+40 tests, zero regressions, zero pre-existing tests modified**).
+    `ruff` clean on the new test file; the 4 findings in `chart_specs.py` and
+    2 in `audit_render_probe.py` were verified byte-identical to `HEAD` before
+    the change and are left for 5.1/5.3.
 
 ### Phase 4 — Depth control & MBB exhibit vocabulary
-- [ ] **4.1** Explicit page budget → word budget → per-section allocation
-- [ ] **4.2** Narrow page-count contract to `15..22` and make it a quality-gate failure
+- [x] **4.1** Explicit page budget → word budget → per-section allocation
+  — `hyperion/output/page_budget.py` (new) + `synthesis_lead.py`, commit pending
+  - **The finding restated.** B-10 was not "the report is too long" — length is a
+    symptom. The defect was that *nothing related page count to anything*:
+    section count was `len(self._findings_by_agent)` (1–12, whatever reported),
+    word count was a literal `2000` retyped in **four** prompt strings in one
+    function, and the only check was `15 <= page_count <= 40` — a window wide
+    enough that a 16-page and a 39-page report both "pass". Page count was an
+    emergent accident.
+  - **The fix inverts the dependency.** `plan_budget(section_count)` now takes
+    the page contract as the *input* and emits words-per-section as the *output*.
+    A 2-agent engagement is asked for 2,600-word sections; a 6-agent engagement
+    for 575-word sections. Both land inside 15–20 pages.
+  - **Two bugs the tests caught before commit** (both were in my first draft, and
+    both are the *same class of error as the bug being fixed*, which is why they
+    are recorded rather than quietly corrected):
+    1. **Continuous division.** The first model divided available pages by
+       section count as if page space were a fluid. It is not: the production CSS
+       sets `page-break-before: always`, so a section needing 2.1 pages burns
+       **3 sheets**. The continuous model therefore *under-projected* — it would
+       have promised 15 pages and rendered 18. Fixed by ceiling-ing per section
+       (`_section_pages`) and inverting that ceiling analytically
+       (`_max_words_in_pages`), with a test asserting the two are exact inverses
+       at the boundary so they cannot drift apart.
+    2. **Aiming at the midpoint.** The first model targeted the middle of the
+       15–20 band, so with 4 sections it chose 16 pages / 575 words when
+       20 pages / **1,342 words** fit the same contract. Undershooting by 4 pages
+       is not the safe option — it is a thinner deliverable bought for nothing.
+       `target_pages` is now documented and tested as a *ceiling to fill*, not a
+       bullseye, and `test_no_larger_allotment_would_have_fitted` asserts the
+       chosen allocation is **maximal**, not merely legal. A naive
+       `within_contract` assertion passed the buggy version — which is exactly
+       why that test exists.
+  - **Constants are measured, not guessed.** Re-derived with PyMuPDF from the
+    probe PDF: 767 words/full two-column page (page 6 — the only pure-prose page
+    in the fixture), 8 pages fixed front/back matter (pages 1–4, 33–36), 1.25
+    pages/section of chrome (opener + exhibit). Calibration: the probe fixture
+    emits **1,510** body words/section (I had initially recorded 1,615 — corrected
+    by re-deriving it from `LOREM_PARA` rather than trusting the earlier note),
+    and `_projected_pages(7, 1510) == 36` — *exactly* the page count the audit
+    measured. `test_fixture_word_count_is_still_1510` re-computes that input from
+    the probe source so the calibration cannot silently stop referring to the
+    real artefact.
+  - **Degrades honestly.** ≥7 sections cannot fit 20 pages even at the 450-word
+    floor, so `sections_over_capacity` is set and the Synthesis Lead logs a
+    warning. The alternative — silently emitting 200-word stubs, or shipping 32
+    pages under a "20-page" contract — is what the old code did. Tests pin that
+    over-capacity means *overrun*, never undershoot, so the operator is never
+    sent looking in the wrong direction.
+  - **Retry threshold now tracks the ask.** The old gate was a fixed
+    `len(content) > 800`. At ~6 chars/word that is ~130 words, so a section that
+    answered a 2,000-word request with 130 words was **accepted silently**. Now
+    `max(800, words_per_section * 6 * 0.5)` — floored at 800 so the change can
+    only ever be stricter than what it replaced.
+  - **Wiring is tested, not assumed.** `TestSynthesisLeadUsesTheBudget` greps the
+    agent source (comments stripped, so the explanatory notes naming the old
+    values don't self-satisfy the check) for `2000-4000 words` /
+    `at least 2000 words` / `fewer than 2000 words`. Without this, someone could
+    delete the wiring and still see green on the module's own tests.
+  - Full suite: **1,236 passed, 8 skipped** (was 1,191 / 8; **+45 tests, zero
+    regressions, zero pre-existing tests modified**). `ruff` clean on both new
+    files; `synthesis_lead.py` went 20 → 19 pre-existing findings (one removed,
+    none added). Probe re-run unchanged: 7/7 exhibits, Note+Source on each, no
+    leaks.
+  - **Not yet closed:** the budget now *governs the request*, but nothing yet
+    *verifies the result* — that is 4.2, which narrows `render.py`'s 15–40 window
+    and promotes the violation from a log line to a quality-gate failure.
+    **→ Closed by 4.2 below.**
+- [x] **4.2** Narrow page-count contract to `15..22` and make it a quality-gate failure
+  — `page_budget.page_count_verdict` (new) + `render.py`, `render_engine.py`,
+  `harness.py`, `orchestrator.py`, `presentation_designer.py`, `models.py`
+  - **The finding restated.** The audit reported "36 pages vs a 15–20 target" as a
+    ⚠️ row, but the deeper defect was that **three separate checks all measured
+    page count and none could fail on it**:
+    1. `render.py:757` recorded `page_count_reasonable: 15 <= page_count <= 40`,
+       then computed `passed` from blank pages and fonts **only** — the page count
+       was written into the result dict and structurally discarded.
+    2. `render_engine._verify_pdf` — the method whose own docstring calls the
+       agent "the last line of defense for quality" which "never ships a broken
+       PDF" — **did not check page count at all**. It was measured two steps
+       later in `run()` to populate a status string.
+    3. `harness.py` used `5 <= page_count <= 60`: a 55-page window on a 20-page
+       contract, which no plausible render could fail.
+    So the 36-page report did not fail a check; it passed three of them. And the
+    windows were too wide to be informative anyway — `15..40` returns the same
+    verdict for a 16-page and a 39-page document, so no achievable improvement
+    could ever move it.
+  - **The fix makes the verdict load-bearing.** `page_count_verdict()` is now the
+    single definition of the band, and it participates in `passed` /
+    `verification_issues` at all three sites. The band is *derived*
+    (`PAGE_COUNT_MAX = TARGET_PAGES_MAX + RENDER_SLACK_PAGES`) rather than
+    retyped, so it moves with the contract; `RENDER_SLACK_PAGES = 2` is global,
+    not per-section, because a per-section allowance would admit +6 pages at 6
+    sections — a third of the contract.
+  - **A defect *inside 4.1* that this work exposed.** 4.1 sized each section to
+    the *most* words fitting its sheet allotment, then advertised "acceptable
+    range 0.9N–1.1N" on top. Those two statements contradicted each other: at 4
+    sections the allocation was 1,342 words (exactly 3 sheets) while the clause
+    invited 1,476, which needs 4. **A model that obeyed its instructions pushed
+    the report from 20 pages to 24 — and this held at 4 of the 6 realistic
+    section counts (3, 4, 5, 6), by up to 6 pages.** While nothing verified the
+    output this was invisible; the moment page count became a gate it would have
+    failed reports whose only fault was compliance, and the natural-looking "fix"
+    would have been to widen the gate — entrenching the real bug. The allocation
+    now reserves the tolerance it advertises (`SECTION_WORD_TOLERANCE`, one
+    constant shared by the clause and the allocation, which previously used a
+    hardcoded `1.1` and *no* allowance respectively). Costs ~9% of prose;
+    `test_a_maximally_compliant_report_passes_the_gate` pins it for all 12
+    section counts.
+  - **Fair, not merely strict.** A flat band would fail two reports for
+    conditions the budget already declared: a 1-section engagement clamped by
+    `MAX_SECTION_WORDS` projects 13 pages and *cannot* reach 15 without padding,
+    and an over-capacity engagement already logged a warning naming its
+    projection. Passing the budget widens the band for exactly those two
+    self-declared cases — and `test_over_capacity_still_fails_if_it_overruns_its_own_admission`
+    pins that the widening is bounded, so it is not a blank cheque. A
+    zero-section budget is explicitly refused as a widening basis, since
+    `plan_budget(0)` projects 8 pages and would otherwise let anything through.
+  - **Wired in production, not just in tests.** `orchestrator._page_budget_for`
+    reconstructs the budget from the finished report's section count and passes it
+    to `RenderEngine.run(page_budget=...)`. Reconstructed rather than carried as
+    state because the quality-iteration loop can revise the report — and its
+    section count — several times before delivery, so a budget captured at
+    synthesis time would describe a report that no longer exists. `plan_budget`
+    is pure, so recomputation is exact (`test_reconstructed_budget_equals_the_planned_one`).
+  - **The contract is now stated once.** It previously appeared in five places
+    with three different values (`15-40` in `render.py`, `5-60` in `harness.py`,
+    `15-40` in the `LayoutPlan` schema and in the Presentation Designer's own
+    prompt, `15-20` in the budget) — so the agent laying out the pages was told a
+    looser rule than the agent verifying them. `TestTheContractIsStatedOnceInTheCodebase`
+    greps for each stale window; it tokenises the source to strip comments *and*
+    docstrings, because the explanatory notes legitimately name the old values —
+    a naive `#`-only filter failed on this fix's own docstring, caught on first run.
+  - **Two negative controls run before commit.** Reverting
+    `page_count_reasonable` to the old expression, and deleting the `run()` budget
+    assignment, each made the intended test fail — confirming the assertions bite
+    rather than passing vacuously. This matters here specifically because the
+    pre-fix code *computed the band correctly* and merely ignored the result:
+    band arithmetic alone cannot distinguish fixed from broken, only wiring can.
+  - Full suite: **1,334 passed, 8 skipped** (was 1,236 / 8; **+98 tests, zero
+    regressions, zero pre-existing tests modified**). `ruff` clean on
+    `page_budget.py` and the new test file; no new findings in any touched file,
+    and `presentation_designer.py` went 34 → 27 (a stray `logger =` sitting above
+    the import block was making 7 imports `E402`; moving it below removed all
+    seven rather than adding an eighth). Probe re-run unchanged: 36 pages on the
+    7-section fixture — which the gate now correctly *rejects*, 54 chars/line,
+    2 columns, 7/7 exhibits with Note+Source, 0 leaks, 0 blank pages, brand
+    fonts embedded.
+  - **Note on the probe's 36 pages:** the fixture deliberately over-fills (7
+    sections × 1,510 words, written before the budget existed) and is retained as
+    the *calibration* artefact for the page model — `test_page_budget` asserts the
+    model reproduces 36 exactly. It is not a contract violation by the pipeline,
+    which would now ask those 7 sections for 450 words each.
 - [ ] **4.3** Add tornado, marimekko, football-field, growth-share, bubble charts
 - [ ] **4.4** Enforce MGI exhibit anatomy in template
 - [ ] **4.5** Add At-a-glance, Technical appendix, Endnotes

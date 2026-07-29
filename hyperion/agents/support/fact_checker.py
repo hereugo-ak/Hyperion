@@ -86,6 +86,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.tools.query_utils import ground_query
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -601,13 +602,42 @@ class FactChecker(BaseAgent):
         try:
             searxng = self.get_tool(ToolName.SEARXNG)
 
-            # Build search query from claim
-            query = claim.claim[:100]
-            if claim.agent:
-                query = f"{query} {claim.agent.replace('_', ' ')}"
+            # Fix 1.7 (HYPERION_DEEP_AUDIT_2026-07-27.md §4.9 Finding B-8):
+            # the previous query was `claim.claim[:100]` with the internal
+            # agent name appended (e.g. "... market analyst"), which had two
+            # problems. First, a blind 100-char slice of a claim sentence is
+            # not a search query — it frequently cut mid-word/mid-clause,
+            # producing debris like "...for $218 milli" instead of the
+            # claim's actual entity+metric. Second, appending the internal
+            # agent name injected HYPERION's own org vocabulary
+            # ("market analyst", "risk analyst") into the outbound search
+            # string — exactly the debris `normalize_query`'s
+            # `_INTERNAL_TOKENS` set exists to strip, and it never went
+            # through `ground_query` at all, so a claim with no clear
+            # subject of its own (e.g. a bare percentage) could search
+            # ungrounded, unanchored to the engagement's actual subject or
+            # geography.
+            #
+            # Fixed: ground the claim's own text (not a pre-truncated
+            # slice — `ground_query` truncates to 256 chars internally,
+            # AFTER cleaning, which preserves whole words instead of
+            # cutting mid-token) and do not append the agent name at all.
+            # `searxng.search()` also grounds internally (fix 1.1), so this
+            # is defence in depth — it means a subject-less claim is
+            # rescued from the engagement focus instead of being dropped
+            # for lack of an entity/metric to anchor it to, and it means
+            # this call site can never again leak an internal agent-role
+            # string into a verification search.
+            query = ground_query(claim.claim)
+            if not query:
+                logger.debug(
+                    "Fact checker: claim has no subject after grounding, "
+                    "skipping web search for claim %r", claim.claim[:80]
+                )
+                query = ""
 
             # Search for the claim
-            results = await searxng.search(query, num_results=5)
+            results = await searxng.search(query, num_results=5) if query else None
             if results:
                 for result in results[:5]:
                     url = getattr(result, "url", "")
