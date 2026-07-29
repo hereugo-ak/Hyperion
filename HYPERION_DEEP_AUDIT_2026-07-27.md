@@ -1692,8 +1692,122 @@ progress, `[x]` = landed with proof.
     fix is to bound that module's peak (or shard in CI), which is 5.x work —
     not a claim that the suite is unverified. Sharded green is a real
     measurement; it is simply a different one.
-- [ ] **4.4** Enforce MGI exhibit anatomy in template
-- [ ] **4.5** Add At-a-glance, Technical appendix, Endnotes
+- [x] **4.4** Enforce MGI exhibit anatomy in template — `b74b370`
+  - The anatomy was already *emitted* by 3.7, which made this look done. It was
+    not: **every part was independently optional** in the Jinja source —
+    `{% if chart.caption %}` around the action title and
+    `{% if chart.source_citation or chart.note %}` around the *entire* footer.
+    Only `image_path` was ever guarded.
+  - Measured before the fix, all five degenerate combinations rendered clean —
+    no exception, no log line, and a PDF that still looked deliberate:
+    `NO action title` → `title=0 figure=1 Note=1 Source=1 footer=1`;
+    `NO note+source` → `title=1 figure=1 Note=0 Source=0 footer=0`. An exhibit
+    with no takeaway title and no provenance shipped silently.
+  - Fix: `_enforce_exhibit_anatomy(placements) -> list[str]` runs inside
+    `_assemble_chart_placements` *before* it returns, repairing and reporting
+    defects per exhibit; `_humanise_chart_id` supplies a readable fallback
+    title; the `exhibit-title` div and `exhibit-footer` figcaption are now
+    **unconditional**.
+  - `tests/test_exhibit_anatomy.py` — **21 tests / 5 classes**, asserting on the
+    repaired object and on rendered HTML, never on template text (the pre-4.4
+    template *contained* `Note:` too, inside an `{% if %}` that could skip it).
+    `21 passed`; combined exhibit/output/page suites `220 passed`; ruff "All
+    checks passed" on the new file and `IDENTICAL` findings vs HEAD on the
+    modified module.
+  - 🔴 **One of my own negative controls did not bite, and that is the finding.**
+    NC2 restored the old `{% if chart.source_citation or chart.note %}` guard
+    and the behavioural footer test **still passed** — because enforcement
+    defaults the source upstream, so `source or note` is now always true. The
+    test was measuring a condition the fix had made unreachable. Replaced with a
+    *structural* assertion on the template, which does fail when the guard
+    returns. A negative control that passes is not a reassurance; it is a bug in
+    the test.
+- [x] **4.5** Add At-a-glance, Technical appendix, Endnotes — this session
+  - Three sections every MGI/BCG report carries were absent. The third was the
+    worst, and not merely for being missing: `quality_score`,
+    `confidence_breakdown`, `contradictions`, `fact_check_report` and
+    `limitations` **already existed on `FinalReport`**, were computed by the
+    pipeline, and **none reached the PDF**. The system graded itself and threw
+    the scorecard away. The data was there; only the page was missing.
+  - Added: an **At a Glance** page *before* the TOC (question, recommendation,
+    confidence, evidence base, analysis depth, why, top-5 findings capped,
+    top-4 assumptions capped); **Endnotes** numbered continuously across the
+    document and grouped by citing chapter, de-duplicated by URL *within* a
+    chapter; a **Technical Appendix** publishing quality dimensions, residual
+    gaps, confidence breakdown, contradictions, fact-check counts and
+    limitations. TOC rows and page offsets updated; `Appendix` renamed
+    `Appendix: Sources`.
+  - Both render call sites are fed (`endnotes_html`, `technical_appendix_html`)
+    — deliberately, because fix 3.5 was exactly the bug of registering in one
+    Jinja env and not the other. `TestBothRenderPathsAreFed` asserts it by count.
+  - Also fixed in `_build_appendix_sources_html`: the literal `"Unknown"`
+    fallback title, which `tools/audit_render_probe.py` counts as a **template
+    leak** (§11 requires zero), and titles/URLs being interpolated
+    **unescaped** — an `&` or `<` in a real headline corrupted the table.
+  - 🔴 **Three wrong field names shipped in my first draft, all hidden by
+    `getattr(obj, "field", default)`.** Caught only by checking the builders
+    against `model_fields` rather than trusting them:
+    `QualityScore.dimensions` is a `list[QualityDimension]`, **not a dict** — the
+    draft guarded with `isinstance(dimensions, dict)`, so the dimension table
+    would have rendered on **no report ever**; `FactCheckReport` exposes
+    `total_claims_checked`/`verified_count`, **not** `claims_checked`/
+    `claims_verified` — both reads returned `None` and the whole fact-check block
+    was skipped; `Contradiction` carries `finding_a`/`finding_b`, **not**
+    `description`/`topic` — the draft's `or str(item)` fallback would have
+    printed a **raw pydantic field dump** into a client-facing PDF. A defensive
+    default converts a schema mismatch into a plausible-looking empty section.
+    All `getattr` defaults removed from both builders and the construct is now
+    **banned by test** inside them.
+  - The probe fixture was rebuilt on **real pydantic models** instead of
+    `SimpleNamespace` stubs, and immediately rejected three of my own fixture
+    errors that a stub would have accepted: `dimension_id` is an enum (not a
+    free string), `score` is an `int` constrained 1..5 (not a float), and the
+    enum member is `INTERPRETATION_CONFLICT` (not `INTERPRETATION`). Production
+    formatting corrected to `N/5` accordingly — `4.0` implies precision the
+    schema does not carry.
+  - 🔴 **My own probe metric was wrong twice, in both cases reading healthier
+    than reality.** `glance_labels_present` scored `1/4` because the labels are
+    uppercased by CSS `text-transform`, so the literal `"Recommendation"` never
+    matched — and the single hit was the word "Confidence" on the *Technical
+    Appendix* page, meaning the metric would have reported non-zero with the
+    entire At-a-glance grid deleted. `endnote_entries` read `24` because the
+    regex ran over the whole document and counted the At-a-glance findings list
+    as endnotes. Both are now scoped **per page** (and skip the TOC, which lists
+    every heading). A measurement that cannot distinguish the thing it names
+    from an unrelated page is not a measurement.
+  - Measured on the rendered PDF (`tools/audit_render_probe.py`, rc=0):
+    `at_a_glance_page=2`, `endnotes_page=36`, `technical_appendix_page=37`,
+    `glance_labels_present=4/4`, `glance_words=111`, `endnote_entries=21`,
+    `technical_appendix_sections=5/5`, `glance_precedes_toc=true`,
+    `page_count=42`, `blank_pages=0`, all four `leaks` **0** (incl. `unknown`),
+    `exhibit_count=7` with `note=7`/`source=7`. The `21` is itself the
+    de-duplication proof: 7 chapters × 4 raw sources = 28 → 21 after collapsing
+    the shared URL.
+  - `tests/test_front_back_matter.py` — **56 tests / 6 classes**. `56 passed`;
+    adjacent suites `175 passed`; related suites `108 passed, 5 skipped`. Ruff:
+    new files clean except one **pre-existing** `N802` in the probe (2 findings
+    before my change, 2 after); `presentation_designer.py` held at **27
+    findings, identical to HEAD** after I wrapped the three long lines I had
+    introduced. Pre-existing findings remain deferred to 5.1/5.3.
+  - Negative controls — all four bit: **NC1** restore `isinstance(dict)` on
+    dimensions → 2 failures (heading and tables render, dimension rows vanish);
+    **NC2** gate fact-check on `claims_checked` → 5 failures, including the
+    `getattr` ban, catching the *mechanism* and not just the symptom; **NC3**
+    reset endnote numbering per chapter → 2 failures; **NC4** reinstate the
+    `description`/`topic` + `str(item)` fallback → 4 failures. Fix restored, no
+    NC residue, `56 passed`.
+  - 🔴 **NC4 exposed two more weak tests of mine, which is why it was worth
+    running.** `test_no_raw_pydantic_repr_leaks_into_the_appendix` **passed**
+    with the leak deliberately reinstated: pydantic v2's `str()` is not
+    `repr()` (no `ClassName(` prefix) and `html_escape` rewrites `'` to
+    `&#x27;`, so both of my literals were unmatchable. So was
+    `test_contradictions_render_both_opposed_findings`, because a leaked dump
+    *contains* the finding text — a substring assertion cannot tell a formatted
+    table from a dumped object. Rewrote the first to look for pydantic
+    field-dump syntax (`agent_a=`, `finding_a=`) and added
+    `test_each_contradiction_occupies_its_own_structured_cells`, which asserts
+    four `<td>` per row and no `colspan`. NC4 then produced **4** failures
+    instead of 2.
 
 ### Phase 5 — Hardening
 - [ ] **5.1** `ruff` + `mypy --strict` pre-commit (the process fix for the P0)
