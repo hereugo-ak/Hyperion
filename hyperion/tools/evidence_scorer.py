@@ -503,10 +503,7 @@ class EvidenceScorer:
         # Substring heuristic for retail/ad/affiliate domains.
         host = domain.split(":")[0]
         label = host.split(".")[0] if "." in host else host
-        for token in self.DENIED_DOMAIN_SUBSTRINGS:
-            if token in label:
-                return True
-        return False
+        return any(token in label for token in self.DENIED_DOMAIN_SUBSTRINGS)
 
     def _score_credibility(self, url: str) -> float:
         """Score source credibility based on domain."""

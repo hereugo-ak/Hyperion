@@ -246,9 +246,14 @@ class RedditClient:
         if self._reddit is None:
             try:
                 import praw
-            except ImportError:
+            except ImportError as exc:
                 logger.error("praw not installed. Install with: pip install praw")
-                raise ImportError("praw is required for RedditClient. Install with: pip install praw>=7.7.0")
+                # `from exc` (ruff B904): preserves whether praw is absent or
+                # merely failed to import (a broken dependency of its own).
+                raise ImportError(
+                    "praw is required for RedditClient. "
+                    "Install with: pip install praw>=7.7.0"
+                ) from exc
 
             if not self._client_id or not self._client_secret:
                 logger.warning("Reddit credentials not configured. Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in .env")
@@ -379,10 +384,7 @@ class RedditClient:
             results: list[RedditPost] = []
 
             try:
-                if subreddit:
-                    search_target = reddit.subreddit(subreddit)
-                else:
-                    search_target = reddit
+                search_target = reddit.subreddit(subreddit) if subreddit else reddit
 
                 for submission in search_target.search(
                     query,

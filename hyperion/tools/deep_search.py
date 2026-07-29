@@ -35,6 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from hyperion.tools._content_quality import is_quality_content
 from hyperion.tools.content_selector import select_relevant_content
 from hyperion.tools.evidence_scorer import EvidenceScorer, EvidenceSummary, ScoredResult
 from hyperion.tools.query_utils import grounded_search_or_empty
@@ -1027,16 +1028,15 @@ class DeepSearchClient:
         return selection.content
 
     def _is_quality_content(self, content: str) -> bool:
-        """Check if extracted content meets quality thresholds."""
-        if not content or len(content) < self.MIN_CONTENT_LENGTH:
-            return False
-        # Check it's not just an error message or boilerplate
-        error_indicators = ["404", "not found", "access denied", "forbidden", "captcha"]
-        content_lower = content.lower()
-        error_count = sum(1 for indicator in error_indicators if indicator in content_lower)
-        if error_count > 2 and len(content) < 500:
-            return False
-        return True
+        """Check if extracted content meets quality thresholds.
+
+        Phase 5.1d: shared with `unified_extract` via
+        :mod:`hyperion.tools._content_quality`. The previous inline substring
+        counter let 404/403/captcha bodies through as successful extractions,
+        which both poisoned the evidence base and prevented the ladder from
+        descending to a stronger rung.
+        """
+        return is_quality_content(content, self.MIN_CONTENT_LENGTH)
 
     async def _extract_jina(self, semaphore: asyncio.Semaphore, url: str) -> ExtractedContent:
         """Extract via Jina Reader — fast, keyless, reliable extraction."""

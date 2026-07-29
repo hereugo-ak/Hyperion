@@ -96,6 +96,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from hyperion.tools._content_quality import is_quality_content
 from hyperion.tools.camoufox_client import CamoufoxClient
 from hyperion.tools.content_selector import DEFAULT_BUDGET_CHARS, select_relevant_content
 from hyperion.tools.crawl4ai import Crawl4AIClient
@@ -469,17 +470,18 @@ class UnifiedExtract:
         return dict(self._skipped)
 
     def _is_quality_content(self, content: str) -> bool:
-        """Check if extracted content meets quality thresholds."""
-        if not content or len(content) < self.MIN_CONTENT_LENGTH:
-            return False
-        # Check it's not just an error message or boilerplate
-        error_indicators = ["404", "not found", "access denied", "forbidden", "captcha"]
-        content_lower = content.lower()
-        error_count = sum(1 for indicator in error_indicators if indicator in content_lower)
-        # If more than 2 error indicators in first 500 chars, likely an error page
-        if error_count > 2 and len(content) < 500:
-            return False
-        return True
+        """Check if extracted content meets quality thresholds.
+
+        Phase 5.1d: the inline substring counter this replaced accepted a
+        stock ``"404 Not Found. The requested URL was not found on this
+        server."`` body as quality content (only 2 of its 5 indicators
+        matched, and the gate required *more than* 2). Because a "successful"
+        rung stops the ladder descending, that error text became the final
+        extraction result and flowed downstream as evidence. Detection now
+        lives in :mod:`hyperion.tools._content_quality`, shared with
+        `deep_search` so the two ladders cannot drift apart again.
+        """
+        return is_quality_content(content, self.MIN_CONTENT_LENGTH)
 
     def _finish(
         self,

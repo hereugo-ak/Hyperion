@@ -315,7 +315,11 @@ class WaitGate:
         """
         candidates: list[ProviderCandidate] = []
 
-        for (provider_type, model_name), tracker in self._trackers.items():
+        # `model_name` is intentionally not read: `tracker.model` is the
+        # authoritative model record, and the key half was only ever used for
+        # dict lookup. Named `_model_name` so ruff B007 keeps flagging any
+        # *future* unused loop variable instead of being silenced wholesale.
+        for (provider_type, _model_name), tracker in self._trackers.items():
             if provider_type not in available_providers:
                 continue
             if tracker.model.tier != tier:

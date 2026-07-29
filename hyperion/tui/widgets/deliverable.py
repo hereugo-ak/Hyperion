@@ -108,12 +108,11 @@ class DeliverableView(Widget):
         yield Static(self._build_header(), id="dv-header")
         yield Static(self._render_markdown(), id="dv-report")
         yield Static(self._build_quality(), id="dv-quality")
-        with Vertical(id="dv-actions"):
-            with Horizontal():
-                yield Button("Export PDF", id="btn-pdf", variant="primary")
-                yield Button("Export Markdown", id="btn-md", variant="default")
-                yield Button("Export JSON", id="btn-json", variant="default")
-                yield Button("Open PDF", id="btn-open", variant="success")
+        with Vertical(id="dv-actions"), Horizontal():
+            yield Button("Export PDF", id="btn-pdf", variant="primary")
+            yield Button("Export Markdown", id="btn-md", variant="default")
+            yield Button("Export JSON", id="btn-json", variant="default")
+            yield Button("Open PDF", id="btn-open", variant="success")
 
     # ── public API ────────────────────────────────────────────────────────────
 

@@ -145,9 +145,16 @@ class GoogleTrendsClient:
         if self._pytrends is None:
             try:
                 from pytrends.request import TrendReq
-            except ImportError:
+            except ImportError as exc:
                 logger.error("pytrends not installed. Install with: pip install pytrends")
-                raise ImportError("pytrends is required for GoogleTrendsClient. Install with: pip install pytrends>=4.7.3")
+                # `from exc` (ruff B904): without it the chain is reported as
+                # "During handling of the above exception, another exception
+                # occurred", which hides whether the real cause was a missing
+                # package or a broken transitive import inside pytrends.
+                raise ImportError(
+                    "pytrends is required for GoogleTrendsClient. "
+                    "Install with: pip install pytrends>=4.7.3"
+                ) from exc
 
             self._pytrends = TrendReq(
                 hl="en-US",

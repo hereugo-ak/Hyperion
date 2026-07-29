@@ -82,9 +82,13 @@ def shell(
     """
     try:
         from hyperion.tui.app import HyperionApp
-    except ImportError:
+    except ImportError as exc:
         console.print(f"[{ERROR}]Textual not installed. Run: pip install textual rich[/{ERROR}]")
-        raise typer.Exit(code=1)
+        # `from exc` (ruff B904): an ImportError here is not always "textual is
+        # missing" — it is just as often a broken import *inside* the TUI
+        # package. Chaining keeps that traceback reachable instead of replacing
+        # it with a misleading install hint.
+        raise typer.Exit(code=1) from exc
 
     # Teardown is guaranteed here as well as inside the app.
     #
@@ -325,7 +329,7 @@ def vault(
         console.print(table)
     except Exception as exc:
         console.print(f"[{ERROR}]vault error: {exc}[/{ERROR}]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
 
 # ── export ───────────────────────────────────────────────────────────────────

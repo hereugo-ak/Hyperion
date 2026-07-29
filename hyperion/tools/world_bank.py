@@ -486,10 +486,8 @@ class WorldBankClient:
         results: dict[str, float | None] = {}
 
         for country in countries:
-            if year > 0:
-                date_range = str(year)
-            else:
-                date_range = "2000:"  # Get recent data
+            # year <= 0 means "no specific year" → widen to a recent range.
+            date_range = str(year) if year > 0 else "2000:"
 
             indicator_data = await self.get_indicator(
                 indicator_code,

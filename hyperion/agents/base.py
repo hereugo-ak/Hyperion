@@ -30,6 +30,7 @@ The `run()` method is where the agent's skills are applied.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from abc import ABC, abstractmethod
 from typing import Any, TypeVar
@@ -52,6 +53,8 @@ from hyperion.schemas.agents import (
     ToolName,
 )
 from hyperion.schemas.models import KeyFinding
+
+logger = logging.getLogger(__name__)
 
 # Type variable for structured output models
 T = TypeVar("T", bound=BaseModel)
@@ -354,9 +357,22 @@ class BaseAgent(ABC):
         """Handle incoming bus messages.
 
         Override in subclasses for agent-specific message handling.
-        Default: ignore (agent processes messages in its run() loop).
+        The base implementation is a deliberate, documented no-op: most
+        agents drain the bus inside their own ``run()`` loop and do not
+        need a push callback. It is NOT abstract (ruff B027 would
+        otherwise flag the empty body) because forcing all 20 agents to
+        implement a method they do not use would be pure ceremony.
+
+        Subclasses that DO care about push delivery override this.
         """
-        pass
+        # Traced rather than silently dropped: a message arriving here means
+        # the subscribing agent declared interest in a channel but has no
+        # handler, which is nearly always a wiring bug (§4.8).
+        logger.debug(
+            "%s received bus message with no handler override (msg=%r) — dropping",
+            self.name,
+            getattr(msg, "message_type", msg),
+        )
 
     async def _publish_finding(self, finding: KeyFinding) -> None:
         """Publish a completed finding to the bus.
@@ -906,15 +922,32 @@ class BaseAgent(ABC):
         Called by the orchestrator on shutdown. Closes every instantiated
         tool's HTTP client / browser / connection pool, then delegates to
         cleanup() to unsubscribe from the bus.
+
+        Failures are logged, never swallowed: a tool whose close() raises has
+        leaked an HTTP client, a browser process, or a connection pool, and a
+        silent ``except Exception: pass`` here is exactly the anti-pattern
+        that produced the original P0 (§0.3). We narrow the catch to the
+        errors a real teardown can legitimately raise, log every one of them
+        with the offending tool named, and keep closing the rest so one bad
+        tool cannot strand the others.
         """
         for tool_name, tool in self._tools.items():
             close_method = getattr(tool, "close", None)
-            if callable(close_method):
-                try:
-                    result = close_method()
-                    if asyncio.iscoroutine(result):
-                        await result
-                except (RuntimeError, OSError, Exception):
-                    pass
+            if not callable(close_method):
+                continue
+            try:
+                result = close_method()
+                if asyncio.iscoroutine(result):
+                    await result
+            except asyncio.CancelledError:
+                # Cancellation is control flow, not an error — never absorb it.
+                raise
+            except (RuntimeError, OSError, AttributeError, TypeError, ValueError):
+                logger.warning(
+                    "%s: tool %r failed to close — resource may be leaked",
+                    self.name,
+                    tool_name,
+                    exc_info=True,
+                )
         self._tools.clear()
         await self.cleanup()
