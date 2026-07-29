@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from html import escape as _html_escape
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,11 @@ class ChartSpec:
     y_label: str = ""
     x_data: list[Any] = field(default_factory=list)
     y_data: list[list[Any]] = field(default_factory=list)  # Multiple series
+    # D5.1c: `series_names` is a LABEL, `y_data` is the DATA. They are not
+    # co-authoritative and this default is exactly why: it is empty, so any
+    # construction that supplies data but no names used to render nothing at
+    # all (see `series_pairs` below). The number of series a chart has is
+    # `len(y_data)`. Always.
     series_names: list[str] = field(default_factory=list)
     source: str = ""  # Data source citation
     caption: str = ""
@@ -104,6 +110,70 @@ class ChartSpec:
     orientation: str = "v"  # v=vertical, h=horizontal
     is_risk: bool = False  # If True, use Alert Red for primary series
     annotations: list[dict[str, Any]] = field(default_factory=list)
+
+    def series_pairs(self) -> list[tuple[list[Any], str]]:
+        """Pair every `y_data` row with a display name. **`y_data` is the truth.**
+
+        D5.1c — THE DEFECT THIS REPLACES
+        --------------------------------
+        Twelve chart creators (and both matplotlib fallback branches) iterated::
+
+            for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+
+        ``zip`` stops at the SHORTER argument. ``series_names`` defaults to
+        ``[]``. So for any spec built with data but without names — which is
+        every spec whose producer treats the name as the optional cosmetic it
+        looks like — the loop body **never executed once** and the figure was
+        returned with zero traces. Measured live before this fix::
+
+            ChartSpec(chart_type="bar", x_data=["a","b"], y_data=[[1,2],[3,4]])
+            -> _create_bar(...) -> 0 traces      (2 series of real data in)
+            ChartSpec(..., y_data=[3 rows], series_names=["only"])
+            -> _create_line(...) -> 1 trace      (2 series silently dropped)
+
+        This was invisible for three compounding reasons:
+
+        1. ``generate()`` reports ``success=True`` for an empty figure — kaleido
+           writes a perfectly valid PNG of an empty axis frame, so there is no
+           exception for the three-tier fallback to catch and nothing to log.
+        2. Tier 2 (matplotlib) contains the same ``zip`` and loses the same
+           series, so degrading does not recover the data.
+        3. Tier 3 (the HTML data table) drives its header cells AND its value
+           columns off ``series_names`` too, so the "never blank" final
+           fallback also emitted a table of labels with no numbers.
+
+        ``ruff B905`` flags exactly this as ``zip()`` without ``strict=``. It
+        was sitting in the lint backlog as one of 15 "style" findings.
+
+        THE CONTRACT
+        ------------
+        One pair per ``y_data`` row, always. Missing names are generated
+        (``Series 1``, ``Series 2``, …) rather than allowed to truncate the
+        data; surplus names are ignored rather than allowed to invent an empty
+        series. A name is a caption for a series — it can never decide whether
+        that series exists.
+        """
+        pairs: list[tuple[list[Any], str]] = []
+        for i, row in enumerate(self.y_data):
+            if i < len(self.series_names) and str(self.series_names[i]).strip():
+                name = str(self.series_names[i])
+            else:
+                # Single-series charts are the common case and a legend is
+                # suppressed for them anyway (`showlegend=len(...) > 1`), so
+                # this placeholder is rarely user-visible — but it must exist,
+                # because a trace with no name is what Plotly turns into
+                # "trace 0" in a legend.
+                name = f"Series {i + 1}"
+            pairs.append((row, name))
+        return pairs
+
+    def series_count(self) -> int:
+        """Number of series this chart actually has — driven by data, not names.
+
+        D5.1c. Used for legend visibility and colour-cycle length so those two
+        decisions cannot disagree with the number of traces drawn.
+        """
+        return len(self.y_data)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -199,7 +269,12 @@ class ChartGenerator:
         else:
             colors = CHART_COLORS[:5]  # Max 5 colors (§7.3)
 
-        return colors[:max(len(spec.series_names), 1)]
+        # D5.1c: was `len(spec.series_names)`, which returned ONE colour for a
+        # three-series chart whose producer supplied no names — so series 2 and
+        # 3 were drawn in series 1's colour (or, in `_color_cycle`'s words,
+        # raised IndexError). The count of colours a chart needs is the count of
+        # series it has, and that is `len(y_data)`.
+        return colors[: max(spec.series_count(), 1)]
 
     def _apply_brand_styling(self, fig: Any, spec: ChartSpec) -> Any:
         """Apply HYPERION brand styling to a Plotly figure.
@@ -247,8 +322,12 @@ class ChartGenerator:
                 bordercolor=CHART_GRID_COLOR,
                 borderwidth=1,
             ),
-            # Tufte principles: no chartjunk
-            showlegend=len(spec.series_names) > 1,
+            # Tufte principles: no chartjunk. D5.1c: keyed off the series count
+            # rather than the name count, so a legend appears whenever there is
+            # more than one trace to disambiguate — including when the names
+            # were auto-generated. Previously a 3-series unnamed chart drew 0
+            # traces and, consistently enough, no legend either.
+            showlegend=spec.series_count() > 1,
             margin=dict(l=60, r=40, t=80, b=60),
         )
 
@@ -332,7 +411,7 @@ class ChartGenerator:
         colors = self._get_colors(spec)
 
         fig = go.Figure()
-        for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+        for i, (y_values, name) in enumerate(spec.series_pairs()):
             fig.add_trace(go.Bar(
                 x=spec.x_data,
                 y=y_values,
@@ -348,7 +427,7 @@ class ChartGenerator:
         colors = self._get_colors(spec)
 
         fig = go.Figure()
-        for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+        for i, (y_values, name) in enumerate(spec.series_pairs()):
             fig.add_trace(go.Scatter(
                 x=spec.x_data,
                 y=y_values,
@@ -365,7 +444,7 @@ class ChartGenerator:
         colors = self._get_colors(spec)
 
         fig = go.Figure()
-        for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+        for i, (y_values, name) in enumerate(spec.series_pairs()):
             fig.add_trace(go.Scatter(
                 x=spec.x_data,
                 y=y_values,
@@ -381,7 +460,7 @@ class ChartGenerator:
         colors = self._get_colors(spec)
 
         fig = go.Figure()
-        for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+        for i, (y_values, name) in enumerate(spec.series_pairs()):
             fig.add_trace(go.Histogram(
                 x=y_values,
                 name=name,
@@ -396,7 +475,7 @@ class ChartGenerator:
         colors = self._get_colors(spec)
 
         fig = go.Figure()
-        for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+        for i, (y_values, name) in enumerate(spec.series_pairs()):
             fig.add_trace(go.Bar(
                 x=spec.x_data,
                 y=y_values,
@@ -481,7 +560,7 @@ class ChartGenerator:
         colors = self._get_colors(spec)
 
         fig = go.Figure()
-        for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+        for i, (y_values, name) in enumerate(spec.series_pairs()):
             fig.add_trace(go.Scatterpolar(
                 r=y_values,
                 theta=spec.x_data,
@@ -980,21 +1059,34 @@ class ChartGenerator:
 
             if chart_type == "bar":
                 x = spec.x_data
-                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+                for i, (y_values, name) in enumerate(spec.series_pairs()):
                     ax.bar(x, y_values, color=colors[i % len(colors)], label=name, alpha=0.95)
                 if spec.orientation == "h":
                     ax.invert_yaxis()
             elif chart_type == "line":
-                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+                for i, (y_values, name) in enumerate(spec.series_pairs()):
                     ax.plot(spec.x_data, y_values, color=colors[i % len(colors)], marker="o", markersize=4, linewidth=2, label=name)
             elif chart_type == "scatter":
-                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+                for i, (y_values, name) in enumerate(spec.series_pairs()):
                     ax.scatter(spec.x_data, y_values, color=colors[i % len(colors)], alpha=0.7, s=40, label=name)
             elif chart_type == "stacked_bar":
-                bottom = [0] * len(spec.x_data)
-                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
-                    ax.bar(spec.x_data, y_values, bottom=bottom, color=colors[i % len(colors)], label=name)
-                    bottom = [b + v for b, v in zip(bottom, y_values)]
+                # D5.1c (ruff B905): `zip(bottom, y_values)` truncated to the
+                # SHORTER of the two, so a series row with fewer values than
+                # there are categories permanently shortened `bottom` — and
+                # every subsequent layer of the stack was then clipped to that
+                # new, shorter length. A single ragged row (which is the norm
+                # for mined data: a finding that quotes 4 years where its
+                # sibling quotes 5) silently amputated the right-hand end of
+                # the whole exhibit. Pad to the category count instead, so a
+                # missing value reads as zero contribution and the stack stays
+                # the width of the axis.
+                n_cats = len(spec.x_data)
+                bottom = [0.0] * n_cats
+                for i, (y_row, name) in enumerate(spec.series_pairs()):
+                    y_values = (self._nums(y_row) + [0.0] * n_cats)[:n_cats]
+                    ax.bar(spec.x_data, y_values, bottom=bottom,
+                           color=colors[i % len(colors)], label=name)
+                    bottom = [b + v for b, v in zip(bottom, y_values, strict=True)]
 
             # ── MBB exhibit vocabulary (fix 4.3) ──────────────────────────
             # These four are handled explicitly rather than left to the
@@ -1101,7 +1193,7 @@ class ChartGenerator:
 
             else:
                 # Default to bar for unsupported types in matplotlib fallback
-                for i, (y_values, name) in enumerate(zip(spec.y_data, spec.series_names)):
+                for i, (y_values, name) in enumerate(spec.series_pairs()):
                     ax.bar(spec.x_data, y_values, color=colors[i % len(colors)], label=name)
 
             # Brand styling
@@ -1156,33 +1248,60 @@ class ChartGenerator:
             safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in spec.title.lower())[:50]
             output_path = str(self._output_dir / f"{safe_title}_table.html")
 
+            # D5.1c: every interpolation below is escaped. The values reaching
+            # this fallback are LLM-authored titles and mined finding text,
+            # which routinely contain `&` ("M&A", "R&D") and `<`/`>` ("<5%").
+            # Unescaped, an `&` alone is a malformed entity and a stray `<`
+            # swallows the rest of the row when this fragment is embedded in
+            # the report HTML.
+            pairs = spec.series_pairs()
+
             # Build HTML table with brand styling
             html_parts = [
                 '<div class="chart-data-table" style="font-family: Source Sans 3, sans-serif; background: #F5F4EE; padding: 1cm; border: 1px solid #E8E6DD;">',
-                f'<h3 style="font-family: Instrument Serif, serif; color: #1A1A1A; margin: 0 0 0.5cm 0;">{spec.title}</h3>',
+                f'<h3 style="font-family: Instrument Serif, serif; color: #1A1A1A; margin: 0 0 0.5cm 0;">{_html_escape(spec.title)}</h3>',
                 '<table style="width: 100%; border-collapse: collapse; font-family: JetBrains Mono, monospace; font-size: 9pt;">',
             ]
 
-            # Header row
-            header_cells = [f'<th style="background: #3D3530; color: #F5F4EE; padding: 6px 10px; text-align: left;">{spec.x_label or "Category"}</th>']
-            for name in spec.series_names:
-                header_cells.append(f'<th style="background: #3D3530; color: #F5F4EE; padding: 6px 10px; text-align: right;">{name}</th>')
+            # Header row — one column per SERIES, not per name (D5.1c). With the
+            # old `for name in spec.series_names` this fallback emitted a
+            # single-column table for any spec built without names: the
+            # "never blank" tier rendered the category labels and dropped
+            # every number, which is worse than blank because it looks
+            # deliberate.
+            header_cells = [
+                '<th style="background: #3D3530; color: #F5F4EE; padding: 6px 10px; '
+                f'text-align: left;">{_html_escape(spec.x_label or "Category")}</th>'
+            ]
+            for _row, name in pairs:
+                header_cells.append(
+                    '<th style="background: #3D3530; color: #F5F4EE; padding: 6px 10px; '
+                    f'text-align: right;">{_html_escape(name)}</th>'
+                )
             html_parts.append("<tr>" + "".join(header_cells) + "</tr>")
 
             # Data rows
             for row_idx, x_val in enumerate(spec.x_data):
-                row_cells = [f'<td style="padding: 6px 10px; border-bottom: 1px solid #E8E6DD; color: #1A1A1A;">{x_val}</td>']
-                for series_idx in range(len(spec.series_names)):
-                    y_values = spec.y_data[series_idx] if series_idx < len(spec.y_data) else []
+                row_cells = [
+                    '<td style="padding: 6px 10px; border-bottom: 1px solid #E8E6DD; '
+                    f'color: #1A1A1A;">{_html_escape(str(x_val))}</td>'
+                ]
+                for y_values, _name in pairs:
                     val = y_values[row_idx] if row_idx < len(y_values) else ""
-                    row_cells.append(f'<td style="padding: 6px 10px; border-bottom: 1px solid #E8E6DD; text-align: right; color: #1A1A1A;">{val}</td>')
+                    row_cells.append(
+                        '<td style="padding: 6px 10px; border-bottom: 1px solid #E8E6DD; '
+                        f'text-align: right; color: #1A1A1A;">{_html_escape(str(val))}</td>'
+                    )
                 bg = ' style="background: #F5F4EE;"' if row_idx % 2 == 0 else ""
                 html_parts.append(f"<tr{bg}>" + "".join(row_cells) + "</tr>")
 
             html_parts.append("</table>")
 
             if spec.source:
-                html_parts.append(f'<p style="font-family: Source Sans 3, sans-serif; font-size: 8pt; color: #8B8680; margin-top: 0.3cm;">Source: {spec.source}</p>')
+                html_parts.append(
+                    '<p style="font-family: Source Sans 3, sans-serif; font-size: 8pt; '
+                    f'color: #8B8680; margin-top: 0.3cm;">Source: {_html_escape(spec.source)}</p>'
+                )
 
             html_parts.append("</div>")
 
@@ -1213,6 +1332,15 @@ class ChartGenerator:
 
         Returns:
             ChartResult with the generated chart image path.
+
+        D5.1c: an **empty figure now fails Tier 1** instead of succeeding. This
+        is the check whose absence let the `series_names` truncation bug ship
+        undetected: kaleido renders a trace-less figure to a completely valid
+        PNG of an empty axis frame, so `write_image` did not raise, `success`
+        was set to `True`, and a blank exhibit was pasted into the report with
+        its real title, its real `Note:` and its real `Source:` underneath it.
+        A chart with data in and no traces out is a defect in this module, and
+        the only honest thing to do with it is refuse to call it a success.
         """
         # Tier 1: Plotly + kaleido
         try:
@@ -1221,6 +1349,17 @@ class ChartGenerator:
 
             creator = self._get_chart_creator(spec.chart_type)
             fig = creator(spec, go)
+
+            # Empty-output guard. Raised (not returned) so the existing
+            # three-tier ladder handles it: Tier 2 and Tier 3 get their chance,
+            # and if they also produce nothing the caller receives an explicit
+            # error naming all three failures instead of a blank PNG.
+            if spec.y_data and not fig.to_plotly_json().get("data"):
+                raise ValueError(
+                    f"chart creator for '{spec.chart_type}' produced 0 traces from "
+                    f"{len(spec.y_data)} series of data — refusing to export a blank exhibit"
+                )
+
             fig = self._apply_brand_styling(fig, spec)
             fig.update_layout(
                 width=spec.width or self.DEFAULT_WIDTH,

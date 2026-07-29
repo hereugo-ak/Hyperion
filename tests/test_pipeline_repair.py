@@ -166,11 +166,20 @@ class TestNoHardcodedGeographyDefaults:
             args = node.args
             # Positional args pair with defaults right-aligned.
             positional = args.posonlyargs + args.args
+            # `strict=True` on both (ruff B905): the slice is right-aligned to
+            # `len(args.defaults)` and the AST guarantees `kw_defaults` is
+            # exactly as long as `kwonlyargs` (padded with None). Both are
+            # equal-length by construction, so asserting it costs nothing and
+            # turns a future off-by-one in this scanner into a loud error
+            # rather than a silently under-scanned function signature.
             paired = list(
-                zip(positional[len(positional) - len(args.defaults):], args.defaults)
+                zip(positional[len(positional) - len(args.defaults):], args.defaults,
+                    strict=True)
             )
             paired += [
-                (a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None
+                (a, d)
+                for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+                if d is not None
             ]
             for arg, default in paired:
                 if arg.arg.lower() not in self.GEO_KEYS:

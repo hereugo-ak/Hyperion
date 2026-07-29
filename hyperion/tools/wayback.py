@@ -315,8 +315,24 @@ class WaybackClient:
                 snapshots: list[WaybackSnapshot] = []
 
                 for row in data[1:]:
-                    row_dict = dict(zip(headers, row))
-                    status_code = int(row_dict.get("statuscode", 0))
+                    # D5.1c (ruff B905): `zip` without `strict` silently
+                    # tolerates a row that does not match the header row. A
+                    # SHORT row leaves `statuscode` absent, which the `.get`
+                    # below turns into `0` — and `0` is not "unknown", it is a
+                    # value `filter_status` then quietly discards, so a
+                    # malformed CDX row vanished from the timeline without a
+                    # word. A LONG row silently dropped its trailing fields.
+                    # Neither is fatal to the other rows, so this logs and
+                    # continues rather than raising — but it can no longer
+                    # happen invisibly.
+                    if len(row) != len(headers):
+                        logger.warning(
+                            "Wayback CDX row arity mismatch for %s: %d fields vs %d headers "
+                            "— fields will be missing or dropped (row=%r)",
+                            url, len(row), len(headers), row[:8],
+                        )
+                    row_dict = dict(zip(headers, row, strict=False))
+                    status_code = int(row_dict.get("statuscode", 0) or 0)
 
                     if filter_status and status_code not in filter_status:
                         continue
