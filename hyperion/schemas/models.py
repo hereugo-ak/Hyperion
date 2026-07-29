@@ -1741,9 +1741,33 @@ class FactCheckReport(BaseModel):
 class ChartType(str, Enum):
     """Chart types supported by the Data Visualizer (§4.5, Agent 17).
 
+    THIS ENUM IS THE CANONICAL CHART-TYPE REGISTRY. Fix 4.3 established
+    that invariant. Before it, the same list of chart types was written out
+    in three independent places that could — and did — disagree:
+
+      1. this enum,
+      2. the ``_get_chart_creator`` dispatch dict in ``hyperion/output/charts.py``,
+      3. the ``type_map`` and the ``_build_plotly_traces`` branch chain in
+         ``hyperion/agents/support/data_visualizer.py``.
+
+    Divergence was silent and lossy in a specific direction: both (2) and (3)
+    fall through to a *bar chart* for any type they do not recognise. So a
+    chart type present in this enum but missing from (2) produced a bar chart
+    with the right data and the wrong geometry — no exception, no log line,
+    no failing test. ``PIE`` was in exactly that state: enumerated here,
+    selectable by ``_select_chart_type``, and rendered as a bar by
+    ``charts.py`` because ``_get_chart_creator`` had no ``"pie"`` key.
+
+    ``tests/test_mbb_chart_vocabulary.py::TestTheThreeRegistriesAgree`` now
+    asserts three-way parity, so adding a member here without wiring (2) and
+    (3) fails the suite instead of silently degrading to a bar chart.
+
     Selection is based on data shape:
     comparison → bar, trend → line, distribution → histogram,
-    correlation → scatter, composition → stacked bar/treemap, flow → sankey.
+    correlation → scatter, composition → stacked bar/treemap, flow → sankey,
+    sensitivity → tornado, two-dimensional composition → marimekko,
+    valuation range → football_field, portfolio → growth_share,
+    three-variable comparison → bubble.
     """
 
     BAR = "bar"
@@ -1757,6 +1781,16 @@ class ChartType(str, Enum):
     SANKEY = "sankey"
     STACKED_BAR = "stacked_bar"
     PIE = "pie"  # Discouraged — only used when composition has ≤4 parts
+
+    # ── MBB exhibit vocabulary (fix 4.3, audit §3.9) ──────────────────────
+    # The audit found HYPERION could draw the generic business-graphics set
+    # but none of the exhibit forms that actually distinguish MBB work
+    # product. These five are the named gap.
+    TORNADO = "tornado"                  # Sensitivity: which driver moves the answer
+    MARIMEKKO = "marimekko"              # Two-dimensional composition (width × height)
+    FOOTBALL_FIELD = "football_field"    # Valuation range by methodology
+    GROWTH_SHARE = "growth_share"        # BCG portfolio matrix
+    BUBBLE = "bubble"                    # Three variables: x, y, and encoded area
 
 
 class ChartDataSeries(BaseModel):

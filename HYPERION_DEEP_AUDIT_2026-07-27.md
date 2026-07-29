@@ -1585,7 +1585,65 @@ progress, `[x]` = landed with proof.
     the *calibration* artefact for the page model — `test_page_budget` asserts the
     model reproduces 36 exactly. It is not a contract violation by the pipeline,
     which would now ask those 7 sections for 450 words each.
-- [ ] **4.3** Add tornado, marimekko, football-field, growth-share, bubble charts
+- [x] **4.3** Add tornado, marimekko, football-field, growth-share, bubble charts
+  - `5d21d07` geometry + reachability + tests, `9e698ba` renderer lifecycle.
+  - **The hard part was not drawing five shapes.** The chart type list was
+    written out in THREE independent places, and drift between them is silent
+    *and directional*, which is why no existing test caught it:
+    - `ChartType` (`schemas/models.py`) — now declared CANONICAL in its docstring.
+    - `_get_chart_creator` (`output/charts.py`) — a type missing here renders a
+      **BAR chart**, because the dispatch ends in `.get(type, self._create_bar)`.
+      Right data, wrong geometry, no exception, no log line.
+    - `data_visualizer.py` — `type_map`, `_select_chart_type`, and the
+      `_build_plotly_traces` chain. Missing from the chain renders **EMPTY**;
+      present but unreachable from `_select_chart_type` is **dead code that
+      every direct unit test still passes**.
+  - **Latent bug found by the parity test, not by reading code:**
+    `ChartType.PIE` was enumerated and selectable but had no dispatch key, so
+    every pie request had been silently rendering a bar chart. Fixed.
+  - **Rule ordering in `_select_chart_type` is load-bearing, not stylistic.**
+    The MBB rules had to go *before* the generic families: `"growth-share"`
+    contains `"growth"`(→LINE), `"share mekko"` contains `"share"`
+    (→composition), `"comparable"` contains `"compar"`(→BAR). Appending them —
+    the obvious additive change — leaves 4 of 9 natural phrasings unreachable
+    while all direct unit tests still pass.
+  - **Encoding:** bubbles use `sizemode="area"` with explicit `sizeref`;
+    Plotly's default scales *diameter*, which overstates quadratically (Tufte
+    lie factor). Growth-share divides at share = **1.0x (BCG parity)**, not the
+    data median. Tornado overrides "first series is Terracotta" and colors by
+    sign (Alert Red down / Sage up) because the sign IS the information.
+  - **A hang that was NOT what it looked like — the real find.** The new suite
+    made the full run hang in `kaleido/scopes/base.py:308`, which reads as
+    kaleido process exhaustion. Measurement falsified that: 60 consecutive
+    exports show **zero** degradation (flat ~0.15s). What actually happens is
+    one export spawns a Chromium tree of **7 procs / 277MB and holds it for the
+    life of the interpreter**. On this 985MB box with swap already exhausted
+    that is most of the free memory, so the *next* allocation thrashes and
+    kaleido's pipe read is merely where the stall becomes visible. Decisive
+    control: the exact combination that timed out at >45s finished in **12s**
+    after reaping orphaned trees, nothing else changed.
+    `ChartGenerator.close()` was literally `pass`, so `async with` and every
+    `finally: await close()` freed nothing. Now `release_renderer()` +
+    `close()` + a `finally` in `generate_batch` (released per batch, not per
+    chart: respawn is ~1.5s vs ~0.15s warm).
+  - **Verified by measurement, not assertion:** all **16** chart types export
+    Tier 1 as real PNGs (191–501KB) and Tier 2 via matplotlib (42–99KB); 24
+    hostile-input combinations all stay on Tier 1; selection 6/6 collision
+    phrases, 12/12 generic regressions, 9/9 hints. All 5 exhibits were
+    *visually* inspected — which is the only reason the football-field
+    label-clipping bug was found, and it is now pinned by an explicit
+    x-range-headroom test.
+  - **Five negative controls, all bit, all restored:** missing dispatch key
+    (6 failures), rule ordering (4), marimekko widths (5), area-vs-diameter
+    (1), and `close()` reverted to `pass` (2, incl. the behavioural one).
+  - Two of my own tests were wrong and were rewritten to pin what is true:
+    one expected `[]` where reality is 2 valid empty traces (creators coerce
+    rather than raise — a *better* outcome), and one hardcoded `expected`
+    while leaving `widths` unused (ruff F841 caught a second unverified
+    implementation).
+  - `tests/test_mbb_chart_vocabulary.py` — **122 tests / 11 classes.** Lint:
+    "All checks passed"; no new findings in touched modules vs `bcdf98e`
+    (B905 18→12, E501 20→19 are improvements).
 - [ ] **4.4** Enforce MGI exhibit anatomy in template
 - [ ] **4.5** Add At-a-glance, Technical appendix, Endnotes
 
