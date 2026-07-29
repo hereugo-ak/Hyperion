@@ -59,7 +59,6 @@ import hashlib
 import logging
 import os
 import re
-from datetime import datetime
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any
@@ -80,7 +79,6 @@ from hyperion.schemas.agents import (
 from hyperion.schemas.models import (
     AnalysisSection,
     ChartPlacement,
-    ChartSpecification,
     ConfidenceLevel,
     FinalReport,
     ImageSelection,
@@ -2481,7 +2479,7 @@ class PresentationDesigner(BaseAgent):
         except (ValueError, AttributeError, RuntimeError):
             # Fallback: render manually with Jinja2
             try:
-                from jinja2 import Environment, BaseLoader
+                from jinja2 import BaseLoader, Environment
 
                 from hyperion.output.render import TemplateRenderer
 
@@ -2903,7 +2901,7 @@ class PresentationDesigner(BaseAgent):
             # PDFRenderer.render_pdf expects HTML string content, not a file path.
             html_content = ""
             try:
-                with open(html_path, "r", encoding="utf-8") as f:
+                with open(html_path, encoding="utf-8") as f:
                     html_content = f.read()
             except (OSError, ValueError) as e:
                 self._log(f"RENDER: cannot read staged HTML {html_path}: {e}")

@@ -27,16 +27,16 @@ class SearchBudget:
     used: dict[str, int] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    _instance: "SearchBudget | None" = None
+    _instance: SearchBudget | None = None
 
     @classmethod
-    def start(cls, cap: int = 60) -> "SearchBudget":
+    def start(cls, cap: int = 60) -> SearchBudget:
         cls._instance = SearchBudget(cap=cap)
         logger.info("SearchBudget started: cap=%d", cap)
         return cls._instance
 
     @classmethod
-    def current(cls) -> "SearchBudget":
+    def current(cls) -> SearchBudget:
         if cls._instance is None:
             cls._instance = SearchBudget()
         return cls._instance

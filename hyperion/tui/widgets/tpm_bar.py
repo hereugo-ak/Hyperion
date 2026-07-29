@@ -17,15 +17,13 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
-from hyperion.tui.content import build, line, span
+from hyperion.tui.content import build, span
 from hyperion.tui.theme import (
-    CLAY,
     ROSE,
     SAGE,
     SIG_WARN,
     TEXT_DIM,
     TEXT_GHOST,
-    TEXT_PRIMARY,
     TEXT_SECONDARY,
 )
 

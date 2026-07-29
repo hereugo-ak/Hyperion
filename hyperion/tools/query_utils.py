@@ -509,9 +509,7 @@ def normalize_query(q: str) -> str:
     # ("Scope 3", "Tier 1", "Article 5") — dropping them changes the meaning.
     tokens: list[str] = []
     for tok in s.split():
-        if len(tok) > 1:
-            tokens.append(tok)
-        elif tok.isdigit() and tokens and re.search(r"[A-Za-z]", tokens[-1]):
+        if len(tok) > 1 or tok.isdigit() and tokens and re.search(r"[A-Za-z]", tokens[-1]):
             tokens.append(tok)
     # Count only alphabetic tokens toward the "too thin" threshold, so
     # "Scope 3 emissions" (2 words + a digit) isn't rejected as thin.

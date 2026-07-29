@@ -21,7 +21,6 @@ from hyperion.tui.roster import GROUP_ORDER, by_group
 from hyperion.tui.theme import (
     CLAY,
     LOGO_STOPS,
-    SAGE,
     TEXT_DIM,
     TEXT_GHOST,
     TEXT_PRIMARY,

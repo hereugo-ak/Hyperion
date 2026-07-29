@@ -390,7 +390,7 @@ class ObscuraClient:
                     error=error,
                 )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ObscuraFetchResult(
                 url=url,
                 status_code=408,
@@ -508,7 +508,7 @@ class ObscuraClient:
                     failed=len(urls),
                 )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ObscuraScrapeResult(
                 results=[ObscuraFetchResult(url=u, error="Timeout") for u in urls],
                 total=len(urls),
@@ -608,7 +608,7 @@ class ObscuraClient:
                 self._serve_proc.terminate()
                 await asyncio.wait_for(self._serve_proc.wait(), timeout=5.0)
                 logger.info("Obscura serve stopped (pid=%d)", self._serve_proc.pid)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._serve_proc.kill()
                 logger.warning("Obscura serve killed (did not terminate gracefully)")
             except (OSError, ProcessLookupError):
@@ -736,7 +736,7 @@ class ObscuraClient:
                     )
                 # Ignore events and other responses
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return CDPResponse(id=cmd_id, error="CDP command timed out")
         except (ConnectionError, json.JSONDecodeError, RuntimeError) as e:
             return CDPResponse(id=cmd_id, error=str(e))

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from hyperion.tools.curl_cffi_client import CurlCffiClient, CurlCffiResult
-from hyperion.tools.nodriver_client import NodriverClient, NodriverResult
-from hyperion.tools.camoufox_client import CamoufoxClient, CamoufoxResult
+from hyperion.tools.camoufox_client import CamoufoxClient
+from hyperion.tools.curl_cffi_client import CurlCffiClient
+from hyperion.tools.nodriver_client import NodriverClient
 
 
 class TestCurlCffiClient:

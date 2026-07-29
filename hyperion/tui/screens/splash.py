@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from pathlib import Path
 from typing import Any
 
 from textual.app import ComposeResult
@@ -29,17 +28,11 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Static
 
-from hyperion.tui.banner import WORDMARK, TAGLINE
+from hyperion.tui.banner import TAGLINE, WORDMARK
 from hyperion.tui.content import build, build_line, line, span
 from hyperion.tui.motion.color import ramp
 from hyperion.tui.theme import (
-    BG_CANVAS,
-    BORDER_SUBTLE,
-    CLAY,
-    CLAY_DEEP,
-    CLAY_SOFT,
     LOGO_STOPS,
-    ROSE,
     SAGE,
     SIG_ERROR,
     SIG_SUCCESS,
@@ -192,8 +185,9 @@ class SplashScreen(Screen):
         # ── Vault ───────────────────────────────────────────────────────────────
         vault = self.query_one("#stat-vault", SplashStatus)
         try:
-            from hyperion.config import get_settings
             from pathlib import Path
+
+            from hyperion.config import get_settings
             settings = get_settings()
             vault_path = getattr(settings, "second_brain_vault", None)
             if vault_path and Path(vault_path).exists():

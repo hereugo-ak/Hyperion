@@ -31,18 +31,16 @@ tier (up or down based on task urgency).
 
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import Any
 
 from hyperion.config import (
     ModelSpec,
     ModelTier,
-    ProviderConfig,
     ProviderType,
     Settings,
     get_settings,
 )
+from hyperion.obs import trace
 from hyperion.router.budget import DailyBudgetPlanner, TaskUrgency
 from hyperion.router.estimator import TokenEstimator
 from hyperion.router.providers.base import BaseProvider, RouterResponse
@@ -55,8 +53,6 @@ from hyperion.router.semantic_cache import ResponseCache
 from hyperion.router.speculative_racer import SpeculativeRacer
 from hyperion.router.structured_validator import StructuredValidator
 from hyperion.router.wait_gate import ProviderCandidate, SlidingWindowTracker, WaitGate
-from hyperion.obs import trace
-
 
 # Tier adjacency for fallback (§3.3: "> 30s wait: try adjacent tier")
 # When a tier is exhausted, try the next tier up (more capable) or down (less capable)

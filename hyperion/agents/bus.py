@@ -32,13 +32,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from hyperion.schemas.agents import AgentName, AgentState
 from hyperion.schemas.models import KeyFinding
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Channel and Message Type Definitions (§4.8)
@@ -218,7 +218,7 @@ class AgentBus:
         while self._running:
             try:
                 msg = await asyncio.wait_for(queue.get(), timeout=0.5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
             # Deliver to all subscribers of this channel

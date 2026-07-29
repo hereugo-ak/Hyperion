@@ -20,8 +20,6 @@ per the audit's `has_exhibits: false` finding).
 
 from __future__ import annotations
 
-import pytest
-
 
 def test_kaleido_is_pinned_below_v1() -> None:
     """kaleido must stay on the 0.x static-engine line per pyproject.toml.

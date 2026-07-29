@@ -26,7 +26,6 @@ from pydantic import BaseModel, Field
 from hyperion.config import ModelTier
 from hyperion.schemas.agents import AgentName, SubAgentSpec
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Question Classification (ARCHITECTURE.md §4.9, Agent 1)
 # ─────────────────────────────────────────────────────────────────────────────

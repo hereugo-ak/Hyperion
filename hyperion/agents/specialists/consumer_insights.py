@@ -88,7 +88,6 @@ from hyperion.schemas.models import (
 )
 from hyperion.tools.query_utils import resolve_subject
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
 # ─────────────────────────────────────────────────────────────────────────────

@@ -22,7 +22,6 @@ from hyperion.tools.pdf_tables import (
     tables_to_prose,
 )
 
-
 # ── In-memory PDF builders ───────────────────────────────────────────────────
 
 def _pdf_with_text_table() -> bytes:

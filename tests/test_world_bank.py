@@ -7,10 +7,14 @@ Tests:
 - Error handling for API failures
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-from hyperion.tools.world_bank import WorldBankClient, WorldBankIndicator, WorldBankIndicatorData, WorldBankCountryProfile
+import pytest
+
+from hyperion.tools.world_bank import (
+    WorldBankClient,
+    WorldBankIndicatorData,
+)
 
 
 class TestWorldBankClient:

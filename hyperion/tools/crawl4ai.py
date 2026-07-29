@@ -191,7 +191,7 @@ class Crawl4AIClient:
             # Crawl4AI not installed — fall back to httpx + basic extraction
             return await self._fallback_extract(url, output_format, extract_tables, extract_links)
 
-        except (RuntimeError, asyncio.TimeoutError, ValueError) as e:
+        except (TimeoutError, RuntimeError, ValueError) as e:
             # Crawl4AI failed — try fallback
             fallback = await self._fallback_extract(url, output_format, extract_tables, extract_links)
             if fallback.error:

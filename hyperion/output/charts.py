@@ -56,12 +56,10 @@ Used by: Data Visualizer (PLOTLY tool), Presentation Designer (PLOTLY tool) (§5
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from html import escape as _html_escape
 from pathlib import Path
 from typing import Any
-
 
 # Chart color sequence (§7.3) — always in this order
 CHART_COLORS = [

@@ -62,7 +62,6 @@ from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
-from hyperion.tools.query_utils import detect_geographies, resolve_subject
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -86,7 +85,7 @@ from hyperion.schemas.models import (
     SourceCredibility,
     SustainabilityAnalysis,
 )
-
+from hyperion.tools.query_utils import detect_geographies, resolve_subject
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification

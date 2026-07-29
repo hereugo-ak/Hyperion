@@ -239,7 +239,7 @@ class SubAgentRunner:
             "dollar figures, dates, and company names. Vague findings are useless.\n"
             "6. Each finding's content should be 200-500 words of detailed analysis "
             "with specific data points, not a one-sentence summary.\n"
-            "7. Use the tools available to you: {tools}.\n"
+            f"7. Use the tools available to you: {tool_names}.\n"
             "8. Follow the tool selection strategy: SearxNG + Jina Search in "
             "parallel for discovery, then Obscura → Scrapling → Jina Reader → "
             "Crawl4AI for extraction. Use SEC EDGAR for financial filings, "
@@ -254,7 +254,7 @@ class SubAgentRunner:
             "Your output must be a JSON object with a 'findings' key containing "
             "an array of finding objects. Each finding must have:\n"
             "  - id: a unique identifier (e.g., 'finding_001')\n"
-            "  - agent: '{parent}'\n"
+            f"  - agent: '{self.parent_agent}'\n"
             "  - finding_type: the type (e.g., 'market_data', 'competitor_info')\n"
             "  - title: short title for display\n"
             "  - content: the specific finding with data and evidence\n"
@@ -262,7 +262,7 @@ class SubAgentRunner:
             "(one of: peer_reviewed, government, industry_report, news, blog, social_media)\n"
             "  - confidence: 'high', 'medium', or 'low'\n"
             "  - gaps: array of strings describing what you couldn't find"
-        ).format(tools=tool_names, parent=self.parent_agent)
+        )
 
     def _build_user_prompt(self) -> str:
         """Build the user prompt with the sub-question and parent context."""

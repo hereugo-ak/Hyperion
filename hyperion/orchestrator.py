@@ -28,7 +28,6 @@ Architecture reference: §4.9 Dynamic Workflow Engine, §10.2 Adaptive Replannin
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -40,12 +39,6 @@ from hyperion.agents.engagement_director import EngagementDirector
 from hyperion.agents.synthesis_lead import SynthesisLead
 from hyperion.obs import ArtifactStore, RunJournal, RunManifest, trace
 from hyperion.schemas.agents import AgentName, AgentState
-from hyperion.tools.query_utils import (
-    canonicalize_geographies,
-    clear_engagement_focus,
-    detect_geographies,
-    set_engagement_focus,
-)
 from hyperion.schemas.models import (
     FactCheckReport,
     FinalReport,
@@ -59,6 +52,12 @@ from hyperion.schemas.workflow import (
     TaskNode,
     TaskStatus,
     WorkflowDAG,
+)
+from hyperion.tools.query_utils import (
+    canonicalize_geographies,
+    clear_engagement_focus,
+    detect_geographies,
+    set_engagement_focus,
 )
 
 logger = logging.getLogger(__name__)
@@ -806,7 +805,7 @@ class WorkflowEngine:
 
             return result
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timeout_used = (
                 self.SPECIALIST_TIMEOUT_SECONDS
                 if task.agent in (
@@ -1274,8 +1273,8 @@ class WorkflowEngine:
             return
 
         try:
-            from hyperion.tools.second_brain import SecondBrainClient
             from hyperion.config import get_settings
+            from hyperion.tools.second_brain import SecondBrainClient
 
             settings = get_settings()
             brain = SecondBrainClient(settings=settings)
@@ -1409,8 +1408,8 @@ class WorkflowEngine:
 
         # P9 GAP-4: Startup health table — check every tool + tier
         try:
-            from hyperion.obs.health import check_startup_health
             from hyperion.config import get_settings
+            from hyperion.obs.health import check_startup_health
             check_startup_health(get_settings())
         except Exception:
             pass  # Health check is best-effort — don't block the pipeline
@@ -1670,7 +1669,7 @@ class WorkflowEngine:
 
             return result
 
-        except (ValueError, RuntimeError, OSError, asyncio.TimeoutError) as e:
+        except (TimeoutError, ValueError, RuntimeError, OSError) as e:
             result.error = str(e)
             result.duration_seconds = time.time() - self._start_time
             self._log(f"ENGAGEMENT FAILED: {type(e).__name__}: {e}")
@@ -1722,7 +1721,7 @@ class WorkflowEngine:
             print(f"  Quality Score:   {result.quality_score.total_score:.1f}/5.0")
             print(f"  Quality Iters:   {result.quality_iterations}")
         else:
-            print(f"  Quality Score:   N/A")
+            print("  Quality Score:   N/A")
 
         # Agents & findings
         if result.dag:
@@ -1746,7 +1745,7 @@ class WorkflowEngine:
 
         by_provider = token_summary.get("by_provider", {})
         if by_provider:
-            print(f"\n  Token Breakdown by Provider:")
+            print("\n  Token Breakdown by Provider:")
             print(f"  {'Provider':<16} {'Input':>10} {'Output':>10} {'Total':>12} {'Calls':>8}")
             print(f"  {'-' * 16} {'-' * 10} {'-' * 10} {'-' * 12} {'-' * 8}")
             for provider_name in sorted(by_provider.keys()):

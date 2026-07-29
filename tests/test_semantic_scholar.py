@@ -7,10 +7,11 @@ Tests:
 - Error handling for API failures
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-from hyperion.tools.semantic_scholar import SemanticScholarClient, AcademicPaper, CitationGraph
+import pytest
+
+from hyperion.tools.semantic_scholar import AcademicPaper, SemanticScholarClient
 
 
 class TestSemanticScholarClient:

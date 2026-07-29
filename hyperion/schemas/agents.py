@@ -22,7 +22,6 @@ from pydantic import BaseModel, Field
 
 from hyperion.config import ModelTier
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Identity (ARCHITECTURE.md §4.2)
 # ─────────────────────────────────────────────────────────────────────────────

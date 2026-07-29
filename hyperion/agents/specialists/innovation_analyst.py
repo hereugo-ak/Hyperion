@@ -80,9 +80,9 @@ from hyperion.schemas.models import (
     DisruptionAnalysis,
     DisruptionPattern,
     FirstMoverAnalysis,
+    HorizonScanItem,
     HypeCyclePhase,
     HypeCyclePosition,
-    HorizonScanItem,
     InnovationAnalysis,
     InnovationPortfolio,
     InnovationPortfolioItem,
@@ -92,7 +92,6 @@ from hyperion.schemas.models import (
     TechnologyTRL,
 )
 from hyperion.tools.query_utils import resolve_subject
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -497,7 +496,7 @@ class InnovationAnalyst(BaseAgent):
 
             # URLs to check historical snapshots for
             trend_urls = [
-                f"https://www.gartner.com/en/research/megatrends",
+                "https://www.gartner.com/en/research/megatrends",
                 f"https://en.wikipedia.org/wiki/{space or sector}_technology",
                 f"https://www.technologyreview.com/topic/{space or sector}/",
             ]

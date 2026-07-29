@@ -60,7 +60,6 @@ from urllib.parse import urlparse
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
-from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -77,7 +76,6 @@ from hyperion.schemas.models import (
     SourceCollection,
     SourceCredibility,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification

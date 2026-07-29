@@ -7,10 +7,11 @@ Tests:
 - Error handling for API failures
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-from hyperion.tools.sec_edgar import SECEdgarClient, SECFiling, SECFilingContent, SECCompanyInfo
+import pytest
+
+from hyperion.tools.sec_edgar import SECEdgarClient, SECFiling
 
 
 class TestSECEdgarClient:

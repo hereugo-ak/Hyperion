@@ -12,17 +12,15 @@ Architecture reference: §4 Agent System
 """
 
 import asyncio
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
-from hyperion.agents.bus import AgentBus, Channel, MessageType, get_bus, reset_bus
+from hyperion.agents.bus import Channel, MessageType, get_bus, reset_bus
 from hyperion.agents.engagement_director import (
-    EngagementDirector,
     ENGAGEMENT_DIRECTOR_SPEC,
     QUESTION_TYPE_AGENTS,
+    EngagementDirector,
 )
-from hyperion.agents.synthesis_lead import SynthesisLead, SYNTHESIS_LEAD_SPEC
-from hyperion.schemas.agents import AgentName, AgentState, ModelTier
+from hyperion.agents.synthesis_lead import SYNTHESIS_LEAD_SPEC
+from hyperion.schemas.agents import AgentName, ModelTier
 from hyperion.schemas.workflow import QuestionType
 
 
@@ -47,18 +45,18 @@ class TestAgentSpecs:
     def test_all_specialist_specs_have_tools(self):
         """Every specialist should have at least 2 tools."""
         from hyperion.agents.specialists import (
-            MARKET_ANALYST_SPEC,
             COMPETITIVE_INTEL_SPEC,
+            CONSUMER_INSIGHTS_SPEC,
             FINANCIAL_ANALYST_SPEC,
-            RISK_ANALYST_SPEC,
-            TECHNOLOGY_ANALYST_SPEC,
+            INNOVATION_ANALYST_SPEC,
+            MA_ANALYST_SPEC,
+            MARKET_ANALYST_SPEC,
             OPERATIONS_ANALYST_SPEC,
             REGULATORY_ANALYST_SPEC,
-            SUSTAINABILITY_ANALYST_SPEC,
-            CONSUMER_INSIGHTS_SPEC,
-            MA_ANALYST_SPEC,
-            INNOVATION_ANALYST_SPEC,
+            RISK_ANALYST_SPEC,
             STRATEGY_ANALYST_SPEC,
+            SUSTAINABILITY_ANALYST_SPEC,
+            TECHNOLOGY_ANALYST_SPEC,
         )
 
         specs = [

@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -485,8 +484,8 @@ class StealthSearchClient:
                     # Bing uses redirect URLs: https://www.bing.com/ck/a?...&u=a1<base64>&...
                     # The real URL is base64-encoded in the 'u' parameter with 'a1' prefix
                     if "bing.com/ck/a" in href:
-                        from urllib.parse import parse_qs, urlparse
                         import base64
+                        from urllib.parse import parse_qs, urlparse
                         parsed = urlparse(href)
                         qs = parse_qs(parsed.query)
                         u_param = qs.get("u", [""])[0]

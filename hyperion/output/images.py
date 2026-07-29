@@ -32,8 +32,7 @@ Used by: Render Engine (PILLOW tool), Data Visualizer (PILLOW tool) (§5.1)
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -134,7 +133,7 @@ class ImageProcessor:
 
     def _import_pillow(self) -> tuple[Any, Any, Any]:
         """Import Pillow components. Returns (Image, ImageFilter, ImageEnhance)."""
-        from PIL import Image, ImageFilter, ImageEnhance
+        from PIL import Image, ImageEnhance, ImageFilter
 
         return Image, ImageFilter, ImageEnhance
 

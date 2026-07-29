@@ -30,10 +30,8 @@ import random
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
 
 from hyperion.config import ModelSpec, ModelTier, ProviderType, WaitGateConfig
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SlidingWindowTracker — per provider+model rate limit tracking (§3.3)

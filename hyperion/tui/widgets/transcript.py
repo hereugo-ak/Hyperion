@@ -157,7 +157,7 @@ class Transcript(ScrollView):
         for _ in range(blank_after):
             self._append(("content", Content("")))
 
-    def write(self, content, **_kwargs) -> "Transcript":
+    def write(self, content, **_kwargs) -> Transcript:
         """RichLog-compatible write, so existing callers keep working."""
         if isinstance(content, str):
             content = Content(content)
@@ -229,7 +229,7 @@ class Transcript(ScrollView):
             self._live.remove(row)
         self._rewrite_row(row)
 
-    def clear(self) -> "Transcript":
+    def clear(self) -> Transcript:
         self._rows.clear()
         self._blocks.clear()
         self._live.clear()

@@ -24,7 +24,6 @@ terminal handles selection & copy natively.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from textual.app import App
@@ -36,7 +35,6 @@ from hyperion.tui.screens.session import SessionScreen
 from hyperion.tui.screens.splash import SplashScreen
 from hyperion.tui.theme import (
     BG_CANVAS,
-    BG_SURFACE,
     CLAY,
     CLAY_DEEP,
     CLAY_SOFT,

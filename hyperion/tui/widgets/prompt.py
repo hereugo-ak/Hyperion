@@ -25,7 +25,6 @@ from hyperion.tui.motion.color import mix
 from hyperion.tui.theme import (
     BG_CANVAS,
     CLAY,
-    CLAY_DEEP,
     TEXT_DIM,
     TEXT_PRIMARY,
     TEXT_SECONDARY,

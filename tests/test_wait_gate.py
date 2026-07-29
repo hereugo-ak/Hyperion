@@ -10,11 +10,9 @@ Tests:
 Architecture reference: §3.3 Wait Gate
 """
 
-import pytest
 import time
-from unittest.mock import MagicMock
 
-from hyperion.config import ProviderType, ModelTier, ModelSpec, WaitGateConfig
+from hyperion.config import ModelSpec, ModelTier, ProviderType, WaitGateConfig
 
 
 def _make_model(name: str = "test-model", tpm: int = 10000, rpm: int = 30, rpd: int | None = 1000) -> ModelSpec:

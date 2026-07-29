@@ -79,7 +79,6 @@ from hyperion.schemas.agents import (
     ToolName,
 )
 from hyperion.schemas.models import (
-    ClaimStatus,
     ConfidenceLevel,
     FactCheckReport,
     FinalReport,
@@ -89,7 +88,6 @@ from hyperion.schemas.models import (
     QualityScore,
     VisualizationOutput,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dimension metadata — names, descriptions, and scoring criteria
@@ -1306,13 +1304,13 @@ class QualityGate(BaseAgent):
         low_dims = [d for d in dimensions if d.score < 4 and not d.critical]
 
         report_parts = [
-            f"QUALITY GATE ESCALATION REPORT",
-            f"=" * 50,
-            f"",
+            "QUALITY GATE ESCALATION REPORT",
+            "=" * 50,
+            "",
             f"Iterations attempted: {iteration} (max {self.MAX_ITERATIONS})",
             f"Final score: {total_score}/{self.APPROVAL_THRESHOLD}",
-            f"Status: FAILED — escalation required",
-            f"",
+            "Status: FAILED — escalation required",
+            "",
             f"CRITICAL DIMENSIONS (score < {self.CRITICAL_THRESHOLD}):",
         ]
 
@@ -1321,21 +1319,21 @@ class QualityGate(BaseAgent):
             if d.fix_instructions:
                 report_parts.append(f"    Fix: {d.fix_instructions}")
 
-        report_parts.append(f"")
-        report_parts.append(f"DIMENSIONS NEEDING IMPROVEMENT (score < 4):")
+        report_parts.append("")
+        report_parts.append("DIMENSIONS NEEDING IMPROVEMENT (score < 4):")
 
         for d in low_dims:
             report_parts.append(f"  - {d.name} (score {d.score}/5): {d.feedback}")
             if d.fix_instructions:
                 report_parts.append(f"    Fix: {d.fix_instructions}")
 
-        report_parts.append(f"")
-        report_parts.append(f"RECOMMENDATION: Manual review required. The report has failed")
+        report_parts.append("")
+        report_parts.append("RECOMMENDATION: Manual review required. The report has failed")
         report_parts.append(f"quality gating after {iteration} iterations. The Synthesis Lead")
-        report_parts.append(f"should review the specific issues above and determine whether to:")
-        report_parts.append(f"  1. Make manual fixes and resubmit")
-        report_parts.append(f"  2. Accept the report with documented limitations")
-        report_parts.append(f"  3. Restart the engagement with a different approach")
+        report_parts.append("should review the specific issues above and determine whether to:")
+        report_parts.append("  1. Make manual fixes and resubmit")
+        report_parts.append("  2. Accept the report with documented limitations")
+        report_parts.append("  3. Restart the engagement with a different approach")
 
         return "\n".join(report_parts)
 

@@ -78,7 +78,6 @@ from hyperion.schemas.models import (
     RenderOutput,
 )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Pillow Image Pipeline Constants (§6.4)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -613,7 +612,7 @@ class RenderEngine(BaseAgent):
             return html_path
 
         try:
-            with open(html_path, "r", encoding="utf-8") as f:
+            with open(html_path, encoding="utf-8") as f:
                 html_content = f.read()
 
             for original, processed_path in processed.items():
@@ -625,7 +624,7 @@ class RenderEngine(BaseAgent):
                 f.write(html_content)
 
             return updated_path
-        except (OSError, IOError):
+        except OSError:
             return html_path
 
     # ─────────────────────────────────────────────────────────────────────
@@ -653,7 +652,7 @@ class RenderEngine(BaseAgent):
             # Read the HTML file that the Presentation Designer wrote.
             html_content = ""
             try:
-                with open(html_path, "r", encoding="utf-8") as f:
+                with open(html_path, encoding="utf-8") as f:
                     html_content = f.read()
             except (OSError, ValueError) as e:
                 self._log(f"RENDER: failed to read HTML file: {e!s:.200}")
@@ -704,7 +703,7 @@ class RenderEngine(BaseAgent):
             try:
                 from hyperion.output.render import PDFRenderer
 
-                with open(html_path, "r", encoding="utf-8") as f:
+                with open(html_path, encoding="utf-8") as f:
                     html_content = f.read()
                 if html_content:
                     result = PDFRenderer(settings=self.settings).render_pdf(

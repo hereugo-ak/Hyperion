@@ -7,10 +7,14 @@ Tests:
 - Error handling for API failures
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-from hyperion.tools.reddit import RedditClient, RedditPost, RedditComment, Subreddit, SentimentSummary
+import pytest
+
+from hyperion.tools.reddit import (
+    RedditClient,
+    RedditPost,
+)
 
 
 class TestRedditClient:

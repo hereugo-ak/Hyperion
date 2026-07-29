@@ -47,9 +47,9 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote_plus
 
 import httpx
-from urllib.parse import quote_plus
 
 from hyperion.tools.query_utils import grounded_search_or_empty
 

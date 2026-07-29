@@ -23,22 +23,18 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Static
 
-from hyperion.tui.content import build, build_line, line, span
+from hyperion.tui.content import build_line, span
 from hyperion.tui.theme import (
     CLAY,
     SAGE,
-    SIG_SUCCESS,
     TEXT_DIM,
     TEXT_GHOST,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
 )
 from hyperion.tui.widgets.deliverable import (
     DeliverableView,
     ExportRequested,
     OpenPDFRequested,
 )
-from hyperion.tui.widgets.mark import Mark, MarkState
 from hyperion.tui.widgets.rule import hr
 
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -604,9 +604,7 @@ class EvidenceScorer:
         # Determine stance based on relative counts
         if conflict_count > support_count and conflict_count >= 2:
             return "conflict"
-        elif support_count > conflict_count and support_count >= 2:
-            return "support"
-        elif support_count > 0 and conflict_count == 0:
+        elif support_count > conflict_count and support_count >= 2 or support_count > 0 and conflict_count == 0:
             return "support"
         elif conflict_count > 0 and support_count == 0:
             return "conflict"

@@ -35,9 +35,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from hyperion.tools.jina import JinaClient, JinaSearchResult
-from hyperion.tools.obscura import ObscuraClient, ObscuraFetchResult
-from hyperion.tools.searxng import SearxNGClient, SearchResult, SearchResponse
+from hyperion.tools.jina import JinaClient
+from hyperion.tools.obscura import ObscuraClient
+from hyperion.tools.searxng import SearxNGClient
 from hyperion.tools.stealth_search import StealthSearchClient
 
 logger = logging.getLogger(__name__)

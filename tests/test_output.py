@@ -11,8 +11,9 @@ Tests:
 Architecture reference: §6 Output Pipeline, §7 Brand System
 """
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from hyperion.config import get_settings
 

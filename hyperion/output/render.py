@@ -380,7 +380,7 @@ class PDFRenderer:
 
         Raises OSError if native GTK libraries are not available (common on Windows).
         """
-        from weasyprint import HTML, CSS
+        from weasyprint import CSS, HTML
 
         return HTML, CSS
 
@@ -460,8 +460,8 @@ class PDFRenderer:
         - <img src="data:image/...">          → already embedded, skip
         - <img src="https://...">             → remote URL, skip
         """
-        import re
         import base64
+        import re
 
         # Match img src attributes
         img_pattern = re.compile(r'<img\s+[^>]*src="([^"]+)"', re.IGNORECASE)

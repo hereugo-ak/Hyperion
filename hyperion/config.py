@@ -20,7 +20,6 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Model Tiers — the 5 intelligence levels (ARCHITECTURE.md §2.5)
 # ─────────────────────────────────────────────────────────────────────────────

@@ -17,7 +17,7 @@ one or more lines into a single ``Content`` with newlines between them.
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from textual.content import Content
 

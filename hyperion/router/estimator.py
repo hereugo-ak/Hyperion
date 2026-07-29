@@ -20,11 +20,10 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier
-
 
 # Conservative char-to-token ratios (§3.4)
 _CHARS_PER_TOKEN_ENGLISH = 3

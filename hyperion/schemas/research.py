@@ -15,14 +15,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
 
 from pydantic import BaseModel, Field
 
 from hyperion.config import ModelTier
 from hyperion.schemas.agents import AgentName, SubAgentSpec, ToolName
 from hyperion.schemas.models import ConfidenceLevel, KeyFinding, Source
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Research Node Status

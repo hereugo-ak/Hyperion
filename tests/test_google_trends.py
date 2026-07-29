@@ -7,10 +7,11 @@ Tests:
 - Error handling for API failures
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-from hyperion.tools.google_trends import GoogleTrendsClient, TrendResult, RelatedQuery, RelatedTopic
+import pytest
+
+from hyperion.tools.google_trends import GoogleTrendsClient, TrendResult
 
 
 class TestGoogleTrendsClient:

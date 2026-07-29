@@ -913,7 +913,7 @@ class BaseAgent(ABC):
                 runner.run(),
                 timeout=spec.timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # §4.7: "if a sub-agent doesn't return in 5 min, the parent
             # proceeds with available findings and flags the gap"
             findings = []

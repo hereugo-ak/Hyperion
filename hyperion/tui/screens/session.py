@@ -369,7 +369,16 @@ class SessionScreen(Screen):
 
     async def _on_bus_message(self, msg: Any) -> None:
         from hyperion.agents.bus import Channel
-        from hyperion.tui.theme import agent_badge, CLAY, SKY, GOLD, SAGE, ROSE, TEXT_DIM, TEXT_PRIMARY
+        from hyperion.tui.theme import (
+            CLAY,
+            GOLD,
+            ROSE,
+            SAGE,
+            SKY,
+            TEXT_DIM,
+            TEXT_PRIMARY,
+            agent_badge,
+        )
 
         log = self._log()
         metrics = self._metrics()

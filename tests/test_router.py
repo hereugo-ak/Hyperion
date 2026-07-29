@@ -12,12 +12,10 @@ Tests:
 Architecture reference: §3 LLM Router, §3.1-3.4
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from hyperion.config import ModelTier, ProviderType
 from hyperion.router.budget import TaskUrgency
-from hyperion.router.router import LLMRouter, get_router, reset_router
+from hyperion.router.router import get_router, reset_router
 
 
 class TestRouterInitialization:

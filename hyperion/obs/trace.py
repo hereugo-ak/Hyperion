@@ -32,7 +32,8 @@ import json
 import os
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 _LOCK = threading.Lock()
 _SINKS: list[Callable[[dict[str, Any]], None]] = []

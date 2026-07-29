@@ -32,7 +32,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Golden Set — representative queries across all workflow types
 # ─────────────────────────────────────────────────────────────────────────────
@@ -466,7 +465,7 @@ class EvalHarness:
         if not os.path.exists(self.baseline_path):
             return 0.0
         try:
-            with open(self.baseline_path, "r", encoding="utf-8") as f:
+            with open(self.baseline_path, encoding="utf-8") as f:
                 data = json.load(f)
             return data.get("mean_score", 0.0)
         except (json.JSONDecodeError, OSError):

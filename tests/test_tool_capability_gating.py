@@ -23,7 +23,6 @@ to fail before the corresponding fix. They fall into four groups:
 from __future__ import annotations
 
 import ast
-import asyncio
 import inspect
 from pathlib import Path
 
@@ -33,7 +32,6 @@ from hyperion.tools.deep_search import DeepSearchClient, DeepSearchResult, Extra
 from hyperion.tools.stealth_search import StealthSearchClient
 from hyperion.tools.unified_extract import UnifiedExtract
 from hyperion.tools.unified_search import UnifiedSearch, UnifiedSearchResult
-
 
 # ─────────────────────────────────────────────────────────────────────
 # Helpers

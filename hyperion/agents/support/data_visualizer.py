@@ -57,13 +57,11 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import datetime
 from typing import Any
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
-from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -81,7 +79,6 @@ from hyperion.schemas.models import (
     KeyFinding,
     VisualizationOutput,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HYPERION Chart Color Sequence (§7.3 — STRICT)
@@ -650,16 +647,7 @@ class DataVisualizer(BaseAgent):
         for i, series in enumerate(chart_spec.data_series):
             color = series.color or CHART_COLORS[i % len(CHART_COLORS)]
 
-            if chart_spec.chart_type == ChartType.BAR:
-                traces.append({
-                    "type": "bar",
-                    "name": series.name,
-                    "x": series.labels,
-                    "y": series.values,
-                    "marker": {"color": color},
-                })
-
-            elif chart_spec.chart_type == ChartType.STACKED_BAR:
+            if chart_spec.chart_type == ChartType.BAR or chart_spec.chart_type == ChartType.STACKED_BAR:
                 traces.append({
                     "type": "bar",
                     "name": series.name,

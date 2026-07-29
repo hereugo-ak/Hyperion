@@ -15,15 +15,13 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Static
-from textual.widget import Widget
 from textual.message import Message
+from textual.widget import Widget
+from textual.widgets import Button, Static
 
-from hyperion.tui.content import build, build_line, line, span
+from hyperion.tui.content import build, line, span
 from hyperion.tui.theme import (
     CLAY,
-    CLAY_DEEP,
-    SAGE,
     SIG_ERROR,
     SIG_SUCCESS,
     SIG_WARN,

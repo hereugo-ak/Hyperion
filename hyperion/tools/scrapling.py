@@ -32,7 +32,6 @@ from typing import Any
 
 import httpx
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Data Models
 # ─────────────────────────────────────────────────────────────────────────────
@@ -294,7 +293,7 @@ class ScraplingClient:
                 selector_recovered=selector_recovered,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             took_ms = int((_time.monotonic() - start) * 1000)
             return ScraplingResult(
                 url=url,
@@ -343,7 +342,7 @@ class ScraplingClient:
                 took_ms=took_ms,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             took_ms = int((_time.monotonic() - start) * 1000)
             return ScraplingResult(
                 url=url,

@@ -66,20 +66,18 @@ from hyperion.schemas.agents import (
     SkillSpec,
     ToolName,
 )
-from hyperion.schemas.models import KeyFinding, ConfidenceLevel
+from hyperion.schemas.workflow import (
+    QuestionType,
+    ResearchDomain,
+    TaskNode,
+    TaskStatus,
+    WorkflowDAG,
+)
 from hyperion.tools.query_utils import (
     canonicalize_geographies,
     detect_geographies,
     is_contentless,
 )
-from hyperion.schemas.workflow import (
-    QuestionType,
-    TaskNode,
-    TaskStatus,
-    WorkflowDAG,
-    ResearchDomain,
-)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification

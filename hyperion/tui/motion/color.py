@@ -11,8 +11,7 @@ and fast enough to run per-cell per-frame at 30+ fps.
 
 from __future__ import annotations
 
-import math
-from typing import Sequence
+from collections.abc import Sequence
 
 RGB = tuple[int, int, int]
 

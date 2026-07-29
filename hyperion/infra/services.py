@@ -236,7 +236,7 @@ async def run_command(cmd: list[str], timeout: float = 30.0) -> tuple[int, str, 
 
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()
         except Exception:

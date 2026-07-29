@@ -106,7 +106,7 @@ class FindingsStream(Transcript):
         self._findings.append(entry)
         self._write_finding(entry)
 
-    def clear(self) -> "FindingsStream":  # type: ignore[override]
+    def clear(self) -> FindingsStream:  # type: ignore[override]
         self._findings.clear()
         super().clear()
         return self

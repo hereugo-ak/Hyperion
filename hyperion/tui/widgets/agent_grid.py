@@ -15,27 +15,22 @@ Per ARCHITECTURE.md §8.5.
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from textual.widgets import Static
 
-from hyperion.tui.content import build, line, span
+from hyperion.tui.content import build, span
 from hyperion.tui.motion.indicators import spinner_span
 from hyperion.tui.theme import (
     CLAY,
     CLAY_DEEP,
-    CLAY_SOFT,
     GOLD,
-    ROSE,
-    SAGE,
     SIG_ERROR,
     SIG_SUCCESS,
     SIG_WARN,
     SKY,
     TEXT_DIM,
     TEXT_GHOST,
-    TEXT_PRIMARY,
     TEXT_SECONDARY,
     badge_color,
 )

@@ -81,7 +81,7 @@ class RunManifest:
         path = os.path.join(base_dir, run_id, "run_manifest.json")
         if not os.path.exists(path):
             return None
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return cls(
             run_id=data["run_id"],

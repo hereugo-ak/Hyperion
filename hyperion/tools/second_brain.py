@@ -48,11 +48,7 @@ Used by: Research Librarian, all agents (read) (§5.1)
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import os
 import re
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -202,9 +198,7 @@ class SecondBrainClient:
                         if value.startswith("[") and value.endswith("]"):
                             value = [v.strip().strip('"\'') for v in value[1:-1].split(",") if v.strip()]
                         # Handle quoted strings
-                        elif value.startswith('"') and value.endswith('"'):
-                            value = value[1:-1]
-                        elif value.startswith("'") and value.endswith("'"):
+                        elif value.startswith('"') and value.endswith('"') or value.startswith("'") and value.endswith("'"):
                             value = value[1:-1]
                         frontmatter[key] = value
 

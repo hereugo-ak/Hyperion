@@ -50,13 +50,8 @@ from textual.widgets import Static
 from hyperion.tui.content import build_line, span
 from hyperion.tui.roster import ROSTER
 from hyperion.tui.theme import (
-    BORDER_SUBTLE,
     CLAY,
-    CLAY_DEEP,
     TEXT_DIM,
-    TEXT_GHOST,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
 )
 from hyperion.tui.widgets.agent_grid import AgentGrid
 from hyperion.tui.widgets.findings_stream import FindingsStream
