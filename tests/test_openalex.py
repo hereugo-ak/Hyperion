@@ -85,7 +85,8 @@ class TestOpenAlexClient:
         """Client handles API errors gracefully."""
         client = OpenAlexClient()
 
-        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API error"})):
+        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API "
+            "error"})):
             results = await client.search_works("test query")
             assert results == []
 

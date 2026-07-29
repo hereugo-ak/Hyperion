@@ -90,7 +90,8 @@ class TestSemanticScholarClient:
         """Client handles API errors gracefully."""
         client = SemanticScholarClient()
 
-        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API error"})):
+        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API "
+            "error"})):
             results = await client.search("test query")
             assert results == []
 

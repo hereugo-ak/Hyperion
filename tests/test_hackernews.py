@@ -85,7 +85,8 @@ class TestHackerNewsClient:
         """Client handles API errors gracefully."""
         client = HackerNewsClient()
 
-        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API error"})):
+        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API "
+            "error"})):
             results = await client.search_stories("test query")
             assert results == []
 

@@ -58,8 +58,10 @@ class ResearchBrief(BaseModel):
     """
 
     sub_question: str = Field(description="The focused sub-question to research")
-    parent_context: str = Field(description="What the parent already knows — gives the sub-agent context")
-    tools: list[ToolName] = Field(description="Subset of parent's tools needed for this sub-question")
+    parent_context: str = Field(description="What the parent already knows — gives the sub-agent "
+        "context")
+    tools: list[ToolName] = Field(description="Subset of parent's tools needed for this "
+        "sub-question")
     model_tier: ModelTier = Field(description="MICRO or FAST — don't burn STRONG/DEEP quota")
     expected_findings: list[str] = Field(
         default_factory=list,
@@ -93,10 +95,13 @@ class ResearchNode(BaseModel):
 
     id: str = Field(description="Unique node identifier")
     brief: ResearchBrief = Field(description="The research brief for this node")
-    sub_agent_spec: SubAgentSpec | None = Field(default=None, description="How the sub-agent was dispatched")
+    sub_agent_spec: SubAgentSpec | None = Field(default=None, description="How the sub-agent was "
+        "dispatched")
     status: ResearchStatus = ResearchStatus.PENDING
-    findings: list[KeyFinding] = Field(default_factory=list, description="Structured findings returned")
-    sources: list[Source] = Field(default_factory=list, description="All sources found by this node")
+    findings: list[KeyFinding] = Field(default_factory=list, description="Structured findings "
+        "returned")
+    sources: list[Source] = Field(default_factory=list, description="All sources found by this "
+        "node")
     gaps: list[str] = Field(default_factory=list, description="What this node couldn't find")
     confidence: ConfidenceLevel | None = Field(default=None, description="Confidence of findings")
     started_at: datetime | None = Field(default=None)
@@ -146,14 +151,16 @@ class ResearchTree(BaseModel):
 
     specialist: AgentName = Field(description="Which specialist owns this tree")
     task_description: str = Field(description="The original task from the Engagement Director")
-    nodes: list[ResearchNode] = Field(default_factory=list, description="All research sub-question nodes")
+    nodes: list[ResearchNode] = Field(default_factory=list, description="All research "
+        "sub-question nodes")
     synthesized_findings: list[KeyFinding] = Field(
         default_factory=list,
         description="Findings the specialist synthesized from sub-agent results"
     )
     total_sources: int = Field(default=0, description="Total unique sources across all nodes")
     total_tokens: int = Field(default=0, description="Total tokens consumed across all nodes")
-    total_gaps: list[str] = Field(default_factory=list, description="All gaps aggregated from all nodes")
+    total_gaps: list[str] = Field(default_factory=list, description="All gaps aggregated from all "
+        "nodes")
 
     def add_node(self, node: ResearchNode) -> None:
         """Add a research node to the tree."""

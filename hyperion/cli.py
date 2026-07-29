@@ -195,19 +195,23 @@ def consult(
 
     if result.success:
         lines = [
-            Text.assemble(("recommendation  ", DIM), (str(getattr(getattr(result.final_report, "recommendation", None), "value", "—")), f"bold {SUCCESS}")),
+            Text.assemble(("recommendation  "
+                "", DIM), (str(getattr(getattr(result.final_report, "recommendation", None), "value", "—")), f"bold {SUCCESS}")),
         ]
         if result.pdf_path:
             lines.append(Text.assemble(("pdf             ", DIM), (result.pdf_path, MAGENTA)))
         if result.quality_score is not None:
-            lines.append(Text.assemble(("quality         ", DIM), (f"{result.quality_score.weighted_total:.1f}/5.0", CYAN)))
-        lines.append(Text.assemble(("duration        ", DIM), (f"{result.duration_seconds:.0f}s", DIM)))
+            lines.append(Text.assemble(("quality         "
+                "", DIM), (f"{result.quality_score.weighted_total:.1f}/5.0", CYAN)))
+        lines.append(Text.assemble(("duration        "
+            "", DIM), (f"{result.duration_seconds:.0f}s", DIM)))
         body = Text("\n").join(lines)
         console.print(Panel(body, title=Text("done", style=SUCCESS), border_style=SUCCESS))
         if markdown and result.markdown_path:
             console.print(f"[{DIM}]markdown → {result.markdown_path}[/{DIM}]")
     else:
-        console.print(Panel(Text(result.error or "engagement failed", style=ERROR), title=Text("error", style=ERROR), border_style=ERROR))
+        console.print(Panel(Text(result.error or "engagement "
+            "failed", style=ERROR), title=Text("error", style=ERROR), border_style=ERROR))
         raise typer.Exit(code=1)
 
 

@@ -112,7 +112,8 @@ class Source(BaseModel):
     accessed_at: datetime = Field(default_factory=datetime.now)
     author: str | None = Field(default=None, description="Author or organization")
     publication_date: str | None = Field(default=None, description="Publication date if available")
-    key_data: str | None = Field(default=None, description="The specific data point extracted from this source")
+    key_data: str | None = Field(default=None, description="The specific data point extracted "
+        "from this source")
 
     @field_validator("url")
     @classmethod
@@ -144,13 +145,15 @@ class KeyFinding(BaseModel):
 
     id: str = Field(description="Unique finding identifier")
     agent: str = Field(description="Which agent produced this finding")
-    finding_type: str = Field(description="Type of finding (e.g., 'market_size', 'risk', 'competitor_profile')")
+    finding_type: str = Field(description="Type of finding (e.g., 'market_size', 'risk', "
+        "'competitor_profile')")
     title: str = Field(description="Short title for TUI display")
     content: str = Field(description="The finding content — specific, evidence-based, not generic")
     sources: list[Source] = Field(default_factory=list, description="Evidence backing this finding")
     confidence: ConfidenceLevel = Field(description="How confident the agent is")
     gaps: list[str] = Field(default_factory=list, description="What the agent couldn't find")
-    implications: str | None = Field(default=None, description="'So what?' — what does this mean for the recommendation?")
+    implications: str | None = Field(default=None, description="'So what?' — what does this mean "
+        "for the recommendation?")
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
@@ -185,11 +188,14 @@ class Risk(BaseModel):
     impact: int = Field(ge=1, le=5, description="Impact score 1-5")
     risk_score: int = Field(ge=1, le=25, description="probability × impact")
     mitigation: str = Field(description="Specific mitigation action — actionable, not vague")
-    residual_probability: int | None = Field(default=None, ge=1, le=5, description="Probability after mitigation")
-    residual_impact: int | None = Field(default=None, ge=1, le=5, description="Impact after mitigation")
+    residual_probability: int | None = Field(default=None, ge=1, le=5, description="Probability "
+        "after mitigation")
+    residual_impact: int | None = Field(default=None, ge=1, le=5, description="Impact after "
+        "mitigation")
     owner: str = Field(description="Which agent monitors this risk")
     is_black_swan: bool = Field(default=False, description="Low-probability, high-impact event")
-    trigger_conditions: str | None = Field(default=None, description="What would cause this risk to materialize")
+    trigger_conditions: str | None = Field(default=None, description="What would cause this risk "
+        "to materialize")
     sources: list[Source] = Field(default_factory=list)
 
 
@@ -209,12 +215,14 @@ class FinancialMetric(BaseModel):
     """
 
     name: str = Field(description="Metric name (e.g., 'DCF Valuation', 'LTV/CAC Ratio')")
-    value: float | str = Field(description="The metric value (float for numbers, str for ranges like '$1.8B-$2.3B')")
+    value: float | str = Field(description="The metric value (float for numbers, str for ranges "
+        "like '$1.8B-$2.3B')")
     unit: str = Field(default="", description="Unit (e.g., '$', '%', 'x', 'months')")
     low_estimate: float | None = Field(default=None, description="Low end of range")
     high_estimate: float | None = Field(default=None, description="High end of range")
     base_case: float | None = Field(default=None, description="Base case estimate")
-    assumptions: list[str] = Field(default_factory=list, description="Key assumptions driving this metric")
+    assumptions: list[str] = Field(default_factory=list, description="Key assumptions driving "
+        "this metric")
     sensitivity: dict[str, dict[str, float]] | None = Field(
         default=None,
         description="Sensitivity table: {variable: {low/medium/high: value}}"
@@ -294,11 +302,15 @@ class AnalysisSection(BaseModel):
     agent: str = Field(description="Which agent authored this section")
     key_insight: str = Field(description="The key insight for the highlighted box")
     body: str = Field(description="The section body — evidence-based, not generic")
-    findings: list[KeyFinding] = Field(default_factory=list, description="Findings backing this section")
+    findings: list[KeyFinding] = Field(default_factory=list, description="Findings backing this "
+        "section")
     charts: list[str] = Field(default_factory=list, description="Chart image paths (300 DPI PNG)")
-    images: list[str] = Field(default_factory=list, description="Unsplash image paths for this section")
-    implications: str = Field(description="'So what?' — what does this mean for the recommendation?")
-    sources: list[Source] = Field(default_factory=list, description="All sources cited in this section")
+    images: list[str] = Field(default_factory=list, description="Unsplash image paths for this "
+        "section")
+    implications: str = Field(description="'So what?' — what does this mean for the "
+        "recommendation?")
+    sources: list[Source] = Field(default_factory=list, description="All sources cited in this "
+        "section")
     confidence: ConfidenceLevel = Field(description="Confidence level for this section's analysis")
 
 
@@ -330,8 +342,10 @@ class Contradiction(BaseModel):
     finding_b: str = Field(description="What agent B claims")
     contradiction_type: ContradictionType = Field(description="Type of contradiction")
     resolution: str | None = Field(default=None, description="How the Synthesis Lead resolved it")
-    resolved: bool = Field(default=False, description="Whether this contradiction has been resolved")
-    evidence_weighted_winner: str | None = Field(default=None, description="Which finding was better supported")
+    resolved: bool = Field(default=False, description="Whether this contradiction has been "
+        "resolved")
+    evidence_weighted_winner: str | None = Field(default=None, description="Which finding was "
+        "better supported")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -355,7 +369,8 @@ class MarketAnalysis(BaseModel):
     som: FinancialMetric = Field(description="Serviceable Obtainable Market")
     cagr: FinancialMetric = Field(description="Compound Annual Growth Rate")
     segments: list[KeyFinding] = Field(default_factory=list, description="Market segments")
-    growth_drivers: list[KeyFinding] = Field(default_factory=list, description="Growth driver decomposition")
+    growth_drivers: list[KeyFinding] = Field(default_factory=list, description="Growth driver "
+        "decomposition")
     market_maturity: str = Field(description="emerging/growing/mature/declining")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
@@ -370,12 +385,17 @@ class CompetitiveLandscape(BaseModel):
     """
 
     competitors: list[KeyFinding] = Field(description="Competitor profiles")
-    competitor_matrix: dict[str, dict[str, str]] = Field(description="Competitor × dimension comparison")
-    moat_assessments: list[KeyFinding] = Field(default_factory=list, description="Hamilton Helmer moat framework")
-    strategic_groups: list[str] = Field(default_factory=list, description="Strategic group clusters")
-    positioning_map: dict[str, Any] | None = Field(default=None, description="2D positioning map data")
+    competitor_matrix: dict[str, dict[str, str]] = Field(description="Competitor × dimension "
+        "comparison")
+    moat_assessments: list[KeyFinding] = Field(default_factory=list, description="Hamilton Helmer "
+        "moat framework")
+    strategic_groups: list[str] = Field(default_factory=list, description="Strategic group "
+        "clusters")
+    positioning_map: dict[str, Any] | None = Field(default=None, description="2D positioning map "
+        "data")
     white_space: list[str] = Field(default_factory=list, description="White space opportunities")
-    pricing_trends: list[KeyFinding] = Field(default_factory=list, description="Historical pricing via Wayback")
+    pricing_trends: list[KeyFinding] = Field(default_factory=list, description="Historical "
+        "pricing via Wayback")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -389,12 +409,15 @@ class FinancialAnalysis(BaseModel):
     """
 
     dcf_valuation: FinancialMetric | None = Field(default=None, description="DCF model output")
-    comparable_analysis: FinancialMetric | None = Field(default=None, description="Comparable company multiples")
-    unit_economics: list[FinancialMetric] = Field(default_factory=list, description="LTV, CAC, payback, margins")
+    comparable_analysis: FinancialMetric | None = Field(default=None, description="Comparable "
+        "company multiples")
+    unit_economics: list[FinancialMetric] = Field(default_factory=list, description="LTV, CAC, "
+        "payback, margins")
     sensitivity_tables: list[FinancialMetric] = Field(default_factory=list, description="Two-variable sensitivity")
     scenarios: dict[str, FinancialMetric] = Field(default_factory=dict, description="best/base/worst case")
     break_even: FinancialMetric | None = Field(default=None, description="Break-even analysis")
-    key_value_drivers: list[str] = Field(default_factory=list, description="2-3 assumptions driving 80% of variance")
+    key_value_drivers: list[str] = Field(default_factory=list, description="2-3 assumptions "
+        "driving 80% of variance")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -409,9 +432,11 @@ class RiskAnalysis(BaseModel):
 
     risks: list[Risk] = Field(description="All identified risks")
     top_risks: list[Risk] = Field(default_factory=list, description="Top 10 risks with mitigations")
-    black_swan_scenarios: list[Risk] = Field(default_factory=list, description="Low-probability, high-impact events")
+    black_swan_scenarios: list[Risk] = Field(default_factory=list, description="Low-probability, "
+        "high-impact events")
     residual_risk_summary: str = Field(description="Risk profile after mitigations")
-    scenario_plan: dict[str, Any] = Field(default_factory=dict, description="best/base/worst with triggers")
+    scenario_plan: dict[str, Any] = Field(default_factory=dict, description="best/base/worst with "
+        "triggers")
     # D5.1: `_build_risk_matrix()` and `_run_monte_carlo()` were both computed by
     # the Risk Analyst and then assigned to locals that nothing ever read — ruff
     # F841 found them. The Monte Carlo is an LLM call, so every engagement paid
@@ -445,12 +470,15 @@ class VendorComparison(BaseModel):
 
     vendor_name: str = Field(description="Vendor or technology name")
     feature_fit: int = Field(ge=1, le=5, description="How well features match requirements (1-5)")
-    pricing: int = Field(ge=1, le=5, description="Pricing competitiveness (1=expensive, 5=affordable)")
+    pricing: int = Field(ge=1, le=5, description="Pricing competitiveness (1=expensive, "
+        "5=affordable)")
     scalability: int = Field(ge=1, le=5, description="Ability to scale with the business (1-5)")
     support_quality: int = Field(ge=1, le=5, description="Support and documentation quality (1-5)")
     ecosystem: int = Field(ge=1, le=5, description="Integration ecosystem and community (1-5)")
-    lock_in_risk: int = Field(ge=1, le=5, description="Lock-in risk (1=high lock-in, 5=easy to switch)")
-    roadmap_alignment: int = Field(ge=1, le=5, description="Roadmap alignment with business needs (1-5)")
+    lock_in_risk: int = Field(ge=1, le=5, description="Lock-in risk (1=high lock-in, 5=easy to "
+        "switch)")
+    roadmap_alignment: int = Field(ge=1, le=5, description="Roadmap alignment with business needs "
+        "(1-5)")
     overall_score: float = Field(ge=0, le=5, description="Weighted overall score")
     notes: str = Field(default="", description="Qualitative notes on this vendor")
     pricing_details: str | None = Field(default=None, description="Pricing tier details")
@@ -471,8 +499,10 @@ class BuildVsBuyAnalysis(BaseModel):
     time_to_market_buy: str = Field(description="Estimated time if buying")
     tco_5yr_build: float = Field(description="5-year TCO if building ($)")
     tco_5yr_buy: float = Field(description="5-year TCO if buying ($)")
-    strategic_differentiation_build: str = Field(description="How much strategic differentiation if building")
-    strategic_differentiation_buy: str = Field(description="How much strategic differentiation if buying")
+    strategic_differentiation_build: str = Field(description="How much strategic differentiation "
+        "if building")
+    strategic_differentiation_buy: str = Field(description="How much strategic differentiation if "
+        "buying")
     maintenance_burden_build: str = Field(description="Maintenance burden if building")
     maintenance_burden_buy: str = Field(description="Maintenance burden if buying")
     team_capability_assessment: str = Field(description="Can the team build and maintain this?")
@@ -515,11 +545,15 @@ class ArchitectureReview(BaseModel):
     architecture_description: str = Field(description="What architecture is being reviewed")
     scalability_assessment: str = Field(description="Can it scale to 10x current load?")
     reliability_assessment: str = Field(description="Single points of failure, redundancy")
-    maintainability_assessment: str = Field(description="Code quality, documentation, team familiarity")
+    maintainability_assessment: str = Field(description="Code quality, documentation, team "
+        "familiarity")
     cost_assessment: str = Field(description="Infrastructure cost at scale")
-    anti_patterns: list[str] = Field(default_factory=list, description="Architectural anti-patterns identified")
-    single_points_of_failure: list[str] = Field(default_factory=list, description="SPOFs in the architecture")
-    recommendations: list[str] = Field(default_factory=list, description="Specific architectural recommendations")
+    anti_patterns: list[str] = Field(default_factory=list, description="Architectural "
+        "anti-patterns identified")
+    single_points_of_failure: list[str] = Field(default_factory=list, description="SPOFs in the "
+        "architecture")
+    recommendations: list[str] = Field(default_factory=list, description="Specific architectural "
+        "recommendations")
 
 
 class TechnologyAssessment(BaseModel):
@@ -532,12 +566,17 @@ class TechnologyAssessment(BaseModel):
     lock-in risk. (§4.4, Agent 7)
     """
 
-    vendor_matrix: list[VendorComparison] = Field(default_factory=list, description="Vendor comparison matrix")
-    build_vs_buy: BuildVsBuyAnalysis | None = Field(default=None, description="Build-vs-buy recommendation")
-    tco_analysis: list[TCOAnalysis] = Field(default_factory=list, description="5-year TCO for each option")
+    vendor_matrix: list[VendorComparison] = Field(default_factory=list, description="Vendor "
+        "comparison matrix")
+    build_vs_buy: BuildVsBuyAnalysis | None = Field(default=None, description="Build-vs-buy "
+        "recommendation")
+    tco_analysis: list[TCOAnalysis] = Field(default_factory=list, description="5-year TCO for "
+        "each option")
     architecture_review: ArchitectureReview | None = Field(default=None, description="Architecture review if applicable")
-    platform_assessment: str = Field(default="", description="Platform play vs. point solution assessment")
-    lock_in_risk_summary: str = Field(default="", description="Lock-in risk across all recommended vendors")
+    platform_assessment: str = Field(default="", description="Platform play vs. point solution "
+        "assessment")
+    lock_in_risk_summary: str = Field(default="", description="Lock-in risk across all "
+        "recommended vendors")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -633,13 +672,19 @@ class OperationsAnalysis(BaseModel):
     contribution margin. ROI = 300%." (§4.4, Agent 8)
     """
 
-    process_map: list[ProcessStep] = Field(default_factory=list, description="End-to-end SIPOC process map")
-    bottlenecks: list[Bottleneck] = Field(default_factory=list, description="Identified bottlenecks with $ improvement potential")
-    capacity_utilization: str = Field(default="", description="Current capacity utilization and constraints")
+    process_map: list[ProcessStep] = Field(default_factory=list, description="End-to-end SIPOC "
+        "process map")
+    bottlenecks: list[Bottleneck] = Field(default_factory=list, description="Identified "
+        "bottlenecks with $ improvement potential")
+    capacity_utilization: str = Field(default="", description="Current capacity utilization and "
+        "constraints")
     benchmark_comparison: list[BenchmarkComparison] = Field(default_factory=list, description="Benchmark vs. industry leaders")
-    kpi_dashboard: list[OperationalKPI] = Field(default_factory=list, description="5-7 KPIs that drive performance")
-    improvement_opportunities: list[str] = Field(default_factory=list, description="Lean/Six Sigma improvement opportunities")
-    total_improvement_value: str = Field(default="", description="Total annual $ value of all improvement opportunities")
+    kpi_dashboard: list[OperationalKPI] = Field(default_factory=list, description="5-7 KPIs that "
+        "drive performance")
+    improvement_opportunities: list[str] = Field(default_factory=list, description="Lean/Six "
+        "Sigma improvement opportunities")
+    total_improvement_value: str = Field(default="", description="Total annual $ value of all "
+        "improvement opportunities")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -674,7 +719,8 @@ class Regulation(BaseModel):
     jurisdiction: str = Field(description="Jurisdiction (e.g., 'EU', 'US-California', 'India')")
     regulation_type: RegulationType = Field(description="Category of regulation")
     description: str = Field(description="What the regulation requires")
-    key_requirements: list[str] = Field(default_factory=list, description="Specific compliance requirements")
+    key_requirements: list[str] = Field(default_factory=list, description="Specific compliance "
+        "requirements")
     penalty_range: str = Field(default="", description="Range of penalties for non-compliance")
     compliance_cost: str = Field(default="", description="Estimated compliance cost ($)")
     risk_level: str = Field(default="medium", description="Risk level: low, medium, high, critical")
@@ -692,11 +738,13 @@ class ComplianceItem(BaseModel):
 
     requirement: str = Field(description="Specific compliance requirement")
     regulation: str = Field(description="Which regulation this satisfies")
-    documentation_needed: list[str] = Field(default_factory=list, description="Documents required for compliance")
+    documentation_needed: list[str] = Field(default_factory=list, description="Documents required "
+        "for compliance")
     estimated_cost: str = Field(default="", description="Estimated compliance cost ($)")
     estimated_timeline: str = Field(default="", description="Time to achieve compliance")
     priority: str = Field(default="medium", description="Priority: low, medium, high, critical")
-    status: str = Field(default="not_started", description="Status: not_started, in_progress, compliant")
+    status: str = Field(default="not_started", description="Status: not_started, in_progress, "
+        "compliant")
 
 
 class RegulatoryHorizonItem(BaseModel):
@@ -763,11 +811,16 @@ class JurisdictionComparison(BaseModel):
 
     jurisdiction: str = Field(description="Jurisdiction name")
     regulation_count: int = Field(description="Number of applicable regulations")
-    compliance_burden: str = Field(description="Overall compliance burden: low, medium, high, very high")
-    estimated_annual_cost: str = Field(default="", description="Estimated annual compliance cost ($)")
-    key_advantages: list[str] = Field(default_factory=list, description="Regulatory advantages of this jurisdiction")
-    key_disadvantages: list[str] = Field(default_factory=list, description="Regulatory disadvantages")
-    strategic_assessment: str = Field(default="", description="Strategic implications for this jurisdiction")
+    compliance_burden: str = Field(description="Overall compliance burden: low, medium, high, "
+        "very high")
+    estimated_annual_cost: str = Field(default="", description="Estimated annual compliance cost "
+        "($)")
+    key_advantages: list[str] = Field(default_factory=list, description="Regulatory advantages of "
+        "this jurisdiction")
+    key_disadvantages: list[str] = Field(default_factory=list, description="Regulatory "
+        "disadvantages")
+    strategic_assessment: str = Field(default="", description="Strategic implications for this "
+        "jurisdiction")
 
 
 class RegulatoryAnalysis(BaseModel):
@@ -781,14 +834,18 @@ class RegulatoryAnalysis(BaseModel):
     potential strategic advantage. (§4.4, Agent 9)
     """
 
-    regulatory_map: list[Regulation] = Field(default_factory=list, description="All applicable regulations by jurisdiction")
+    regulatory_map: list[Regulation] = Field(default_factory=list, description="All applicable "
+        "regulations by jurisdiction")
     jurisdiction_comparison: list[JurisdictionComparison] = Field(default_factory=list, description="Regulatory comparison across jurisdictions")
     compliance_checklist: list[ComplianceItem] = Field(default_factory=list, description="Structured compliance checklist")
     horizon_scan: list[RegulatoryHorizonItem] = Field(default_factory=list, description="Pending/proposed regulations (1-3 year horizon)")
     enforcement_precedents: list[EnforcementPrecedent] = Field(default_factory=list, description="Enforcement actions against similar companies")
-    lightest_jurisdiction: str = Field(default="", description="Jurisdiction with the lightest regulatory touch (strategic advantage)")
-    regulatory_evolution: str = Field(default="", description="How regulations have evolved over time (Wayback Machine data)")
-    legal_disclaimer: str = Field(default="This is regulatory intelligence, not legal advice. Consult qualified legal counsel for definitive opinions.", description="Disclaimer that this is not legal advice")
+    lightest_jurisdiction: str = Field(default="", description="Jurisdiction with the lightest "
+        "regulatory touch (strategic advantage)")
+    regulatory_evolution: str = Field(default="", description="How regulations have evolved over "
+        "time (Wayback Machine data)")
+    legal_disclaimer: str = Field(default="This is regulatory intelligence, not legal advice. "
+        "Consult qualified legal counsel for definitive opinions.", description="Disclaimer that this is not legal advice")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -821,8 +878,10 @@ class ESGScore(BaseModel):
     score: str = Field(description="Score or rating (e.g., 'AA', '8.2/10', 'A-')")
     key_strengths: list[str] = Field(default_factory=list, description="Key ESG strengths")
     key_weaknesses: list[str] = Field(default_factory=list, description="Key ESG weaknesses")
-    stakeholder_audience: str = Field(default="", description="Who cares about this framework (investors, regulators, customers)")
-    is_mandatory: bool = Field(default=False, description="Is this framework mandatory for the business?")
+    stakeholder_audience: str = Field(default="", description="Who cares about this framework "
+        "(investors, regulators, customers)")
+    is_mandatory: bool = Field(default=False, description="Is this framework mandatory for the "
+        "business?")
 
 
 class EmissionSource(BaseModel):
@@ -835,13 +894,16 @@ class EmissionSource(BaseModel):
     """
 
     source_name: str = Field(description="Specific emission source")
-    scope: str = Field(description="Scope 1 (direct), Scope 2 (purchased electricity), or Scope 3 (value chain)")
+    scope: str = Field(description="Scope 1 (direct), Scope 2 (purchased electricity), or Scope 3 "
+        "(value chain)")
     emissions_tco2e: str = Field(description="Annual emissions in tonnes CO2e")
     percentage_of_total: str = Field(default="", description="% of total footprint")
     abatement_action: str = Field(default="", description="Specific action to reduce emissions")
-    abatement_cost_per_tco2e: str = Field(default="", description="Cost per tonne CO2e to abate ($)")
+    abatement_cost_per_tco2e: str = Field(default="", description="Cost per tonne CO2e to abate "
+        "($)")
     total_abatement_cost: str = Field(default="", description="Total annual cost of abatement ($)")
-    is_top_80: bool = Field(default=False, description="Is this in the top 80% of emission sources?")
+    is_top_80: bool = Field(default=False, description="Is this in the top 80% of emission "
+        "sources?")
 
 
 class CarbonFootprint(BaseModel):
@@ -855,12 +917,16 @@ class CarbonFootprint(BaseModel):
     """
 
     scope1_tco2e: str = Field(default="", description="Scope 1 emissions (direct) in tCO2e")
-    scope2_tco2e: str = Field(default="", description="Scope 2 emissions (purchased electricity) in tCO2e")
+    scope2_tco2e: str = Field(default="", description="Scope 2 emissions (purchased electricity) "
+        "in tCO2e")
     scope3_tco2e: str = Field(default="", description="Scope 3 emissions (value chain) in tCO2e")
     total_tco2e: str = Field(default="", description="Total emissions in tCO2e")
-    emission_sources: list[EmissionSource] = Field(default_factory=list, description="Top emission sources with abatement costs")
-    top_80_sources: list[EmissionSource] = Field(default_factory=list, description="Sources accounting for 80% of footprint")
-    total_abatement_cost: str = Field(default="", description="Total annual cost to abate all identified sources ($)")
+    emission_sources: list[EmissionSource] = Field(default_factory=list, description="Top "
+        "emission sources with abatement costs")
+    top_80_sources: list[EmissionSource] = Field(default_factory=list, description="Sources "
+        "accounting for 80% of footprint")
+    total_abatement_cost: str = Field(default="", description="Total annual cost to abate all "
+        "identified sources ($)")
 
 
 class ReportingRequirement(BaseModel):
@@ -871,13 +937,16 @@ class ReportingRequirement(BaseModel):
     compliance.
     """
 
-    report_name: str = Field(description="Name of the report (e.g., 'CSRD', 'SEC Climate Disclosure', 'TCFD', 'CDP')")
+    report_name: str = Field(description="Name of the report (e.g., 'CSRD', 'SEC Climate "
+        "Disclosure', 'TCFD', 'CDP')")
     jurisdiction: str = Field(default="", description="Jurisdiction (e.g., 'EU', 'US', 'Global')")
     is_mandatory: bool = Field(default=False, description="Is this report mandatory?")
     deadline: str = Field(default="", description="Reporting deadline/frequency")
-    key_disclosures: list[str] = Field(default_factory=list, description="Key disclosure requirements")
+    key_disclosures: list[str] = Field(default_factory=list, description="Key disclosure "
+        "requirements")
     penalty_for_non_compliance: str = Field(default="", description="Penalty for not reporting")
-    estimated_compliance_cost: str = Field(default="", description="Estimated cost of compliance ($)")
+    estimated_compliance_cost: str = Field(default="", description="Estimated cost of compliance "
+        "($)")
 
 
 class GreenFinancingOpportunity(BaseModel):
@@ -889,7 +958,8 @@ class GreenFinancingOpportunity(BaseModel):
     saves $500K/yr in interest.'"
     """
 
-    instrument: str = Field(description="Financing instrument (green bond, sustainability-linked loan, carbon credits)")
+    instrument: str = Field(description="Financing instrument (green bond, sustainability-linked "
+        "loan, carbon credits)")
     description: str = Field(description="Description of the opportunity")
     estimated_amount: str = Field(default="", description="Estimated financing amount ($)")
     conventional_rate: str = Field(default="", description="Conventional financing rate (%)")
@@ -907,7 +977,8 @@ class CircularEconomyAssessment(BaseModel):
     $ value and implementation cost.
     """
 
-    opportunity: str = Field(description="Circular economy opportunity (reduce, reuse, recycle, refurbish)")
+    opportunity: str = Field(description="Circular economy opportunity (reduce, reuse, recycle, "
+        "refurbish)")
     description: str = Field(default="", description="How to implement this opportunity")
     current_waste: str = Field(default="", description="Current waste this addresses")
     implementation_cost: str = Field(default="", description="Cost to implement ($)")
@@ -928,15 +999,21 @@ class SustainabilityAnalysis(BaseModel):
     CSRD, customers want GRI). (§4.4, Agent 10)
     """
 
-    esg_scores: list[ESGScore] = Field(default_factory=list, description="ESG scores across frameworks")
-    most_relevant_framework: str = Field(default="", description="Most relevant ESG framework for the stakeholder")
-    carbon_footprint: CarbonFootprint | None = Field(default=None, description="Carbon footprint with abatement costs")
+    esg_scores: list[ESGScore] = Field(default_factory=list, description="ESG scores across "
+        "frameworks")
+    most_relevant_framework: str = Field(default="", description="Most relevant ESG framework for "
+        "the stakeholder")
+    carbon_footprint: CarbonFootprint | None = Field(default=None, description="Carbon footprint "
+        "with abatement costs")
     reporting_requirements: list[ReportingRequirement] = Field(default_factory=list, description="Mandatory and voluntary reporting requirements")
     green_financing_opportunities: list[GreenFinancingOpportunity] = Field(default_factory=list, description="Green financing opportunities with $ savings")
     circular_economy: list[CircularEconomyAssessment] = Field(default_factory=list, description="Circular economy opportunities")
-    total_green_financing_savings: str = Field(default="", description="Total annual savings from green financing ($)")
-    total_abatement_cost: str = Field(default="", description="Total annual cost to abate all emission sources ($)")
-    financial_impact_summary: str = Field(default="", description="ESG mapped to financial impact (savings, penalty avoidance, investor access)")
+    total_green_financing_savings: str = Field(default="", description="Total annual savings from "
+        "green financing ($)")
+    total_abatement_cost: str = Field(default="", description="Total annual cost to abate all "
+        "emission sources ($)")
+    financial_impact_summary: str = Field(default="", description="ESG mapped to financial impact "
+        "(savings, penalty avoidance, investor access)")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -960,12 +1037,18 @@ class Persona(BaseModel):
 
     name: str = Field(description="Persona name (descriptive, not generic)")
     demographics: str = Field(description="Age, income, geography, company size, role")
-    behaviors: list[str] = Field(default_factory=list, description="Observed behaviors — usage patterns, purchase frequency, feature adoption")
-    motivations: list[str] = Field(default_factory=list, description="What drives this persona to buy/use")
-    frustrations: list[str] = Field(default_factory=list, description="Top frustrations with specific frequency from review data")
-    preferred_channels: list[str] = Field(default_factory=list, description="Where this persona gets information and makes purchases")
-    buying_triggers: list[str] = Field(default_factory=list, description="Specific triggers that drive purchase (with % from review data)")
-    data_basis: str = Field(default="", description="What data this persona is based on (e.g., '847 G2 reviews, 234 Reddit threads')")
+    behaviors: list[str] = Field(default_factory=list, description="Observed behaviors — usage "
+        "patterns, purchase frequency, feature adoption")
+    motivations: list[str] = Field(default_factory=list, description="What drives this persona to "
+        "buy/use")
+    frustrations: list[str] = Field(default_factory=list, description="Top frustrations with "
+        "specific frequency from review data")
+    preferred_channels: list[str] = Field(default_factory=list, description="Where this persona "
+        "gets information and makes purchases")
+    buying_triggers: list[str] = Field(default_factory=list, description="Specific triggers that "
+        "drive purchase (with % from review data)")
+    data_basis: str = Field(default="", description="What data this persona is based on (e.g., "
+        "'847 G2 reviews, 234 Reddit threads')")
     is_primary: bool = Field(default=False, description="Is this the primary persona?")
 
 
@@ -976,13 +1059,18 @@ class JourneyStage(BaseModel):
     Identifies friction points, drop-off points, and moments of truth.
     """
 
-    stage: str = Field(description="Journey stage (awareness, consideration, purchase, onboarding, usage, advocacy, etc.)")
+    stage: str = Field(description="Journey stage (awareness, consideration, purchase, "
+        "onboarding, usage, advocacy, etc.)")
     description: str = Field(default="", description="What happens at this stage")
-    touchpoints: list[str] = Field(default_factory=list, description="Customer touchpoints at this stage")
-    friction_points: list[str] = Field(default_factory=list, description="Friction points at this stage")
+    touchpoints: list[str] = Field(default_factory=list, description="Customer touchpoints at "
+        "this stage")
+    friction_points: list[str] = Field(default_factory=list, description="Friction points at this "
+        "stage")
     drop_off_rate: str = Field(default="", description="Drop-off rate at this stage (if known)")
-    is_moment_of_truth: bool = Field(default=False, description="Is this a 'moment of truth' that determines customer outcome?")
-    improvement_opportunity: str = Field(default="", description="Specific improvement opportunity at this stage")
+    is_moment_of_truth: bool = Field(default=False, description="Is this a 'moment of truth' that "
+        "determines customer outcome?")
+    improvement_opportunity: str = Field(default="", description="Specific improvement "
+        "opportunity at this stage")
 
 
 class NPSAnalysis(BaseModel):
@@ -997,10 +1085,13 @@ class NPSAnalysis(BaseModel):
     promoter_percentage: str = Field(default="", description="% of promoters (9-10)")
     passive_percentage: str = Field(default="", description="% of passives (7-8)")
     detractor_percentage: str = Field(default="", description="% of detractors (0-6)")
-    promotion_drivers: list[str] = Field(default_factory=list, description="Specific drivers of promotion (with frequency from feedback)")
-    detraction_drivers: list[str] = Field(default_factory=list, description="Specific drivers of detraction (with frequency from feedback)")
+    promotion_drivers: list[str] = Field(default_factory=list, description="Specific drivers of "
+        "promotion (with frequency from feedback)")
+    detraction_drivers: list[str] = Field(default_factory=list, description="Specific drivers of "
+        "detraction (with frequency from feedback)")
     sample_size: str = Field(default="", description="Sample size of NPS data")
-    key_quotes: list[str] = Field(default_factory=list, description="Representative quotes from promoters and detractors")
+    key_quotes: list[str] = Field(default_factory=list, description="Representative quotes from "
+        "promoters and detractors")
 
 
 class SegmentationApproach(str, Enum):
@@ -1021,10 +1112,13 @@ class CustomerSegment(BaseModel):
     approach: SegmentationApproach = Field(description="Segmentation approach used")
     segment_name: str = Field(description="Name of the segment")
     size_percentage: str = Field(default="", description="% of total market in this segment")
-    characteristics: list[str] = Field(default_factory=list, description="Key characteristics of this segment")
-    purchase_probability: str = Field(default="", description="Purchase probability/propensity for this segment")
+    characteristics: list[str] = Field(default_factory=list, description="Key characteristics of "
+        "this segment")
+    purchase_probability: str = Field(default="", description="Purchase probability/propensity "
+        "for this segment")
     value: str = Field(default="", description="Customer lifetime value or annual value ($)")
-    is_most_predictive: bool = Field(default=False, description="Is this the most predictive segment for purchase behavior?")
+    is_most_predictive: bool = Field(default=False, description="Is this the most predictive "
+        "segment for purchase behavior?")
 
 
 class WillingnessToPay(BaseModel):
@@ -1036,12 +1130,17 @@ class WillingnessToPay(BaseModel):
     range of acceptable prices.
     """
 
-    optimal_price_point: str = Field(default="", description="Price point that maximizes revenue ($)")
-    too_cheap_price: str = Field(default="", description="Price below which customers question quality ($)")
-    too_expensive_price: str = Field(default="", description="Price above which customers won't buy ($)")
+    optimal_price_point: str = Field(default="", description="Price point that maximizes revenue "
+        "($)")
+    too_cheap_price: str = Field(default="", description="Price below which customers question "
+        "quality ($)")
+    too_expensive_price: str = Field(default="", description="Price above which customers won't "
+        "buy ($)")
     acceptable_range: str = Field(default="", description="Range of acceptable prices ($- $)")
-    revenue_at_optimal: str = Field(default="", description="Estimated revenue at optimal price point ($)")
-    methodology: str = Field(default="Van Westendorp Price Sensitivity Meter", description="Methodology used")
+    revenue_at_optimal: str = Field(default="", description="Estimated revenue at optimal price "
+        "point ($)")
+    methodology: str = Field(default="Van Westendorp Price Sensitivity "
+        "Meter", description="Methodology used")
     data_basis: str = Field(default="", description="What data this analysis is based on")
 
 
@@ -1054,12 +1153,18 @@ class DemandEstimate(BaseModel):
 
     total_addressable_market: str = Field(default="", description="TAM ($)")
     serviceable_addressable_market: str = Field(default="", description="SAM ($)")
-    serviceable_obtainable_market: str = Field(default="", description="SOM / market share achievable (%)")
-    price_elasticity: str = Field(default="", description="Price elasticity of demand (e.g., '-1.5')")
-    demand_at_current_price: str = Field(default="", description="Estimated demand at current price")
-    demand_at_optimal_price: str = Field(default="", description="Estimated demand at optimal price")
-    revenue_forecast: str = Field(default="", description="Revenue forecast at optimal price ($/yr)")
-    methodology: str = Field(default="Conjoint analysis proxy + price elasticity from market data", description="Methodology used")
+    serviceable_obtainable_market: str = Field(default="", description="SOM / market share "
+        "achievable (%)")
+    price_elasticity: str = Field(default="", description="Price elasticity of demand (e.g., "
+        "'-1.5')")
+    demand_at_current_price: str = Field(default="", description="Estimated demand at current "
+        "price")
+    demand_at_optimal_price: str = Field(default="", description="Estimated demand at optimal "
+        "price")
+    revenue_forecast: str = Field(default="", description="Revenue forecast at optimal price "
+        "($/yr)")
+    methodology: str = Field(default="Conjoint analysis proxy + price elasticity from market "
+        "data", description="Methodology used")
 
 
 class ConsumerInsights(BaseModel):
@@ -1074,14 +1179,21 @@ class ConsumerInsights(BaseModel):
     company' (mentioned in 41% of positive reviews)." (§4.4, Agent 11)
     """
 
-    personas: list[Persona] = Field(default_factory=list, description="Data-driven customer personas grounded in scraped review data")
-    journey_map: list[JourneyStage] = Field(default_factory=list, description="End-to-end customer journey with friction points and moments of truth")
-    nps_analysis: NPSAnalysis | None = Field(default=None, description="NPS analysis with promotion/detraction drivers")
-    segments: list[CustomerSegment] = Field(default_factory=list, description="Customer segments across demographic, behavioral, psychographic approaches")
-    most_predictive_segmentation: str = Field(default="", description="Which segmentation approach is most predictive of purchase behavior")
-    demand_estimate: DemandEstimate | None = Field(default=None, description="Demand estimation with price elasticity")
+    personas: list[Persona] = Field(default_factory=list, description="Data-driven customer "
+        "personas grounded in scraped review data")
+    journey_map: list[JourneyStage] = Field(default_factory=list, description="End-to-end "
+        "customer journey with friction points and moments of truth")
+    nps_analysis: NPSAnalysis | None = Field(default=None, description="NPS analysis with "
+        "promotion/detraction drivers")
+    segments: list[CustomerSegment] = Field(default_factory=list, description="Customer segments "
+        "across demographic, behavioral, psychographic approaches")
+    most_predictive_segmentation: str = Field(default="", description="Which segmentation "
+        "approach is most predictive of purchase behavior")
+    demand_estimate: DemandEstimate | None = Field(default=None, description="Demand estimation "
+        "with price elasticity")
     willingness_to_pay: WillingnessToPay | None = Field(default=None, description="Willingness-to-pay analysis using Van Westendorp methodology")
-    total_reviews_analyzed: str = Field(default="", description="Total number of reviews/data points analyzed")
+    total_reviews_analyzed: str = Field(default="", description="Total number of reviews/data "
+        "points analyzed")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -1108,7 +1220,8 @@ class AcquisitionTarget(BaseModel):
     strategic_fit: str = Field(default="", description="Strategic fit rationale")
     acquisition_rationale: str = Field(default="", description="Why acquire this company")
     list_stage: str = Field(default="long", description="long or short")
-    risks: list[str] = Field(default_factory=list, description="Key risks associated with this target")
+    risks: list[str] = Field(default_factory=list, description="Key risks associated with this "
+        "target")
 
 
 class SynergyAnalysis(BaseModel):
@@ -1121,26 +1234,35 @@ class SynergyAnalysis(BaseModel):
     materialize.
     """
 
-    revenue_synergies: list[str] = Field(default_factory=list, description="Revenue synergies (cross-sell, upsell, new markets)")
-    revenue_synergy_value: str = Field(default="", description="Estimated annual revenue synergy value ($)")
-    cost_synergies: list[str] = Field(default_factory=list, description="Cost synergies (headcount, facilities, procurement)")
-    cost_synergy_value: str = Field(default="", description="Estimated annual cost synergy value ($)")
-    total_estimated_synergies: str = Field(default="", description="Total estimated annual synergies ($)")
-    reality_discount_percentage: str = Field(default="40%", description="Reality discount applied (synergies rarely materialize at 100%)")
-    realizable_synergies: str = Field(default="", description="Synergies after reality discount ($)")
+    revenue_synergies: list[str] = Field(default_factory=list, description="Revenue synergies "
+        "(cross-sell, upsell, new markets)")
+    revenue_synergy_value: str = Field(default="", description="Estimated annual revenue synergy "
+        "value ($)")
+    cost_synergies: list[str] = Field(default_factory=list, description="Cost synergies "
+        "(headcount, facilities, procurement)")
+    cost_synergy_value: str = Field(default="", description="Estimated annual cost synergy value "
+        "($)")
+    total_estimated_synergies: str = Field(default="", description="Total estimated annual "
+        "synergies ($)")
+    reality_discount_percentage: str = Field(default="40%", description="Reality discount applied "
+        "(synergies rarely materialize at 100%)")
+    realizable_synergies: str = Field(default="", description="Synergies after reality discount "
+        "($)")
     synergy_timeline: str = Field(default="", description="Timeline for synergy realization")
 
 
 class IntegrationWorkstream(BaseModel):
     """A workstream in the 100-day integration plan (§4.4, Agent 12)."""
 
-    workstream: str = Field(description="Workstream name (e.g., 'Sales integration', 'IT systems migration')")
+    workstream: str = Field(description="Workstream name (e.g., 'Sales integration', 'IT systems "
+        "migration')")
     owner: str = Field(default="", description="Workstream owner")
     key_milestones: list[str] = Field(default_factory=list, description="Key milestones")
     day_1_actions: list[str] = Field(default_factory=list, description="Day 1 actions")
     day_30_milestones: list[str] = Field(default_factory=list, description="Day 30 milestones")
     day_100_milestones: list[str] = Field(default_factory=list, description="Day 100 milestones")
-    risk_flags: list[str] = Field(default_factory=list, description="Risk flags for this workstream")
+    risk_flags: list[str] = Field(default_factory=list, description="Risk flags for this "
+        "workstream")
 
 
 class IntegrationPlan(BaseModel):
@@ -1152,9 +1274,11 @@ class IntegrationPlan(BaseModel):
     """
 
     workstreams: list[IntegrationWorkstream] = Field(default_factory=list, description="Integration workstreams")
-    top_3_integration_risks: list[str] = Field(default_factory=list, description="Top 3 integration risks")
+    top_3_integration_risks: list[str] = Field(default_factory=list, description="Top 3 "
+        "integration risks")
     day_1_priorities: list[str] = Field(default_factory=list, description="Day 1 priorities")
-    success_metrics: list[str] = Field(default_factory=list, description="Success metrics for integration")
+    success_metrics: list[str] = Field(default_factory=list, description="Success metrics for "
+        "integration")
 
 
 class ValuationGap(BaseModel):
@@ -1164,12 +1288,15 @@ class ValuationGap(BaseModel):
     acceptable price. Identifies the zone of possible agreement.
     """
 
-    acquirer_max_price: str = Field(default="", description="Acquirer's maximum acceptable price ($)")
+    acquirer_max_price: str = Field(default="", description="Acquirer's maximum acceptable price "
+        "($)")
     target_min_price: str = Field(default="", description="Target's minimum acceptable price ($)")
-    zone_of_possible_agreement: str = Field(default="", description="Zone of possible agreement ($ - $)")
+    zone_of_possible_agreement: str = Field(default="", description="Zone of possible agreement "
+        "($ - $)")
     likely_transaction_price: str = Field(default="", description="Likely transaction price ($)")
     premium_to_market: str = Field(default="", description="Premium to current market price (%)")
-    is_deal_feasible: bool = Field(default=False, description="Is there a zone of possible agreement?")
+    is_deal_feasible: bool = Field(default=False, description="Is there a zone of possible "
+        "agreement?")
 
 
 class AccretionDilution(BaseModel):
@@ -1180,14 +1307,17 @@ class AccretionDilution(BaseModel):
     what conditions.
     """
 
-    year_1_eps_impact: str = Field(default="", description="Year 1 EPS impact (% accretive/dilutive)")
+    year_1_eps_impact: str = Field(default="", description="Year 1 EPS impact (% "
+        "accretive/dilutive)")
     year_2_eps_impact: str = Field(default="", description="Year 2 EPS impact (%)")
     year_3_eps_impact: str = Field(default="", description="Year 3 EPS impact (%)")
     is_accretive: bool = Field(default=False, description="Is the deal accretive in year 1?")
-    accretive_conditions: list[str] = Field(default_factory=list, description="Conditions under which the deal becomes accretive")
+    accretive_conditions: list[str] = Field(default_factory=list, description="Conditions under "
+        "which the deal becomes accretive")
     pro_forma_revenue: str = Field(default="", description="Pro forma combined revenue ($)")
     pro_forma_ebitda: str = Field(default="", description="Pro forma combined EBITDA ($)")
-    deal_financing: str = Field(default="", description="Deal financing structure (cash, stock, debt)")
+    deal_financing: str = Field(default="", description="Deal financing structure (cash, stock, "
+        "debt)")
 
 
 class CulturalFit(BaseModel):
@@ -1198,14 +1328,22 @@ class CulturalFit(BaseModel):
     #1 reason M&A deals fail to deliver synergies.
     """
 
-    acquirer_culture_summary: str = Field(default="", description="Acquirer culture summary from public data")
-    target_culture_summary: str = Field(default="", description="Target culture summary from public data")
-    compatibility_score: str = Field(default="", description="Cultural compatibility score (e.g., '7/10')")
-    alignment_areas: list[str] = Field(default_factory=list, description="Areas of cultural alignment")
-    misalignment_areas: list[str] = Field(default_factory=list, description="Areas of cultural misalignment")
-    glassdoor_ratings: dict[str, str] = Field(default_factory=dict, description="Glassdoor ratings for acquirer and target")
-    integration_risk: str = Field(default="", description="Cultural integration risk level (low, medium, high)")
-    data_basis: str = Field(default="", description="What data this assessment is based on (e.g., 'Glassdoor reviews, LinkedIn pages')")
+    acquirer_culture_summary: str = Field(default="", description="Acquirer culture summary from "
+        "public data")
+    target_culture_summary: str = Field(default="", description="Target culture summary from "
+        "public data")
+    compatibility_score: str = Field(default="", description="Cultural compatibility score (e.g., "
+        "'7/10')")
+    alignment_areas: list[str] = Field(default_factory=list, description="Areas of cultural "
+        "alignment")
+    misalignment_areas: list[str] = Field(default_factory=list, description="Areas of cultural "
+        "misalignment")
+    glassdoor_ratings: dict[str, str] = Field(default_factory=dict, description="Glassdoor "
+        "ratings for acquirer and target")
+    integration_risk: str = Field(default="", description="Cultural integration risk level (low, "
+        "medium, high)")
+    data_basis: str = Field(default="", description="What data this assessment is based on (e.g., "
+        "'Glassdoor reviews, LinkedIn pages')")
 
 
 class MAAnalysis(BaseModel):
@@ -1218,15 +1356,22 @@ class MAAnalysis(BaseModel):
     is the hard part. (§4.4, Agent 12)
     """
 
-    acquisition_criteria: str = Field(default="", description="Acquisition criteria defined with Engagement Director")
-    long_list: list[AcquisitionTarget] = Field(default_factory=list, description="Long list of targets (20-50)")
-    short_list: list[AcquisitionTarget] = Field(default_factory=list, description="Short list of targets (5-10) with rationale")
-    synergy_analysis: SynergyAnalysis | None = Field(default=None, description="Synergy analysis with reality discount")
-    valuation_gap: ValuationGap | None = Field(default=None, description="Valuation gap analysis with zone of possible agreement")
+    acquisition_criteria: str = Field(default="", description="Acquisition criteria defined with "
+        "Engagement Director")
+    long_list: list[AcquisitionTarget] = Field(default_factory=list, description="Long list of "
+        "targets (20-50)")
+    short_list: list[AcquisitionTarget] = Field(default_factory=list, description="Short list of "
+        "targets (5-10) with rationale")
+    synergy_analysis: SynergyAnalysis | None = Field(default=None, description="Synergy analysis "
+        "with reality discount")
+    valuation_gap: ValuationGap | None = Field(default=None, description="Valuation gap analysis "
+        "with zone of possible agreement")
     accretion_dilution: AccretionDilution | None = Field(default=None, description="Accretion/dilution analysis (EPS impact)")
     cultural_fit: CulturalFit | None = Field(default=None, description="Cultural fit assessment")
-    integration_plan: IntegrationPlan | None = Field(default=None, description="100-day integration plan")
-    top_integration_risks: list[str] = Field(default_factory=list, description="Top integration risks")
+    integration_plan: IntegrationPlan | None = Field(default=None, description="100-day "
+        "integration plan")
+    top_integration_risks: list[str] = Field(default_factory=list, description="Top integration "
+        "risks")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -1258,10 +1403,14 @@ class TechnologyTRL(BaseModel):
 
     technology: str = Field(description="Technology name")
     trl_level: int = Field(description="TRL level 1-9 (1=basic research, 9=deployed)")
-    trl_description: str = Field(default="", description="What this TRL level means for this technology")
-    is_production_ready: bool = Field(default=False, description="Is this technology ready for production use (TRL 7+)?")
-    time_to_production: str = Field(default="", description="Estimated time to production readiness")
-    key_bottlenecks: list[str] = Field(default_factory=list, description="Key bottlenecks preventing higher TRL")
+    trl_description: str = Field(default="", description="What this TRL level means for this "
+        "technology")
+    is_production_ready: bool = Field(default=False, description="Is this technology ready for "
+        "production use (TRL 7+)?")
+    time_to_production: str = Field(default="", description="Estimated time to production "
+        "readiness")
+    key_bottlenecks: list[str] = Field(default_factory=list, description="Key bottlenecks "
+        "preventing higher TRL")
     evidence: str = Field(default="", description="Evidence supporting this TRL assessment")
 
 
@@ -1275,9 +1424,12 @@ class HypeCyclePosition(BaseModel):
 
     technology: str = Field(description="Technology name")
     phase: HypeCyclePhase = Field(description="Current hype cycle phase")
-    phase_description: str = Field(default="", description="What this phase means for this technology")
-    years_to_plateau: str = Field(default="", description="Estimated years to plateau of productivity")
-    is_overhyped: bool = Field(default=False, description="Is this technology overhyped relative to its TRL?")
+    phase_description: str = Field(default="", description="What this phase means for this "
+        "technology")
+    years_to_plateau: str = Field(default="", description="Estimated years to plateau of "
+        "productivity")
+    is_overhyped: bool = Field(default=False, description="Is this technology overhyped relative "
+        "to its TRL?")
     hype_vs_reality_gap: str = Field(default="", description="Gap between hype and reality")
 
 
@@ -1291,7 +1443,8 @@ class HorizonScanItem(BaseModel):
     horizon: str = Field(description="H1 (0-12 months), H2 (1-3 years), or H3 (3-10 years)")
     signal: str = Field(description="Signal of change")
     description: str = Field(default="", description="Description of the signal")
-    impact: str = Field(default="", description="Potential impact: low, medium, high, transformative")
+    impact: str = Field(default="", description="Potential impact: low, medium, high, "
+        "transformative")
     probability: str = Field(default="", description="Probability of materializing")
     time_horizon: str = Field(default="", description="When this signal is expected to materialize")
     recommended_action: str = Field(default="", description="Recommended action for this signal")
@@ -1315,10 +1468,13 @@ class DisruptionAnalysis(BaseModel):
 
     pattern: DisruptionPattern = Field(description="Disruption pattern identified")
     description: str = Field(default="", description="How this disruption pattern applies")
-    disrupted_companies: list[str] = Field(default_factory=list, description="Companies likely to be disrupted")
-    disrupting_companies: list[str] = Field(default_factory=list, description="Companies driving the disruption")
+    disrupted_companies: list[str] = Field(default_factory=list, description="Companies likely to "
+        "be disrupted")
+    disrupting_companies: list[str] = Field(default_factory=list, description="Companies driving "
+        "the disruption")
     disruption_timeline: str = Field(default="", description="Timeline for disruption to play out")
-    defensibility: str = Field(default="", description="Can incumbents defend against this disruption?")
+    defensibility: str = Field(default="", description="Can incumbents defend against this "
+        "disruption?")
 
 
 class FirstMoverAnalysis(BaseModel):
@@ -1332,15 +1488,23 @@ class FirstMoverAnalysis(BaseModel):
     others bear the R&D cost and learn from their mistakes.'
     """
 
-    recommendation: str = Field(default="", description="first_mover, fast_follower, or fast_second")
+    recommendation: str = Field(default="", description="first_mover, fast_follower, or "
+        "fast_second")
     rationale: str = Field(default="", description="Why this strategy is recommended")
-    network_effects: str = Field(default="", description="Strength of network effects: strong, moderate, weak, none")
-    switching_costs: str = Field(default="", description="Switching costs for customers: high, medium, low")
-    learning_curve: str = Field(default="", description="Learning curve advantage: steep, moderate, flat")
-    patent_protection: str = Field(default="", description="Patent protection strength: strong, moderate, weak, none")
-    brand_advantage: str = Field(default="", description="Brand advantage for first mover: strong, moderate, weak")
-    first_mover_examples: list[str] = Field(default_factory=list, description="Examples of first movers in this space and their outcomes")
-    fast_follower_examples: list[str] = Field(default_factory=list, description="Examples of fast followers and their outcomes")
+    network_effects: str = Field(default="", description="Strength of network effects: strong, "
+        "moderate, weak, none")
+    switching_costs: str = Field(default="", description="Switching costs for customers: high, "
+        "medium, low")
+    learning_curve: str = Field(default="", description="Learning curve advantage: steep, "
+        "moderate, flat")
+    patent_protection: str = Field(default="", description="Patent protection strength: strong, "
+        "moderate, weak, none")
+    brand_advantage: str = Field(default="", description="Brand advantage for first mover: "
+        "strong, moderate, weak")
+    first_mover_examples: list[str] = Field(default_factory=list, description="Examples of first "
+        "movers in this space and their outcomes")
+    fast_follower_examples: list[str] = Field(default_factory=list, description="Examples of fast "
+        "followers and their outcomes")
 
 
 class InnovationPortfolioItem(BaseModel):
@@ -1361,12 +1525,15 @@ class InnovationPortfolio(BaseModel):
     Identifies if the portfolio is balanced or over-invested in one horizon.
     """
 
-    items: list[InnovationPortfolioItem] = Field(default_factory=list, description="Innovation initiatives")
+    items: list[InnovationPortfolioItem] = Field(default_factory=list, description="Innovation "
+        "initiatives")
     h1_count: int = Field(default=0, description="Number of H1 (current) initiatives")
     h2_count: int = Field(default=0, description="Number of H2 (emerging) initiatives")
     h3_count: int = Field(default=0, description="Number of H3 (future) initiatives")
-    is_balanced: bool = Field(default=False, description="Is the portfolio balanced across horizons?")
-    imbalance_description: str = Field(default="", description="If unbalanced, what's the imbalance?")
+    is_balanced: bool = Field(default=False, description="Is the portfolio balanced across "
+        "horizons?")
+    imbalance_description: str = Field(default="", description="If unbalanced, what's the "
+        "imbalance?")
     recommendation: str = Field(default="", description="Portfolio rebalancing recommendation")
 
 
@@ -1382,15 +1549,20 @@ class InnovationAnalysis(BaseModel):
     (§4.4, Agent 13)
     """
 
-    trl_assessments: list[TechnologyTRL] = Field(default_factory=list, description="TRL assessments for each technology")
+    trl_assessments: list[TechnologyTRL] = Field(default_factory=list, description="TRL "
+        "assessments for each technology")
     hype_cycle_positions: list[HypeCyclePosition] = Field(default_factory=list, description="Gartner hype cycle positioning for each technology")
-    horizon_scan: list[HorizonScanItem] = Field(default_factory=list, description="Horizon scan signals across H1/H2/H3")
-    disruption_analysis: DisruptionAnalysis | None = Field(default=None, description="Disruption pattern analysis")
+    horizon_scan: list[HorizonScanItem] = Field(default_factory=list, description="Horizon scan "
+        "signals across H1/H2/H3")
+    disruption_analysis: DisruptionAnalysis | None = Field(default=None, description="Disruption "
+        "pattern analysis")
     first_mover_analysis: FirstMoverAnalysis | None = Field(default=None, description="First-mover vs. fast-follower analysis")
     innovation_portfolio: InnovationPortfolio | None = Field(default=None, description="Innovation portfolio assessment")
-    key_emerging_technologies: list[str] = Field(default_factory=list, description="Key emerging technologies identified")
+    key_emerging_technologies: list[str] = Field(default_factory=list, description="Key emerging "
+        "technologies identified")
     technologies_ready_for_production: list[str] = Field(default_factory=list, description="Technologies at TRL 7+ ready for production")
-    technologies_overhyped: list[str] = Field(default_factory=list, description="Technologies that are overhyped relative to TRL")
+    technologies_overhyped: list[str] = Field(default_factory=list, description="Technologies "
+        "that are overhyped relative to TRL")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -1418,17 +1590,24 @@ class PorterFiveForces(BaseModel):
     """
 
     threat_of_new_entrants: ForceStrength = Field(default=ForceStrength.MODERATE, description="Barriers to entry assessment")
-    new_entrants_rationale: str = Field(default="", description="Why this strength — specific barriers or lack thereof")
+    new_entrants_rationale: str = Field(default="", description="Why this strength — specific "
+        "barriers or lack thereof")
     bargaining_power_suppliers: ForceStrength = Field(default=ForceStrength.MODERATE, description="Supplier power assessment")
-    suppliers_rationale: str = Field(default="", description="Why this strength — supplier concentration, switching costs")
+    suppliers_rationale: str = Field(default="", description="Why this strength — supplier "
+        "concentration, switching costs")
     bargaining_power_buyers: ForceStrength = Field(default=ForceStrength.MODERATE, description="Buyer power assessment")
-    buyers_rationale: str = Field(default="", description="Why this strength — buyer concentration, price sensitivity")
+    buyers_rationale: str = Field(default="", description="Why this strength — buyer "
+        "concentration, price sensitivity")
     threat_of_substitutes: ForceStrength = Field(default=ForceStrength.MODERATE, description="Substitute threat assessment")
-    substitutes_rationale: str = Field(default="", description="Why this strength — alternative products/services")
+    substitutes_rationale: str = Field(default="", description="Why this strength — alternative "
+        "products/services")
     competitive_rivalry: ForceStrength = Field(default=ForceStrength.MODERATE, description="Rivalry intensity assessment")
-    rivalry_rationale: str = Field(default="", description="Why this strength — competitor count, growth rate, differentiation")
-    overall_attractiveness: str = Field(default="", description="Overall industry attractiveness summary")
-    frameworks_used: list[str] = Field(default_factory=list, description="Which frameworks were selected and why")
+    rivalry_rationale: str = Field(default="", description="Why this strength — competitor count, "
+        "growth rate, differentiation")
+    overall_attractiveness: str = Field(default="", description="Overall industry attractiveness "
+        "summary")
+    frameworks_used: list[str] = Field(default_factory=list, description="Which frameworks were "
+        "selected and why")
 
 
 class BCGCategory(str, Enum):
@@ -1446,8 +1625,10 @@ class BCGUnit(BaseModel):
     unit_name: str = Field(description="Business unit or product name")
     category: BCGCategory = Field(description="BCG category: star, cash_cow, question_mark, or dog")
     market_growth_rate: str = Field(default="", description="Market growth rate (%)")
-    relative_market_share: str = Field(default="", description="Relative market share vs. leading competitor")
-    recommendation: str = Field(default="", description="Resource allocation recommendation: invest, harvest, divest, hold")
+    relative_market_share: str = Field(default="", description="Relative market share vs. leading "
+        "competitor")
+    recommendation: str = Field(default="", description="Resource allocation recommendation: "
+        "invest, harvest, divest, hold")
 
 
 class BCGMatrix(BaseModel):
@@ -1457,12 +1638,15 @@ class BCGMatrix(BaseModel):
     Identifies resource allocation recommendations for each unit.
     """
 
-    units: list[BCGUnit] = Field(default_factory=list, description="Business units plotted on the matrix")
+    units: list[BCGUnit] = Field(default_factory=list, description="Business units plotted on the "
+        "matrix")
     stars: list[str] = Field(default_factory=list, description="Star units (invest)")
     cash_cows: list[str] = Field(default_factory=list, description="Cash cow units (harvest)")
-    question_marks: list[str] = Field(default_factory=list, description="Question mark units (invest selectively)")
+    question_marks: list[str] = Field(default_factory=list, description="Question mark units "
+        "(invest selectively)")
     dogs: list[str] = Field(default_factory=list, description="Dog units (divest)")
-    portfolio_balance: str = Field(default="", description="Is the portfolio balanced across categories?")
+    portfolio_balance: str = Field(default="", description="Is the portfolio balanced across "
+        "categories?")
 
 
 class SWOTItem(BaseModel):
@@ -1497,10 +1681,13 @@ class SWOTTOWS(BaseModel):
 
     strengths: list[SWOTItem] = Field(default_factory=list, description="Internal strengths")
     weaknesses: list[SWOTItem] = Field(default_factory=list, description="Internal weaknesses")
-    opportunities: list[SWOTItem] = Field(default_factory=list, description="External opportunities")
+    opportunities: list[SWOTItem] = Field(default_factory=list, description="External "
+        "opportunities")
     threats: list[SWOTItem] = Field(default_factory=list, description="External threats")
-    tows_strategies: list[TOWSStrategy] = Field(default_factory=list, description="TOWS matrix strategies (SO, WO, ST, WT)")
-    note: str = Field(default="SWOT is a snapshot, not a strategy. TOWS converts it to strategic options.", description="Critical distinction note")
+    tows_strategies: list[TOWSStrategy] = Field(default_factory=list, description="TOWS matrix "
+        "strategies (SO, WO, ST, WT)")
+    note: str = Field(default="SWOT is a snapshot, not a strategy. TOWS converts it to strategic "
+        "options.", description="Critical distinction note")
 
 
 class BlueOceanStrategy(BaseModel):
@@ -1525,13 +1712,19 @@ class BlueOceanStrategy(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    eliminate: list[str] = Field(default_factory=list, description="What factors should be eliminated that the industry takes for granted?")
-    reduce: list[str] = Field(default_factory=list, description="What factors should be reduced well below the industry standard?")
+    eliminate: list[str] = Field(default_factory=list, description="What factors should be "
+        "eliminated that the industry takes for granted?")
+    reduce: list[str] = Field(default_factory=list, description="What factors should be reduced "
+        "well below the industry standard?")
     raise_factors: list[str] = Field(default_factory=list, validation_alias=AliasChoices("raise", "raise_factors"), description="What factors should be raised well above the industry standard?")
-    create: list[str] = Field(default_factory=list, description="What factors should be created that the industry has never offered?")
-    strategy_canvas: list[dict[str, str]] = Field(default_factory=list, description="Strategy canvas comparing company to competitors on key factors")
-    is_blue_ocean_feasible: bool = Field(default=False, description="Is Blue Ocean strategy feasible for this company?")
-    new_market_space: str = Field(default="", description="Description of the uncontested market space")
+    create: list[str] = Field(default_factory=list, description="What factors should be created "
+        "that the industry has never offered?")
+    strategy_canvas: list[dict[str, str]] = Field(default_factory=list, description="Strategy "
+        "canvas comparing company to competitors on key factors")
+    is_blue_ocean_feasible: bool = Field(default=False, description="Is Blue Ocean strategy "
+        "feasible for this company?")
+    new_market_space: str = Field(default="", description="Description of the uncontested market "
+        "space")
 
 
 class VRIOResult(BaseModel):
@@ -1542,12 +1735,17 @@ class VRIOResult(BaseModel):
     """
 
     resource: str = Field(description="Resource or capability name")
-    is_valuable: bool = Field(default=False, description="Does it enable the firm to exploit opportunities or neutralize threats?")
+    is_valuable: bool = Field(default=False, description="Does it enable the firm to exploit "
+        "opportunities or neutralize threats?")
     is_rare: bool = Field(default=False, description="Is it controlled by only a few firms?")
-    is_inimitable: bool = Field(default=False, description="Is it costly for other firms to imitate?")
-    is_organized: bool = Field(default=False, description="Is the firm organized to exploit this resource?")
-    competitive_implication: str = Field(default="", description="Competitive disadvantage, parity, temporary advantage, or sustained advantage")
-    description: str = Field(default="", description="Description of the resource and its strategic value")
+    is_inimitable: bool = Field(default=False, description="Is it costly for other firms to "
+        "imitate?")
+    is_organized: bool = Field(default=False, description="Is the firm organized to exploit this "
+        "resource?")
+    competitive_implication: str = Field(default="", description="Competitive disadvantage, "
+        "parity, temporary advantage, or sustained advantage")
+    description: str = Field(default="", description="Description of the resource and its "
+        "strategic value")
 
 
 class VRIOAssessment(BaseModel):
@@ -1558,11 +1756,16 @@ class VRIOAssessment(BaseModel):
     advantage.
     """
 
-    resources: list[VRIOResult] = Field(default_factory=list, description="VRIO assessment for each resource/capability")
-    sustained_advantages: list[str] = Field(default_factory=list, description="Resources providing sustained competitive advantage")
-    temporary_advantages: list[str] = Field(default_factory=list, description="Resources providing temporary competitive advantage")
-    competitive_parity: list[str] = Field(default_factory=list, description="Resources at competitive parity")
-    competitive_disadvantage: list[str] = Field(default_factory=list, description="Resources at competitive disadvantage")
+    resources: list[VRIOResult] = Field(default_factory=list, description="VRIO assessment for "
+        "each resource/capability")
+    sustained_advantages: list[str] = Field(default_factory=list, description="Resources "
+        "providing sustained competitive advantage")
+    temporary_advantages: list[str] = Field(default_factory=list, description="Resources "
+        "providing temporary competitive advantage")
+    competitive_parity: list[str] = Field(default_factory=list, description="Resources at "
+        "competitive parity")
+    competitive_disadvantage: list[str] = Field(default_factory=list, description="Resources at "
+        "competitive disadvantage")
 
 
 class CoreCompetence(BaseModel):
@@ -1573,12 +1776,18 @@ class CoreCompetence(BaseModel):
     transferable.
     """
 
-    competencies: list[str] = Field(default_factory=list, description="2-3 core competencies identified")
-    competency_descriptions: list[str] = Field(default_factory=list, description="Description of each competency")
-    is_defensible: bool = Field(default=False, description="Are these competencies defensible against competitors?")
-    is_transferable: bool = Field(default=False, description="Are these competencies transferable to new markets/products?")
-    defensibility_assessment: str = Field(default="", description="How defensible are these competencies?")
-    transferability_assessment: str = Field(default="", description="How transferable are these competencies?")
+    competencies: list[str] = Field(default_factory=list, description="2-3 core competencies "
+        "identified")
+    competency_descriptions: list[str] = Field(default_factory=list, description="Description of "
+        "each competency")
+    is_defensible: bool = Field(default=False, description="Are these competencies defensible "
+        "against competitors?")
+    is_transferable: bool = Field(default=False, description="Are these competencies transferable "
+        "to new markets/products?")
+    defensibility_assessment: str = Field(default="", description="How defensible are these "
+        "competencies?")
+    transferability_assessment: str = Field(default="", description="How transferable are these "
+        "competencies?")
 
 
 class StrategicOption(BaseModel):
@@ -1594,7 +1803,8 @@ class StrategicOption(BaseModel):
     impact: str = Field(default="", description="Impact score: high, medium, low")
     risk: str = Field(default="", description="Risk level: high, medium, low")
     time_to_value: str = Field(default="", description="Time to value: 0-6mo, 6-12mo, 1-2yr, 2-5yr")
-    resource_requirements: str = Field(default="", description="Resource requirements: high, medium, low")
+    resource_requirements: str = Field(default="", description="Resource requirements: high, "
+        "medium, low")
     overall_score: str = Field(default="", description="Overall score or ranking")
     recommendation: str = Field(default="", description="Recommendation: pursue, explore, reject")
 
@@ -1606,7 +1816,8 @@ class StrategicOptionGrid(BaseModel):
     risk, time to value, and resource requirements.
     """
 
-    options: list[StrategicOption] = Field(default_factory=list, description="3-5 strategic options")
+    options: list[StrategicOption] = Field(default_factory=list, description="3-5 strategic "
+        "options")
     recommended_option: str = Field(default="", description="The recommended option")
     rationale: str = Field(default="", description="Why this option is recommended")
 
@@ -1621,10 +1832,13 @@ class GameTheoryAnalysis(BaseModel):
     is to maintain prices, but the temptation to defect is high.'
     """
 
-    game_type: str = Field(default="", description="Game type: prisoner's_dilemma, sequential, signaling, chicken, stag_hunt")
+    game_type: str = Field(default="", description="Game type: prisoner's_dilemma, sequential, "
+        "signaling, chicken, stag_hunt")
     players: list[str] = Field(default_factory=list, description="Key players in the game")
-    strategies: list[str] = Field(default_factory=list, description="Available strategies for each player")
-    payoff_matrix: list[dict[str, str]] = Field(default_factory=list, description="Payoff matrix for the game")
+    strategies: list[str] = Field(default_factory=list, description="Available strategies for "
+        "each player")
+    payoff_matrix: list[dict[str, str]] = Field(default_factory=list, description="Payoff matrix "
+        "for the game")
     dominant_strategy: str = Field(default="", description="Dominant strategy if one exists")
     nash_equilibrium: str = Field(default="", description="Nash equilibrium description")
     implications: str = Field(default="", description="Strategic implications for the company")
@@ -1642,17 +1856,25 @@ class StrategyAnalysis(BaseModel):
     chose that framework over the alternatives. (§4.4, Agent 14)
     """
 
-    frameworks_selected: list[str] = Field(default_factory=list, description="Frameworks selected for this question and why")
-    frameworks_not_selected: list[str] = Field(default_factory=list, description="Frameworks not selected and why not")
-    porter_five_forces: PorterFiveForces | None = Field(default=None, description="Porter's Five Forces analysis")
+    frameworks_selected: list[str] = Field(default_factory=list, description="Frameworks selected "
+        "for this question and why")
+    frameworks_not_selected: list[str] = Field(default_factory=list, description="Frameworks not "
+        "selected and why not")
+    porter_five_forces: PorterFiveForces | None = Field(default=None, description="Porter's Five "
+        "Forces analysis")
     bcg_matrix: BCGMatrix | None = Field(default=None, description="BCG growth-share matrix")
     swot_tows: SWOTTOWS | None = Field(default=None, description="SWOT with TOWS matrix conversion")
-    blue_ocean: BlueOceanStrategy | None = Field(default=None, description="Blue Ocean strategy analysis")
-    vrio_assessment: VRIOAssessment | None = Field(default=None, description="VRIO framework assessment")
-    core_competence: CoreCompetence | None = Field(default=None, description="Core competence analysis")
+    blue_ocean: BlueOceanStrategy | None = Field(default=None, description="Blue Ocean strategy "
+        "analysis")
+    vrio_assessment: VRIOAssessment | None = Field(default=None, description="VRIO framework "
+        "assessment")
+    core_competence: CoreCompetence | None = Field(default=None, description="Core competence "
+        "analysis")
     strategic_option_grid: StrategicOptionGrid | None = Field(default=None, description="Strategic option grid with 3-5 scored options")
-    game_theory: GameTheoryAnalysis | None = Field(default=None, description="Game theory analysis of competitive dynamics")
-    recommended_strategy: str = Field(default="", description="The recommended strategy based on the analysis")
+    game_theory: GameTheoryAnalysis | None = Field(default=None, description="Game theory "
+        "analysis of competitive dynamics")
+    recommended_strategy: str = Field(default="", description="The recommended strategy based on "
+        "the analysis")
     confidence: ConfidenceLevel
     sources: list[Source] = Field(default_factory=list)
 
@@ -1673,9 +1895,11 @@ class PriorResearchLink(BaseModel):
     engagement_id: str = Field(description="Prior engagement ID")
     topic: str = Field(description="Topic that was researched")
     note_path: str = Field(description="Path to the vault note")
-    relevance_score: float = Field(default=0.0, description="Relevance score (0-1) from keyword matching")
+    relevance_score: float = Field(default=0.0, description="Relevance score (0-1) from keyword "
+        "matching")
     summary: str = Field(default="", description="Summary of the prior research")
-    agents_used: list[str] = Field(default_factory=list, description="Which agents were used in the prior engagement")
+    agents_used: list[str] = Field(default_factory=list, description="Which agents were used in "
+        "the prior engagement")
 
 
 class SourceCollection(BaseModel):
@@ -1691,17 +1915,24 @@ class SourceCollection(BaseModel):
     time by accumulating knowledge in the vault.
     """
 
-    sources: list[Source] = Field(default_factory=list, description="Deduplicated sources with credibility scores")
-    total_sources_before_dedup: int = Field(default=0, description="Total sources before deduplication")
-    total_sources_after_dedup: int = Field(default=0, description="Total unique sources after deduplication")
+    sources: list[Source] = Field(default_factory=list, description="Deduplicated sources with "
+        "credibility scores")
+    total_sources_before_dedup: int = Field(default=0, description="Total sources before "
+        "deduplication")
+    total_sources_after_dedup: int = Field(default=0, description="Total unique sources after "
+        "deduplication")
     duplicates_removed: int = Field(default=0, description="Number of duplicate sources removed")
-    low_credibility_sources: list[Source] = Field(default_factory=list, description="Sources flagged as low credibility (blog, social media)")
+    low_credibility_sources: list[Source] = Field(default_factory=list, description="Sources "
+        "flagged as low credibility (blog, social media)")
     prior_research_links: list[PriorResearchLink] = Field(default_factory=list, description="Links to prior engagement research from the vault")
-    citations_formatted: list[str] = Field(default_factory=list, description="Footnote-style formatted citations for the final report")
-    vault_note_saved: bool = Field(default=False, description="Whether engagement findings were saved to vault")
+    citations_formatted: list[str] = Field(default_factory=list, description="Footnote-style "
+        "formatted citations for the final report")
+    vault_note_saved: bool = Field(default=False, description="Whether engagement findings were "
+        "saved to vault")
     vault_note_path: str = Field(default="", description="Path to the saved vault note")
     confidence: ConfidenceLevel = Field(default=ConfidenceLevel.MEDIUM)
-    sources_by_credibility: dict[str, int] = Field(default_factory=dict, description="Count of sources per credibility tier")
+    sources_by_credibility: dict[str, int] = Field(default_factory=dict, description="Count of "
+        "sources per credibility tier")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1742,14 +1973,21 @@ class Claim(BaseModel):
     id: str = Field(description="Claim identifier")
     agent: str = Field(description="Which agent made the claim")
     claim: str = Field(description="The factual claim text")
-    claim_type: ClaimType = Field(default=ClaimType.NUMBER, description="Type of claim for targeted verification")
+    claim_type: ClaimType = Field(default=ClaimType.NUMBER, description="Type of claim for "
+        "targeted verification")
     status: ClaimStatus = Field(description="Verification status")
-    verification_sources: list[Source] = Field(default_factory=list, description="Sources used to verify")
-    contradiction_with: str | None = Field(default=None, description="ID of contradicting claim if any")
-    evidence_chain_valid: bool = Field(default=True, description="Whether claim → source → original data chain is intact")
-    evidence_chain_break: str | None = Field(default=None, description="Where the chain breaks if invalid")
-    credibility_weighted_score: float = Field(default=0.0, description="Verification score weighted by source credibility (0-1)")
-    is_hallucinated_citation: bool = Field(default=False, description="True if the cited source doesn't exist or doesn't contain the data")
+    verification_sources: list[Source] = Field(default_factory=list, description="Sources used to "
+        "verify")
+    contradiction_with: str | None = Field(default=None, description="ID of contradicting claim "
+        "if any")
+    evidence_chain_valid: bool = Field(default=True, description="Whether claim → source → "
+        "original data chain is intact")
+    evidence_chain_break: str | None = Field(default=None, description="Where the chain breaks if "
+        "invalid")
+    credibility_weighted_score: float = Field(default=0.0, description="Verification score "
+        "weighted by source credibility (0-1)")
+    is_hallucinated_citation: bool = Field(default=False, description="True if the cited source "
+        "doesn't exist or doesn't contain the data")
     verification_notes: str = Field(default="", description="Notes on the verification process")
 
 
@@ -1767,15 +2005,22 @@ class FactCheckReport(BaseModel):
     plausible_count: int = Field(default=0, description="Number of PLAUSIBLE claims")
     unverified_count: int = Field(default=0, description="Number of UNVERIFIED claims")
     contradicted_count: int = Field(default=0, description="Number of CONTRADICTED claims")
-    contradictions: list[Contradiction] = Field(default_factory=list, description="Inter-agent contradictions")
-    hallucinated_citations: list[Claim] = Field(default_factory=list, description="Claims with fake sources")
-    hallucinated_citation_count: int = Field(default=0, description="Total hallucinated citations found")
-    statistical_red_flags: list[str] = Field(default_factory=list, description="Statistical sanity check issues: too round numbers, implausible growth rates, market sizes that don't reconcile")
-    evidence_chain_breaks: list[Claim] = Field(default_factory=list, description="Claims where the evidence chain (claim → source → original data) is broken")
+    contradictions: list[Contradiction] = Field(default_factory=list, description="Inter-agent "
+        "contradictions")
+    hallucinated_citations: list[Claim] = Field(default_factory=list, description="Claims with "
+        "fake sources")
+    hallucinated_citation_count: int = Field(default=0, description="Total hallucinated citations "
+        "found")
+    statistical_red_flags: list[str] = Field(default_factory=list, description="Statistical "
+        "sanity check issues: too round numbers, implausible growth rates, market sizes that don't reconcile")
+    evidence_chain_breaks: list[Claim] = Field(default_factory=list, description="Claims where "
+        "the evidence chain (claim → source → original data) is broken")
     evidence_chain_break_count: int = Field(default=0, description="Total evidence chain breaks")
     total_claims_checked: int = Field(default=0, description="Total claims extracted and checked")
-    verification_rate: float = Field(default=0.0, description="Percentage of claims verified (verified + plausible / total)")
-    confidence: ConfidenceLevel = Field(default=ConfidenceLevel.MEDIUM, description="Confidence in the fact-check process")
+    verification_rate: float = Field(default=0.0, description="Percentage of claims verified "
+        "(verified + plausible / total)")
+    confidence: ConfidenceLevel = Field(default=ConfidenceLevel.MEDIUM, description="Confidence "
+        "in the fact-check process")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1844,7 +2089,8 @@ class ChartDataSeries(BaseModel):
     name: str = Field(description="Series name (e.g., 'Revenue', 'Market Share')")
     values: list[float | str] = Field(default_factory=list, description="Data values")
     labels: list[str] = Field(default_factory=list, description="Category labels for the values")
-    color: str | None = Field(default=None, description="Hex color override (otherwise uses CHART_COLORS sequence)")
+    color: str | None = Field(default=None, description="Hex color override (otherwise uses "
+        "CHART_COLORS sequence)")
 
 
 class ChartAnnotation(BaseModel):
@@ -1854,7 +2100,8 @@ class ChartAnnotation(BaseModel):
     benchmark lines, callout boxes, trend lines.
     """
 
-    annotation_type: str = Field(description="Type: 'benchmark_line', 'callout', 'trend_line', 'shaded_region'")
+    annotation_type: str = Field(description="Type: 'benchmark_line', 'callout', 'trend_line', "
+        "'shaded_region'")
     text: str = Field(description="Annotation text")
     x: float | None = Field(default=None, description="X position (if applicable)")
     y: float | None = Field(default=None, description="Y position (if applicable)")
@@ -1876,12 +2123,16 @@ class ChartSpecification(BaseModel):
     title: str = Field(description="Chart title")
     section: str = Field(default="", description="Which report section this chart belongs to")
     chart_type: ChartType = Field(description="Selected chart type based on data shape")
-    data_series: list[ChartDataSeries] = Field(default_factory=list, description="Data series to plot")
+    data_series: list[ChartDataSeries] = Field(default_factory=list, description="Data series to "
+        "plot")
     x_axis_label: str = Field(default="", description="X-axis label")
     y_axis_label: str = Field(default="", description="Y-axis label")
-    x_axis_range: tuple[float, float] | None = Field(default=None, description="X-axis range (for honest axis calibration)")
-    y_axis_range: tuple[float, float] | None = Field(default=None, description="Y-axis range (no truncated axes)")
-    annotations: list[ChartAnnotation] = Field(default_factory=list, description="Contextual annotations")
+    x_axis_range: tuple[float, float] | None = Field(default=None, description="X-axis range (for "
+        "honest axis calibration)")
+    y_axis_range: tuple[float, float] | None = Field(default=None, description="Y-axis range (no "
+        "truncated axes)")
+    annotations: list[ChartAnnotation] = Field(default_factory=list, description="Contextual "
+        "annotations")
     source_citation: str = Field(default="", description="Data source citation for the chart")
     caption: str = Field(default="", description="Chart caption (below chart)")
     # Fix 3.7: the methodology note that prints ABOVE the source line, matching
@@ -1894,12 +2145,15 @@ class ChartSpecification(BaseModel):
     # misleading as an invented source.
     note: str = Field(default="", description="Methodology note shown above the source line")
     image_path: str = Field(default="", description="Path to the generated PNG (300 DPI)")
-    thumbnail_path: str = Field(default="", description="Path to a thumbnail version for TUI display")
+    thumbnail_path: str = Field(default="", description="Path to a thumbnail version for TUI "
+        "display")
     dpi: int = Field(default=300, description="Export DPI (always 300)")
     width_px: int = Field(default=1200, description="Chart width in pixels")
     height_px: int = Field(default=800, description="Chart height in pixels")
-    tufte_compliant: bool = Field(default=True, description="Whether chart follows Tufte principles (no chartjunk, no 3D, no gradients)")
-    unsplash_image_path: str = Field(default="", description="Path to complementary Unsplash image (if requested)")
+    tufte_compliant: bool = Field(default=True, description="Whether chart follows Tufte "
+        "principles (no chartjunk, no 3D, no gradients)")
+    unsplash_image_path: str = Field(default="", description="Path to complementary Unsplash "
+        "image (if requested)")
     unsplash_caption: str = Field(default="", description="Caption for the Unsplash image")
 
 
@@ -1918,13 +2172,17 @@ class VisualizationOutput(BaseModel):
     always chooses the chart type that best reveals the insight.
     """
 
-    charts: list[ChartSpecification] = Field(default_factory=list, description="All generated charts with image paths")
+    charts: list[ChartSpecification] = Field(default_factory=list, description="All generated "
+        "charts with image paths")
     total_charts: int = Field(default=0, description="Total charts generated")
     total_images: int = Field(default=0, description="Total Unsplash images sourced")
-    chart_types_used: list[str] = Field(default_factory=list, description="Chart types used in this engagement")
+    chart_types_used: list[str] = Field(default_factory=list, description="Chart types used in "
+        "this engagement")
     all_300_dpi: bool = Field(default=True, description="Whether all charts are 300 DPI")
-    all_brand_compliant: bool = Field(default=True, description="Whether all charts use brand color sequence")
-    all_tufte_compliant: bool = Field(default=True, description="Whether all charts follow Tufte principles")
+    all_brand_compliant: bool = Field(default=True, description="Whether all charts use brand "
+        "color sequence")
+    all_tufte_compliant: bool = Field(default=True, description="Whether all charts follow Tufte "
+        "principles")
     confidence: ConfidenceLevel = Field(default=ConfidenceLevel.MEDIUM)
 
 
@@ -1984,7 +2242,8 @@ class QualityDimension(BaseModel):
     weight: float = Field(description="Weight in total score (from DIMENSION_WEIGHTS)")
     feedback: str = Field(description="Specific, actionable feedback — not just 'good' or 'bad'")
     fix_instructions: str | None = Field(default=None, description="What to fix if score < 4")
-    critical: bool = Field(default=False, description="True if score < 3 — forces iteration regardless of total")
+    critical: bool = Field(default=False, description="True if score < 3 — forces iteration "
+        "regardless of total")
 
 
 class QualityScore(BaseModel):
@@ -2002,13 +2261,18 @@ class QualityScore(BaseModel):
     dimensions: list[QualityDimension] = Field(description="All 10 dimension scores with feedback")
     total_score: float = Field(ge=0, le=5, description="Weighted total score across all dimensions")
     threshold: float = Field(default=4.0, description="Approval threshold (default 4.0/5.0)")
-    approved: bool = Field(description="True if total_score >= threshold AND no critical dimensions")
+    approved: bool = Field(description="True if total_score >= threshold AND no critical "
+        "dimensions")
     iteration: int = Field(ge=1, description="Which iteration this is (max 3)")
-    gaps: list[str] = Field(default_factory=list, description="Specific gaps identified — questions unanswered, data missing")
+    gaps: list[str] = Field(default_factory=list, description="Specific gaps identified — "
+        "questions unanswered, data missing")
     critical_dimensions: list[QualityDimensionName] = Field(default_factory=list, description="Dimensions scoring < 3 — forces iteration")
-    max_iterations_reached: bool = Field(default=False, description="True if 3 iterations done without pass")
-    escalation_report: str | None = Field(default=None, description="Detailed escalation report if max iterations reached without pass")
-    fix_priority: list[str] = Field(default_factory=list, description="Ordered list of fixes to apply, highest impact first")
+    max_iterations_reached: bool = Field(default=False, description="True if 3 iterations done "
+        "without pass")
+    escalation_report: str | None = Field(default=None, description="Detailed escalation report "
+        "if max iterations reached without pass")
+    fix_priority: list[str] = Field(default_factory=list, description="Ordered list of fixes to "
+        "apply, highest impact first")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2047,29 +2311,36 @@ class FinalReport(BaseModel):
     engagement_id: str = Field(description="Unique engagement identifier")
     question: str = Field(description="The original business question")
     recommendation: Recommendation = Field(description="The final recommendation")
-    recommendation_rationale: str = Field(description="Why — the evidence chain supporting the recommendation")
-    critical_assumptions: list[str] = Field(description="Assumptions that would flip the recommendation if wrong")
+    recommendation_rationale: str = Field(description="Why — the evidence chain supporting the "
+        "recommendation")
+    critical_assumptions: list[str] = Field(description="Assumptions that would flip the "
+        "recommendation if wrong")
     confidence: ConfidenceLevel = Field(description="System-level confidence")
     confidence_breakdown: dict[str, ConfidenceLevel] = Field(
         description="Per-domain confidence (market=HIGH, regulatory=LOW, etc.)"
     )
 
     # Executive summary (§6.1) — the page the CEO reads, must stand alone
-    executive_summary: str = Field(description="The recommendation + key findings + critical risks, standalone")
-    key_findings: list[KeyFinding] = Field(default_factory=list, description="3-5 key findings for exec summary")
+    executive_summary: str = Field(description="The recommendation + key findings + critical "
+        "risks, standalone")
+    key_findings: list[KeyFinding] = Field(default_factory=list, description="3-5 key findings "
+        "for exec summary")
 
     # Analysis sections (§6.1) — each 3-8 pages, self-contained
-    sections: list[AnalysisSection] = Field(default_factory=list, description="Specialist analysis sections")
+    sections: list[AnalysisSection] = Field(default_factory=list, description="Specialist "
+        "analysis sections")
 
     # Risk analysis (§6.1) — 2-3 pages
     risk_analysis: RiskAnalysis | None = Field(default=None, description="Risk section")
 
     # Reconciliation artifacts
-    contradictions: list[Contradiction] = Field(default_factory=list, description="All contradictions and resolutions")
+    contradictions: list[Contradiction] = Field(default_factory=list, description="All "
+        "contradictions and resolutions")
 
     # Quality and fact-check
     quality_score: QualityScore | None = Field(default=None, description="Quality Gate score")
-    fact_check_report: FactCheckReport | None = Field(default=None, description="Fact Checker report")
+    fact_check_report: FactCheckReport | None = Field(default=None, description="Fact Checker "
+        "report")
 
     # Chart specifications for the Data Visualizer (§4.5, Agent 17).
     #
@@ -2128,8 +2399,10 @@ class ImageSelection(BaseModel):
     photographer: str = Field(default="", description="Photographer name for attribution")
     unsplash_id: str = Field(default="", description="Unsplash photo ID")
     caption: str = Field(default="", description="Caption with source attribution")
-    placement: str = Field(default="right", description="Placement: 'full_bleed' (cover), 'right' (section), 'inline'")
-    width_percent: int = Field(default=40, description="Width as percentage of page (40% for sections, 100% for cover)")
+    placement: str = Field(default="right", description="Placement: 'full_bleed' (cover), 'right' "
+        "(section), 'inline'")
+    width_percent: int = Field(default=40, description="Width as percentage of page (40% for "
+        "sections, 100% for cover)")
     page_number: int = Field(default=0, description="Which page this image appears on")
 
 
@@ -2154,7 +2427,8 @@ class ChartPlacement(BaseModel):
     # note is as misleading as an invented source.
     note: str = Field(default="", description="Methodology note shown above the source line")
     width_percent: int = Field(default=80, description="Width as percentage of page")
-    placement: str = Field(default="center", description="Placement on page: 'center', 'left', 'right'")
+    placement: str = Field(default="center", description="Placement on page: 'center', 'left', "
+        "'right'")
 
 
 class PageLayout(BaseModel):
@@ -2168,13 +2442,17 @@ class PageLayout(BaseModel):
     page_type: PageType = Field(description="What type of page this is")
     section_id: str = Field(default="", description="Which section (if applicable)")
     title: str = Field(default="", description="Page title (Instrument Serif)")
-    content_blocks: list[str] = Field(default_factory=list, description="Ordered content blocks on this page")
+    content_blocks: list[str] = Field(default_factory=list, description="Ordered content blocks "
+        "on this page")
     images: list[ImageSelection] = Field(default_factory=list, description="Images on this page")
     charts: list[ChartPlacement] = Field(default_factory=list, description="Charts on this page")
-    has_key_insight_box: bool = Field(default=False, description="Whether this page has a key insight box")
-    has_implication_box: bool = Field(default=False, description="Whether this page has a 'so what?' implication box")
+    has_key_insight_box: bool = Field(default=False, description="Whether this page has a key "
+        "insight box")
+    has_implication_box: bool = Field(default=False, description="Whether this page has a 'so "
+        "what?' implication box")
     is_full_bleed: bool = Field(default=False, description="True for cover page (full-bleed image)")
-    page_break_before: bool = Field(default=False, description="Whether to force a page break before this page")
+    page_break_before: bool = Field(default=False, description="Whether to force a page break "
+        "before this page")
 
 
 class LayoutPlan(BaseModel):
@@ -2195,13 +2473,17 @@ class LayoutPlan(BaseModel):
     pages: list[PageLayout] = Field(default_factory=list, description="Page-by-page layout")
     # Fix 4.2: was "15-40 for standard engagement" — a restatement of the wide
     # window that made the page-count check meaningless. The contract is 15-22.
-    total_pages: int = Field(default=0, description="Total page count (15-22 for standard engagement)")
+    total_pages: int = Field(default=0, description="Total page count (15-22 for standard "
+        "engagement)")
     cover_image: ImageSelection | None = Field(default=None, description="Cover page image")
-    section_images: list[ImageSelection] = Field(default_factory=list, description="All section header images")
-    chart_placements: list[ChartPlacement] = Field(default_factory=list, description="All chart placements")
+    section_images: list[ImageSelection] = Field(default_factory=list, description="All section "
+        "header images")
+    chart_placements: list[ChartPlacement] = Field(default_factory=list, description="All chart "
+        "placements")
     html_template_path: str = Field(default="", description="Path to the Jinja2-rendered HTML")
     css_path: str = Field(default="", description="Path to the CSS file (brand colors, typography)")
-    pdf_path: str = Field(default="", description="Path to the generated PDF (empty until Render Engine runs)")
+    pdf_path: str = Field(default="", description="Path to the generated PDF (empty until Render "
+        "Engine runs)")
     typography: dict[str, str] = Field(
         default_factory=lambda: {
             "header_font": "Instrument Serif",
@@ -2230,7 +2512,8 @@ class LayoutPlan(BaseModel):
         description="PDF color palette (§7.2)",
     )
     no_blank_pages: bool = Field(default=True, description="Whether the layout has no blank pages")
-    no_orphaned_images: bool = Field(default=True, description="Whether all images have adjacent text context")
+    no_orphaned_images: bool = Field(default=True, description="Whether all images have adjacent "
+        "text context")
     all_images_300_dpi: bool = Field(default=True, description="Whether all images are 300 DPI")
     confidence: ConfidenceLevel = Field(default=ConfidenceLevel.MEDIUM)
 
@@ -2255,13 +2538,18 @@ class RenderOutput(BaseModel):
     page_count: int = Field(default=0, description="Total pages in the PDF")
     file_size_mb: float = Field(default=0.0, description="File size in MB")
     dpi: int = Field(default=300, description="PDF DPI (always 300)")
-    images_processed: int = Field(default=0, description="Number of images processed through Pillow pipeline")
-    charts_processed: int = Field(default=0, description="Number of charts processed through Pillow pipeline")
+    images_processed: int = Field(default=0, description="Number of images processed through "
+        "Pillow pipeline")
+    charts_processed: int = Field(default=0, description="Number of charts processed through "
+        "Pillow pipeline")
     fonts_embedded: list[str] = Field(default_factory=list, description="Fonts embedded in the PDF")
     no_blank_pages: bool = Field(default=True, description="Verified: no blank pages in PDF")
-    no_orphaned_images: bool = Field(default=True, description="Verified: no orphaned images in PDF")
+    no_orphaned_images: bool = Field(default=True, description="Verified: no orphaned images in "
+        "PDF")
     all_fonts_embedded: bool = Field(default=True, description="Verified: all fonts embedded")
     all_images_300_dpi: bool = Field(default=True, description="Verified: all images are 300 DPI")
-    verification_passed: bool = Field(default=True, description="True if all verification checks passed")
-    verification_issues: list[str] = Field(default_factory=list, description="Issues found during verification (empty if all passed)")
+    verification_passed: bool = Field(default=True, description="True if all verification checks "
+        "passed")
+    verification_issues: list[str] = Field(default_factory=list, description="Issues found during "
+        "verification (empty if all passed)")
     rendered_at: datetime = Field(default_factory=datetime.now)

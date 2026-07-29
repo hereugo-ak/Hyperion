@@ -149,7 +149,8 @@ class SplashScreen(Screen):
             yield SplashStatus("VAULT", id="stat-vault")
             yield SplashStatus("SEARXNG", id="stat-searxng")
             yield SplashStatus("OBSCURA", id="stat-obscura")
-        yield Static(build_line(span("  press any key to start  ·  esc to skip", TEXT_GHOST)), id="splash-hint")
+        yield Static(build_line(span("  press any key to start  ·  esc to "
+            "skip", TEXT_GHOST)), id="splash-hint")
 
     def on_mount(self) -> None:
         self._boot_task = asyncio.create_task(self._run_boot())

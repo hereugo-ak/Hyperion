@@ -1646,7 +1646,8 @@ class SynthesisLead(BaseAgent):
         resolved_contradictions = await self._resolve_contradictions(contradictions, matrix)
 
         # Step 5+6: Identify critical path AND draft recommendation (single DEEP call)
-        await self._transition(AgentState.WORKING, "Identifying critical path + drafting recommendation")
+        await self._transition(AgentState.WORKING, "Identifying critical path + drafting "
+            "recommendation")
         critical_path, recommendation_data = await self._identify_and_draft(
             matrix, resolved_contradictions, prior_patterns,
         )

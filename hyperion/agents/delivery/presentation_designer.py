@@ -2513,7 +2513,8 @@ class PresentationDesigner(BaseAgent):
                 # Last resort: strip Jinja2 tags and do basic format
                 html_str = HTML_TEMPLATE.replace("{{ css_content | safe }}", css_content)
                 html_str = html_str.replace("{{ report.question }}", str(report.question))
-                html_str = html_str.replace("{{ report.recommendation.value | upper }}", str(report.recommendation.value).upper())
+                html_str = html_str.replace("{{ report.recommendation.value | upper "
+                    "}}", str(report.recommendation.value).upper())
 
             with open(self.HTML_OUTPUT, "w", encoding="utf-8") as f:
                 f.write(html_str)
@@ -3050,7 +3051,8 @@ class PresentationDesigner(BaseAgent):
         self._pages = self._design_layout_plan(report)
 
         # Step 4: Select Unsplash images
-        await self._transition(AgentState.WORKING, "Step 4: Selecting Unsplash images for cover and sections")
+        await self._transition(AgentState.WORKING, "Step 4: Selecting Unsplash images for cover "
+            "and sections")
         self._cover_image = await self._select_cover_image(report)
         self._section_images = await self._select_section_images(report)
 
@@ -3062,7 +3064,8 @@ class PresentationDesigner(BaseAgent):
                 page.images.append(self._section_images[page.section_id])
 
         # Step 5: Receive chart images from Data Visualizer
-        await self._transition(AgentState.WORKING, "Step 5: Receiving chart images from Data Visualizer")
+        await self._transition(AgentState.WORKING, "Step 5: Receiving chart images from Data "
+            "Visualizer")
         # `report` is passed so homeless charts can be re-homed onto a section
         # that actually exists (fix 3.7) — without it the headline exhibits
         # mined from `key_findings` are rendered by nobody.
@@ -3090,7 +3093,8 @@ class PresentationDesigner(BaseAgent):
         pdf_path = await self._generate_pdf(html_path)
 
         # Step 8: Post-process images with Pillow (via Render Engine)
-        await self._transition(AgentState.WORKING, "Step 8: Post-processing images (handed to Render Engine)")
+        await self._transition(AgentState.WORKING, "Step 8: Post-processing images (handed to "
+            "Render Engine)")
 
         # Collect all chart placements
         all_chart_placements: list[ChartPlacement] = []

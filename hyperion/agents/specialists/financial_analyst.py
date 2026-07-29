@@ -585,7 +585,8 @@ class FinancialAnalyst(BaseAgent):
         prompt = (
             "You are the Financial Analyst building a DCF model.\n\n"
             f"Question: {question}\n"
-            f"TAM from Market Analyst: {tam_from_market or 'Not available — estimate from benchmarks'}\n\n"
+            f"TAM from Market Analyst: {tam_from_market or 'Not available — estimate from '
+                'benchmarks'}\n\n"
             f"Comparable companies:\n{comp_summary}\n\n"
             f"Macroeconomic data:\n{macro_summary}\n\n"
             f"Industry benchmarks:\n{benchmark_summary}\n\n"
@@ -933,7 +934,8 @@ class FinancialAnalyst(BaseAgent):
             data = json.loads(response.content)
             unit = data.get("unit", "$")
 
-            for key, label in [("best_case", "Best Case (20%)"), ("base_case", "Base Case (60%)"), ("worst_case", "Worst Case (20%)")]:
+            for key, label in [("best_case", "Best Case "
+                "(20%)"), ("base_case", "Base Case (60%)"), ("worst_case", "Worst Case (20%)")]:
                 scenario = data.get(key, {})
                 if isinstance(scenario, dict):
                     scenarios[label] = FinancialMetric(
@@ -1290,10 +1292,12 @@ class FinancialAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel data collection
         if tickers or industry:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning financial data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning financial data "
+                "collection sub-agents")
             sub_findings = await self._spawn_financial_sub_agents(tickers, industry, business_model)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 1: Pull comparable company financials
         if tickers:
@@ -1310,7 +1314,8 @@ class FinancialAnalyst(BaseAgent):
             self._industry_benchmarks = await self._search_industry_benchmarks(industry)
 
         # Step 4: Build DCF model with sensitivity tables
-        await self._transition(AgentState.WORKING, "Step 4: Building DCF model with sensitivity tables")
+        await self._transition(AgentState.WORKING, "Step 4: Building DCF model with sensitivity "
+            "tables")
         dcf_valuation, sensitivity_tables = await self._build_dcf_model(
             self._question,
             self._comparable_companies,
@@ -1334,7 +1339,8 @@ class FinancialAnalyst(BaseAgent):
         )
 
         # Step 7: Run scenario analysis
-        await self._transition(AgentState.WORKING, "Step 7: Running scenario analysis (best/base/worst)")
+        await self._transition(AgentState.WORKING, "Step 7: Running scenario analysis "
+            "(best/base/worst)")
         scenarios = await self._run_scenario_analysis(
             self._question,
             dcf_valuation,

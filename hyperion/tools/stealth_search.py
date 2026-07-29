@@ -362,7 +362,8 @@ class StealthSearchClient:
                         parent = await link.evaluate_handle("el => el.closest('div')")
                         if parent:
                             try:
-                                title_text = await parent.evaluate("el => el.querySelector('h3')?.textContent || ''")
+                                title_text = await parent.evaluate("el => "
+                                    "el.querySelector('h3')?.textContent || ''")
                             except Exception:
                                 title_text = ""
 
@@ -372,7 +373,8 @@ class StealthSearchClient:
                     # Get snippet — look for nearby text
                     snippet = ""
                     try:
-                        parent_div = await link.evaluate_handle("el => el.closest('div.g') || el.closest('div')")
+                        parent_div = await link.evaluate_handle("el => el.closest('div.g') || "
+                            "el.closest('div')")
                         if parent_div:
                             snippet = await parent_div.evaluate("""
                                 el => {
@@ -441,7 +443,8 @@ class StealthSearchClient:
                     # Get snippet from sibling element
                     snippet = ""
                     try:
-                        parent = await link.evaluate_handle("el => el.closest('.result') || el.closest('.web-result')")
+                        parent = await link.evaluate_handle("el => el.closest('.result') || "
+                            "el.closest('.web-result')")
                         if parent:
                             snippet_el = await parent.query_selector(".result__snippet")
                             if snippet_el:
@@ -520,7 +523,8 @@ class StealthSearchClient:
                     try:
                         parent = await link.evaluate_handle("el => el.closest('li.b_algo')")
                         if parent:
-                            snippet_el = await parent.query_selector("p, .b_caption p, .b_captionpara")
+                            snippet_el = await parent.query_selector("p, .b_caption p, "
+                                ".b_captionpara")
                             if snippet_el:
                                 snippet = await snippet_el.inner_text()
                     except Exception:

@@ -220,7 +220,8 @@ class FlareSolverrClient:
 
         results: list[dict] = []
 
-        # Google result links are in <a href="/url?q=..."> or <a href="https://..."> within result divs
+        # Google result links are in <a href="/url?q=..."> or <a href="https://..."> within result
+        # divs
         # Pattern for Google's result links
         link_pattern = re.compile(
             r'<a[^>]+href="/url\?q=([^&"]+)[^"]*"[^>]*>(.*?)</a>',

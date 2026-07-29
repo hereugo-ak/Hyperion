@@ -774,7 +774,8 @@ tags: {", ".join(tags)}
         vault_saved = bool(self._vault_note_path)
 
         # Step 7: Format citation list
-        await self._transition(AgentState.WORKING, "Step 7: Formatting citation list for final report")
+        await self._transition(AgentState.WORKING, "Step 7: Formatting citation list for final "
+            "report")
         citations = self._format_citations(deduplicated)
 
         # Calibrate confidence
@@ -847,7 +848,8 @@ tags: {", ".join(tags)}
                 content=(
                     f"Found {len(self._prior_research)} prior engagement(s) "
                     f"with relevant research. Top: "
-                    f"{', '.join(f'{p.topic} (relevance: {p.relevance_score})' for p in self._prior_research[:3])}"
+                    f"{', '
+                        ''.join(f'{p.topic} (relevance: {p.relevance_score})' for p in self._prior_research[:3])}"
                 ),
                 confidence=ConfidenceLevel.MEDIUM,
             )

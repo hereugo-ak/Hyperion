@@ -90,7 +90,8 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
     display_name="Engagement Director",
     model_tier=ModelTier.STRONG,
     tools=[
-        # Orchestrator — needs SECOND_BRAIN for prior research context, DEEP_SEARCH for initial scoping
+        # Orchestrator — needs SECOND_BRAIN for prior research context, DEEP_SEARCH for initial
+        # scoping
         ToolName.SECOND_BRAIN,
         ToolName.DEEP_SEARCH,
     ],
@@ -624,7 +625,8 @@ class EngagementDirector(BaseAgent):
             types.append(QuestionType.COMPARISON)
 
         # Forecast patterns
-        forecast_patterns = ["forecast", "predict", "future", "will", "by 20", "next year", "outlook"]
+        forecast_patterns = ["forecast", "predict", "future", "will", "by "
+            "20", "next year", "outlook"]
         if any(p in q_lower for p in forecast_patterns):
             types.append(QuestionType.FORECAST)
 
@@ -634,7 +636,8 @@ class EngagementDirector(BaseAgent):
             types.append(QuestionType.DIAGNOSTIC)
 
         # Optimization patterns
-        optimization_patterns = ["optimize", "improve", "efficient", "reduce cost", "increase", "enhance"]
+        optimization_patterns = ["optimize", "improve", "efficient", "reduce "
+            "cost", "increase", "enhance"]
         if any(p in q_lower for p in optimization_patterns):
             types.append(QuestionType.OPTIMIZATION)
 

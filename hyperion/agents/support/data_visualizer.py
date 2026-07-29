@@ -481,7 +481,8 @@ class DataVisualizer(BaseAgent):
             return ChartType.BAR
 
         # Trend → line
-        if any(w in shape_lower for w in ["trend", "time", "over time", "growth", "decline", "trajectory"]):
+        if any(w in shape_lower for w in ["trend", "time", "over "
+            "time", "growth", "decline", "trajectory"]):
             return ChartType.LINE
 
         # Distribution → histogram

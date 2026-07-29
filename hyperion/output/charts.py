@@ -565,7 +565,8 @@ class ChartGenerator:
                 fill="toself",
                 name=name,
                 line=dict(color=colors[i % len(colors)]),
-                fillcolor=colors[i % len(colors)].replace(")", ", 0.2)").replace("rgb", "rgba") if "rgb" in colors[i % len(colors)] else colors[i % len(colors)],
+                fillcolor=colors[i % len(colors)].replace(")", ", "
+                    "0.2)").replace("rgb", "rgba") if "rgb" in colors[i % len(colors)] else colors[i % len(colors)],
             ))
 
         return fig

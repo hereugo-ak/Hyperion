@@ -172,10 +172,12 @@ class AgentSpec(BaseModel):
     display_name: str = Field(description="Human-readable name for TUI display")
     model_tier: ModelTier = Field(description="Intelligence level this agent operates at")
     tools: list[ToolName] = Field(description="Tools this agent can use — not decorative, all used")
-    skills: list[SkillSpec] = Field(description="Proprietary analytical frameworks this agent applies")
+    skills: list[SkillSpec] = Field(description="Proprietary analytical frameworks this agent "
+        "applies")
     system_prompt: str = Field(description="Expertise, voice, methodology — not a generic prompt")
     spawn_condition: str = Field(description="When the Engagement Director activates this agent")
-    max_sub_agents: int = Field(default=0, description="Max sub-agents this agent can spawn (0 = none)")
+    max_sub_agents: int = Field(default=0, description="Max sub-agents this agent can spawn (0 = "
+        "none)")
     output_model: str = Field(description="Name of the Pydantic model this agent produces")
 
     def has_tool(self, tool: ToolName) -> bool:

@@ -79,7 +79,8 @@ def _stub_tiers(ex: UnifiedExtract, *, succeed: set[str] | None = None, log: lis
         setattr(ex, f"_extract_{tier}", mk(tier))
 
 
-def _sub_agent(tools: list[ToolName], question: str = "Nigeria battery market size 2025") -> SubAgentRunner:
+def _sub_agent(tools: list[ToolName], question: str = "Nigeria battery market size "
+    "2025") -> SubAgentRunner:
     spec = SubAgentSpec(
         question=question,
         parent_agent=AgentName.MARKET_ANALYST,

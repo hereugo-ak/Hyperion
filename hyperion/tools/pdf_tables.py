@@ -146,7 +146,8 @@ class PDFTable:
         for row in self.rows:
             cells = [c for c in row if c]
             if cells:
-                lines.append(": ".join([cells[0], " | ".join(cells[1:])]) if len(cells) > 1 else cells[0])
+                lines.append(": "
+                    "".join([cells[0], " | ".join(cells[1:])]) if len(cells) > 1 else cells[0])
         return lines
 
 

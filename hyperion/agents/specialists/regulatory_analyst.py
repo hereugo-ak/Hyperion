@@ -595,7 +595,8 @@ class RegulatoryAnalyst(BaseAgent):
         prompt = (
             "You are the HYPERION Regulatory Analyst mapping regulations by jurisdiction.\n\n"
             f"Question: {question}\n\n"
-            f"Jurisdictions: {', '.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
+            f"Jurisdictions: {', '
+                ''.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
             f"Search results:\n{search_summary}\n\n"
             f"Government portal data:\n{gov_summary}\n\n"
             "Map ALL applicable regulations across jurisdictions:\n"
@@ -793,9 +794,11 @@ class RegulatoryAnalyst(BaseAgent):
         prompt = (
             "You are the HYPERION Regulatory Analyst scanning the regulatory horizon.\n\n"
             f"Question: {question}\n\n"
-            f"Jurisdictions: {', '.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
+            f"Jurisdictions: {', '
+                ''.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
             f"Current regulatory search results:\n{search_summary}\n\n"
-            f"Historical regulatory evolution (Wayback Machine):\n{historical_summary or 'No historical data available'}\n\n"
+            f"Historical regulatory evolution (Wayback Machine):\n{historical_summary or 'No '
+                'historical data available'}\n\n"
             "Identify pending regulations, proposed rules, and regulatory trends (1-3 year horizon):\n"
             "For each item:\n"
             "- regulation_name: name of pending/proposed regulation\n"
@@ -1290,21 +1293,25 @@ class RegulatoryAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel regulatory research
         if jurisdictions and industry:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning regulatory research sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning regulatory research "
+                "sub-agents")
             sub_findings = await self._spawn_regulatory_sub_agents(jurisdictions, industry)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 1: Search for applicable regulations
         await self._transition(AgentState.WORKING, f"Step 1: Searching regulations for {industry} in {jurisdictions}")
         self._search_results = await self._search_regulations(industry, jurisdictions)
 
         # Step 2: Scrape government portals
-        await self._transition(AgentState.WORKING, "Step 2: Scraping government regulatory portals (Obscura)")
+        await self._transition(AgentState.WORKING, "Step 2: Scraping government regulatory "
+            "portals (Obscura)")
         self._government_data = await self._scrape_government_portals(jurisdictions)
 
         # Step 3: Pull historical regulatory data
-        await self._transition(AgentState.WORKING, "Step 3: Pulling historical regulatory snapshots (Wayback)")
+        await self._transition(AgentState.WORKING, "Step 3: Pulling historical regulatory "
+            "snapshots (Wayback)")
         self._historical_snapshots = await self._pull_historical_data(jurisdictions, industry)
 
         # Step 4: Map regulations by jurisdiction
@@ -1315,13 +1322,15 @@ class RegulatoryAnalyst(BaseAgent):
         )
 
         # Step 5: Build compliance checklist
-        await self._transition(AgentState.WORKING, "Step 5: Building structured compliance checklist")
+        await self._transition(AgentState.WORKING, "Step 5: Building structured compliance "
+            "checklist")
         compliance_checklist = await self._build_compliance_checklist(
             self._question, regulations, self._context,
         )
 
         # Step 6: Scan regulatory horizon
-        await self._transition(AgentState.WORKING, "Step 6: Scanning regulatory horizon (1-3 years)")
+        await self._transition(AgentState.WORKING, "Step 6: Scanning regulatory horizon (1-3 "
+            "years)")
         horizon_scan = await self._scan_horizon(
             self._question, self._search_results, self._historical_snapshots,
             jurisdictions, self._context,

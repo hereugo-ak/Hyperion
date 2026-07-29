@@ -1157,7 +1157,8 @@ class CompetitiveIntel(BaseAgent):
         await self._scrape_competitor_sites(self._competitor_names)
 
         # Spawn sub-agents for parallel data collection
-        await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning competitor data collection sub-agents")
+        await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning competitor data collection "
+            "sub-agents")
         sub_findings = await self._spawn_competitor_sub_agents(self._competitor_names)
         self._sub_agent_findings = sub_findings
 
@@ -1174,7 +1175,8 @@ class CompetitiveIntel(BaseAgent):
         )
 
         # Step 5: Assess moats for top 5 competitors
-        await self._transition(AgentState.WORKING, "Step 5: Assessing moats (Hamilton Helmer framework)")
+        await self._transition(AgentState.WORKING, "Step 5: Assessing moats (Hamilton Helmer "
+            "framework)")
         moat_assessments = await self._assess_moats(
             self._competitor_names[:5], competitor_matrix, self._scraped_pages,
         )

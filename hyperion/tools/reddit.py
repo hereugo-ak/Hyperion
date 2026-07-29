@@ -256,7 +256,8 @@ class RedditClient:
                 ) from exc
 
             if not self._client_id or not self._client_secret:
-                logger.warning("Reddit credentials not configured. Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in .env")
+                logger.warning("Reddit credentials not configured. Set REDDIT_CLIENT_ID and "
+                    "REDDIT_CLIENT_SECRET in .env")
 
             self._reddit = praw.Reddit(
                 client_id=self._client_id,
@@ -393,7 +394,8 @@ class RedditClient:
                     limit=limit,
                 ):
                     created_utc = submission.created_utc or 0.0
-                    created_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(created_utc)) if created_utc else ""
+                    created_str = time.strftime("%Y-%m-%d "
+                        "%H:%M:%S", time.gmtime(created_utc)) if created_utc else ""
 
                     results.append(RedditPost(
                         post_id=submission.id or "",
@@ -470,7 +472,8 @@ class RedditClient:
                         continue
 
                     created_utc = comment.created_utc or 0.0
-                    created_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(created_utc)) if created_utc else ""
+                    created_str = time.strftime("%Y-%m-%d "
+                        "%H:%M:%S", time.gmtime(created_utc)) if created_utc else ""
 
                     results.append(RedditComment(
                         comment_id=comment.id or "",

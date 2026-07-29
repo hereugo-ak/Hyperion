@@ -1614,24 +1614,28 @@ class StrategyAnalyst(BaseAgent):
         self._search_results = await self._search_strategic_context(sector, company)
 
         # Framework selection — the critical differentiator
-        await self._transition(AgentState.WORKING, "Selecting frameworks based on the specific question")
+        await self._transition(AgentState.WORKING, "Selecting frameworks based on the specific "
+            "question")
         self._frameworks_selected, self._frameworks_not_selected = await self._select_frameworks(
             self._question, self._context,
         )
 
         # Spawn sub-agents for parallel data collection
         if sector or company:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning strategy data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning strategy data "
+                "collection sub-agents")
             sub_findings = await self._spawn_strategy_sub_agents(sector, company)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 2: Run Porter's Five Forces
         await self._transition(AgentState.WORKING, "Step 2: Running Porter's Five Forces analysis")
         porter = await self._run_porter_five_forces(self._question, self._search_results, self._context)
 
         # Step 3: Run VRIO on company resources
-        await self._transition(AgentState.WORKING, "Step 3: Running VRIO analysis on company resources")
+        await self._transition(AgentState.WORKING, "Step 3: Running VRIO analysis on company "
+            "resources")
         vrio = await self._run_vrio(self._question, self._search_results, self._context)
 
         # Step 4: Build SWOT → TOWS matrix
@@ -1639,13 +1643,15 @@ class StrategyAnalyst(BaseAgent):
         swot_tows = await self._build_swot_tows(self._question, self._search_results, porter, vrio, self._context)
 
         # Steps 5-6: Generate strategic options + score on grid
-        await self._transition(AgentState.WORKING, "Steps 5-6: Generating and scoring strategic options")
+        await self._transition(AgentState.WORKING, "Steps 5-6: Generating and scoring strategic "
+            "options")
         option_grid = await self._generate_and_score_options(
             self._question, porter, vrio, swot_tows, self._context,
         )
 
         # Step 7: Run game theory analysis
-        await self._transition(AgentState.WORKING, "Step 7: Running game theory analysis on competitive dynamics")
+        await self._transition(AgentState.WORKING, "Step 7: Running game theory analysis on "
+            "competitive dynamics")
         game_theory = await self._run_game_theory(self._question, porter, self._search_results, self._context)
 
         # Step 7b: Conditional frameworks — run ONLY when _select_frameworks
@@ -1741,7 +1747,8 @@ class StrategyAnalyst(BaseAgent):
                 id=f"finding_{uuid.uuid4().hex[:8]}",
                 agent=self.name.value,
                 finding_type="sustained_advantage",
-                title=f"Sustained Competitive Advantages: {', '.join(vrio.sustained_advantages[:3])}",
+                title=f"Sustained Competitive Advantages: {', '
+                    ''.join(vrio.sustained_advantages[:3])}",
                 content=(
                     f"Resources providing sustained competitive advantage: "
                     f"{', '.join(vrio.sustained_advantages)}. "

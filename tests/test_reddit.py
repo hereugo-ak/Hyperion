@@ -88,7 +88,8 @@ class TestRedditClient:
         mock_reddit.search.return_value = [mock_submission1, mock_submission2]
 
         with patch.object(client, "_get_reddit", return_value=mock_reddit):
-            results = await client.search_posts("AI 2024", sort="relevance", time_filter="year", limit=15)
+            results = await client.search_posts("AI "
+                "2024", sort="relevance", time_filter="year", limit=15)
 
         assert len(results) == 2
         assert isinstance(results[0], RedditPost)

@@ -670,7 +670,8 @@ class RenderEngine(BaseAgent):
 
             if result and result.success:
                 if result.warnings:
-                    self._log(f"RENDER: PDF generated with warnings: {'; '.join(result.warnings[:3])}")
+                    self._log(f"RENDER: PDF generated with warnings: {'; '
+                        ''.join(result.warnings[:3])}")
                 return self._pdf_path
             else:
                 error_msg = ""
@@ -1023,7 +1024,8 @@ class RenderEngine(BaseAgent):
             self._page_budget = page_budget
 
         # Step 1: Receive HTML from Presentation Designer
-        await self._transition(AgentState.WORKING, "Step 1: Receiving HTML from Presentation Designer")
+        await self._transition(AgentState.WORKING, "Step 1: Receiving HTML from Presentation "
+            "Designer")
         if html_path:
             self._receive_html(html_path, css_path)
         if layout_plan:
@@ -1069,7 +1071,8 @@ class RenderEngine(BaseAgent):
         final_html = self._update_html_with_processed_images(self._html_path, processed)
 
         # Step 4: Convert HTML → PDF with WeasyPrint at 300 DPI
-        await self._transition(AgentState.WORKING, "Step 4: Converting HTML → PDF with WeasyPrint at 300 DPI")
+        await self._transition(AgentState.WORKING, "Step 4: Converting HTML → PDF with WeasyPrint "
+            "at 300 DPI")
         pdf_path = await self._render_pdf(final_html)
 
         if not pdf_path or not os.path.exists(pdf_path):
@@ -1179,7 +1182,8 @@ class RenderEngine(BaseAgent):
                 f"Fonts embedded: {', '.join(fonts_embedded) if fonts_embedded else 'none'}. "
                 f"Blank pages: {'none' if render_output.no_blank_pages else 'detected'}. "
                 f"Orphaned images: {'none' if render_output.no_orphaned_images else 'detected'}. "
-                f"{'All checks passed.' if render_output.verification_passed else f'Issues: {all_issues}'}"
+                f"{'All checks '
+                    'passed.' if render_output.verification_passed else f'Issues: {all_issues}'}"
             ),
             confidence=ConfidenceLevel.HIGH if render_output.verification_passed else ConfidenceLevel.MEDIUM,
         )

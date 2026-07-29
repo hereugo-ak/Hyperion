@@ -1142,10 +1142,12 @@ class RiskAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel risk data collection
         if industry or space:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning risk data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning risk data collection "
+                "sub-agents")
             sub_findings = await self._spawn_risk_sub_agents(industry, jurisdiction, space)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 1: Search for known risks
         await self._transition(AgentState.WORKING, f"Step 1: Searching for known risks in {industry or space}")
@@ -1219,7 +1221,8 @@ class RiskAnalyst(BaseAgent):
         )
 
         # Run Monte Carlo simulation (skill #2)
-        await self._transition(AgentState.WORKING, "Running Monte Carlo simulation on key variables")
+        await self._transition(AgentState.WORKING, "Running Monte Carlo simulation on key "
+            "variables")
         monte_carlo = await self._run_monte_carlo(self._question, risks, self._context)
 
         # Identify top 10 risks (sorted by score)
