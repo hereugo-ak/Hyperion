@@ -35,12 +35,19 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from hyperion.tools.content_selector import select_relevant_content
 from hyperion.tools.evidence_scorer import EvidenceScorer, EvidenceSummary, ScoredResult
 from hyperion.tools.query_utils import grounded_search_or_empty
 
 logger = logging.getLogger(__name__)
 
-# Content truncation — 15000 chars per source (Step 1.6)
+# Retained-content budget — 15000 chars per source (Step 1.6).
+#
+# Fix 2.2 (§4.7 Finding B-6) did NOT change this number. It changed how the
+# budget is *spent*: every tier below now calls `_fit_content`, which selects
+# the most relevant 15000 chars via chunk → rerank → top-k, instead of the
+# blind head-slice `content[:MAX_CONTENT_CHARS]` that retained a 60-page PDF's
+# title page and table of contents while discarding its tables and conclusions.
 MAX_CONTENT_CHARS = 15000
 
 # Cache TTL — 1 hour
@@ -283,6 +290,25 @@ class DeepSearchClient:
         self._availability: dict[str, bool] = {}
         self._skipped: dict[str, str] = {}
 
+        # Fix 2.2: the query the in-flight extraction batch is being performed
+        # for, so `_fit_content` can select the most *relevant* 15000 chars
+        # rather than the first 15000.
+        #
+        # Held as state rather than threaded through every `_extract_<tier>`
+        # signature on purpose: `tests/test_tool_capability_gating.py`
+        # monkeypatches `client._extract_jina(semaphore, url)` etc. to exercise
+        # ladder behaviour without a network, and `UnifiedExtract`'s
+        # `tier_resolver` contract is `(url) -> UnifiedExtractResult`. Adding a
+        # `query` parameter to those methods would break both, for no gain: the
+        # batch is single-query by construction (`search()` grounds one query,
+        # then extracts for it), so per-call threading would only pass the same
+        # value to every call.
+        self._active_query: str = ""
+        # Per-batch selection provenance, keyed by URL. Consumed by fix 2.6's
+        # extraction-yield metric; kept here so the metric reports what
+        # *actually* happened rather than re-deriving it.
+        self._selection_stats: dict[str, dict[str, Any]] = {}
+
     # ─────────────────────────────────────────────────────────────────
     # Capability gating
     # ─────────────────────────────────────────────────────────────────
@@ -520,8 +546,11 @@ class DeepSearchClient:
         extraction_target = num_sources * self.EXTRACTION_MULTIPLIER
         urls_to_extract = discovered_urls[:extraction_target]
 
+        # Fix 2.2: pass the grounded query down so every extraction tier fits
+        # its 15000-char budget by relevance to *this* question instead of by
+        # position in the document.
         extracted, extraction_tools, extraction_tried, extraction_errors = (
-            await self._extract_batch(urls_to_extract)
+            await self._extract_batch(urls_to_extract, query)
         )
         tools_used.extend(extraction_tools)
         tools_tried.extend(extraction_tried)
@@ -747,6 +776,7 @@ class DeepSearchClient:
     async def _extract_batch(
         self,
         urls: list[str],
+        query: str = "",
     ) -> tuple[list[ExtractedContent], list[str], list[str], dict[str, str]]:
         """Extract content from URLs using the VIGIL fallback chain.
 
@@ -774,9 +804,18 @@ class DeepSearchClient:
         provenance vocabulary is unchanged by the delegation. The two extra
         members exist so the caller can distinguish "every tier failed" from
         "nothing needed extracting" — previously both looked identical.
+
+        Fix 2.2: ``query`` is what every tier's :meth:`_fit_content` call ranks
+        chunks against. It is optional and defaults to empty so the pre-existing
+        one-argument call signature keeps working — with an empty query the
+        selection honestly degrades to the old head-slice rather than silently
+        ranking against nothing.
         """
         if not urls:
             return ([], [], [], {})
+
+        self._active_query = query or ""
+        self._selection_stats = {}
 
         outcome = await self._get_unified_extract().extract_ladder(
             urls,
@@ -815,6 +854,42 @@ class DeepSearchClient:
     # Per-tool extraction methods
     # ─────────────────────────────────────────────────────────────────
 
+    def _fit_content(self, content: str, url: str = "") -> str:
+        """Fit ``content`` into :data:`MAX_CONTENT_CHARS` **by relevance**.
+
+        Fix 2.2 (§4.7 Finding B-6). This method is the single replacement for
+        the six identical ``[:MAX_CONTENT_CHARS]`` head-slices that used to sit
+        in the six ``_extract_<tier>`` methods below.
+
+        Why one helper instead of six inline calls: the audit's §4.5 lesson is
+        that N copies of the same logic diverge (three extraction ladders, and
+        the archive-ordering fix landed only in the one with no callers). Six
+        copies of a truncation rule would drift the same way — and a tier that
+        kept the old head-slice would silently produce worse evidence than its
+        neighbours while reporting the same ``tool_used``.
+
+        Degrades safely: with no active query there is nothing to rank against,
+        so :func:`select_relevant_content` head-slices and says so. That keeps
+        this a strict improvement — never worse than the previous behaviour.
+        """
+        if not content:
+            return ""
+        selection = select_relevant_content(
+            content,
+            self._active_query,
+            budget_chars=MAX_CONTENT_CHARS,
+        )
+        if url:
+            self._selection_stats[url] = selection.to_dict()
+        if selection.degraded and selection.strategy != "empty":
+            logger.debug(
+                "DeepSearch: relevance selection degraded for %s (%s) — %s",
+                url or "<url unknown>",
+                selection.strategy,
+                selection.reason,
+            )
+        return selection.content
+
     def _is_quality_content(self, content: str) -> bool:
         """Check if extracted content meets quality thresholds."""
         if not content or len(content) < self.MIN_CONTENT_LENGTH:
@@ -834,7 +909,7 @@ class DeepSearchClient:
                 jina = self._get_jina()
                 result = await jina.read(url)
                 if result and (result.markdown or result.content):
-                    content = (result.markdown or result.content)[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.markdown or result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -854,7 +929,7 @@ class DeepSearchClient:
                 http_extract = self._get_http_extract()
                 result = await http_extract.extract(url)
                 if result and result.success and result.content:
-                    content = result.content[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -874,7 +949,7 @@ class DeepSearchClient:
                 obscura = self._get_obscura()
                 result = await obscura.fetch(url, output_format="markdown")
                 if result and (result.markdown or result.content):
-                    content = (result.markdown or result.content)[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.markdown or result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -894,7 +969,7 @@ class DeepSearchClient:
                 scrapling = self._get_scrapling()
                 result = await scrapling.fetch(url, stealth=True)
                 if result and result.content:
-                    content = result.content[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -914,7 +989,7 @@ class DeepSearchClient:
                 crawl4ai = self._get_crawl4ai()
                 result = await crawl4ai.crawl(url)
                 if result and (result.markdown or result.content):
-                    content = (result.markdown or result.content)[:MAX_CONTENT_CHARS]
+                    content = self._fit_content(result.markdown or result.content, url)
                     if self._is_quality_content(content):
                         return ExtractedContent(
                             url=url,
@@ -936,7 +1011,7 @@ class DeepSearchClient:
                 if result and result.success and result.html:
                     # Strip HTML tags for basic text extraction
                     text = re.sub(r"<[^>]+>", " ", result.html)
-                    text = re.sub(r"\s+", " ", text).strip()[:MAX_CONTENT_CHARS]
+                    text = self._fit_content(re.sub(r"\s+", " ", text).strip(), url)
                     if self._is_quality_content(text):
                         return ExtractedContent(
                             url=url,

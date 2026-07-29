@@ -97,6 +97,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from hyperion.tools.camoufox_client import CamoufoxClient
+from hyperion.tools.content_selector import DEFAULT_BUDGET_CHARS, select_relevant_content
 from hyperion.tools.crawl4ai import Crawl4AIClient
 from hyperion.tools.curl_cffi_client import CurlCffiClient
 from hyperion.tools.flaresolverr import FlareBreaker, FlareSolverrClient
@@ -238,6 +239,7 @@ class UnifiedExtract:
         self,
         settings: Any | None = None,
         tiers: tuple[str, ...] | list[str] | None = None,
+        content_budget_chars: int = DEFAULT_BUDGET_CHARS,
     ) -> None:
         """
         Args:
@@ -248,9 +250,25 @@ class UnifiedExtract:
                 ladder. Order is normalised back to ``TIER_ORDER`` order so a
                 caller cannot accidentally put a browser tier ahead of a free
                 one (the whole point of the ladder is that it is cheap-first).
+            content_budget_chars: Fix 2.2 — the retained-content budget applied
+                when (and only when) a query is supplied to :meth:`extract` /
+                :meth:`extract_ladder`. Content over budget is fitted by
+                relevance rather than head-sliced.
         """
         self.settings = settings
         self.tier_order: tuple[str, ...] = self._normalize_tiers(tiers)
+        self.content_budget_chars = int(content_budget_chars) or DEFAULT_BUDGET_CHARS
+
+        # Fix 2.2: the query the in-flight extraction is being performed for.
+        # Instance state rather than a parameter on all ten `_extract_<tier>`
+        # methods: the tier contract is `(url, *, extract_tables,
+        # extract_links)` and `deep_search` adapts to it through
+        # `tier_resolver`, so widening it would break the seam that fix 2.1
+        # deliberately preserved. An extraction batch is single-query by
+        # construction, so there is nothing to lose by holding it here.
+        self._active_query: str = ""
+        # URL → SelectionResult.to_dict(), for fix 2.6's yield metric.
+        self._selection_stats: dict[str, dict[str, Any]] = {}
 
         self._jina: JinaClient | None = None
         self._http_extract: HttpExtractClient | None = None
@@ -483,13 +501,31 @@ class UnifiedExtract:
         _is_quality_content(...)`` check against a *different* field (markdown
         here, content there), which is precisely how the three ladders drifted.
         One helper, one gate, one field-precedence rule.
+
+        Fix 2.2 (§4.7 Finding B-6) hooks in *here*, for the same reason the
+        quality gate does: this is the one place every tier's output passes
+        through. When a query is in flight (:attr:`_active_query`, set by
+        :meth:`extract` / :meth:`extract_ladder`), oversized content is fitted
+        to :attr:`content_budget_chars` by relevance — chunk → rerank → top-k —
+        instead of being handed to the caller whole and head-sliced downstream.
+
+        The gate runs on the **pre-selection** text on purpose. ``primary`` is
+        what the tier actually retrieved; judging retrieval success on a
+        post-selection excerpt would let a selection bug read as an extraction
+        failure and send the ladder climbing to a browser tier for a page that
+        was fetched perfectly well.
         """
         ok = bool(primary) and self._is_quality_content(primary)
+        resolved_content = content or primary
+        resolved_markdown = markdown or primary
+        if ok:
+            resolved_content = self._fit(resolved_content, url)
+            resolved_markdown = self._fit(resolved_markdown, url)
         return UnifiedExtractResult(
             url=url,
             title=title,
-            content=content or primary,
-            markdown=markdown or primary,
+            content=resolved_content,
+            markdown=resolved_markdown,
             html=html,
             links=list(links or []),
             tables=list(tables or []),
@@ -497,6 +533,29 @@ class UnifiedExtract:
             success=ok,
             error="" if ok else (error or "no quality content returned"),
         )
+
+    def _fit(self, text: str, url: str = "") -> str:
+        """Fit ``text`` into the content budget by relevance to the active query.
+
+        No-ops when no query is in flight. That is deliberate rather than
+        defensive: without a query there is nothing to rank against, and
+        silently head-slicing here would make ``UnifiedExtract`` lossy for
+        callers that never asked for a budget — the audit's §4.7 complaint was
+        about *unweighted* truncation, and unweighted truncation applied by
+        default would simply relocate the defect into this module.
+        """
+        if not text or not self._active_query:
+            return text
+        if len(text) <= self.content_budget_chars:
+            return text
+        selection = select_relevant_content(
+            text,
+            self._active_query,
+            budget_chars=self.content_budget_chars,
+        )
+        if url:
+            self._selection_stats[url] = selection.to_dict()
+        return selection.content
 
     # ── The tier table ──────────────────────────────────────────────────────
     #
@@ -780,6 +839,7 @@ class UnifiedExtract:
         extract_tables: bool = True,
         extract_links: bool = True,
         force_js_render: bool = False,
+        query: str = "",
     ) -> UnifiedExtractResult:
         """Extract content from a single URL, climbing the ladder cheapest-first.
 
@@ -790,6 +850,10 @@ class UnifiedExtract:
             force_js_render: Skip the non-JS tiers (curl_cffi/jina/http) and go
                 straight to a rendering tier, for pages whose content only
                 exists after script execution.
+            query: Fix 2.2 — the question this URL was retrieved to answer.
+                Supplying it caps the result at
+                :attr:`content_budget_chars` **by relevance**; omitting it
+                returns the full extraction untruncated.
 
         Returns:
             UnifiedExtractResult with the best extraction available. Never
@@ -799,6 +863,7 @@ class UnifiedExtract:
         """
         tools_tried: list[str] = []
         errors: list[str] = []
+        self._active_query = query or ""
 
         for tier in self._eligible_tiers(force_js_render):
             if not self._tier_available(tier):
@@ -873,6 +938,7 @@ class UnifiedExtract:
         tiers: tuple[str, ...] | list[str] | None = None,
         tier_resolver: Any | None = None,
         tier_available: Any | None = None,
+        query: str = "",
     ) -> LadderOutcome:
         """Extract a batch of URLs **tier-major**: all URLs at tier N, then N+1.
 
@@ -908,8 +974,17 @@ class UnifiedExtract:
             tier_available: ``(tier) -> bool`` override for the availability
                 probe, so a delegating caller's own cached probe results (and
                 its own tests' forced values) remain authoritative.
+            query: Fix 2.2 — the question this batch was discovered for. One
+                query per batch, because a batch *is* the URL set discovered
+                for one question. Applies only to tiers resolved by this
+                class's own tier table: a caller supplying ``tier_resolver``
+                (i.e. ``DeepSearchClient``) fits its own budget inside its own
+                extractors, and double-fitting would select from an
+                already-selected excerpt.
         """
         outcome = LadderOutcome()
+        self._active_query = query or ""
+        self._selection_stats = {}
         if not urls:
             return outcome
 
@@ -978,6 +1053,7 @@ class UnifiedExtract:
         self,
         urls: list[str],
         concurrency: int = 5,
+        query: str = "",
     ) -> list[UnifiedExtractResult]:
         """Extract content from multiple URLs, one result per input URL.
 
@@ -985,7 +1061,7 @@ class UnifiedExtract:
         implementation) and re-keys the outcome back to the caller's input
         order, filling misses with an explanatory failure result.
         """
-        outcome = await self.extract_ladder(urls, concurrency=concurrency)
+        outcome = await self.extract_ladder(urls, concurrency=concurrency, query=query)
         by_url = {r.url: r for r in outcome.results}
         detail = "; ".join(f"{k}: {v}" for k, v in outcome.errors.items())
         if outcome.tiers_unavailable:

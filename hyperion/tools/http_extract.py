@@ -28,9 +28,17 @@ from urllib.parse import urlparse
 
 import httpx
 
+from hyperion.tools.content_selector import select_content
+
 logger = logging.getLogger(__name__)
 
-# Content truncation — match deep_search MAX_CONTENT_CHARS
+# Retained-content budget — matches ``deep_search.MAX_CONTENT_CHARS``.
+#
+# Fix 2.2 (§4.7 Finding B-6) leaves the number alone and changes how it is
+# spent: `extract(url, query=...)` now selects the most relevant 15000 chars
+# via chunk → rerank → top-k rather than head-slicing. With no query supplied
+# the behaviour is byte-identical to the old head-slice, so every existing
+# caller is unaffected until it opts in.
 MAX_CONTENT_CHARS = 15000
 
 # Request settings
@@ -167,11 +175,19 @@ class HttpExtractClient:
             response.raise_for_status()
             return response.text, response.status_code
 
-    async def extract(self, url: str) -> HttpExtractResult:
+    async def extract(self, url: str, query: str = "") -> HttpExtractResult:
         """Extract content from a URL using HTTP fetch + trafilatura.
 
         Args:
             url: The URL to extract content from.
+            query: Fix 2.2 — the question this page was retrieved to answer.
+                When supplied, the ``MAX_CONTENT_CHARS`` budget is filled with
+                the most *relevant* passages (chunk → rerank → top-k) instead
+                of the document's first N characters. Trafilatura is the tier
+                that handles PDFs and long institutional documents, so this is
+                precisely where a blind head-slice did the most damage: it kept
+                the title page and table of contents and dropped the tables.
+                Omitted ⇒ head-slice, exactly as before.
 
         Returns:
             HttpExtractResult with extracted content, or error status.
@@ -241,8 +257,18 @@ class HttpExtractClient:
                     if title_match:
                         title = title_match.group(1).strip()[:200]
 
-                content = (text or "")[:MAX_CONTENT_CHARS]
-                md = (markdown or text or "")[:MAX_CONTENT_CHARS]
+                # Fix 2.2: relevance-aware budget fill. `content` and
+                # `markdown` are selected independently because trafilatura's
+                # markdown output has different chunk boundaries (it retains
+                # table markup, which `_TABLE_MARKERS` scores as evidence) —
+                # ranking the plain-text rendering and then slicing markdown to
+                # match would misalign the two.
+                content = select_content(
+                    text or "", query, budget_chars=MAX_CONTENT_CHARS
+                )
+                md = select_content(
+                    markdown or text or "", query, budget_chars=MAX_CONTENT_CHARS
+                )
 
                 return HttpExtractResult(
                     url=url,
@@ -320,12 +346,16 @@ class HttpExtractClient:
         self,
         urls: list[str],
         concurrency: int = 5,
+        query: str = "",
     ) -> list[HttpExtractResult]:
         """Extract content from multiple URLs concurrently.
 
         Args:
             urls: List of URLs to extract from.
             concurrency: Maximum concurrent requests.
+            query: Fix 2.2 — forwarded to :meth:`extract` for relevance-aware
+                budget fill. One query per batch, because a batch is by
+                construction the set of URLs discovered for a single question.
 
         Returns:
             List of HttpExtractResult, one per URL (in order).
@@ -336,7 +366,7 @@ class HttpExtractClient:
 
         async def _bounded_extract(url: str) -> HttpExtractResult:
             async with semaphore:
-                return await self.extract(url)
+                return await self.extract(url, query)
 
         results = await asyncio.gather(*[_bounded_extract(u) for u in urls])
         return list(results)

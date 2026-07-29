@@ -54,8 +54,14 @@ from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import LLMRouter, get_router
 from hyperion.schemas.agents import SubAgentSpec
 from hyperion.schemas.models import KeyFinding
+from hyperion.tools.content_selector import select_content
 
 logger = logging.getLogger(__name__)
+
+# Fix 2.2 (§4.7 Finding B-6): the retained-content budget for a fetched SEC
+# filing. Same number as before; what changed is that the budget is now filled
+# by relevance to the sub-question instead of by position in the document.
+SEC_FILING_BUDGET_CHARS = 15000
 
 
 class SubAgentRunner:
@@ -357,8 +363,12 @@ class SubAgentRunner:
         all_urls = list(dict.fromkeys(searxng_urls + jina_search_urls))
 
         # ── EXTRACTION (fix 2.1: the single UnifiedExtract ladder) ──────
+        # Fix 2.2: the sub-question is passed down so the ladder fills its
+        # retained-content budget by relevance rather than by document position.
         if all_urls:
-            extracted, extract_errors = await self._extract_urls(all_urls)
+            extracted, extract_errors = await self._extract_urls(
+                all_urls, self.spec.question
+            )
             raw_data.extend(extracted)
             errors.extend(extract_errors)
 
@@ -410,7 +420,19 @@ class SubAgentRunner:
                     # Fetch most recent filing content
                     content = await sec.get_filing_content(filings[0])
                     if content and content.content:
-                        raw_data.append(f"SEC filing content ({filings[0].filing_type} {filings[0].company_name}):\n{content.content[:15000]}")
+                        # Fix 2.2: a 10-K is the worst case for a blind
+                        # head-slice anywhere in this file. The first 15,000
+                        # chars of one are the cover page, the cross-reference
+                        # table and the opening of Item 1A risk factors, while
+                        # the segment revenue tables and the MD&A a financial
+                        # analyst actually needs sit tens of thousands of
+                        # characters further in.
+                        body = select_content(
+                            content.content,
+                            self.spec.question,
+                            budget_chars=SEC_FILING_BUDGET_CHARS,
+                        )
+                        raw_data.append(f"SEC filing content ({filings[0].filing_type} {filings[0].company_name}):\n{body}")
             except Exception as e:
                 errors.append(f"SEC EDGAR: {e!s:.80}")
 
@@ -781,12 +803,23 @@ class SubAgentRunner:
         ]
         return tiers
 
-    async def _extract_urls(self, urls: list[str]) -> tuple[list[str], list[str]]:
+    async def _extract_urls(
+        self, urls: list[str], query: str = ""
+    ) -> tuple[list[str], list[str]]:
         """Extract discovered URLs via the single ladder (fix 2.1).
 
         Returns ``(raw_data_blocks, errors)`` in the shape
         :meth:`_gather_raw_data` already accumulates, so the delegation is
         invisible to its caller.
+
+        ``query`` (fix 2.2) is the sub-question these URLs were discovered for.
+        It is what the ladder ranks chunks against when a page exceeds the
+        retained-content budget. This matters most for the sub-agent path
+        specifically: a sub-agent's whole output is a handful of KeyFindings
+        distilled from this text, so a budget spent on a PDF's front matter
+        rather than its tables produces a finding with no number in it — which
+        is indistinguishable, downstream, from the ``research_gap`` the audit's
+        P0 was manufacturing (§4.2).
 
         Never raises. A ladder that returns nothing yields an ``errors`` entry
         naming each tier that was tried and why it produced nothing — the
@@ -807,7 +840,9 @@ class SubAgentRunner:
         # tools would have seen.
         extractor = UnifiedExtract(settings=get_settings())
         try:
-            outcome = await extractor.extract_ladder(targets, tiers=tiers)
+            outcome = await extractor.extract_ladder(
+                targets, tiers=tiers, query=query or self.spec.question
+            )
         except Exception as e:
             # The ladder documents a never-raises contract, but a sub-agent
             # losing its entire research phase to an unexpected error here is

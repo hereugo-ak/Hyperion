@@ -7,6 +7,14 @@ it does need. This is deliberate — tool assignment is a design decision.
 """
 
 from hyperion.tools.alpha_vantage import AlphaVantageClient, FundamentalData, StockQuote, TimeSeriesData
+from hyperion.tools.content_selector import (
+    Chunk,
+    SelectionResult,
+    chunk_content,
+    rerank_chunks,
+    select_content,
+    select_relevant_content,
+)
 from hyperion.tools.crawl4ai import Crawl4AIClient, CrawlResult
 from hyperion.tools.camoufox_client import CamoufoxClient, CamoufoxResult
 from hyperion.tools.curl_cffi_client import CurlCffiClient, CurlCffiResult
@@ -107,6 +115,13 @@ __all__ = [
     # Unified Extract
     "UnifiedExtract",
     "UnifiedExtractResult",
+    # Content Selector (fix 2.2 — chunk → rerank → top-k)
+    "Chunk",
+    "SelectionResult",
+    "chunk_content",
+    "rerank_chunks",
+    "select_content",
+    "select_relevant_content",
     # DeepSearch
     "DeepSearchClient",
     "DeepSearchResult",

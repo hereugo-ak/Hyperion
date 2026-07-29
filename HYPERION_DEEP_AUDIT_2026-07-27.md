@@ -1229,7 +1229,102 @@ progress, `[x]` = landed with proof.
   - Full suite: **758 passed, 3 skipped** (was 682 passed, 3 skipped after
     Phase 1; +76 new tests, **zero regressions**, zero pre-existing tests
     modified).
-- [ ] **2.2** Chunk → rerank → top-k assembly replacing blind 15k head-slice
+- [x] **2.2** Chunk → rerank → top-k assembly replacing blind 15k head-slice
+  - **The defect (§4.7 / B-6), reproduced live before fixing.** `MAX_CONTENT_CHARS
+    = 15000` was applied as `content[:15000]` at **6 call sites**. On a
+    10,936-char fixture whose evidence sits in the back half (as it does in every
+    real report — tables and conclusions are never in the front matter), against
+    a 4,000-char budget:
+    - head-slice retained **0 of 4** evidence markers, and *did* retain
+      `"Copyright"`;
+    - chunk→rerank→top-k retained **4 of 4**.
+    - Ranking diagnostic: the evidence chunk scores `bm25=19.611`, the foreword
+      `bm25=0.000`. The budget is **unchanged** — only how it is *spent*.
+  - **New module `hyperion/tools/content_selector.py`** (828 lines): `tokenize`,
+    `chunk_content` (structure-aware: headings → blank lines → sentences),
+    `rerank_chunks`, `select_relevant_content` → `SelectionResult`,
+    `select_content` (string-in/string-out, the literal one-line head-slice
+    swap), `Chunk`/`SelectionResult` dataclasses carrying provenance.
+  - **BM25 hand-implemented** (Robertson/Sparck-Jones, `k1=1.5`, `b=0.75`, IDF
+    within the document's own chunk set). Not a dependency: `rank-bm25` is
+    present only *transitively* via crawl4ai and is not declared in
+    `pyproject.toml`, so importing it would have been an undeclared-dependency
+    landmine.
+  - **Selection is by score; output is by document order** — a relevance-sorted
+    jumble contains the identical characters but is measurably worse input for
+    the LLM that consumes it.
+  - **Wired into all 6 sites**, threading the grounded query end-to-end:
+    `deep_search.py` (`_fit_content`, `_extract_batch(query)`, `search()`),
+    `http_extract.py` (`extract`/`extract_batch`, both `content` and `markdown` —
+    selected independently because markdown retains table markup),
+    `unified_extract.py` (`_fit` hooked into `_finish`, **only when `ok`** so the
+    quality gate still sees pre-selection text — a selection bug must not read as
+    an extraction failure and send the ladder to a browser tier),
+    `sub_agent.py` (`_extract_urls(query)`, SEC-filing path).
+  - **Never-raises / never-empty contract.** On any internal failure the result
+    is the old head-slice with `degraded=True` and a WARNING with `exc_info=True`
+    (fix 0.3 discipline). A bug here can cost retrieval *quality*; it can never
+    zero retrieval — the failure mode that produced the audit's P0.
+  - **6 real implementation bugs caught by the new tests and fixed in the
+    implementation, never by weakening a test:**
+    1. Short titled sections (`## Conclusions`) were absorbed into the previous
+       chunk, **deleting the heading label** — precisely the short, high-value
+       closing section a consulting report most wants. Fixed with
+       `_is_titled_section()`.
+    2. Budget **under-filled**: 200 of 1,000 chars on a boundary-less document.
+       An 80% unspent budget is an 80% smaller evidence base than the caller
+       asked for — quietly *worse* than the head-slice being replaced. Fixed
+       with a top-up pass (`MIN_TOPUP_CHARS = 150`; threshold, not always, or
+       every selection ends mid-sentence for a fragment too short to carry a
+       fact).
+    3. A **table of contents** scored `bm25=0.000` but `boost=0.600` on pure
+       numeral density, beating genuinely-scored chunks. `_evidence_boost` was
+       documented as a tie-breaker but applied unconditionally; now gated on
+       `base > 0`. Generalises to stock-ticker sidebars, date lists, pagination,
+       footnote runs, cookie banners.
+    4. `_is_titled_section("# H1\n\n## H2")` returned True (an H2 counts as "text
+       under H1"), emitting a 12-char pure-label chunk. Fixed by excluding
+       heading lines from the body check.
+    5. **The greedy fill pass had no relevance gate** — only the top-up did. At a
+       900-char budget the 1,618-char lead chunk does not fit, so assembly began
+       empty, correctly took the three evidence chunks (673 chars), then spent
+       the remaining 227 on a **121-char table of contents** (one of six
+       identical copies; at score 0.0 all zeros tie and the lowest index wins).
+       The front matter §4.7 complains about walked back in through the side
+       door. Both passes now share one gate: a zero-scoring chunk is admitted
+       only when the document has no scored chunk *anywhere*. Post-fix, budget
+       900 keeps `[0, 15, 16, 17]` — all 4 evidence markers, no ToC, no
+       acknowledgements, 900/900 chars spent.
+    6. A **relevance-blind selection reported itself as clean.** When BM25
+       matches no query term in any chunk, the reranker ran but had nothing to
+       rank on, so the output is a head-slice in all but name; it returned
+       `degraded=False`. Now flagged with a reason, because fix 2.6 reports
+       extraction yield off these flags — an unflagged relevance-blind selection
+       tells the operator "15,000 chars, reranked, clean" for a source that
+       contributed nothing topical, which is the exact shape of the audit's P0:
+       a healthy-looking metric over a silent quality failure. Deliberately
+       does **not** flag a prefix-cut top-up on its own — a cut chunk is a
+       *boundary* artefact, not a relevance failure, and firing on every normal
+       budget-edge trim would make the flag worthless.
+  - **Invariants proved, not assumed**, before being pinned as tests: lossless
+    chunking across 6 document shapes (markdown, blank-line-only, no boundaries,
+    one huge sentence, tabs/tables, CRLF); never-raises across 13 content × 4
+    query combinations; budget respected at 300/1,000/5,000/15,000 including 0
+    and negative; determinism across 5 runs; token-boundary matching
+    (`tokenize("said chain maintain")` does **not** yield `"ai"` — the §4.8 defect
+    fix 2.4 will address in `evidence_scorer`).
+  - `tests/test_content_selector.py`: **+271 tests** (`TestTheAuditsActualComplaint`,
+    `TestChunking`, `TestReranking`, `TestTokenization`, `TestAssemblyContract`,
+    `TestNeverRaisesNeverSilentlyEmpty`).
+  - Net diff: **1,684 insertions / 20 deletions** across 7 files.
+  - Full suite: **1,029 passed, 8 skipped** (was 758 passed, 3 skipped after
+    2.1; **+271 new tests, zero regressions, zero pre-existing tests
+    modified**). `ruff` clean on both new files; the 28 pre-existing `ruff`
+    findings in the touched consumers were verified pre-existing at HEAD and are
+    left for fixes 5.1/5.3.
+  - Note: `deep_search.to_markdown()` retains a `[:MAX_CONTENT_CHARS]` cap. That
+    is a render-time cap on *already-selected* content, not a selection, and is
+    deliberately left in place.
 - [ ] **2.3** `pdfplumber`/`camelot` table extraction → `chart_specs`
 - [ ] **2.4** Token-boundary relevance in `evidence_scorer`; recalibrate `MIN_RELEVANCE`
 - [ ] **2.5** Cap `confidence` when `overall_stance == "insufficient"`
