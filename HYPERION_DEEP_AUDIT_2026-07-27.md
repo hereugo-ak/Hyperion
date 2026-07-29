@@ -1644,6 +1644,54 @@ progress, `[x]` = landed with proof.
   - `tests/test_mbb_chart_vocabulary.py` — **122 tests / 11 classes.** Lint:
     "All checks passed"; no new findings in touched modules vs `bcdf98e`
     (B905 18→12, E501 20→19 are improvements).
+- [x] **4.3-followup** Full-suite verification + the OOM was NOT kaleido
+  - `dad5b03` declares `pytest-timeout` (it was installed ad hoc and undeclared,
+    so a clean `pip install -e ".[dev]"` produced an interpreter where
+    `--timeout=120` is an unrecognised argument). Not hypothetical: this sandbox
+    was rebuilt between sessions and came back without it. Negative control — a
+    test that blocks forever: **without** the plugin it ran until an external
+    `timeout 15` killed it (rc=124) and pytest printed *nothing*; **with**
+    `--timeout=5` it reported `Failed: Timeout (>5.0s)`, rc=1, in 5.04s.
+  - **The suite is green. 1456 passed, 8 skipped, 0 failed, 0 errors** across
+    38 per-module shards (`tools/run_suite_sharded.sh`), wall 118s.
+    Collection parity proves sharding hides nothing: full-suite collection and
+    the sum of the 38 shard collections both report **1464**, and
+    1456 + 8 = 1464 exactly.
+  - **The handoff's expected total (~1573) was wrong** and was arithmetic, not
+    measurement: it came from a stale `1451` that contradicted its own `1334`
+    baseline. Measured: 1342 collected without the 4.3 module + 122 in it =
+    **1464**, i.e. `1334 + 122 = 1456` passing. No tests are missing.
+  - 🔴 **The single-process OOM is not the kaleido/Chromium tree.** The prior
+    session inferred that from the 34%→93% improvement after the `close()` fix.
+    Falsified by direct control: the full suite run with **both** chart modules
+    excluded (`--ignore` mbb + chart_export_smoke) *still* dies `rc=137` at
+    **91%**. Kaleido cannot be the cause of a crash that happens without it.
+  - **Actual cause, by bisect on module prefixes** (`tools/probe_suite_memory.sh`,
+    peak RSS via `resource.getrusage`): a prefix of the first **34** modules
+    peaks at **316 MB and passes**; extending to 35–36 OOMs. Module 35 is
+    `tests/test_two_column_layout.py`, which alone peaks at **454 MB** — more
+    than the whole 34-module prefix. Its neighbour
+    `test_unified_extract_ladder.py` is 93 MB, so this is one module, not
+    ambient growth. WeasyPrint PDF rendering, not chart export, is the
+    allocation that breaks the 985 MB ceiling.
+  - Peak RSS is monotonic within one interpreter (221→327→344 MB over the first
+    26 modules) and never returns, which is why sharding is the only thing that
+    reclaims: process exit does the freeing. `release_renderer()` can return the
+    Chromium tree *between batches* but cannot lower an interpreter's own
+    high-water mark — so 4.3's fix was real but was never the whole story.
+  - Two measurement instruments were themselves wrong before they were right:
+    `/usr/bin/time -f %M` is **not installed** in this image and its absence
+    returned `rc=127` with a `0 MB` reading — which reads as "no memory growth"
+    rather than "did not run", the exact green-test-over-broken-system failure
+    this audit is about. Replaced with in-process `getrusage`. A per-module RSS
+    pytest plugin was abandoned after its detached launches were repeatedly
+    reaped, giving stale traces from an earlier validation run; the prefix
+    bisect is coarser but its numbers are trustworthy.
+  - Still open: no single-process green summary exists, and on this host one is
+    not achievable while `test_two_column_layout.py` needs 454 MB. The correct
+    fix is to bound that module's peak (or shard in CI), which is 5.x work —
+    not a claim that the suite is unverified. Sharded green is a real
+    measurement; it is simply a different one.
 - [ ] **4.4** Enforce MGI exhibit anatomy in template
 - [ ] **4.5** Add At-a-glance, Technical appendix, Endnotes
 
