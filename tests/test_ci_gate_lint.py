@@ -23,6 +23,7 @@ this runs in the 985MB CI sandbox.
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import tomllib
 from pathlib import Path
@@ -201,6 +202,40 @@ class TestStructuralGuards:
             "module's types instead of hiding it"
         )
 
+    def test_run_gate_routes_lint_before_quality_harness(self):
+        """--lint must short-circuit before the eval-harness import, so the
+        lint gate runs even where the LLM stack is not installed."""
+        src = (REPO_ROOT / "hyperion" / "eval" / "ci_gate.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(src)
+        run_gate = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_gate"
+        )
+        # body[0] is the docstring; the lint route must be the first real
+        # statement, and it must precede the harness import in the source.
+        first_stmt = ast.get_source_segment(src, run_gate.body[1]) or ""
+        assert "lint" in first_stmt, (
+            "run_gate's first statement after the docstring must be the "
+            "--lint route, before the harness import"
+        )
+        assert src.index("if args.lint:") < src.index(
+            "from hyperion.eval import GOLDEN_SET"
+        ), "--lint route must precede the eval-harness import"
+
+    def test_e501_quarantine_shrinks_never_grows(self):
+        """E501 per-file-ignores are the 5.1e burn-down list. Adding files to
+        it instead of reflowing lines re-creates the backlog."""
+        cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        pfi = cfg["tool"]["ruff"]["lint"]["per-file-ignores"]
+        e501_count = sum(1 for v in pfi.values() if "E501" in v)
+        assert e501_count <= 60, (
+            "E501 per-file quarantine grew beyond the 5.1f baseline — reflow "
+            "lines instead of quarantining new files"
+        )
+
     def test_semantics_changing_rule_families_stay_ignored_with_reason(self):
         """UP042/TC00x/SIM112 are ignored because the 'fix' changes runtime
         behavior in this codebase (documented in 989372d/6acbdb3). If the
@@ -230,3 +265,53 @@ class TestNegativeControl:
             "negative control: a failing tool must NEVER produce EXIT_PASS"
         )
         assert rc == EXIT_REGRESSION
+
+
+class TestLintGateLiveProbe:
+    """The only tests here that invoke the REAL ruff + mypy (not stubs).
+
+    Skipped where the tools are absent (985MB CI sandbox); on a dev box they
+    prove the gate is green on the committed tree and that a reintroduced
+    F401 — the finding class behind the P0 — actually fails the gate.
+    """
+
+    def test_gate_passes_on_current_tree(self):
+        import pytest
+
+        pytest.importorskip("mypy")
+        from hyperion.eval import ci_gate
+
+        rc = ci_gate.run_lint()
+        assert rc == ci_gate.EXIT_PASS, (
+            "lint gate is red on the tree it was committed against — either a "
+            "new finding landed or the quarantine was widened silently"
+        )
+
+    def test_nc1_live_reintroduced_f401_fails_the_gate(self):
+        """Drop an unused import into the scanned tree; the real gate MUST
+        catch it. A gate that cannot catch the finding class that caused the
+        P0 is decorative."""
+        import pytest
+
+        pytest.importorskip("mypy")
+        from hyperion.eval import ci_gate
+
+        probe = REPO_ROOT / "hyperion" / "_lint_gate_nc_probe.py"
+        # NOTE: no comment containing the suppression-directive token anywhere
+        # near this import — ruff treats any comment starting with that token
+        # as a directive, which is how the first version of this probe
+        # silenced its own finding and produced a false-pass control.
+        probe.write_text(
+            '"""NC probe — deleted by the test that writes it."""\n'
+            "import os\n"
+            "\n"
+            "NC_MARKER = True\n"
+        )
+        try:
+            rc = ci_gate.run_lint()
+        finally:
+            probe.unlink()
+        assert rc == ci_gate.EXIT_REGRESSION, (
+            "negative control: a real unused import in the scanned tree must "
+            "fail the gate"
+        )
