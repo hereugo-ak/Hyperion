@@ -124,8 +124,8 @@ def ramp(stops: Sequence[str], t: float) -> str:
 
 def dim(hex_color: str, factor: float) -> str:
     """Scale a colour toward black in OKLab lightness. factor in [0, 1]."""
-    L, a, b = rgb_to_oklab(hex_to_rgb(hex_color))
-    return rgb_to_hex(oklab_to_rgb((L * factor, a * factor, b * factor)))
+    lightness, a, b = rgb_to_oklab(hex_to_rgb(hex_color))
+    return rgb_to_hex(oklab_to_rgb((lightness * factor, a * factor, b * factor)))
 
 
 def mix(a_hex: str, b_hex: str, t: float) -> str:

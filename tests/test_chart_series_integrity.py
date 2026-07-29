@@ -325,7 +325,7 @@ class TestBlankExhibitIsNotASuccess:
         also pass if the stub simply never worked — which is precisely the
         false-pass mode described in the class docstring, one level down.
         """
-        go = _go()
+        _go()  # require plotly, skipping if absent — the creators take `go` as a param
 
         class _RealFigureGenerator(self._EmptyFigureGenerator):
             def _get_chart_creator(self, chart_type):

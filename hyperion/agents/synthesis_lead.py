@@ -992,7 +992,7 @@ class SynthesisLead(BaseAgent):
         """
 
         # Consulting-style section titles — never use raw agent names as headings
-        AGENT_SECTION_TITLES = {
+        agent_section_titles = {
             "market_analyst": "Market Landscape",
             "competitive_intel": "Competitive Landscape",
             "financial_analyst": "Financial Viability",
@@ -1008,7 +1008,7 @@ class SynthesisLead(BaseAgent):
         }
 
         def _section_title(agent: str) -> str:
-            return AGENT_SECTION_TITLES.get(agent, agent.replace("_", " ").title())
+            return agent_section_titles.get(agent, agent.replace("_", " ").title())
 
         # Fix 4.1: derive the per-section word allocation from the page contract
         # instead of hardcoding it.

@@ -60,8 +60,6 @@ import re
 from datetime import datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
@@ -88,6 +86,8 @@ from hyperion.schemas.models import (
     SourceCredibility,
 )
 from hyperion.tools.query_utils import ground_query
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification

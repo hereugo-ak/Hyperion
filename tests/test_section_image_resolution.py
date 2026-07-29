@@ -23,6 +23,7 @@ These tests cover:
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -48,9 +49,9 @@ class TestNoUpscalePreserved:
 
     @pytest.fixture()
     def small_image(self, tmp_path) -> str:
-        Image, _, _ = ImageProcessor()._import_pillow()
+        pil_image, _, _ = ImageProcessor()._import_pillow()
         path = tmp_path / "small.jpg"
-        Image.new("RGB", (1600, 800), (200, 180, 160)).save(path, "JPEG")
+        pil_image.new("RGB", (1600, 800), (200, 180, 160)).save(path, "JPEG")
         return str(path)
 
     def test_small_source_returns_error_result(self, small_image: str) -> None:
@@ -76,9 +77,9 @@ class TestPrintGradeProcessing:
 
     @pytest.fixture()
     def hires_image(self, tmp_path) -> str:
-        Image, _, _ = ImageProcessor()._import_pillow()
+        pil_image, _, _ = ImageProcessor()._import_pillow()
         path = tmp_path / "hires.jpg"
-        Image.new("RGB", (2400, 1200), (120, 100, 90)).save(path, "JPEG")
+        pil_image.new("RGB", (2400, 1200), (120, 100, 90)).save(path, "JPEG")
         return str(path)
 
     def test_full_res_source_processes_to_2000x1000(
@@ -93,8 +94,8 @@ class TestPrintGradeProcessing:
         assert result.final_height == 1000
         assert out.exists()
 
-        Image, _, _ = ImageProcessor()._import_pillow()
-        with Image.open(out) as img:
+        pil_image, _, _ = ImageProcessor()._import_pillow()
+        with pil_image.open(out) as img:
             assert img.size == (2000, 1000)
             # PNG stores DPI as pixels-per-meter, so 300 DPI round-trips
             # as ~299.9994 — assert within tolerance, not exact equality.
@@ -180,7 +181,7 @@ class TestQualityAwareCache:
         path = await client.download_image(self._image(), quality="high")
         assert os.path.basename(path) == "photo123_high.jpg"
         assert fetched, "high request must download, not serve the regular cache"
-        assert open(path, "rb").read() == b"fresh-fullres"
+        assert Path(path).read_bytes() == b"fresh-fullres"
 
     @pytest.mark.asyncio
     async def test_same_quality_cache_hit_skips_download(
@@ -194,7 +195,7 @@ class TestQualityAwareCache:
 
         monkeypatch.setattr(client, "_get_client", _get)
         path = await client.download_image(self._image(), quality="high")
-        assert open(path, "rb").read() == b"cached-fullres"
+        assert Path(path).read_bytes() == b"cached-fullres"
 
 
 class TestDesignerRequestsFullResolution:

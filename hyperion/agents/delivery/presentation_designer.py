@@ -2958,14 +2958,17 @@ class PresentationDesigner(BaseAgent):
 
         for page in pages:
             # Check for blank pages (no content blocks and no images)
-            if not page.content_blocks and not page.images and not page.charts:
-                if page.page_type not in (PageType.BACK_COVER,):
-                    no_blank = False
+            if (
+                not page.content_blocks
+                and not page.images
+                and not page.charts
+                and page.page_type not in (PageType.BACK_COVER,)
+            ):
+                no_blank = False
 
             # Check for orphaned images (image without text context on same page)
-            if page.images and not page.content_blocks:
-                if page.page_type != PageType.COVER:
-                    no_orphaned = False
+            if page.images and not page.content_blocks and page.page_type != PageType.COVER:
+                no_orphaned = False
 
         return (no_blank, no_orphaned)
 

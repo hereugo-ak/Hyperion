@@ -386,7 +386,7 @@ class RenderEngine(BaseAgent):
         HYPERION brand palette. (§6.4)
         """
         try:
-            from PIL import Image, ImageEnhance, ImageOps
+            from PIL import Image, ImageEnhance
 
             # Split into RGB channels
             r, g, b = img.split()
@@ -413,7 +413,8 @@ class RenderEngine(BaseAgent):
         part of the image (faces, objects, focal points). (§6.4)
         """
         try:
-            from PIL import Image
+            # Availability probe only — the crop below uses img's own methods.
+            from PIL import Image as _PILImage  # noqa: F401
 
             width, height = img.size
             aspect_target = target_width / target_height
@@ -736,10 +737,10 @@ class RenderEngine(BaseAgent):
             for page_num in range(len(doc)):
                 page = doc[page_num]
                 text = page.get_text().strip()
-                if len(text) < 10:  # Less than 10 chars = effectively blank
-                    # Don't flag cover page (page 0) or back cover (last page)
-                    if page_num != 0 and page_num != len(doc) - 1:
-                        blank_pages.append(page_num + 1)
+                # Less than 10 chars = effectively blank; don't flag cover
+                # page (page 0) or back cover (last page)
+                if len(text) < 10 and page_num != 0 and page_num != len(doc) - 1:
+                    blank_pages.append(page_num + 1)
             doc.close()
 
         except ImportError:
@@ -829,11 +830,10 @@ class RenderEngine(BaseAgent):
                 images = page.get_images()
                 text = page.get_text().strip()
 
-                if images and len(text) < 10:
-                    # Page has images but no text — orphaned
-                    # Don't flag cover (page 0) or back cover (last page)
-                    if page_num != 0 and page_num != len(doc) - 1:
-                        orphaned_pages.append(page_num + 1)
+                # Page has images but no text — orphaned; don't flag cover
+                # (page 0) or back cover (last page)
+                if images and len(text) < 10 and page_num != 0 and page_num != len(doc) - 1:
+                    orphaned_pages.append(page_num + 1)
 
             doc.close()
 

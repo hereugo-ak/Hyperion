@@ -683,7 +683,7 @@ class ObscuraClient:
                 except ImportError:
                     # websockets not available — try aiohttp
                     try:
-                        from aiohttp import ClientSession, WSMsgType
+                        from aiohttp import ClientSession
 
                         session = ClientSession()
                         self._cdp_ws = await session.ws_connect(ws_url)

@@ -516,8 +516,10 @@ class EngagementDirector(BaseAgent):
                 if task.agent.value == reroute_from:
                     # Add dependency on the reroute_to agent's task
                     for dep_task in self._current_dag.tasks:
-                        if dep_task.agent.value == reroute_to:
-                            if dep_task.id not in task.dependencies:
+                        if (
+                            dep_task.agent.value == reroute_to
+                            and dep_task.id not in task.dependencies
+                        ):
                                 task.dependencies.append(dep_task.id)
                                 self._current_dag.adapted = True
                                 self._current_dag.adaptation_log.append(
@@ -797,13 +799,13 @@ class EngagementDirector(BaseAgent):
                         selected_agents.append(ea)
 
             # Ensure minimum of 6 agents for comprehensive analysis
-            MIN_AGENTS = 6
-            if len(selected_agents) < MIN_AGENTS:
+            min_agents = 6
+            if len(selected_agents) < min_agents:
                 defaults = QUESTION_TYPE_AGENTS.get(question_types[0], QUESTION_TYPE_AGENTS[QuestionType.GENERAL])
                 for da in defaults:
                     if da not in selected_agents:
                         selected_agents.append(da)
-                    if len(selected_agents) >= MIN_AGENTS:
+                    if len(selected_agents) >= min_agents:
                         break
 
             key_question = data.get("key_question", question)

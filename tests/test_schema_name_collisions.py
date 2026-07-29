@@ -372,7 +372,7 @@ class TestScanHorizonNoLongerFailsSilently:
         )
         assert any("0 constructed" in r.getMessage() for r in errors)
 
-    def test_unnamed_regulation_is_dropped_not_labelled_Unknown(self, caplog):
+    def test_unnamed_regulation_is_dropped_not_labelled_unknown(self, caplog):
         """An item with no `regulation_name` must be dropped, never defaulted.
 
         Found by this very test file: the parse block defaulted both

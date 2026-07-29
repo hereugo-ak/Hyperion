@@ -332,8 +332,11 @@ def print_completion_health(
     # Degraded status
     if not getattr(result, 'success', False):
         print(f"\n  ⚠ ENGAGEMENT FAILED: {getattr(result, 'error', 'unknown')[:60]}")
-    elif hasattr(result, 'quality_score') and result.quality_score:
-        if result.quality_score.total_score < result.quality_score.threshold:
+    elif (
+        hasattr(result, 'quality_score')
+        and result.quality_score
+        and result.quality_score.total_score < result.quality_score.threshold
+    ):
             print("\n  ⚠ Quality below threshold — report delivered with caveats.")
 
     print("=" * 72 + "\n")

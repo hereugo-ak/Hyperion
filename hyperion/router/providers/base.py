@@ -156,9 +156,7 @@ class ProviderHealth:
                 self.consecutive_failures = 0
                 return True
             return False
-        if self.status == ProviderStatus.UNAVAILABLE:
-            return False
-        return True
+        return self.status != ProviderStatus.UNAVAILABLE
 
     def uptime_percentage(self) -> float:
         if self.total_requests == 0:

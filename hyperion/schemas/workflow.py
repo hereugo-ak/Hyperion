@@ -222,11 +222,12 @@ class WorkflowDAG(BaseModel):
         failed_ids = {t.id for t in self.tasks if t.status == TaskStatus.FAILED}
         newly_failed: list[TaskNode] = []
         for task in self.tasks:
-            if task.status == TaskStatus.PENDING:
-                if any(dep in failed_ids for dep in task.dependencies):
-                    task.status = TaskStatus.FAILED
-                    task.error = "Upstream dependency failed"
-                    newly_failed.append(task)
+            if task.status == TaskStatus.PENDING and any(
+                dep in failed_ids for dep in task.dependencies
+            ):
+                task.status = TaskStatus.FAILED
+                task.error = "Upstream dependency failed"
+                newly_failed.append(task)
         return newly_failed
 
     def get_running_tasks(self) -> list[TaskNode]:

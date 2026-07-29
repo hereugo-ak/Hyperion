@@ -1257,12 +1257,11 @@ class QualityGate(BaseAgent):
             gaps.append("No limitations listed — what couldn't be researched?")
 
         # Cross-reference with Fact Checker
-        if self._fact_check_report:
-            if self._fact_check_report.hallucinated_citation_count > 0:
-                gaps.append(
-                    f"{self._fact_check_report.hallucinated_citation_count} hallucinated citation(s) "
-                    f"must be replaced with real sources."
-                )
+        if self._fact_check_report and self._fact_check_report.hallucinated_citation_count > 0:
+            gaps.append(
+                f"{self._fact_check_report.hallucinated_citation_count} hallucinated citation(s) "
+                f"must be replaced with real sources."
+            )
 
         return gaps
 

@@ -757,8 +757,7 @@ class DataVisualizer(BaseAgent):
                         },
                     })
 
-            elif chart_spec.chart_type == ChartType.PIE:
-                if i == 0:
+            elif chart_spec.chart_type == ChartType.PIE and i == 0:
                     traces.append({
                         "type": "pie",
                         "name": series.name,
@@ -1220,10 +1219,7 @@ class DataVisualizer(BaseAgent):
         for series in chart_spec.data_series:
             if series.color:
                 unique_colors.add(series.color)
-        if len(unique_colors) > 5:
-            return False
-
-        return True
+        return len(unique_colors) <= 5
 
     # ─────────────────────────────────────────────────────────────────────
     # Axis calibration

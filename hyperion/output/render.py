@@ -239,7 +239,7 @@ class TemplateRenderer:
             try:
                 from jinja2 import Markup  # deprecated fallback for old jinja2
             except ImportError:
-                Markup = str  # fallback — str will be auto-escaped by Jinja2
+                Markup = str  # noqa: N806 — fallback; str will be auto-escaped by Jinja2
 
         import re
 
@@ -563,14 +563,14 @@ class PDFRenderer:
         # ── Attempt 1: WeasyPrint ──
         weasy_error: Exception | None = None
         try:
-            HTML, CSS = self._get_weasyprint()
+            weasy_html, weasy_css = self._get_weasyprint()
 
             # Create WeasyPrint HTML object
-            html_obj = HTML(string=full_html, base_url=str(Path.cwd()))
+            html_obj = weasy_html(string=full_html, base_url=str(Path.cwd()))
 
             # Extra stylesheet only when the caller explicitly passed one;
             # the shipped brand CSS is inline in `full_html` already.
-            css_obj = CSS(string=css_embedded) if css_embedded else None
+            css_obj = weasy_css(string=css_embedded) if css_embedded else None
 
             # Render PDF
             if css_obj:

@@ -47,10 +47,9 @@ class Rule(Static):
             self.update(self._build(self.size.width or HR_WIDTH))
 
     def _frame(self) -> None:
-        if (time.monotonic() - self._t0) * 1000.0 >= _DRAW_MS:
-            if self._timer:
-                self._timer.stop()
-                self._timer = None
+        if (time.monotonic() - self._t0) * 1000.0 >= _DRAW_MS and self._timer:
+            self._timer.stop()
+            self._timer = None
         self.update(self._build(self.size.width or HR_WIDTH))
 
     def _build(self, width: int):

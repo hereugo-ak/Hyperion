@@ -1605,7 +1605,7 @@ class TestSubjectResolutionIsExplicit:
         # prompt) has adjacent interpolations by design: an absent unit there is
         # cosmetic, whereas an absent term in a query changes what is searched.
         # The discriminator is whether the f-string carries query vocabulary.
-        QUERY_WORDS = (
+        query_words = (
             "acquisition", "criteria", "market", "competitor", "companies",
             "top", "best", "industry", "report", "analysis", "data",
             "forecast", "benchmark", "trends", "news", "regulation",
@@ -1620,7 +1620,7 @@ class TestSubjectResolutionIsExplicit:
                 for v in node.values
                 if isinstance(v, ast.Constant) and isinstance(v.value, str)
             ).lower()
-            if not any(word in literal for word in QUERY_WORDS):
+            if not any(word in literal for word in query_words):
                 continue
             # Two interpolations separated only by a single space: if either is
             # empty the result gains a doubled space or silently loses a term.
@@ -1760,7 +1760,7 @@ class TestPronounUsCannotAnchorGeography:
         wrapper = re.compile(
             r"^\(\?<!\[A-Za-z0-9\]\)(?P<alias>.*)\(\?!\[A-Za-z0-9\]\)$"
         )
-        for pattern, canonical in _GEO_PATTERNS:
+        for pattern, _canonical in _GEO_PATTERNS:
             match = wrapper.match(pattern.pattern)
             if not match:
                 continue

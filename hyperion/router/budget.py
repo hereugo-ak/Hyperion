@@ -201,10 +201,7 @@ class DailyBudgetPlanner:
 
         # Check model-level RPD limit
         model_remaining = budget.remaining_for_model(model)
-        if model_remaining is not None and model_remaining < 1:
-            return False
-
-        return True
+        return model_remaining is None or model_remaining >= 1
 
     def consume(
         self,

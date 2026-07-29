@@ -331,8 +331,7 @@ class UnifiedSearch:
                 logger.debug("searxng search failed: %s", exc)
 
         # Step 2: Jina (if SearxNG returned insufficient results)
-        if searxng_count < min_results and use_jina_fallback:
-            if self._tier_available("jina"):
+        if searxng_count < min_results and use_jina_fallback and self._tier_available("jina"):
                 tools_tried.append("jina")
                 try:
                     jina = await self._get_jina()
@@ -395,8 +394,7 @@ class UnifiedSearch:
         # (Obscura above can only re-render URLs we already had, so without this
         # tier a dead SearxNG plus a rate-limited Jina meant zero results with
         # no recourse, even though a working fallback existed in the codebase.)
-        if not all_results and use_stealth_fallback:
-            if self._tier_available("stealth"):
+        if not all_results and use_stealth_fallback and self._tier_available("stealth"):
                 tools_tried.append("stealth")
                 try:
                     stealth = await self._get_stealth()
