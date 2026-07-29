@@ -27,6 +27,8 @@ import argparse
 import asyncio
 import json
 import logging
+import shutil
+import subprocess
 import sys
 
 logger = logging.getLogger(__name__)
@@ -37,9 +39,48 @@ EXIT_PASS = 0
 EXIT_REGRESSION = 1
 EXIT_HARNESS_ERROR = 2
 
+# The lint gate runs the same two commands the pre-commit hooks run, in the
+# same order. Kept as data (not interpolated into shell strings) so tests can
+# assert the contract directly.
+LINT_STEPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ruff", ("ruff", "check", "hyperion", "tests", "tools")),
+    ("mypy", ("mypy", "hyperion")),
+)
+
+
+def run_lint() -> int:
+    """Run the static-analysis gate (ruff + mypy) and return a CI exit code.
+
+    This is the process fix for the original P0 (audit §11 DoD #13): findings
+    like F401/F841/B905 repeatedly proved to be live outages, not style noise,
+    yet nothing enforced them. A gate that only runs in pre-commit can be
+    skipped with --no-verify; the same gate must exist in CI.
+
+    Missing tools are a harness error (exit 2), not a pass — a gate that
+    silently skips when ruff is absent is exactly the failure this fixes.
+    """
+    failed: list[str] = []
+    for name, cmd in LINT_STEPS:
+        if shutil.which(cmd[0]) is None:
+            print(f"ERROR: {cmd[0]} not found on PATH — cannot run the lint gate")
+            return EXIT_HARNESS_ERROR
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            failed.append(name)
+            tail = "\n".join(
+                (proc.stdout.strip() + "\n" + proc.stderr.strip()).strip().splitlines()[-15:]
+            )
+            print(f"FAIL: {name} reported findings (exit {proc.returncode}):\n{tail}")
+        else:
+            print(f"PASS: {name} clean")
+    return EXIT_REGRESSION if failed else EXIT_PASS
+
 
 async def run_gate(args: argparse.Namespace) -> int:
     """Execute the requested gate mode and return a process exit code."""
+    if args.lint:
+        return run_lint()
+
     from hyperion.eval import GOLDEN_SET, EvalHarness, run_deterministic_checks
 
     if args.report:
@@ -152,6 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--update-baseline",
         action="store_true",
         help="Update the stored baseline with current scores",
+    )
+    parser.add_argument(
+        "--lint",
+        action="store_true",
+        help="Run the static-analysis gate (ruff + mypy) instead of quality checks",
     )
     return parser
 

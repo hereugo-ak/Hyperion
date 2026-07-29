@@ -285,9 +285,13 @@ class Crawl4AIClient:
 
         # Headers
         for i in range(6, 0, -1):
+
+            def _header_repl(m: re.Match[str], level: int = i) -> str:
+                return "\n" + "#" * level + " " + m.group(1).strip() + "\n"
+
             html = re.sub(
                 rf"<h{i}[^>]*>(.*?)</h{i}>",
-                lambda m, level=i: "\n" + "#" * level + " " + m.group(1).strip() + "\n",
+                _header_repl,
                 html,
                 flags=re.DOTALL | re.IGNORECASE,
             )

@@ -85,6 +85,89 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
 
+# Rule families judged semantics-changing in this codebase during the
+# 5.1e-continuation triage (see commits 989372d, 6acbdb3):
+#   UP042 — str(StrEnum) interpolates as the value where str(str,Enum)-mixin
+#           interpolates as "ClassName.MEMBER"; this codebase interpolates
+#           enum members into prompts, paths, and exhibit text, so blanket
+#           conversion silently rewrites client-facing strings.
+#   TC001/TC002/TC003 — 7 of the 9 flagged production files define pydantic
+#           BaseModels or dataclasses whose annotations are evaluated at
+#           runtime; moving the import into TYPE_CHECKING breaks model
+#           construction with NameError.
+#   SIM112 — infra/services.py:279-281 reads genuine Windows env vars
+#           (ProgramFiles, ProgramFiles(x86), ProgramW6432); "fixing" the
+#           capitalization reads a different, empty variable on Windows.
+# The 5.1e-continuation backlog (503 E501 long lines + 3 pre-judged benign
+# sites) is quarantined per-file in [tool.ruff.lint.per-file-ignores] below
+# so that NEW findings in these families still fail the gate.
+ignore = ["UP042", "TC001", "TC002", "TC003", "SIM112"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-judged benign sites (documented in 989372d):
+"hyperion/router/wait_gate.py" = ["E501", "SIM103"]      # :128 deliberate nested condition
+"hyperion/agents/delivery/render_engine.py" = ["E501", "SIM102"]  # :752 mirrors PyPDF2 fallback branch
+"tools/audit_render_probe.py" = ["N802"]                 # def V — known-benign probe helper
+# 5.1e-continuation E501 backlog (503 lines: 281 complete-code, 158 f-string,
+# 52 no-open-bracket, 8 triple-quoted, 4 url/docstring — documented 6acbdb3).
+# Quarantined so new long lines elsewhere fail; shrink this list as files are
+# reflowed under a runnable test suite.
+"hyperion/agents/base.py" = ["E501"]
+"hyperion/cli.py" = ["E501"]
+"hyperion/config.py" = ["E501"]
+"hyperion/eval/harness.py" = ["E501"]
+"hyperion/output/chart_specs.py" = ["E501"]
+"hyperion/router/providers/base.py" = ["E501"]
+"hyperion/schemas/research.py" = ["E501"]
+"hyperion/schemas/workflow.py" = ["E501"]
+"hyperion/tools/crawl4ai.py" = ["E501"]
+"hyperion/tools/google_trends.py" = ["E501"]
+"hyperion/agents/delivery/presentation_designer.py" = ["E501"]
+"hyperion/agents/engagement_director.py" = ["E501"]
+"hyperion/agents/specialists/*.py" = ["E501"]
+"hyperion/agents/sub_agent.py" = ["E501"]
+"hyperion/agents/synthesis_lead.py" = ["E501"]
+"hyperion/agents/support/data_visualizer.py" = ["E501"]
+"hyperion/agents/support/fact_checker.py" = ["E501"]
+"hyperion/agents/support/quality_gate.py" = ["E501"]
+"hyperion/agents/support/research_librarian.py" = ["E501"]
+"hyperion/infra/services.py" = ["E501"]
+"hyperion/obs/health.py" = ["E501"]
+"hyperion/orchestrator.py" = ["E501"]
+"hyperion/output/charts.py" = ["E501"]
+"hyperion/output/images.py" = ["E501"]
+"hyperion/output/markdown.py" = ["E501"]
+"hyperion/output/render.py" = ["E501"]
+"hyperion/router/router.py" = ["E501"]
+"hyperion/schemas/models.py" = ["E501"]
+"hyperion/tools/camoufox_client.py" = ["E501"]
+"hyperion/tools/content_selector.py" = ["E501"]
+"hyperion/tools/deep_search.py" = ["E501"]
+"hyperion/tools/evidence_scorer.py" = ["E501"]
+"hyperion/tools/hackernews.py" = ["E501"]
+"hyperion/tools/pdf_tables.py" = ["E501"]
+"hyperion/tools/query_planner.py" = ["E501"]
+"hyperion/tools/query_utils.py" = ["E501"]
+"hyperion/tools/reddit.py" = ["E501"]
+"hyperion/tools/scrapling.py" = ["E501"]
+"hyperion/tools/searxng.py" = ["E501"]
+"hyperion/tools/second_brain.py" = ["E501"]
+"hyperion/tools/stealth_search.py" = ["E501"]
+"hyperion/tools/unsplash.py" = ["E501"]
+"hyperion/tools/wayback.py" = ["E501"]
+"hyperion/tools/world_bank.py" = ["E501"]
+"hyperion/tools/__init__.py" = ["E501"]
+"hyperion/tui/boot.py" = ["E501"]
+"hyperion/tui/screens/engagement.py" = ["E501"]
+"hyperion/tui/screens/splash.py" = ["E501"]
+"hyperion/tui/widgets/metrics.py" = ["E501"]
+"tests/test_evidence_scorer_relevance.py" = ["E501"]
+"tests/test_font_embedding.py" = ["E501"]
+"tests/test_p13.py" = ["E501"]
+"tests/test_tools.py" = ["E501"]
+"tests/test_unified_extract_ladder.py" = ["E501"]
+"tests/test_wait_gate.py" = ["E501"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -94,3 +177,99 @@ python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+# 5.1f staged allowlist — the process fix for the original P0.
+# 342 errors in 68 files at baseline (174 in hyperion/tui). Every NEW module
+# is checked strict by default; the backlog modules below are quarantined
+# with ignore_errors and must be removed one by one as they are annotated.
+# Third-party packages without stubs get ignore_missing_imports only — the
+# code that imports them is still checked.
+[[tool.mypy.overrides]]
+# Only packages actually imported by modules NOT in the backlog quarantine
+# appear here (warn_unused_configs flags the rest). When a quarantined module
+# leaves the list below, its third-party imports may need re-adding here —
+# e.g. duckduckgo_search, fredpy, alpha_vantage, kaleido, instructor,
+# tenacity. 5.5/5.6 will add yfinance / pikepdf / sqlite_vec.
+module = [
+    "textual.*", "trafilatura", "weasyprint", "transformers", "plotly.*",
+    "matplotlib.*", "PIL.*", "fitz", "pdfplumber",
+    "crawl4ai", "curl_cffi", "praw",
+    "nodriver", "camoufox", "playwright.*", "aiohttp",
+    "websockets", "jinja2", "markupsafe", "openai", "httpx",
+    "rich.*", "typer", "PyPDF2", "yaml",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Backlog quarantine — 68 files with strict errors at the 5.1f baseline.
+# Shrink this list; never grow it.
+module = [
+    "hyperion.agents.base",
+    "hyperion.agents.bus",
+    "hyperion.agents.delivery.presentation_designer",
+    "hyperion.agents.delivery.render_engine",
+    "hyperion.agents.engagement_director",
+    "hyperion.agents.specialists.competitive_intel",
+    "hyperion.agents.specialists.market_analyst",
+    "hyperion.agents.specialists.risk_analyst",
+    "hyperion.agents.support.data_visualizer",
+    "hyperion.agents.synthesis_lead",
+    "hyperion.eval.ci_gate",
+    "hyperion.eval.harness",
+    "hyperion.infra.services",
+    "hyperion.obs.health",
+    "hyperion.orchestrator",
+    "hyperion.output.chart_specs",
+    "hyperion.output.charts",
+    "hyperion.output.images",
+    "hyperion.output.markdown",
+    "hyperion.output.render",
+    "hyperion.router.providers.base",
+    "hyperion.router.router",
+    "hyperion.router.speculative_racer",
+    "hyperion.router.structured_validator",
+    "hyperion.tools.alpha_vantage",
+    "hyperion.tools.camoufox_client",
+    "hyperion.tools.curl_cffi_client",
+    "hyperion.tools.deep_search",
+    "hyperion.tools.flaresolverr",
+    "hyperion.tools.fred",
+    "hyperion.tools.google_trends",
+    "hyperion.tools.hackernews",
+    "hyperion.tools.http_extract",
+    "hyperion.tools.jina",
+    "hyperion.tools.nodriver_client",
+    "hyperion.tools.obscura",
+    "hyperion.tools.openalex",
+    "hyperion.tools.reddit",
+    "hyperion.tools.scrapling",
+    "hyperion.tools.searxng",
+    "hyperion.tools.sec_edgar",
+    "hyperion.tools.second_brain",
+    "hyperion.tools.semantic_scholar",
+    "hyperion.tools.stealth_search",
+    "hyperion.tools.unified_extract",
+    "hyperion.tools.unified_search",
+    "hyperion.tools.world_bank",
+    "hyperion.tui.app",
+    "hyperion.tui.banner",
+    "hyperion.tui.boot",
+    "hyperion.tui.content",
+    "hyperion.tui.motion.easing",
+    "hyperion.tui.motion.indicators",
+    "hyperion.tui.screens.deliverable",
+    "hyperion.tui.screens.engagement",
+    "hyperion.tui.screens.session",
+    "hyperion.tui.screens.splash",
+    "hyperion.tui.widgets.agent_grid",
+    "hyperion.tui.widgets.deliverable",
+    "hyperion.tui.widgets.findings_stream",
+    "hyperion.tui.widgets.header",
+    "hyperion.tui.widgets.mark",
+    "hyperion.tui.widgets.metrics",
+    "hyperion.tui.widgets.prompt",
+    "hyperion.tui.widgets.rule",
+    "hyperion.tui.widgets.tpm_bar",
+    "hyperion.tui.widgets.transcript",
+]
+ignore_errors = true
