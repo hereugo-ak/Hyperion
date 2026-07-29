@@ -115,8 +115,13 @@ class ImageProcessor:
     # Target sizes for common image placements (§6.3)
     COVER_WIDTH = 1920
     COVER_HEIGHT = 1080
-    SECTION_HEADER_WIDTH = 800
-    SECTION_HEADER_HEIGHT = 400
+    # Fix 3.6: was 800x400 — far below print grade. 300 DPI across a 170mm
+    # text measure needs ≈2000px; the BCG benchmark's largest embedded image
+    # is 1660x2346. The no-upscale rule (process_image returns an error
+    # result for sources smaller than target) is UNCHANGED — sources are now
+    # fetched at full resolution so the gate can actually pass.
+    SECTION_HEADER_WIDTH = 2000
+    SECTION_HEADER_HEIGHT = 1000
     CHART_WIDTH = 1200
     CHART_HEIGHT = 800
 
@@ -329,11 +334,14 @@ class ImageProcessor:
         image_path: str,
         output_path: str = "",
     ) -> ImageProcessResult:
-        """Process a section header image (40% page width, 800x400).
+        """Process a section header image (full text width, 2000x1000).
 
-        Section images are smaller than cover images and placed at 40%
-        page width, right-aligned, with caption below.
-        (§6.3 rule 2: "Section images = 40% page width, right-aligned.")
+        Fix 3.6: target raised from 800x400 to print grade — 300 DPI across
+        the ~170mm text measure needs ≈2000px (the BCG benchmark's largest
+        embedded image is 1660x2346). The no-upscale rule in process_image
+        is unchanged: a source smaller than 2000x1000 returns an error
+        result rather than being upscaled. Sources are fetched at full
+        resolution (quality="high") so this gate passes in production.
         """
         return self.process_image(
             image_path=image_path,

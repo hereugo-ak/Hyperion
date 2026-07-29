@@ -298,7 +298,11 @@ class UnsplashClient:
             Local file path to the downloaded image.
         """
         if not filename:
-            filename = f"{image.id}.jpg"
+            # Fix 3.6: cache key includes quality — a `regular` (1080px)
+            # download must never satisfy a later `high` (full-res) request,
+            # or the print-grade pipeline's no-upscale gate would silently
+            # skip every section image.
+            filename = f"{image.id}_{quality}.jpg"
 
         local_path = os.path.join(self.IMAGE_DIR, filename)
 

@@ -1785,8 +1785,10 @@ class PresentationDesigner(BaseAgent):
             if photo_id:
                 self._used_image_ids.add(photo_id)
 
-            # Download using the UnsplashClient's download_image method
-            local_path = await unsplash_tool.download_image(img, quality="regular")
+            # Download using the UnsplashClient's download_image method.
+            # Fix 3.6: full resolution — "regular" (1080px) can never pass
+            # the cover pipeline's 1920px no-upscale gate.
+            local_path = await unsplash_tool.download_image(img, quality="high")
 
             if not local_path or not os.path.exists(local_path):
                 return None
@@ -1907,7 +1909,10 @@ class PresentationDesigner(BaseAgent):
                 if photo_id:
                     self._used_image_ids.add(photo_id)
 
-                local_path = await unsplash_tool.download_image(img, quality="regular")
+                # Fix 3.6: full resolution — the section pipeline targets
+                # 2000px wide (print grade at 300 DPI), which a 1080px
+                # "regular" download can never pass under the no-upscale rule.
+                local_path = await unsplash_tool.download_image(img, quality="high")
 
                 if not local_path or not os.path.exists(local_path):
                     continue
