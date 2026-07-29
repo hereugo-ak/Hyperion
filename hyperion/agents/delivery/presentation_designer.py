@@ -212,7 +212,15 @@ CSS_TEMPLATE = """\
 @page {{
     size: A4;
     dpi: 300;
-    margin: 25mm 25mm 25mm 40mm;  /* 15mm extra on left for binding */
+    /* Fix 3.4: was 25mm 25mm 25mm 40mm (15mm binding allowance). With the
+       two-column body that made each column 69mm ≈ 42 chars/line — far
+       short of the 52–60 benchmark band. The BCG benchmark itself measures
+       L 36pt · R 35pt margins (≈12.5mm): the wide-binding-margin page frame
+       was simply incompatible with the two-column measure. Now 19mm left
+       (4mm binding allowance over 15mm) · 15mm right → 176mm text width →
+       84.5mm columns ≈ 53 chars/line at 10pt Source Sans 3 (1.58mm/char
+       measured by the probe). */
+    margin: 25mm 15mm 25mm 19mm;
     @bottom-center {{
         content: "HYPERION · many minds. one reading. · "
                  counter(page) " / " counter(pages);
@@ -815,6 +823,45 @@ table, .kpi-value, .data-table, .chart-data-table {{
     page-break-before: always;
 }}
 
+/* ── Two-column body (fix 3.4) ─────────────────────────────────────────────
+   The audit measured the shipped report at ~87 chars/line in a single
+   justified column; the BCG benchmark sits at a median of 56 chars/line in
+   a TWO-column layout. The page frame is 25mm/40mm margins on A4, so the
+   measure only resolves to the benchmark range with columns, not with
+   smaller type.
+
+   Only the prose body is columned. Visual anchors span the full width
+   (column-span: all) — an exhibit, KPI strip, insight or implication box
+   squeezed into a 68mm column would read as a sidebar, and both benchmarks
+   set their exhibits full-measure. Headings must never be orphaned at the
+   foot of a column, so they break-after: avoid and stay with their first
+   paragraph. */
+.section-body {{
+    column-count: 2;
+    column-gap: 7mm;
+    column-fill: auto;  /* balance columns on the final page of the section */
+}}
+
+.section-body h3, .section-body h4 {{
+    break-after: avoid;
+    page-break-after: avoid;
+}}
+
+.section-body p:first-of-type {{
+    margin-top: 0;
+}}
+
+/* Full-width anchors inside a two-column section. `column-span: all` is the
+   WeasyPrint-supported spell; the section image sits outside the columned
+   div in the HTML, so it is already full-measure. */
+.exhibit,
+.kpi-strip,
+.key-insight-box,
+.implication-box,
+.callout {{
+    column-span: all;
+}}
+
 .no-break {{
     page-break-inside: avoid;
 }}
@@ -1031,7 +1078,12 @@ HTML_TEMPLATE = """\
     <p class="section-image-caption">{{ section_images[section.id].caption }}</p>
     {% endif %}
 
-    <div class="no-break">
+    {# The prose body is two-column (fix 3.4 — see .section-body in the CSS).
+       It was previously wrapped in .no-break, which tried to keep an entire
+       2000-word section body on one page — impossible, so WeasyPrint ignored
+       it, and it contradicted the column layout. The columns handle their own
+       break etiquette via orphans/widows on the body element. #}
+    <div class="section-body">
         {{ section.body | md_to_html }}
     </div>
 

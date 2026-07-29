@@ -195,7 +195,31 @@ def measure(pdf_path: Path) -> dict:
 
     full_text = "\n".join(doc[i].get_text() for i in range(doc.page_count))
 
+    # ── Fix 3.4 exit criteria: chars/line and column count ──
+    # Line measure: for each text line in a body-size span (9-11pt), count
+    # its characters and bucket it by horizontal position. Two-column pages
+    # show two distinct x-bands; single-column pages one wide band.
+    line_chars: list[int] = []
+    col_bands: set[int] = set()
+    for i in range(doc.page_count):
+        for b in doc[i].get_text("dict")["blocks"]:
+            if b["type"] != 0:
+                continue
+            for line in b["lines"]:
+                spans = [s for s in line["spans"] if 9.0 <= s["size"] <= 11.0]
+                text = "".join(s["text"] for s in spans).strip()
+                if len(text) < 25:  # ignore captions/labels/footers
+                    continue
+                line_chars.append(len(text))
+                x0 = min(s["bbox"][0] for s in spans)
+                col_bands.add(0 if x0 < 297.6 else 1)  # A4 midpoint in pt
+
     return {
+        "chars_per_line_median": statistics.median(line_chars) if line_chars else 0,
+        "chars_per_line_p90": (
+            sorted(line_chars)[int(len(line_chars) * 0.9)] if line_chars else 0
+        ),
+        "column_bands": len(col_bands),
         "pdf": str(pdf_path),
         "page_count": doc.page_count,
         "total_words": sum(words),
