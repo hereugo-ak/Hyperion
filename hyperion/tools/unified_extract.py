@@ -1080,9 +1080,17 @@ class UnifiedExtract:
         ]
 
     async def extract_pdf(self, url: str) -> UnifiedExtractResult:
-        """Extract text from a PDF file.
+        """Extract text AND tables from a PDF file.
 
-        Uses Crawl4AI's PDF extraction capability (PyMuPDF or PyPDF2).
+        Uses Crawl4AI's PDF extraction capability (PyMuPDF or PyPDF2) for the
+        prose stream, then runs pdfplumber table extraction on the same
+        document (fix 2.3, audit §6 Phase 2): the benchmark's quantitative
+        evidence lives in tables, and a prose-only extract discards exactly
+        the numbers ``chart_specs`` mines for exhibits.
+
+        The table pass is strictly additive and failure-isolated: it can add
+        ``tables`` + a rendered prose block to the result, it can never turn
+        a successful text extraction into a failure.
         """
         tools_tried: list[str] = []
 
@@ -1092,11 +1100,41 @@ class UnifiedExtract:
             pdf_result = await crawl4ai.crawl_pdf(url)
 
             if pdf_result.status_code == 200 and self._is_quality_content(pdf_result.content):
+                tables: list[dict[str, Any]] = []
+                content = pdf_result.content
+                try:
+                    from hyperion.tools.pdf_tables import (
+                        extract_tables_from_bytes,
+                        tables_to_prose,
+                    )
+
+                    # crawl_pdf already downloaded the document; reuse those
+                    # bytes rather than fetching the PDF a second time.
+                    pdf_bytes = pdf_result.pdf_bytes
+                    if pdf_bytes:
+                        extracted = extract_tables_from_bytes(pdf_bytes)
+                        if extracted:
+                            tables = [t.to_dict() for t in extracted]
+                            prose = tables_to_prose(extracted)
+                            if prose:
+                                content = f"{content}\n\n{prose}"
+                                tools_tried.append("pdfplumber")
+                                logger.info(
+                                    "pdfplumber recovered %d evidence table(s) from %s",
+                                    len(extracted),
+                                    url,
+                                )
+                except Exception as e:
+                    # Never let the additive table pass sink the text extraction
+                    # (fix 0.3 discipline: loud, never fatal).
+                    logger.warning("PDF table extraction failed for %s: %s", url, e, exc_info=True)
+
                 return UnifiedExtractResult(
                     url=url,
                     title=pdf_result.title,
-                    content=pdf_result.content,
-                    markdown=pdf_result.content,
+                    content=content,
+                    markdown=content,
+                    tables=tables,
                     tool_used="crawl4ai-pdf",
                     tools_tried=tools_tried,
                     success=True,

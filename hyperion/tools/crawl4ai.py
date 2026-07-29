@@ -60,6 +60,13 @@ class CrawlResult:
     error: str = ""
     extraction_method: str = "crawl4ai"
 
+    # Raw downloaded payload for PDF crawls. ``crawl_pdf`` already downloads
+    # the full document to extract its text; carrying the bytes lets
+    # downstream table extraction (fix 2.3, pdfplumber) run on the SAME
+    # document without a second network fetch. Internal hand-back only —
+    # deliberately excluded from ``to_dict()`` like ``UnifiedExtractResult.raw``.
+    pdf_bytes: bytes | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "url": self.url,
@@ -384,6 +391,8 @@ class Crawl4AIClient:
             with open(temp_path, "wb") as f:
                 f.write(response.content)
 
+            pdf_bytes = response.content
+
             # Try PyMuPDF first (best quality)
             try:
                 import fitz
@@ -405,6 +414,7 @@ class Crawl4AIClient:
                     status_code=200,
                     extraction_method="pymupdf",
                     metadata={"pages": len(text_parts)},
+                    pdf_bytes=pdf_bytes,
                 )
 
             except ImportError:
@@ -430,6 +440,7 @@ class Crawl4AIClient:
                     status_code=200,
                     extraction_method="pypdf2",
                     metadata={"pages": len(text_parts)},
+                    pdf_bytes=pdf_bytes,
                 )
 
             except ImportError:

@@ -23,6 +23,7 @@ dependencies = [
     "duckduckgo-search>=6.0.0",
     "crawl4ai>=0.4.0",
     "trafilatura>=1.12.0",
+    "pdfplumber>=1.0.0",  # D2.3: evidence-table extraction from PDF sources
     "curl_cffi>=0.7.0",
     "transformers>=4.44.0",
     "websockets>=12.0",
