@@ -38,6 +38,7 @@ EngagementScreen provides the spec'd multi-panel alternative.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 from typing import Any
 
@@ -249,10 +250,8 @@ class EngagementScreen(Screen):
                 get_bus().unsubscribe(self._bus_sub_id)
             except Exception:
                 pass
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one("#eng-prompt", PromptBar).set_busy(False)
-            except Exception:
-                pass
 
     async def _on_bus_message(self, msg: Any) -> None:
         from hyperion.agents.bus import Channel
@@ -361,10 +360,8 @@ class EngagementScreen(Screen):
             mark.set_state(MarkState.DORMANT)
             raise
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one("#eng-prompt", PromptBar).set_busy(False)
-            except Exception:
-                pass
 
     # ── commands ─────────────────────────────────────────────────────────────────
 

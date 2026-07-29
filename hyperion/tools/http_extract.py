@@ -379,8 +379,8 @@ class HttpExtractClient:
         if self._curl_cffi_session is not None:
             try:
                 await self._curl_cffi_session.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("curl_cffi session close failed: %s: %s", type(exc).__name__, exc)
             self._curl_cffi_session = None
 
     async def __aenter__(self) -> HttpExtractClient:

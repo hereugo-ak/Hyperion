@@ -548,12 +548,12 @@ class StealthSearchClient:
         if self._browser:
             try:
                 await self._browser.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("stealth browser close failed: %s: %s", type(exc).__name__, exc)
             self._browser = None
         if self._playwright:
             try:
                 await self._playwright.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("playwright stop failed: %s: %s", type(exc).__name__, exc)
             self._playwright = None

@@ -41,6 +41,7 @@ Each event is one header line, optionally followed by nested detail lines:
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass, field
 
@@ -256,10 +257,8 @@ class Transcript(ScrollView):
             self._render_cache.clear()
             self.refresh()
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 self.text_select_all()
-            except Exception:
-                pass
 
     # ── selection ──────────────────────────────────────────────────────────
 

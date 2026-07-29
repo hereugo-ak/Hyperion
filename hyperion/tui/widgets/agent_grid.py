@@ -15,6 +15,7 @@ Per ARCHITECTURE.md §8.5.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 
 from textual.widgets import Static
@@ -178,10 +179,8 @@ class AgentGrid(Static):
             self._timer = None
 
     def _repaint(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.update(self._render_grid())
-        except Exception:
-            pass
 
     # ── render ────────────────────────────────────────────────────────────────
 

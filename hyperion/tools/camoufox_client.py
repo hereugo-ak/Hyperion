@@ -116,8 +116,13 @@ class CamoufoxClient:
             if wait_for:
                 try:
                     await page.wait_for_selector(wait_for, timeout=timeout * 1000)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Selector never appeared — we still extract whatever
+                    # rendered, but the miss should be diagnosable.
+                    logger.debug(
+                        "camoufox wait_for_selector %r timed out/failed: %s: %s",
+                        wait_for, type(exc).__name__, exc,
+                    )
 
             html = await page.content()
             title = await page.title() or ""
@@ -175,6 +180,6 @@ class CamoufoxClient:
         if self._browser is not None:
             try:
                 await self._browser.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("camoufox browser stop failed: %s: %s", type(exc).__name__, exc)
             self._browser = None

@@ -15,6 +15,8 @@ Per ARCHITECTURE.md §8.6.
 
 from __future__ import annotations
 
+import contextlib
+
 from textual.widgets import Static
 
 from hyperion.tui.content import build, span
@@ -94,10 +96,8 @@ class TPMBar(Static):
             pass
 
     def _repaint(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.update(self._render_bars())
-        except Exception:
-            pass
 
     def set_usage(self, provider: str, fraction: float) -> None:
         """Manually set a provider's TPM usage (for demo/testing)."""

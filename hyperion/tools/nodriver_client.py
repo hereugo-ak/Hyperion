@@ -120,8 +120,12 @@ class NodriverClient:
             if wait_for:
                 try:
                     await page.wait_for(wait_for, timeout=timeout)
-                except Exception:
-                    pass  # Selector not found — proceed anyway
+                except Exception as exc:
+                    # Selector not found — proceed anyway, but record it.
+                    logger.debug(
+                        "nodriver wait_for %r failed: %s: %s",
+                        wait_for, type(exc).__name__, exc,
+                    )
 
             # Extract page content
             html = await page.get_content()
@@ -188,6 +192,6 @@ class NodriverClient:
         if self._browser is not None:
             try:
                 self._browser.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("nodriver browser stop failed: %s: %s", type(exc).__name__, exc)
             self._browser = None

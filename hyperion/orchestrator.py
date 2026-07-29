@@ -468,8 +468,15 @@ class WorkflowEngine:
                 subject=str(ctx.get("industry") or subject or ""),
                 geography=str(ctx.get("geography") or ""),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            # If the anchor is never set, every outbound search query goes
+            # out ungrounded — the original P0 failure class. This must be
+            # loud, not silent.
+            logger.error(
+                "engagement focus anchor failed — outbound queries will be "
+                "ungrounded: %s: %s",
+                type(exc).__name__, exc,
+            )
 
         self._log(
             "CONTEXT: "
@@ -720,8 +727,15 @@ class WorkflowEngine:
                                 # Designer and Render Engine see the same specs.
                                 try:
                                     final_report.chart_specifications = chart_specs
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    # Mined specs that never reach the report
+                                    # mean a text-only deliverable despite
+                                    # chartable data existing — record it.
+                                    logger.warning(
+                                        "mined chart specs could not be persisted "
+                                        "to the report: %s: %s",
+                                        type(exc).__name__, exc,
+                                    )
                             else:
                                 logger.warning(
                                     "No chartable numeric series found in findings; "
@@ -1735,8 +1749,8 @@ class WorkflowEngine:
         if self.router and hasattr(self.router, "get_token_summary"):
             try:
                 token_summary = self.router.get_token_summary()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("token summary unavailable: %s: %s", type(exc).__name__, exc)
 
         total_tokens = token_summary.get("total_tokens", 0)
         total_calls = token_summary.get("total_calls", 0)
@@ -1768,8 +1782,13 @@ class WorkflowEngine:
             if callable(close_method):
                 try:
                     await close_method()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Teardown must not abort the remaining closes, but a
+                    # leaking tool client should be diagnosable.
+                    logger.debug(
+                        "agent %s close() failed during shutdown: %s: %s",
+                        getattr(agent, "name", "?"), type(exc).__name__, exc,
+                    )
             else:
                 cleanup_method = getattr(agent, "cleanup", None)
                 if callable(cleanup_method):

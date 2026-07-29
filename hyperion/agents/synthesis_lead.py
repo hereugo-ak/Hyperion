@@ -368,8 +368,14 @@ class SynthesisLead(BaseAgent):
                 if report_data:
                     try:
                         self._fact_check_report = FactCheckReport.model_validate(report_data)
-                    except (ValueError, TypeError):
-                        pass
+                    except (ValueError, TypeError) as exc:
+                        # A fact-check report that fails validation leaves the
+                        # Synthesis Lead blind to hallucinated citations — the
+                        # #1 quality risk per the FactCheckReport schema.
+                        logger.warning(
+                            "fact_check_report failed validation and was discarded: %s: %s",
+                            type(exc).__name__, exc,
+                        )
 
             elif task_type == "quality_score":
                 score_data = context_bundle.get("score")
@@ -377,16 +383,24 @@ class SynthesisLead(BaseAgent):
                     try:
                         self._quality_score = QualityScore.model_validate(score_data)
                         self._quality_iteration = self._quality_score.iteration
-                    except (ValueError, TypeError):
-                        pass
+                    except (ValueError, TypeError) as exc:
+                        # A dropped quality score leaves the revision loop on
+                        # stale iteration state — record it.
+                        logger.warning(
+                            "quality_score failed validation and was discarded: %s: %s",
+                            type(exc).__name__, exc,
+                        )
 
             elif task_type == "engagement_dag":
                 dag_data = context_bundle.get("dag")
                 if dag_data:
                     try:
                         self._dag = WorkflowDAG.model_validate(dag_data)
-                    except (ValueError, TypeError):
-                        pass
+                    except (ValueError, TypeError) as exc:
+                        logger.warning(
+                            "engagement_dag failed validation and was discarded: %s: %s",
+                            type(exc).__name__, exc,
+                        )
 
             elif task_type == "start_synthesis":
                 # Engagement Director signals all specialists are done

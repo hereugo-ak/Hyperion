@@ -47,6 +47,7 @@ base64 `@font-face` data-URIs injected into `CSS_TEMPLATE` (fix 3.2).
 
 from __future__ import annotations
 
+import contextlib
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -442,10 +443,8 @@ class PDFRenderer:
         finally:
             # Never leave the scratch HTML on disk — it must not be delivered.
             if temp_html and os.path.exists(temp_html):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(temp_html)
-                except OSError:
-                    pass
 
     def _embed_images_as_data_uris(self, html: str) -> str:
         """Convert img src file paths to base64 data URIs (D17 fix).

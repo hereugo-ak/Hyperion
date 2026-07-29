@@ -15,6 +15,7 @@ States (per ARCHITECTURE.md §8.3):
 
 from __future__ import annotations
 
+import contextlib
 import math
 from enum import Enum
 
@@ -122,10 +123,8 @@ class Mark(Static):
         self._repaint()
 
     def _repaint(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.update(self._render())
-        except Exception:
-            pass
 
     # ── render ────────────────────────────────────────────────────────────────
 

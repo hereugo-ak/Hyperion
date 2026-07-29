@@ -24,6 +24,7 @@ terminal handles selection & copy natively.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from textual.app import App
@@ -109,7 +110,7 @@ class HyperionApp(App):
 
     def on_mount(self) -> None:
         # Apply brand accents to Textual's theme variables where possible.
-        try:
+        with contextlib.suppress(Exception):
             self.theme_variables.update(
                 {
                     "primary": CLAY,
@@ -120,8 +121,6 @@ class HyperionApp(App):
                     "error": SIG_ERROR,
                 }
             )
-        except Exception:
-            pass
         self.push_screen(
             SplashScreen(reduced_motion=self._reduced_motion)
             if self._use_splash
@@ -185,10 +184,8 @@ class HyperionApp(App):
         return ""
 
     def _toast(self, msg: str) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.notify(msg, timeout=3)
-        except Exception:
-            pass
 
     async def action_quit(self) -> None:
         """Tear down every service BEFORE the app exits.
@@ -231,10 +228,8 @@ class HyperionApp(App):
         except Exception as exc:  # noqa: BLE001 - shutdown must never block exit
             # Surfaced, not silently swallowed: a failed teardown leaves real
             # containers running and the user needs to know.
-            try:
+            with contextlib.suppress(Exception):
                 self.log(f"service teardown failed: {type(exc).__name__}: {exc}")
-            except Exception:
-                pass
 
     async def on_unmount(self) -> None:
         """Safety net for exits that do not pass through `action_quit`.

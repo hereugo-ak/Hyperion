@@ -50,6 +50,7 @@ ever looking at a directory. It now reads the real ``vault_path``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
@@ -169,10 +170,8 @@ async def run_boot_sequence(
 
         def _update(message: str) -> None:
             if step.row is not None:
-                try:
+                with contextlib.suppress(Exception):
                     log.update_row(step.row, content=message, spinner=True)
-                except Exception:
-                    pass
 
         return _update
 
@@ -338,10 +337,8 @@ async def run_boot_sequence(
 
     # Touch providers on metrics rail
     for p in provider_status:
-        try:
+        with contextlib.suppress(Exception):
             metrics.touch_provider(p)
-        except Exception:
-            pass
 
     # ── Step 5: Agent roster ──────────────────────────────────────────────
     step = _start_step("ROSTER", "instantiating specialist agents")
@@ -381,10 +378,8 @@ async def run_boot_sequence(
             # Creating it is the correct behaviour: SecondBrainClient writes
             # notes here, so a missing directory is a first-run condition, not
             # an error.
-            try:
+            with contextlib.suppress(OSError):
                 vault.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                pass
             if vault.exists():
                 engagements_dir = vault / "engagements"
                 engagements = (
@@ -563,10 +558,8 @@ async def stop_services() -> None:
     # ── 2. Stop and REMOVE the containers ────────────────────────────────────
     # `rm` as well as `stop`: a stopped-but-present container keeps its cached
     # SearxNG results, so the next boot is not actually a fresh instance.
-    try:
+    with contextlib.suppress(Exception):
         await _infra_stop_services()
-    except Exception:
-        pass
 
     # ── 3. Close shared tool HTTP clients ────────────────────────────────────
     # SearxNG / FlareSolverr / Obscura clients hold their own httpx pools whose
@@ -576,10 +569,8 @@ async def stop_services() -> None:
     # ── 4. Clear in-process state ────────────────────────────────────────────
     # Mirrors the boot-time reset so quit leaves nothing behind even when the
     # interpreter itself keeps running (embedded / test / REPL use).
-    try:
+    with contextlib.suppress(Exception):
         reset_process_state()
-    except Exception:
-        pass
 
 
 async def _close_tool_clients() -> None:

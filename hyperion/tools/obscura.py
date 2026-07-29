@@ -63,6 +63,7 @@ Extraction fallback chain (§5.2):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -898,14 +899,10 @@ class ObscuraClient:
     async def close_browser(self) -> None:
         """Close the browser instance. (MCP tool: browser_close)"""
         if self._cdp_ws:
-            try:
+            with contextlib.suppress(ConnectionError, RuntimeError):
                 await self._send_cdp_command("Browser.close")
-            except (ConnectionError, RuntimeError):
-                pass
-            try:
+            with contextlib.suppress(ConnectionError, RuntimeError):
                 await self._cdp_ws.close()
-            except (ConnectionError, RuntimeError):
-                pass
             self._cdp_ws = None
 
         if self._cdp_client and not self._cdp_client.is_closed:

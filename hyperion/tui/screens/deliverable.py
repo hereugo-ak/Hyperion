@@ -12,6 +12,7 @@ Per ARCHITECTURE.md §8.2 (Deliverable View):
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -159,10 +160,8 @@ class DeliverableScreen(Screen):
 
     def on_export_requested(self, event: ExportRequested) -> None:
         """Handle export button clicks."""
-        try:
+        with contextlib.suppress(Exception):
             self.app.notify(f"Exporting {event.fmt}…", timeout=2)
-        except Exception:
-            pass
 
     def on_open_pdf_requested(self, event: OpenPDFRequested) -> None:
         """Open the PDF in the system viewer."""
@@ -174,10 +173,8 @@ class DeliverableScreen(Screen):
             pass
 
         if not pdf_path:
-            try:
+            with contextlib.suppress(Exception):
                 self.app.notify("No PDF available to open", timeout=2)
-            except Exception:
-                pass
             return
 
         try:
@@ -188,10 +185,8 @@ class DeliverableScreen(Screen):
             else:
                 subprocess.Popen(["xdg-open", pdf_path])
         except Exception as e:
-            try:
+            with contextlib.suppress(Exception):
                 self.app.notify(f"Failed to open PDF: {e}", timeout=3)
-            except Exception:
-                pass
 
     # ── actions ──────────────────────────────────────────────────────────────────
 

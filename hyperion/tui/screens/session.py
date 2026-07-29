@@ -34,6 +34,7 @@ selects the entire scrollback, including everything scrolled out of view.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 from typing import Any
 
@@ -156,10 +157,8 @@ class SessionScreen(Screen):
         log.write_block(hint_content(), blank_after=1)
         log.write_block(hr(), blank_after=1)
         # keep the top (logo) in view on first paint
-        try:
+        with contextlib.suppress(Exception):
             log.scroll_home(animate=False)
-        except Exception:
-            pass
 
     def _log(self) -> Transcript:
         return self.query_one("#log-stream", Transcript)
@@ -362,10 +361,8 @@ class SessionScreen(Screen):
                 get_bus().unsubscribe(self._bus_sub_id)
             except Exception:
                 pass
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one("#prompt", PromptBar).set_busy(False)
-            except Exception:
-                pass
 
     async def _on_bus_message(self, msg: Any) -> None:
         from hyperion.agents.bus import Channel
@@ -674,10 +671,8 @@ class SessionScreen(Screen):
             m.finish(ok=False)
             raise
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one("#prompt", PromptBar).set_busy(False)
-            except Exception:
-                pass
 
     # ── lightweight commands ────────────────────────────────────────────────────
 
