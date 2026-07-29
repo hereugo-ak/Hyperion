@@ -699,12 +699,29 @@ class ComplianceItem(BaseModel):
     status: str = Field(default="not_started", description="Status: not_started, in_progress, compliant")
 
 
-class HorizonScanItem(BaseModel):
+class RegulatoryHorizonItem(BaseModel):
     """A pending or proposed regulation on the horizon (§4.4, Agent 9).
 
     Identifies pending regulations, proposed rules, and regulatory trends
     that could impact the business in 1-3 years. Each item has a probability
     assessment and potential impact.
+
+    D5.1 — renamed from ``HorizonScanItem``. Two *entirely different* models in
+    this file both carried that name: this one (Agent 9, regulatory: keyed on
+    ``regulation_name``/``jurisdiction``/``timeline``) and the Agent 13
+    innovation signal at the bottom of the file (keyed on ``horizon``/``signal``).
+    Python bound the name to whichever was defined last, so **this class was
+    unreachable** — ruff F811 caught the redefinition.
+
+    The consequence was a total, silent outage of the Regulatory Analyst's
+    horizon scan. `_scan_horizon()` constructed `HorizonScanItem(regulation_name=…,
+    jurisdiction=…, …)` and got the Agent 13 model, which requires `horizon` and
+    `signal` and accepts neither of those kwargs → `ValidationError` on **every
+    single item**. And the `except (json.JSONDecodeError, ValueError, TypeError):
+    pass` directly beneath the loop swallowed it (ValidationError subclasses
+    ValueError), so `horizon_scan` came back `[]` on every engagement, forever,
+    with nothing logged. `RegulatoryAnalysis.horizon_scan` was structurally
+    guaranteed to be empty.
     """
 
     regulation_name: str = Field(description="Name of pending/proposed regulation")
@@ -767,7 +784,7 @@ class RegulatoryAnalysis(BaseModel):
     regulatory_map: list[Regulation] = Field(default_factory=list, description="All applicable regulations by jurisdiction")
     jurisdiction_comparison: list[JurisdictionComparison] = Field(default_factory=list, description="Regulatory comparison across jurisdictions")
     compliance_checklist: list[ComplianceItem] = Field(default_factory=list, description="Structured compliance checklist")
-    horizon_scan: list[HorizonScanItem] = Field(default_factory=list, description="Pending/proposed regulations (1-3 year horizon)")
+    horizon_scan: list[RegulatoryHorizonItem] = Field(default_factory=list, description="Pending/proposed regulations (1-3 year horizon)")
     enforcement_precedents: list[EnforcementPrecedent] = Field(default_factory=list, description="Enforcement actions against similar companies")
     lightest_jurisdiction: str = Field(default="", description="Jurisdiction with the lightest regulatory touch (strategic advantage)")
     regulatory_evolution: str = Field(default="", description="How regulations have evolved over time (Wayback Machine data)")

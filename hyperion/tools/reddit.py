@@ -217,7 +217,11 @@ class RedditClient:
         "crash", "bug", "issue", "problem", "concern", "worried",
         "bearish", "pessimistic", "decline", "loss", "unprofitable",
         "inefficient", "confusing", "complicated", "difficult", "poor",
-        "weak", "flawed", "disappointing", "underwhelming", "mediocre",
+        # D5.1b (B033): "disappointing" was listed twice in this set literal
+        # (also on the "hate"/"terrible" line above). Harmless in a set, but it
+        # signals the list was extended without checking, so the dedupe is a
+        # correctness-preserving tidy rather than a behaviour change.
+        "weak", "flawed", "underwhelming", "mediocre",
     }
 
     def __init__(self, settings: Any | None = None) -> None:
@@ -545,7 +549,9 @@ class RedditClient:
             "over", "under", "again", "further", "then", "once", "here",
             "there", "about", "my", "your", "his", "her", "its", "our", "their",
             "if", "because", "while", "any", "also", "them", "me", "him",
-            "us", "am", "been", "being", "myself", "yourself",
+            # D5.1b (B033): "been"/"being" already appear on the
+            # "be", "been", "being", "have"... line above.
+            "us", "am", "myself", "yourself",
         }
 
         word_freq: dict[str, int] = {}

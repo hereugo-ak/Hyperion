@@ -169,8 +169,14 @@ SECTION_IMAGE_SEARCH_TERMS: dict[str, str] = {
     "regulatory_analysis": "government building columns",
     "sustainability": "green sustainable business",
     "sustainability_analysis": "green sustainable business",
+    # D5.1b (F601): "consumer_insights" was listed twice in this one dict —
+    # once above as an agent-name key (it is the literal
+    # `AgentName.CONSUMER_INSIGHTS` value) and again here in the topic block.
+    # Both mapped to the same term, so the duplicate was inert rather than a
+    # live bug, but it is exactly the shape that silently overwrites a *differing*
+    # value later. Only the agent-name entry is kept; "consumer" covers the
+    # title-matching fallback.
     "consumer": "consumer shopping retail",
-    "consumer_insights": "consumer shopping retail",
     "ma": "corporate merger acquisition handshake",
     "ma_analysis": "corporate merger acquisition handshake",
     "innovation": "innovation technology lab",

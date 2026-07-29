@@ -48,9 +48,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import uuid
 from typing import Any
+
+from pydantic import ValidationError
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
@@ -69,16 +72,18 @@ from hyperion.schemas.models import (
     ComplianceItem,
     ConfidenceLevel,
     EnforcementPrecedent,
-    HorizonScanItem,
     JurisdictionComparison,
     KeyFinding,
     Regulation,
     RegulationType,
     RegulatoryAnalysis,
+    RegulatoryHorizonItem,
     Source,
     SourceCredibility,
 )
 from hyperion.tools.query_utils import resolve_subject
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -768,7 +773,7 @@ class RegulatoryAnalyst(BaseAgent):
         historical_snapshots: list[dict[str, Any]],
         jurisdictions: list[str],
         context: dict[str, Any],
-    ) -> list[HorizonScanItem]:
+    ) -> list[RegulatoryHorizonItem]:
         """Scan the regulatory horizon for pending and proposed regulations.
 
         Identifies pending regulations, proposed rules, and regulatory trends
@@ -823,17 +828,68 @@ class RegulatoryAnalyst(BaseAgent):
             response_format={"type": "json_object"},
         )
 
-        horizon_items: list[HorizonScanItem] = []
+        horizon_items: list[RegulatoryHorizonItem] = []
 
         if not response.success or not response.content:
             return horizon_items
 
+        # D5.1: this block used to end in `except (json.JSONDecodeError,
+        # ValueError, TypeError): pass`, and that silence is what let the
+        # HorizonScanItem name collision (see RegulatoryHorizonItem's docstring)
+        # hide for the project's entire life. `ValidationError` subclasses
+        # `ValueError`, so *every* item failed construction and every failure was
+        # swallowed — `horizon_scan` was structurally guaranteed `[]` with nothing
+        # logged anywhere.
+        #
+        # Two changes make that impossible to repeat:
+        #   1. Per-item construction, so one malformed item costs one item rather
+        #      than aborting the whole batch at the first bad element.
+        #   2. Loud logging, and a `ValidationError` is logged as a *schema* error
+        #      (a bug on our side) rather than lumped in with bad model output.
         try:
             data = json.loads(response.content)
-            for item in data.get("horizon_items", []):
-                horizon_items.append(HorizonScanItem(
-                    regulation_name=item.get("regulation_name", "Unknown"),
-                    jurisdiction=item.get("jurisdiction", "Unknown"),
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "Regulatory horizon scan: model returned unparseable JSON: %s", exc
+            )
+            return horizon_items
+
+        raw_items = data.get("horizon_items", []) if isinstance(data, dict) else []
+        if not isinstance(raw_items, list):
+            logger.warning(
+                "Regulatory horizon scan: 'horizon_items' is %s, expected list",
+                type(raw_items).__name__,
+            )
+            return horizon_items
+
+        for item in raw_items:
+            if not isinstance(item, dict):
+                logger.debug("Regulatory horizon scan: skipping non-dict item %r", item)
+                continue
+
+            # D5.1b: these two fields used to default to the literal string
+            # "Unknown". That is wrong twice over. First, "Unknown" is one of the
+            # template-leak tokens the render probe counts and §11 criterion 11
+            # requires to be zero, so an unnamed item would print as a regulation
+            # called "Unknown" in a client-facing compliance deliverable. Second
+            # and worse: a horizon item whose regulation cannot be named is not a
+            # finding at all — emitting it fabricates a phantom regulation the
+            # model never actually identified. An unnamed item is dropped, loudly.
+            regulation_name = str(item.get("regulation_name") or "").strip()
+            jurisdiction = str(item.get("jurisdiction") or "").strip()
+            if not regulation_name:
+                logger.warning(
+                    "Regulatory horizon scan: dropping item with no "
+                    "regulation_name (keys offered: %s) — an unnameable "
+                    "regulation is not a finding",
+                    sorted(item),
+                )
+                continue
+
+            try:
+                horizon_items.append(RegulatoryHorizonItem(
+                    regulation_name=regulation_name,
+                    jurisdiction=jurisdiction or "Not specified",
                     status=item.get("status", "proposed"),
                     timeline=item.get("timeline", ""),
                     probability=item.get("probability", "medium"),
@@ -841,8 +897,28 @@ class RegulatoryAnalyst(BaseAgent):
                     recommended_action=item.get("recommended_action", ""),
                     sources=self._sources[:2],
                 ))
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+            except ValidationError:
+                # A schema mismatch is OUR bug, not bad model output. Log it as
+                # such, with a stack trace, so it can never again be mistaken for
+                # "the LLM returned nothing useful".
+                logger.error(
+                    "Regulatory horizon scan: RegulatoryHorizonItem rejected a "
+                    "well-formed item — this is a SCHEMA defect, not model output. "
+                    "Keys offered: %s",
+                    sorted(item),
+                    exc_info=True,
+                )
+            except (ValueError, TypeError) as exc:
+                logger.warning("Regulatory horizon scan: skipping malformed item: %s", exc)
+
+        if raw_items and not horizon_items:
+            # The exact shape of the outage this fix closes: the model produced
+            # items and none survived construction.
+            logger.error(
+                "Regulatory horizon scan: %d items offered, 0 constructed — "
+                "horizon_scan will be empty",
+                len(raw_items),
+            )
 
         return horizon_items
 

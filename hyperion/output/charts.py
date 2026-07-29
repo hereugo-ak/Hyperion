@@ -248,7 +248,7 @@ class ChartGenerator:
                 borderwidth=1,
             ),
             # Tufte principles: no chartjunk
-            showlegend=True if len(spec.series_names) > 1 else False,
+            showlegend=len(spec.series_names) > 1,
             margin=dict(l=60, r=40, t=80, b=60),
         )
 
