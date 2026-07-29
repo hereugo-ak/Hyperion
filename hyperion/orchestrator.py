@@ -176,6 +176,9 @@ class EngagementResult:
     adaptation_count: int = 0
     escalation_count: int = 0
     quality_iterations: int = 0
+    # Fix 2.6 (audit §6 Phase 2): per-engagement extraction-yield metrics,
+    # populated at engagement completion from engagement_yield_report().
+    extraction_yield: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -189,6 +192,7 @@ class EngagementResult:
             "adaptation_count": self.adaptation_count,
             "escalation_count": self.escalation_count,
             "quality_iterations": self.quality_iterations,
+            "extraction_yield": self.extraction_yield,
             "quality_score": self.quality_score.model_dump() if self.quality_score else None,
             "final_report": self.final_report.model_dump() if self.final_report else None,
             "metadata": self.metadata.model_dump() if self.metadata else None,
@@ -1330,6 +1334,14 @@ class WorkflowEngine:
         # never inherit the previous engagement's industry/geography.
         self._engagement_context = None
         clear_engagement_focus()
+        # Fix 2.6 (audit §6 Phase 2): reset the extraction-yield accumulator
+        # so engagement_yield_report() covers THIS engagement only.
+        try:
+            from hyperion.tools.deep_search import reset_engagement_yield
+
+            reset_engagement_yield()
+        except Exception:
+            pass
         # Seed the search anchor from the raw question immediately, so any
         # search firing before classification completes is still on-topic.
         #
@@ -1566,6 +1578,28 @@ class WorkflowEngine:
             result.adaptation_count = len(dag.adaptation_log)
             result.escalation_count = self._director.get_escalation_count() if self._director else 0
             result.success = True
+
+            # Fix 2.6 (audit §6 Phase 2): surface the per-engagement
+            # extraction-yield metrics in the run report. This is the number
+            # the Phase 2 exit criterion ("extraction success >=60% of
+            # discovered URLs; every cited source >=500 chars retained") is
+            # computed from — before this fix it was unmeasurable per run.
+            try:
+                from hyperion.tools.deep_search import engagement_yield_report
+
+                result.extraction_yield = engagement_yield_report()
+                ym = result.extraction_yield
+                self._log(
+                    "EXTRACTION YIELD: "
+                    f"{ym['urls_extracted']}/{ym['urls_discovered']} URLs "
+                    f"({ym['extraction_yield']:.0%}) extracted, "
+                    f"{ym['chars_retained']} chars retained across "
+                    f"{ym['sources_cited']} cited sources "
+                    f"(avg {ym['avg_chars_per_source']:.0f} chars/source, "
+                    f"{ym['search_calls']} search calls)"
+                )
+            except Exception as e:
+                logger.warning("extraction-yield report failed: %s", e, exc_info=True)
 
             self._log(
                 f"ENGAGEMENT COMPLETE: success={result.success} "

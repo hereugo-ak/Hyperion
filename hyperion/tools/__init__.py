@@ -18,7 +18,14 @@ from hyperion.tools.content_selector import (
 from hyperion.tools.crawl4ai import Crawl4AIClient, CrawlResult
 from hyperion.tools.camoufox_client import CamoufoxClient, CamoufoxResult
 from hyperion.tools.curl_cffi_client import CurlCffiClient, CurlCffiResult
-from hyperion.tools.deep_search import DeepSearchClient, DeepSearchResult, ExtractedContent
+from hyperion.tools.deep_search import (
+    DeepSearchClient,
+    DeepSearchResult,
+    ExtractedContent,
+    YieldMetrics,
+    engagement_yield_report,
+    reset_engagement_yield,
+)
 from hyperion.tools.evidence_scorer import EvidenceScorer, EvidenceSummary, ScoredResult
 from hyperion.tools.flaresolverr import FlareBreaker, FlareSolverrClient, FlareSolverrResult
 from hyperion.tools.query_utils import normalize_query
@@ -126,6 +133,9 @@ __all__ = [
     "DeepSearchClient",
     "DeepSearchResult",
     "ExtractedContent",
+    "YieldMetrics",
+    "engagement_yield_report",
+    "reset_engagement_yield",
     # EvidenceScorer
     "EvidenceScorer",
     "ScoredResult",

@@ -60,6 +60,49 @@ CACHE_TTL_SECONDS = 3600
 
 
 @dataclass
+class YieldMetrics:
+    """Extraction-yield metrics for one deep-search call (fix 2.6).
+
+    Audit §6 Phase 2 item 2.6: "Log an extraction-yield metric per engagement
+    (``urls_discovered``, ``urls_extracted``, ``chars_retained``,
+    ``sources_cited``) and surface it in the run report." These four numbers
+    are what the Phase 2 exit criterion ("extraction success >=60% of
+    discovered URLs; every cited source has >=500 chars of retained, reranked
+    content") is computed FROM — before this fix they existed only
+    implicitly, scattered across three fields, so the criterion was
+    unmeasurable.
+    """
+
+    urls_discovered: int = 0
+    urls_extracted: int = 0
+    chars_retained: int = 0  # total retained content across cited sources
+    sources_cited: int = 0
+
+    @property
+    def extraction_yield(self) -> float:
+        """Fraction of discovered URLs that produced usable content."""
+        if self.urls_discovered == 0:
+            return 0.0
+        return self.urls_extracted / self.urls_discovered
+
+    @property
+    def avg_chars_per_source(self) -> float:
+        if self.sources_cited == 0:
+            return 0.0
+        return self.chars_retained / self.sources_cited
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "urls_discovered": self.urls_discovered,
+            "urls_extracted": self.urls_extracted,
+            "chars_retained": self.chars_retained,
+            "sources_cited": self.sources_cited,
+            "extraction_yield": round(self.extraction_yield, 3),
+            "avg_chars_per_source": round(self.avg_chars_per_source, 1),
+        }
+
+
+@dataclass
 class DeepSearchResult:
     """Result of a deep search operation.
 
@@ -91,6 +134,8 @@ class DeepSearchResult:
     tiers_unavailable: dict[str, str] = field(default_factory=dict)
     # Human-readable roll-up. Empty when results were found.
     error: str = ""
+    # Fix 2.6: extraction-yield metrics for this call (audit §6 Phase 2).
+    yield_metrics: YieldMetrics = field(default_factory=YieldMetrics)
 
     @property
     def success(self) -> bool:
@@ -109,6 +154,11 @@ class DeepSearchResult:
         summary = self.evidence_summary
         lines.append(f"# Deep Search: {self.query}")
         lines.append(f"**Depth**: {self.depth} | **Sources**: {self.total_extracted} extracted / {self.total_discovered} discovered")
+        ym = self.yield_metrics
+        lines.append(
+            f"**Yield**: {ym.extraction_yield:.0%} of discovered URLs extracted | "
+            f"{ym.chars_retained} chars retained across {ym.sources_cited} cited sources"
+        )
         lines.append(f"**Evidence**: {summary.overall_stance} (support={summary.support_count}, conflict={summary.conflict_count}, neutral={summary.neutral_count}, confidence={summary.confidence:.2f})")
         lines.append("")
 
@@ -157,12 +207,72 @@ class DeepSearchResult:
             "tiers_unavailable": self.tiers_unavailable,
             "error": self.error,
             "success": self.success,
+            "yield_metrics": self.yield_metrics.to_dict(),
         }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Extracted Content — intermediate representation for scoring
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-engagement yield accumulator (fix 2.6) — the "run report" surface
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _EngagementYield:
+    """Aggregate extraction yield across every deep-search call in one run.
+
+    Specialists each spawn sub-agents that each issue deep searches; no
+    single ``DeepSearchResult`` can answer "how did retrieval perform on THIS
+    ENGAGEMENT?" — the number the audit's Phase 2 exit criterion is defined
+    on. This process-level accumulator is reset at engagement start
+    (:func:`reset_engagement_yield`) and read at run-report time
+    (:func:`engagement_yield_report`). Thread-safe: sub-agents search
+    concurrently.
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self._lock = threading.Lock()
+        self._totals = YieldMetrics()
+        self._calls = 0
+
+    def record(self, metrics: YieldMetrics) -> None:
+        with self._lock:
+            self._calls += 1
+            self._totals.urls_discovered += metrics.urls_discovered
+            self._totals.urls_extracted += metrics.urls_extracted
+            self._totals.chars_retained += metrics.chars_retained
+            self._totals.sources_cited += metrics.sources_cited
+
+    def report(self) -> dict[str, Any]:
+        with self._lock:
+            out = self._totals.to_dict()
+            out["search_calls"] = self._calls
+            return out
+
+    def reset(self) -> None:
+        with self._lock:
+            self._totals = YieldMetrics()
+            self._calls = 0
+
+
+_engagement_yield = _EngagementYield()
+
+
+def reset_engagement_yield() -> None:
+    """Reset the per-engagement accumulator (call at engagement start)."""
+    _engagement_yield.reset()
+
+
+def engagement_yield_report() -> dict[str, Any]:
+    """The run-report surface for fix 2.6: aggregate extraction yield across
+    all deep-search calls since the last reset, including the audit's four
+    named metrics plus derived yield ratio and per-call count."""
+    return _engagement_yield.report()
 
 
 @dataclass
@@ -583,6 +693,17 @@ class DeepSearchClient:
             if unavailable:
                 error += f" [tiers unavailable here: {', '.join(sorted(unavailable))}]"
 
+        # Fix 2.6 (audit §6 Phase 2): the four audit-named yield metrics.
+        # ``chars_retained`` counts only CITED sources (the ranked cut), so
+        # "every cited source has >=500 chars" (Phase 2 exit criterion) is
+        # directly checkable via ``avg_chars_per_source``.
+        yield_metrics = YieldMetrics(
+            urls_discovered=len(discovered_urls),
+            urls_extracted=len(extracted),
+            chars_retained=sum(len(r.content or "") for r in ranked),
+            sources_cited=len(sources),
+        )
+
         result = DeepSearchResult(
             query=query,
             depth=depth,
@@ -598,7 +719,22 @@ class DeepSearchClient:
             errors=errors,
             tiers_unavailable=unavailable,
             error=error,
+            yield_metrics=yield_metrics,
         )
+
+        # Fix 2.6: log the per-call yield and accumulate into the
+        # per-engagement report. The audit's Phase 2 exit criterion
+        # (">=60% of discovered URLs extracted") is only checkable if this
+        # number exists in logs and in the run report.
+        logger.info(
+            "extraction yield: %d/%d URLs (%.0f%%), %d chars retained across %d cited sources",
+            yield_metrics.urls_extracted,
+            yield_metrics.urls_discovered,
+            yield_metrics.extraction_yield * 100,
+            yield_metrics.chars_retained,
+            yield_metrics.sources_cited,
+        )
+        _engagement_yield.record(yield_metrics)
 
         # Cache for 1 hour
         self._set_cached(cache_key, result)
