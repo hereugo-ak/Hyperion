@@ -30,6 +30,7 @@ The `run()` method is where the agent's skills are applied.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -42,6 +43,7 @@ from hyperion.config import ModelTier, get_settings
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import LLMRouter, get_router
+from hyperion.router.structured_validator import extract_json
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -606,18 +608,85 @@ class BaseAgent(ABC):
                 suggested_action="Reroute to adjacent tier or retry with different provider",
             )
 
-        # Strip markdown code fences from JSON responses — many LLMs wrap
-        # JSON in ```json blocks despite response_format=json_object.
-        # This fixes all downstream json.loads(response.content) calls.
-        if response.success and response.content and response_format and response_format.get("type") == "json_object":
-            content = response.content.strip()
-            if content.startswith("```"):
-                from hyperion.router.structured_validator import extract_json
-                cleaned = extract_json(content)
-                if cleaned:
-                    response.content = cleaned
+        # Normalize JSON responses so `json.loads(response.content)` at the
+        # ~72 downstream call sites cannot fail on a wrapper.
+        #
+        # Phase 5.1e: the previous version of this block only acted when
+        # `content.strip().startswith("```")`. Measured against the shapes real
+        # providers return, that gate missed 4 of 6:
+        #
+        #   fenced                    -> handled
+        #   bare fence (no language)  -> handled
+        #   prose THEN fence          -> MISSED   "Sure!\n```json\n{...}\n```"
+        #   prose prefix, no fence    -> MISSED   "Here is the analysis:\n{...}"
+        #   prose suffix              -> MISSED   "{...}\nHope that helps!"
+        #   trailing commentary       -> MISSED   "{...} - note the caveat."
+        #
+        # Every miss lands on `except (json.JSONDecodeError, ...): return
+        # SomeModel()`, so the agent returns a structurally-valid but EMPTY
+        # framework and reports success. That is the §0.3 anti-pattern at the
+        # scale of every specialist: a Porter's Five Forces with no forces, a
+        # VRIO with no resources, a claim list with no claims.
+        #
+        # It is also not conditional on `response_format` any more. 5 of the 78
+        # `_llm_complete` call sites omit that kwarg yet still json.loads the
+        # result, and several providers ignore the field entirely — so keying
+        # the repair off the *request* rather than the *response* was wrong.
+        # Normalization is now attempted whenever the body looks like it
+        # contains JSON, and is a strict no-op otherwise.
+        if response.success and response.content:
+            response.content = self._normalize_json_content(response.content)
 
         return response
+
+    @staticmethod
+    def _normalize_json_content(content: str) -> str:
+        """Return `content` reduced to its JSON payload, when it has one.
+
+        Conservative by construction: the extracted candidate must itself
+        parse as JSON before it replaces the original. If extraction finds
+        nothing, or finds something that does not parse, the original string
+        is returned untouched so a non-JSON completion (prose, markdown,
+        a drafted section) passes through unharmed.
+        """
+        stripped = content.strip()
+        if not stripped:
+            return content
+
+        # Fast path: already clean JSON. Avoids doing any work for the
+        # overwhelmingly common case.
+        if stripped[:1] in ("{", "["):
+            try:
+                json.loads(stripped)
+                return stripped
+            except (json.JSONDecodeError, TypeError):
+                pass  # falls through to extraction; may be fenced-and-nested
+
+        # Only bother if there is plausibly a JSON payload in there. This keeps
+        # free-text completions (which are the majority of non-JSON calls) from
+        # being scanned at all.
+        if "{" not in stripped and "[" not in stripped:
+            return content
+
+        candidate = extract_json(stripped)
+        if candidate is None:
+            return content
+
+        try:
+            json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            # Extraction produced something unparseable — return the original
+            # so the caller's own error path sees the true response, not a
+            # fragment we invented.
+            return content
+
+        if candidate != stripped:
+            logger.debug(
+                "normalized wrapped JSON response: %d chars -> %d chars",
+                len(stripped),
+                len(candidate),
+            )
+        return candidate
 
     async def _llm_complete_structured(
         self,

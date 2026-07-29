@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from typing import Any
 
@@ -70,6 +71,7 @@ from hyperion.schemas.agents import (
     ToolName,
 )
 from hyperion.schemas.models import (
+    SWOTTOWS,
     BCGCategory,
     BCGMatrix,
     BCGUnit,
@@ -86,13 +88,11 @@ from hyperion.schemas.models import (
     StrategicOptionGrid,
     StrategyAnalysis,
     SWOTItem,
-    SWOTTOWS,
     TOWSStrategy,
     VRIOAssessment,
     VRIOResult,
 )
 from hyperion.tools.query_utils import resolve_subject
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -1012,6 +1012,476 @@ class StrategyAnalyst(BaseAgent):
             return GameTheoryAnalysis()
 
     # ─────────────────────────────────────────────────────────────────────
+    # Conditional frameworks (Phase 5.1e)
+    #
+    # `_select_frameworks` offers the LLM 8 frameworks and asks it to pick
+    # 3-5. Five had implementations. Three — BCG growth-share matrix, Blue
+    # Ocean, and core competence analysis — did not: `run()` hardcoded
+    #
+    #     bcg_matrix=None,       # Only applied if portfolio question
+    #     blue_ocean=None,       # Only applied if market creation question
+    #     core_competence=None,  # Derived from VRIO if needed
+    #
+    # and no such conditional path existed anywhere. So the selector could
+    # (and for portfolio questions, would) choose a framework the agent was
+    # structurally incapable of delivering, `StrategyAnalysis` carried three
+    # permanently-null fields, and `frameworks_selected` advertised analysis
+    # that was never performed — a false claim in the deliverable.
+    #
+    # These three run only when actually selected, which is what the original
+    # comments described but never implemented.
+    # ─────────────────────────────────────────────────────────────────────
+
+    #: Selector labels -> the token we match on. Matching is substring-based
+    #: against the lowercased "framework: reason" strings that
+    #: `_select_frameworks` returns, because the LLM echoes the label with
+    #: minor variations ("BCG matrix", "BCG growth-share matrix").
+    _BCG_TOKENS = ("bcg", "growth-share", "growth share")
+    _BLUE_OCEAN_TOKENS = ("blue ocean",)
+    _CORE_COMPETENCE_TOKENS = ("core competence", "core competency", "core competencies")
+
+    def _framework_selected(self, tokens: tuple[str, ...]) -> bool:
+        """Did `_select_frameworks` pick a framework matching `tokens`?"""
+        haystack = " ".join(self._frameworks_selected).lower()
+        return any(token in haystack for token in tokens)
+
+    async def _run_bcg_matrix(
+        self,
+        question: str,
+        search_results: list[dict[str, Any]],
+        context: dict[str, Any],
+    ) -> BCGMatrix:
+        """Plot business units on the BCG growth-share matrix.
+
+        Categorisation is derived from the two axes the framework is defined
+        by — market growth rate and relative market share — not taken on the
+        model's word. If the model says "star" but reports low growth, the
+        axes win: the framework is the framework.
+        """
+        company = context.get("company", "")
+        sector = context.get("sector", context.get("industry", ""))
+        search_summary = "\n".join(
+            f"- {r.get('title', '')}: {r.get('snippet', '')[:150]}"
+            for r in search_results[:6]
+        )
+
+        prompt = (
+            "You are the HYPERION Strategy Analyst building a BCG "
+            "growth-share matrix.\n\n"
+            f"Question: {question}\n"
+            f"Company: {company}\n"
+            f"Sector: {sector}\n\n"
+            f"Search results:\n{search_summary}\n\n"
+            "Identify 3-6 business units or product lines and for each give:\n"
+            "- unit_name\n"
+            "- market_growth_rate: the market's annual growth rate as a "
+            "percentage, e.g. \"12%\" (the MARKET's growth, not the unit's "
+            "revenue growth)\n"
+            "- relative_market_share: share relative to the LARGEST "
+            "competitor, e.g. \"1.4x\" means 40% larger than the leader, "
+            "\"0.6x\" means 60% of the leader\n"
+            "- recommendation: invest, harvest, hold, or divest\n\n"
+            "The two axes are what define the category:\n"
+            "  high growth + high relative share -> star (invest)\n"
+            "  low growth  + high relative share -> cash cow (harvest)\n"
+            "  high growth + low relative share  -> question mark (invest "
+            "selectively)\n"
+            "  low growth  + low relative share  -> dog (divest)\n\n"
+            "Conventional thresholds: growth is 'high' above 10%; relative "
+            "share is 'high' at or above 1.0x.\n\n"
+            "Also assess portfolio_balance: does this portfolio fund itself? "
+            "A portfolio of all question marks has no cash cow paying for "
+            "them; a portfolio of all cash cows has no future.\n\n"
+            "Do NOT invent units. If the sources do not identify distinct "
+            "business units, return an empty list.\n\n"
+            "Return JSON:\n"
+            "{\n"
+            '  "units": [{"unit_name": "...", "market_growth_rate": "...", '
+            '"relative_market_share": "...", "recommendation": "..."}],\n'
+            '  "portfolio_balance": "..."\n'
+            "}\n"
+        )
+
+        response = await self._llm_complete(
+            user_prompt=prompt,
+            urgency=TaskUrgency.HIGH,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+
+        if not response.success or not response.content:
+            return BCGMatrix()
+
+        try:
+            data = json.loads(response.content)
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            await self._log_tool_use(
+                "llm", "bcg_matrix", f"FAIL · unparseable JSON · {exc}", success=False
+            )
+            return BCGMatrix()
+
+        units: list[BCGUnit] = []
+        buckets: dict[BCGCategory, list[str]] = {c: [] for c in BCGCategory}
+
+        for raw in data.get("units", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("unit_name") or "").strip()
+            if not name:
+                # A unit with no name cannot be plotted or cited. Skipping it
+                # silently is how "Unknown" placeholders reach the deliverable.
+                continue
+
+            growth = str(raw.get("market_growth_rate") or "").strip()
+            share = str(raw.get("relative_market_share") or "").strip()
+            category = self._classify_bcg(growth, share, raw.get("category"))
+
+            unit = BCGUnit(
+                unit_name=name,
+                category=category,
+                market_growth_rate=growth,
+                relative_market_share=share,
+                recommendation=str(raw.get("recommendation") or "").strip()
+                or self._BCG_DEFAULT_ACTION[category],
+            )
+            units.append(unit)
+            buckets[category].append(name)
+
+        return BCGMatrix(
+            units=units,
+            stars=buckets[BCGCategory.STAR],
+            cash_cows=buckets[BCGCategory.CASH_COW],
+            question_marks=buckets[BCGCategory.QUESTION_MARK],
+            dogs=buckets[BCGCategory.DOG],
+            portfolio_balance=str(data.get("portfolio_balance") or "").strip()
+            or self._describe_portfolio_balance(buckets),
+        )
+
+    #: The framework's own prescription per quadrant, used when the model
+    #: omits a recommendation. Not a guess — this is what BCG says.
+    _BCG_DEFAULT_ACTION = {
+        BCGCategory.STAR: "invest",
+        BCGCategory.CASH_COW: "harvest",
+        BCGCategory.QUESTION_MARK: "invest selectively or divest",
+        BCGCategory.DOG: "divest",
+    }
+
+    #: Conventional BCG axis thresholds.
+    BCG_HIGH_GROWTH_PCT = 10.0
+    BCG_HIGH_RELATIVE_SHARE = 1.0
+
+    @staticmethod
+    def _parse_leading_number(text: str) -> float | None:
+        """Pull the first number out of strings like "12%", "1.4x", "~8.5 %"."""
+        match = re.search(r"-?\d+(?:\.\d+)?", text or "")
+        if match is None:
+            return None
+        try:
+            return float(match.group(0))
+        except ValueError:
+            return None
+
+    def _classify_bcg(
+        self,
+        growth: str,
+        share: str,
+        model_category: Any = None,
+    ) -> BCGCategory:
+        """Derive the BCG quadrant from the axes, falling back to the model.
+
+        The axes are authoritative when both are quantified: BCG's categories
+        are *defined* by them, so a model that labels a low-growth unit a
+        "star" is contradicting the framework it was asked to apply. When an
+        axis is missing we fall back to the model's own label rather than
+        guessing, and only then to QUESTION_MARK (the genuinely
+        "insufficient information" quadrant — high potential, unproven).
+        """
+        growth_val = self._parse_leading_number(growth)
+        share_val = self._parse_leading_number(share)
+
+        if growth_val is not None and share_val is not None:
+            high_growth = growth_val >= self.BCG_HIGH_GROWTH_PCT
+            high_share = share_val >= self.BCG_HIGH_RELATIVE_SHARE
+            if high_growth and high_share:
+                return BCGCategory.STAR
+            if not high_growth and high_share:
+                return BCGCategory.CASH_COW
+            if high_growth and not high_share:
+                return BCGCategory.QUESTION_MARK
+            return BCGCategory.DOG
+
+        if model_category:
+            label = str(model_category).strip().lower().replace(" ", "_").replace("-", "_")
+            for candidate in BCGCategory:
+                if candidate.value == label:
+                    return candidate
+
+        return BCGCategory.QUESTION_MARK
+
+    @staticmethod
+    def _describe_portfolio_balance(buckets: dict[BCGCategory, list[str]]) -> str:
+        """State the funding logic of the portfolio when the model didn't.
+
+        Every imbalance present is reported, not just the first one found. An
+        earlier version returned on the first match, so a portfolio of three
+        dogs and one question mark was described only as "no cash cow to fund
+        the growth unit" — true, but it silently omitted that three quarters of
+        the portfolio should be divested. A partial diagnosis of a portfolio is
+        arguably worse than none: the reader believes they have the whole
+        picture and acts on one finding while the larger one goes unmentioned.
+        """
+        if not any(buckets.values()):
+            return ""
+        cows = len(buckets[BCGCategory.CASH_COW])
+        marks = len(buckets[BCGCategory.QUESTION_MARK])
+        stars = len(buckets[BCGCategory.STAR])
+        dogs = len(buckets[BCGCategory.DOG])
+
+        census = (
+            f"{stars} star(s), {cows} cash cow(s), "
+            f"{marks} question mark(s), {dogs} dog(s)"
+        )
+
+        issues: list[str] = []
+        if cows == 0 and (marks or stars):
+            issues.append(
+                f"{marks + stars} growth unit(s) with no cash cow generating "
+                "the cash to fund them"
+            )
+        if cows and not (stars or marks):
+            issues.append(
+                f"{cows} cash cow(s) but no stars or question marks — the "
+                "portfolio has no future growth engine"
+            )
+        if dogs > (stars + cows + marks):
+            issues.append(f"{dogs} dog(s) dominate the portfolio")
+
+        if issues:
+            return f"Unbalanced ({census}): " + "; ".join(issues) + "."
+        return f"Balanced: {census}."
+
+    async def _run_blue_ocean(
+        self,
+        question: str,
+        search_results: list[dict[str, Any]],
+        context: dict[str, Any],
+    ) -> BlueOceanStrategy:
+        """Apply the eliminate-reduce-raise-create framework.
+
+        Note the schema field is `raise_factors` with `validation_alias="raise"`
+        (``raise`` is a Python keyword), so the JSON key we ask for is "raise"
+        but we populate `raise_factors` explicitly rather than relying on the
+        alias surviving a hand-built constructor call.
+        """
+        company = context.get("company", "")
+        sector = context.get("sector", context.get("industry", ""))
+        search_summary = "\n".join(
+            f"- {r.get('title', '')}: {r.get('snippet', '')[:150]}"
+            for r in search_results[:6]
+        )
+
+        prompt = (
+            "You are the HYPERION Strategy Analyst applying Blue Ocean "
+            "strategy.\n\n"
+            f"Question: {question}\n"
+            f"Company: {company}\n"
+            f"Sector: {sector}\n\n"
+            f"Search results:\n{search_summary}\n\n"
+            "Apply the eliminate-reduce-raise-create grid:\n"
+            "- eliminate: which factors the industry competes on should be "
+            "eliminated entirely?\n"
+            "- reduce: which should be reduced well BELOW the industry "
+            "standard?\n"
+            "- raise: which should be raised well ABOVE the industry "
+            "standard?\n"
+            "- create: which factors has the industry never offered?\n\n"
+            "Then judge honestly whether a blue ocean is actually available. "
+            "Most industries are red oceans and most companies should compete "
+            "in them better rather than pretend otherwise. Set "
+            "is_blue_ocean_feasible to false and say why if so — a false "
+            "negative here is far cheaper than recommending a market that "
+            "does not exist.\n\n"
+            "If feasible, describe new_market_space concretely: who is the "
+            "non-customer being converted, and what makes them a customer?\n\n"
+            "Also build a strategy_canvas: for each key competing factor, "
+            "give the industry's typical level and the proposed level.\n\n"
+            "Return JSON:\n"
+            "{\n"
+            '  "eliminate": ["..."],\n'
+            '  "reduce": ["..."],\n'
+            '  "raise": ["..."],\n'
+            '  "create": ["..."],\n'
+            '  "strategy_canvas": [{"factor": "...", "industry": "...", '
+            '"proposed": "..."}],\n'
+            '  "is_blue_ocean_feasible": true,\n'
+            '  "new_market_space": "..."\n'
+            "}\n"
+        )
+
+        response = await self._llm_complete(
+            user_prompt=prompt,
+            urgency=TaskUrgency.HIGH,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+
+        if not response.success or not response.content:
+            return BlueOceanStrategy()
+
+        try:
+            data = json.loads(response.content)
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            await self._log_tool_use(
+                "llm", "blue_ocean", f"FAIL · unparseable JSON · {exc}", success=False
+            )
+            return BlueOceanStrategy()
+
+        def string_list(key: str) -> list[str]:
+            """Coerce a JSON array to clean strings, dropping non-values.
+
+            `None` is filtered *before* stringification. `str(None)` is the
+            literal `"None"`, which is truthy and 4 characters long, so a
+            model emitting `["Showroom footprint", null]` would have put the
+            word "None" into the eliminate axis of a client-facing exhibit.
+            Booleans and dicts are rejected for the same reason: a factor is
+            a phrase, and anything that is not one is model noise.
+            """
+            raw = data.get(key)
+            if not isinstance(raw, list):
+                return []
+            out: list[str] = []
+            for v in raw:
+                if v is None or isinstance(v, bool | dict | list):
+                    continue
+                text = str(v).strip()
+                if text:
+                    out.append(text)
+            return out
+
+        canvas: list[dict[str, str]] = []
+        for row in data.get("strategy_canvas") or []:
+            if isinstance(row, dict):
+                canvas.append({str(k): str(v) for k, v in row.items()})
+
+        feasible = bool(data.get("is_blue_ocean_feasible", False))
+        space = str(data.get("new_market_space") or "").strip()
+
+        # A "feasible blue ocean" with no described market space is an empty
+        # claim — the single most seductive failure mode of this framework.
+        # Downgrade rather than publish it.
+        if feasible and not space:
+            feasible = False
+            space = (
+                "Claimed feasible but no uncontested market space was "
+                "described; treated as not feasible."
+            )
+
+        return BlueOceanStrategy(
+            eliminate=string_list("eliminate"),
+            reduce=string_list("reduce"),
+            raise_factors=string_list("raise") or string_list("raise_factors"),
+            create=string_list("create"),
+            strategy_canvas=canvas,
+            is_blue_ocean_feasible=feasible,
+            new_market_space=space,
+        )
+
+    async def _run_core_competence(
+        self,
+        question: str,
+        vrio: VRIOAssessment,
+        context: dict[str, Any],
+    ) -> CoreCompetence:
+        """Identify core competencies, grounded in the VRIO assessment.
+
+        The original comment said "Derived from VRIO if needed" — this is that
+        derivation, made real. VRIO's sustained advantages are exactly the
+        Prahalad-and-Hamel test for a core competence, so they are passed in
+        as the evidence base rather than asking the model to start over.
+        """
+        company = context.get("company", "")
+        vrio_summary = "\n".join(
+            f"- {r.resource}: {r.competitive_implication}"
+            for r in vrio.resources[:8]
+        ) or "(no VRIO resources were identified)"
+
+        prompt = (
+            "You are the HYPERION Strategy Analyst identifying core "
+            "competencies.\n\n"
+            f"Question: {question}\n"
+            f"Company: {company}\n\n"
+            f"VRIO assessment already performed:\n{vrio_summary}\n\n"
+            f"Sustained advantages: {', '.join(vrio.sustained_advantages) or 'none identified'}\n\n"
+            "Identify the 2-3 genuine core competencies. A core competence "
+            "must pass all three tests:\n"
+            "1. It provides disproportionate customer value\n"
+            "2. It is difficult for competitors to imitate\n"
+            "3. It can be leveraged across multiple products or markets\n\n"
+            "A large budget is not a competence. Being big is not a "
+            "competence. If only one competence passes all three tests, "
+            "return one — do not pad to three.\n\n"
+            "Assess is_defensible and is_transferable as booleans, and "
+            "justify each in defensibility_assessment and "
+            "transferability_assessment.\n\n"
+            "Return JSON:\n"
+            "{\n"
+            '  "competencies": ["..."],\n'
+            '  "competency_descriptions": ["..."],\n'
+            '  "is_defensible": true,\n'
+            '  "is_transferable": true,\n'
+            '  "defensibility_assessment": "...",\n'
+            '  "transferability_assessment": "..."\n'
+            "}\n"
+        )
+
+        response = await self._llm_complete(
+            user_prompt=prompt,
+            urgency=TaskUrgency.HIGH,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+
+        if not response.success or not response.content:
+            return CoreCompetence()
+
+        try:
+            data = json.loads(response.content)
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            await self._log_tool_use(
+                "llm", "core_competence", f"FAIL · unparseable JSON · {exc}", success=False
+            )
+            return CoreCompetence()
+
+        competencies = [
+            str(c).strip() for c in (data.get("competencies") or []) if str(c).strip()
+        ]
+        descriptions = [
+            str(d).strip()
+            for d in (data.get("competency_descriptions") or [])
+            if str(d).strip()
+        ]
+
+        # Keep descriptions aligned with competencies. The two are parallel
+        # lists, so a length mismatch silently mis-attributes a description to
+        # the wrong competence — pad instead of letting them slip.
+        if descriptions and len(descriptions) != len(competencies):
+            if len(descriptions) < len(competencies):
+                descriptions = descriptions + [""] * (len(competencies) - len(descriptions))
+            else:
+                descriptions = descriptions[: len(competencies)]
+
+        return CoreCompetence(
+            competencies=competencies,
+            competency_descriptions=descriptions,
+            is_defensible=bool(data.get("is_defensible", False)),
+            is_transferable=bool(data.get("is_transferable", False)),
+            defensibility_assessment=str(data.get("defensibility_assessment") or "").strip(),
+            transferability_assessment=str(
+                data.get("transferability_assessment") or ""
+            ).strip(),
+        )
+
+    # ─────────────────────────────────────────────────────────────────────
     # Sub-agent spawning for parallel strategy data collection
     # ─────────────────────────────────────────────────────────────────────
 
@@ -1178,6 +1648,40 @@ class StrategyAnalyst(BaseAgent):
         await self._transition(AgentState.WORKING, "Step 7: Running game theory analysis on competitive dynamics")
         game_theory = await self._run_game_theory(self._question, porter, self._search_results, self._context)
 
+        # Step 7b: Conditional frameworks — run ONLY when _select_frameworks
+        # actually chose them (Phase 5.1e). Previously these three were
+        # hardcoded to None, so the selector could advertise analysis the agent
+        # could not produce. Running them unconditionally would be the opposite
+        # error: §4.4 is explicit that the Strategy Analyst "selects the
+        # framework that actually illuminates the specific question" rather
+        # than applying all eight.
+        bcg: BCGMatrix | None = None
+        if self._framework_selected(self._BCG_TOKENS):
+            await self._transition(
+                AgentState.WORKING, "Step 7b: Building BCG growth-share matrix (selected)"
+            )
+            bcg = await self._run_bcg_matrix(
+                self._question, self._search_results, self._context
+            )
+
+        blue_ocean: BlueOceanStrategy | None = None
+        if self._framework_selected(self._BLUE_OCEAN_TOKENS):
+            await self._transition(
+                AgentState.WORKING, "Step 7b: Running Blue Ocean analysis (selected)"
+            )
+            blue_ocean = await self._run_blue_ocean(
+                self._question, self._search_results, self._context
+            )
+
+        core_competence: CoreCompetence | None = None
+        if self._framework_selected(self._CORE_COMPETENCE_TOKENS):
+            await self._transition(
+                AgentState.WORKING, "Step 7b: Running core competence analysis (selected)"
+            )
+            core_competence = await self._run_core_competence(
+                self._question, vrio, self._context
+            )
+
         # Calibrate confidence
         confidence = self._calibrate_confidence(
             has_porter=bool(porter.overall_attractiveness),
@@ -1198,11 +1702,11 @@ class StrategyAnalyst(BaseAgent):
             frameworks_selected=self._frameworks_selected,
             frameworks_not_selected=self._frameworks_not_selected,
             porter_five_forces=porter,
-            bcg_matrix=None,  # Only applied if portfolio question
+            bcg_matrix=bcg,  # Populated when a portfolio framework was selected
             swot_tows=swot_tows,
-            blue_ocean=None,  # Only applied if market creation question
+            blue_ocean=blue_ocean,  # Populated when market creation was selected
             vrio_assessment=vrio,
-            core_competence=None,  # Derived from VRIO if needed
+            core_competence=core_competence,  # Derived from VRIO when selected
             strategic_option_grid=option_grid,
             game_theory=game_theory,
             recommended_strategy=recommended,

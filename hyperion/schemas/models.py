@@ -28,7 +28,7 @@ from enum import Enum
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 def clean_url(url: str) -> str:
@@ -1509,11 +1509,25 @@ class BlueOceanStrategy(BaseModel):
     Identifies whether the company can create uncontested market space using
     the eliminate-reduce-raise-create framework. Builds a strategy canvas
     comparing the company to competitors.
+
+    Phase 5.1e note on ``raise_factors``: the JSON key is ``raise`` (a Python
+    keyword, hence the field rename), exposed via ``validation_alias``. In
+    pydantic v2 a ``validation_alias`` *replaces* the field name for
+    validation, so without ``populate_by_name`` the construction
+
+        BlueOceanStrategy(raise_factors=["Delivery speed"])
+
+    silently discarded the value and left the raise axis empty — no error, no
+    warning, one quarter of the ERRC grid permanently blank in the deliverable.
+    ``populate_by_name=True`` makes both the alias and the field name work,
+    which is what every call site already assumed.
     """
+
+    model_config = ConfigDict(populate_by_name=True)
 
     eliminate: list[str] = Field(default_factory=list, description="What factors should be eliminated that the industry takes for granted?")
     reduce: list[str] = Field(default_factory=list, description="What factors should be reduced well below the industry standard?")
-    raise_factors: list[str] = Field(default_factory=list, validation_alias="raise", description="What factors should be raised well above the industry standard?")
+    raise_factors: list[str] = Field(default_factory=list, validation_alias=AliasChoices("raise", "raise_factors"), description="What factors should be raised well above the industry standard?")
     create: list[str] = Field(default_factory=list, description="What factors should be created that the industry has never offered?")
     strategy_canvas: list[dict[str, str]] = Field(default_factory=list, description="Strategy canvas comparing company to competitors on key factors")
     is_blue_ocean_feasible: bool = Field(default=False, description="Is Blue Ocean strategy feasible for this company?")
