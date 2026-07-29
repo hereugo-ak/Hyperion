@@ -62,11 +62,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
+from hyperion.output.page_budget import PAGE_COUNT_MAX, PAGE_COUNT_MIN
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
     AgentName,
@@ -90,6 +89,12 @@ from hyperion.schemas.models import (
     QualityScore,
     VisualizationOutput,
 )
+
+# Declared after the imports, not between them. It previously sat above the
+# `hyperion.*` block, which made every one of those imports an E402 ("module
+# level import not at top of file") — 7 findings from one misplaced line. Adding
+# the page-budget import would have made it 8, so the line moved instead.
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1342,7 +1347,13 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         "- page-break-inside: avoid for images and charts.\n"
         "- page-break-before: always for new sections.\n"
         "- No blank pages. No orphaned images.\n"
-        "- 15-40 pages for a standard engagement.\n\n"
+        # Fix 4.2: this said "15-40 pages", contradicting the 15-20 delivery
+        # contract the page budget enforces. The Presentation Designer was being
+        # told a looser rule than the Render Engine verifies against, so the
+        # agent that lays out the pages had a different idea of the contract than
+        # the agent that checks it. Interpolated from the constants so the two
+        # cannot diverge again.
+        f"- {PAGE_COUNT_MIN}-{PAGE_COUNT_MAX} pages for a standard engagement.\n\n"
         "You run on STRONG tier. You do NOT spawn sub-agents.\n\n"
         "Your output is a LayoutPlan Pydantic model — page-by-page layout, "
         "image selections, chart placements, HTML template path, CSS path."

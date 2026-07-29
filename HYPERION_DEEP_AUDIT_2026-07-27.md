@@ -1499,7 +1499,92 @@ progress, `[x]` = landed with proof.
   - **Not yet closed:** the budget now *governs the request*, but nothing yet
     *verifies the result* — that is 4.2, which narrows `render.py`'s 15–40 window
     and promotes the violation from a log line to a quality-gate failure.
-- [ ] **4.2** Narrow page-count contract to `15..22` and make it a quality-gate failure
+    **→ Closed by 4.2 below.**
+- [x] **4.2** Narrow page-count contract to `15..22` and make it a quality-gate failure
+  — `page_budget.page_count_verdict` (new) + `render.py`, `render_engine.py`,
+  `harness.py`, `orchestrator.py`, `presentation_designer.py`, `models.py`
+  - **The finding restated.** The audit reported "36 pages vs a 15–20 target" as a
+    ⚠️ row, but the deeper defect was that **three separate checks all measured
+    page count and none could fail on it**:
+    1. `render.py:757` recorded `page_count_reasonable: 15 <= page_count <= 40`,
+       then computed `passed` from blank pages and fonts **only** — the page count
+       was written into the result dict and structurally discarded.
+    2. `render_engine._verify_pdf` — the method whose own docstring calls the
+       agent "the last line of defense for quality" which "never ships a broken
+       PDF" — **did not check page count at all**. It was measured two steps
+       later in `run()` to populate a status string.
+    3. `harness.py` used `5 <= page_count <= 60`: a 55-page window on a 20-page
+       contract, which no plausible render could fail.
+    So the 36-page report did not fail a check; it passed three of them. And the
+    windows were too wide to be informative anyway — `15..40` returns the same
+    verdict for a 16-page and a 39-page document, so no achievable improvement
+    could ever move it.
+  - **The fix makes the verdict load-bearing.** `page_count_verdict()` is now the
+    single definition of the band, and it participates in `passed` /
+    `verification_issues` at all three sites. The band is *derived*
+    (`PAGE_COUNT_MAX = TARGET_PAGES_MAX + RENDER_SLACK_PAGES`) rather than
+    retyped, so it moves with the contract; `RENDER_SLACK_PAGES = 2` is global,
+    not per-section, because a per-section allowance would admit +6 pages at 6
+    sections — a third of the contract.
+  - **A defect *inside 4.1* that this work exposed.** 4.1 sized each section to
+    the *most* words fitting its sheet allotment, then advertised "acceptable
+    range 0.9N–1.1N" on top. Those two statements contradicted each other: at 4
+    sections the allocation was 1,342 words (exactly 3 sheets) while the clause
+    invited 1,476, which needs 4. **A model that obeyed its instructions pushed
+    the report from 20 pages to 24 — and this held at 4 of the 6 realistic
+    section counts (3, 4, 5, 6), by up to 6 pages.** While nothing verified the
+    output this was invisible; the moment page count became a gate it would have
+    failed reports whose only fault was compliance, and the natural-looking "fix"
+    would have been to widen the gate — entrenching the real bug. The allocation
+    now reserves the tolerance it advertises (`SECTION_WORD_TOLERANCE`, one
+    constant shared by the clause and the allocation, which previously used a
+    hardcoded `1.1` and *no* allowance respectively). Costs ~9% of prose;
+    `test_a_maximally_compliant_report_passes_the_gate` pins it for all 12
+    section counts.
+  - **Fair, not merely strict.** A flat band would fail two reports for
+    conditions the budget already declared: a 1-section engagement clamped by
+    `MAX_SECTION_WORDS` projects 13 pages and *cannot* reach 15 without padding,
+    and an over-capacity engagement already logged a warning naming its
+    projection. Passing the budget widens the band for exactly those two
+    self-declared cases — and `test_over_capacity_still_fails_if_it_overruns_its_own_admission`
+    pins that the widening is bounded, so it is not a blank cheque. A
+    zero-section budget is explicitly refused as a widening basis, since
+    `plan_budget(0)` projects 8 pages and would otherwise let anything through.
+  - **Wired in production, not just in tests.** `orchestrator._page_budget_for`
+    reconstructs the budget from the finished report's section count and passes it
+    to `RenderEngine.run(page_budget=...)`. Reconstructed rather than carried as
+    state because the quality-iteration loop can revise the report — and its
+    section count — several times before delivery, so a budget captured at
+    synthesis time would describe a report that no longer exists. `plan_budget`
+    is pure, so recomputation is exact (`test_reconstructed_budget_equals_the_planned_one`).
+  - **The contract is now stated once.** It previously appeared in five places
+    with three different values (`15-40` in `render.py`, `5-60` in `harness.py`,
+    `15-40` in the `LayoutPlan` schema and in the Presentation Designer's own
+    prompt, `15-20` in the budget) — so the agent laying out the pages was told a
+    looser rule than the agent verifying them. `TestTheContractIsStatedOnceInTheCodebase`
+    greps for each stale window; it tokenises the source to strip comments *and*
+    docstrings, because the explanatory notes legitimately name the old values —
+    a naive `#`-only filter failed on this fix's own docstring, caught on first run.
+  - **Two negative controls run before commit.** Reverting
+    `page_count_reasonable` to the old expression, and deleting the `run()` budget
+    assignment, each made the intended test fail — confirming the assertions bite
+    rather than passing vacuously. This matters here specifically because the
+    pre-fix code *computed the band correctly* and merely ignored the result:
+    band arithmetic alone cannot distinguish fixed from broken, only wiring can.
+  - Full suite: **1,334 passed, 8 skipped** (was 1,236 / 8; **+98 tests, zero
+    regressions, zero pre-existing tests modified**). `ruff` clean on
+    `page_budget.py` and the new test file; no new findings in any touched file,
+    and `presentation_designer.py` went 34 → 27 (a stray `logger =` sitting above
+    the import block was making 7 imports `E402`; moving it below removed all
+    seven rather than adding an eighth). Probe re-run unchanged: 36 pages on the
+    7-section fixture — which the gate now correctly *rejects*, 54 chars/line,
+    2 columns, 7/7 exhibits with Note+Source, 0 leaks, 0 blank pages, brand
+    fonts embedded.
+  - **Note on the probe's 36 pages:** the fixture deliberately over-fills (7
+    sections × 1,510 words, written before the budget existed) and is retained as
+    the *calibration* artefact for the page model — `test_page_budget` asserts the
+    model reproduces 36 exactly. It is not a contract violation by the pipeline,
+    which would now ask those 7 sections for 450 words each.
 - [ ] **4.3** Add tornado, marimekko, football-field, growth-share, bubble charts
 - [ ] **4.4** Enforce MGI exhibit anatomy in template
 - [ ] **4.5** Add At-a-glance, Technical appendix, Endnotes

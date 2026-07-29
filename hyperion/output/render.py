@@ -714,14 +714,37 @@ class PDFRenderer:
             )
         return result
 
-    def verify_pdf(self, pdf_path: str) -> dict[str, Any]:
+    def verify_pdf(
+        self,
+        pdf_path: str,
+        budget: Any | None = None,
+    ) -> dict[str, Any]:
         """Verify a PDF meets HYPERION quality standards.
 
         Checks (§6.5):
         - No blank pages
         - All fonts embedded
-        - Page count is reasonable (15-40 pages)
+        - Page count honours the delivery contract (fix 4.2)
         - File size is reasonable
+
+        NOTE (fix 4.2 — the page-count check used to be decorative): this method
+        previously recorded ``page_count_reasonable: 15 <= page_count <= 40`` and
+        then computed ``passed`` from blank pages and embedded fonts *only*. The
+        page count therefore could not fail a verification no matter what it was,
+        and the 25-page-wide window would not have distinguished a compliant
+        report from a 39-page one anyway. That is how the audit's §3.1 "36 pages
+        against a 15-20 target" row survived: the number was measured, written
+        down, and structurally ignored.
+
+        The band now comes from `page_budget`, so it moves with the contract
+        instead of being retyped here, and it participates in `passed`.
+
+        Args:
+            pdf_path: PDF to verify.
+            budget: The `PageBudget` the report was generated under, when the
+                caller knows it. Passing it lets the verdict distinguish a report
+                that is short because the word ceiling bound it from one that is
+                short because it is thin — see `page_count_verdict`.
         """
         try:
             import fitz
@@ -746,6 +769,10 @@ class PDFRenderer:
 
             file_size = os.path.getsize(pdf_path)
 
+            from hyperion.output.page_budget import page_count_verdict
+
+            verdict = page_count_verdict(page_count, budget)
+
             return {
                 "path": pdf_path,
                 "page_count": page_count,
@@ -754,8 +781,15 @@ class PDFRenderer:
                 "fonts_embedded": list(fonts),
                 "all_fonts_embedded": len(fonts) > 0,
                 "file_size_bytes": file_size,
-                "page_count_reasonable": 15 <= page_count <= 40,
-                "passed": len(blank_pages) == 0 and len(fonts) > 0,
+                "page_count_reasonable": verdict.passed,
+                "page_count_expected_min": verdict.expected_min,
+                "page_count_expected_max": verdict.expected_max,
+                "page_count_reason": verdict.reason,
+                # Page count is now load-bearing in the verdict. Before 4.2 it
+                # was computed and discarded.
+                "passed": (
+                    len(blank_pages) == 0 and len(fonts) > 0 and verdict.passed
+                ),
             }
 
         except (ImportError, OSError, ValueError) as e:

@@ -2162,7 +2162,9 @@ The Quality Gate specifically checks:
 - All charts use brand colors (check chart image colors against palette)
 - All fonts are embedded (check PDF metadata)
 - Footer present on every page (scan for footer text)
-- Page count is reasonable (15-40 pages for a standard engagement)
+- Page count honours the delivery contract (15-22 pages: the 15-20 target plus 2
+  pages of render slack). Enforced by `hyperion/output/page_budget.page_count_verdict`
+  and failed as a verification issue by the Render Engine — not merely logged.
 
 ---
 

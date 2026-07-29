@@ -2114,7 +2114,9 @@ class LayoutPlan(BaseModel):
 
     engagement_id: str = Field(description="Engagement identifier")
     pages: list[PageLayout] = Field(default_factory=list, description="Page-by-page layout")
-    total_pages: int = Field(default=0, description="Total page count (15-40 for standard engagement)")
+    # Fix 4.2: was "15-40 for standard engagement" — a restatement of the wide
+    # window that made the page-count check meaningless. The contract is 15-22.
+    total_pages: int = Field(default=0, description="Total page count (15-22 for standard engagement)")
     cover_image: ImageSelection | None = Field(default=None, description="Cover page image")
     section_images: list[ImageSelection] = Field(default_factory=list, description="All section header images")
     chart_placements: list[ChartPlacement] = Field(default_factory=list, description="All chart placements")

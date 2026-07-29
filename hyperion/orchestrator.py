@@ -748,6 +748,11 @@ class WorkflowEngine:
                         question=dag.question,
                         engagement_id=self._engagement_id,
                         layout_plan=layout_plan,
+                        # Fix 4.2: hand the Render Engine the same budget the
+                        # report was written under, so its page-count gate can
+                        # tell a report that is short because the word ceiling
+                        # bound it from one that is short because it is thin.
+                        page_budget=self._page_budget_for(dag),
                     ),
                     timeout=self.TASK_TIMEOUT_SECONDS,
                 )
@@ -842,6 +847,29 @@ class WorkflowEngine:
             if task.agent == agent_name and task.id in self._task_outputs:
                 return self._task_outputs[task.id]
         return None
+
+    def _page_budget_for(self, dag: WorkflowDAG) -> Any | None:
+        """Reconstruct the page budget the final report was written under (4.2).
+
+        Recomputed from the section count of the finished `FinalReport` rather
+        than carried as orchestrator state. `plan_budget` is a pure function of
+        the section count, so recomputation yields the identical budget while
+        avoiding a mutable field that the quality-iteration loop could leave
+        stale: that loop can revise the report — and therefore its section
+        count — several times before delivery, and a budget captured at synthesis
+        time would then describe a report that no longer exists.
+
+        Returns None when there is no report to measure, which the Render
+        Engine's gate treats as "judge against the flat contract band" rather
+        than "skip the check".
+        """
+        report = self._get_output_by_agent(dag, AgentName.SYNTHESIS_LEAD)
+        sections = getattr(report, "sections", None)
+        if not sections:
+            return None
+        from hyperion.output.page_budget import plan_budget
+
+        return plan_budget(len(sections))
 
     def _compute_step_hash(self, task: TaskNode, dag: WorkflowDAG) -> str:
         """P10: Compute a deterministic hash of a step's inputs.

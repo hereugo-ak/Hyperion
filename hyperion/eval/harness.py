@@ -283,13 +283,22 @@ def run_deterministic_checks(
         detail="Source attribution found" if has_footer else "No source attribution in sections",
     ))
 
-    # Check 15: PDF page count is reasonable (15-40 pages)
+    # Check 15: PDF page count honours the delivery contract (fix 4.2)
+    #
+    # This check was `5 <= page_count <= 60`. A 55-page-wide window on a 15-20
+    # page contract cannot fail anything a renderer would plausibly emit, so the
+    # offline gate agreed with the runtime gate only in the sense that neither
+    # was checking. The band now comes from `page_budget`, the single source of
+    # truth, so the offline harness and the Render Engine cannot drift apart.
     if pdf_path and os.path.exists(pdf_path):
+        from hyperion.output.page_budget import page_count_verdict
+
         page_count = _get_pdf_page_count(pdf_path)
+        verdict = page_count_verdict(page_count if page_count is not None else 0)
         results.append(CheckResult(
             name="page_count_reasonable",
-            passed=page_count is not None and 5 <= page_count <= 60,
-            detail=f"{page_count} pages" if page_count is not None else "Could not read PDF",
+            passed=verdict.passed,
+            detail=verdict.reason,
         ))
     else:
         results.append(CheckResult(
