@@ -99,31 +99,89 @@ class TestMarkdownExporter:
 
 
 class TestBrandCSS:
-    """Test brand CSS compliance."""
+    """Test brand CSS compliance against the SHIPPED stylesheet.
+
+    Fix 3.3 collapsed the dead-template fork: the old
+    templates/styles/hyperion.css (which these tests used to read, and
+    which had zero effect on output) is deleted. The single source of
+    truth is now presentation_designer.CSS_TEMPLATE — the CSS that is
+    actually inlined into every report.
+    """
+
+    @staticmethod
+    def _shipped_css() -> str:
+        from hyperion.agents.delivery.presentation_designer import CSS_TEMPLATE
+
+        return CSS_TEMPLATE
 
     def test_css_has_no_blue(self):
         """The brand CSS should not use blue colors."""
-        css_path = Path(__file__).parent.parent / "hyperion" / "output" / "templates" / "styles" / "hyperion.css"
-        if css_path.exists():
-            css_content = css_path.read_text(encoding="utf-8").lower()
-            # Check for blue hex codes
-            blue_codes = ["#0000ff", "#000080", "#4169e1", "#1e90ff", "#87ceeb"]
-            for code in blue_codes:
-                assert code not in css_content, f"Blue color {code} found in CSS"
-            # Check for purple hex codes
-            purple_codes = ["#800080", "#9370db", "#6a5acd", "#483d8b"]
-            for code in purple_codes:
-                assert code not in css_content, f"Purple color {code} found in CSS"
+        css_content = self._shipped_css().lower()
+        # Check for blue hex codes
+        blue_codes = ["#0000ff", "#000080", "#4169e1", "#1e90ff", "#87ceeb"]
+        for code in blue_codes:
+            assert code not in css_content, f"Blue color {code} found in CSS"
+        # Check for purple hex codes
+        purple_codes = ["#800080", "#9370db", "#6a5acd", "#483d8b"]
+        for code in purple_codes:
+            assert code not in css_content, f"Purple color {code} found in CSS"
 
     def test_css_has_warm_palette(self):
         """The brand CSS should use the warm palette colors."""
-        css_path = Path(__file__).parent.parent / "hyperion" / "output" / "templates" / "styles" / "hyperion.css"
-        if css_path.exists():
-            css_content = css_path.read_text(encoding="utf-8")
-            # Check for warm palette colors (case-insensitive)
-            warm_colors = ["#1a1a1a", "#f5f4ee", "#c8704d", "#7c9885"]
-            found = sum(1 for c in warm_colors if c.lower() in css_content.lower())
-            assert found >= 2, "CSS should contain at least 2 warm palette colors"
+        css_content = self._shipped_css()
+        # Check for warm palette colors (case-insensitive)
+        warm_colors = ["#1a1a1a", "#f5f4ee", "#c8704d", "#7c9885"]
+        found = sum(1 for c in warm_colors if c.lower() in css_content.lower())
+        assert found >= 2, "CSS should contain at least 2 warm palette colors"
+
+
+class TestDeadTemplateForkCollapsed:
+    """Fix 3.3 anti-regression: the dead parallel template system must stay
+    gone — one template system (the inline strings in presentation_designer),
+    not two."""
+
+    def test_dead_template_files_do_not_exist(self):
+        templates_dir = (
+            Path(__file__).parent.parent / "hyperion" / "output" / "templates"
+        )
+        for dead in ("report.html.j2", "cover.html.j2", "styles/hyperion.css"):
+            assert not (templates_dir / dead).exists(), (
+                f"dead template resurrected: {dead}"
+            )
+
+    def test_pdf_renderer_has_no_css_path_or_font_embed_fork(self):
+        from hyperion.output.render import PDFRenderer
+
+        assert not hasattr(PDFRenderer, "CSS_PATH")
+        assert not hasattr(PDFRenderer, "_embed_fonts_in_css")
+        assert not hasattr(PDFRenderer, "render_from_template")
+
+    def test_template_renderer_has_no_filesystem_loader(self):
+        from hyperion.output.render import TemplateRenderer
+
+        assert not hasattr(TemplateRenderer, "TEMPLATE_DIR")
+        renderer = TemplateRenderer()
+        env = renderer._get_env()
+        assert env.loader is None, "string-only renderer must not load template files"
+
+    @pytest.mark.asyncio
+    async def test_render_template_rejects_file_based_call(self):
+        from hyperion.output.render import TemplateRenderer
+
+        result = await TemplateRenderer().render_template(template_name="report.html.j2")
+        assert not result.success
+        assert "template_string" in result.error
+
+    @pytest.mark.asyncio
+    async def test_render_template_still_renders_strings(self):
+        from hyperion.output.render import TemplateRenderer
+
+        result = await TemplateRenderer().render_template(
+            template_string="<h1>{{ title }}</h1>",
+            context={"title": "Hello"},
+        )
+        assert result.success
+        assert "<h1>Hello</h1>" in result.html
 
 
 class TestOrchestrator:
