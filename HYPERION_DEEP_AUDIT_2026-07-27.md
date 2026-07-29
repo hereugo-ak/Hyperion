@@ -1432,7 +1432,73 @@ progress, `[x]` = landed with proof.
     the change and are left for 5.1/5.3.
 
 ### Phase 4 — Depth control & MBB exhibit vocabulary
-- [ ] **4.1** Explicit page budget → word budget → per-section allocation
+- [x] **4.1** Explicit page budget → word budget → per-section allocation
+  — `hyperion/output/page_budget.py` (new) + `synthesis_lead.py`, commit pending
+  - **The finding restated.** B-10 was not "the report is too long" — length is a
+    symptom. The defect was that *nothing related page count to anything*:
+    section count was `len(self._findings_by_agent)` (1–12, whatever reported),
+    word count was a literal `2000` retyped in **four** prompt strings in one
+    function, and the only check was `15 <= page_count <= 40` — a window wide
+    enough that a 16-page and a 39-page report both "pass". Page count was an
+    emergent accident.
+  - **The fix inverts the dependency.** `plan_budget(section_count)` now takes
+    the page contract as the *input* and emits words-per-section as the *output*.
+    A 2-agent engagement is asked for 2,600-word sections; a 6-agent engagement
+    for 575-word sections. Both land inside 15–20 pages.
+  - **Two bugs the tests caught before commit** (both were in my first draft, and
+    both are the *same class of error as the bug being fixed*, which is why they
+    are recorded rather than quietly corrected):
+    1. **Continuous division.** The first model divided available pages by
+       section count as if page space were a fluid. It is not: the production CSS
+       sets `page-break-before: always`, so a section needing 2.1 pages burns
+       **3 sheets**. The continuous model therefore *under-projected* — it would
+       have promised 15 pages and rendered 18. Fixed by ceiling-ing per section
+       (`_section_pages`) and inverting that ceiling analytically
+       (`_max_words_in_pages`), with a test asserting the two are exact inverses
+       at the boundary so they cannot drift apart.
+    2. **Aiming at the midpoint.** The first model targeted the middle of the
+       15–20 band, so with 4 sections it chose 16 pages / 575 words when
+       20 pages / **1,342 words** fit the same contract. Undershooting by 4 pages
+       is not the safe option — it is a thinner deliverable bought for nothing.
+       `target_pages` is now documented and tested as a *ceiling to fill*, not a
+       bullseye, and `test_no_larger_allotment_would_have_fitted` asserts the
+       chosen allocation is **maximal**, not merely legal. A naive
+       `within_contract` assertion passed the buggy version — which is exactly
+       why that test exists.
+  - **Constants are measured, not guessed.** Re-derived with PyMuPDF from the
+    probe PDF: 767 words/full two-column page (page 6 — the only pure-prose page
+    in the fixture), 8 pages fixed front/back matter (pages 1–4, 33–36), 1.25
+    pages/section of chrome (opener + exhibit). Calibration: the probe fixture
+    emits **1,510** body words/section (I had initially recorded 1,615 — corrected
+    by re-deriving it from `LOREM_PARA` rather than trusting the earlier note),
+    and `_projected_pages(7, 1510) == 36` — *exactly* the page count the audit
+    measured. `test_fixture_word_count_is_still_1510` re-computes that input from
+    the probe source so the calibration cannot silently stop referring to the
+    real artefact.
+  - **Degrades honestly.** ≥7 sections cannot fit 20 pages even at the 450-word
+    floor, so `sections_over_capacity` is set and the Synthesis Lead logs a
+    warning. The alternative — silently emitting 200-word stubs, or shipping 32
+    pages under a "20-page" contract — is what the old code did. Tests pin that
+    over-capacity means *overrun*, never undershoot, so the operator is never
+    sent looking in the wrong direction.
+  - **Retry threshold now tracks the ask.** The old gate was a fixed
+    `len(content) > 800`. At ~6 chars/word that is ~130 words, so a section that
+    answered a 2,000-word request with 130 words was **accepted silently**. Now
+    `max(800, words_per_section * 6 * 0.5)` — floored at 800 so the change can
+    only ever be stricter than what it replaced.
+  - **Wiring is tested, not assumed.** `TestSynthesisLeadUsesTheBudget` greps the
+    agent source (comments stripped, so the explanatory notes naming the old
+    values don't self-satisfy the check) for `2000-4000 words` /
+    `at least 2000 words` / `fewer than 2000 words`. Without this, someone could
+    delete the wiring and still see green on the module's own tests.
+  - Full suite: **1,236 passed, 8 skipped** (was 1,191 / 8; **+45 tests, zero
+    regressions, zero pre-existing tests modified**). `ruff` clean on both new
+    files; `synthesis_lead.py` went 20 → 19 pre-existing findings (one removed,
+    none added). Probe re-run unchanged: 7/7 exhibits, Note+Source on each, no
+    leaks.
+  - **Not yet closed:** the budget now *governs the request*, but nothing yet
+    *verifies the result* — that is 4.2, which narrows `render.py`'s 15–40 window
+    and promotes the violation from a log line to a quality-gate failure.
 - [ ] **4.2** Narrow page-count contract to `15..22` and make it a quality-gate failure
 - [ ] **4.3** Add tornado, marimekko, football-field, growth-share, bubble charts
 - [ ] **4.4** Enforce MGI exhibit anatomy in template
