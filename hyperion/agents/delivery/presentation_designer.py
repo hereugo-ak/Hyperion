@@ -2085,9 +2085,22 @@ class PresentationDesigner(BaseAgent):
             # Fallback: render manually with Jinja2
             try:
                 from jinja2 import Environment, BaseLoader
+
+                from hyperion.output.render import TemplateRenderer
+
                 env = Environment(loader=BaseLoader(), autoescape=True)
-                env.filters["md_to_html"] = lambda v: v or ""
-                env.filters["clean_dict_repr"] = lambda v: str(v) if v else ""
+                # Fix 3.5: this fallback previously registered
+                #   md_to_html = lambda v: v or ""
+                # a plain-str passthrough. TemplateRenderer._markdown_to_html
+                # returns markupsafe.Markup; a plain str is autoescaped by
+                # Jinja, so every markdown-produced <p>/<strong> tag rendered
+                # as VISIBLE text on the page (audit §3.4 escaped-HTML
+                # divergence). The fallback must use the SAME real filter as
+                # the production JINJA2-tool path or it ships a different
+                # document.
+                _fallback_renderer = TemplateRenderer()
+                env.filters["md_to_html"] = _fallback_renderer._markdown_to_html
+                env.filters["clean_dict_repr"] = _fallback_renderer._clean_dict_repr
                 template = env.from_string(HTML_TEMPLATE)
                 html_str = template.render(
                     report=report,
