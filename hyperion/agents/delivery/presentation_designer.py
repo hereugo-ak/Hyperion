@@ -58,6 +58,7 @@ import base64
 import hashlib
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1104,11 +1105,20 @@ HTML_TEMPLATE = """\
     {% for chart in section_charts[section.id] %}
     <figure class="exhibit no-break">
         <div class="exhibit-number"></div>
-        {% if chart.caption %}<div class="exhibit-title">{{ chart.caption }}</div>{% endif %}
+        {# Fix 4.4: unconditional. A numbered exhibit with no action title is a
+           chart, not an exhibit — MGI's anatomy requires the takeaway to sit
+           between the number and the figure. `_enforce_exhibit_anatomy`
+           guarantees a non-empty caption, so there is nothing to guard. #}
+        <div class="exhibit-title">{{ chart.caption }}</div>
         <div class="exhibit-figure">
             <img src="{{ chart.image_path }}" alt="{{ chart.caption }}">
         </div>
-        {% if chart.source_citation or chart.note %}
+        {# Fix 4.4: the footer is NOT conditional on note/source being present.
+           It used to be, so an exhibit with neither rendered with no footer at
+           all — no hairline, no provenance — and looked deliberate. The hairline
+           is what visually closes the exhibit in both benchmark documents, so it
+           is now always drawn, and `_enforce_exhibit_anatomy` guarantees a
+           Source: line exists by the time we get here. #}
         <figcaption class="exhibit-footer">
             {# Note before source, as in both benchmarks ("Note: Based on
                McKinsey Industry Classification… Source: …"). Each is emitted
@@ -1130,7 +1140,6 @@ HTML_TEMPLATE = """\
                 {{ chart.source_citation | trim | replace("Source:", "", 1) | trim }}</p>
             {% endif %}
         </figcaption>
-        {% endif %}
     </figure>
     {% endfor %}
 
@@ -2060,7 +2069,89 @@ class PresentationDesigner(BaseAgent):
                 self._chart_placements[section_id] = []
             self._chart_placements[section_id].append(placement)
 
+        self._enforce_exhibit_anatomy(self._chart_placements)
         return self._chart_placements
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Fix 4.4: MGI exhibit anatomy is a contract, not a suggestion
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _enforce_exhibit_anatomy(
+        self, placements: dict[str, list[ChartPlacement]]
+    ) -> list[str]:
+        """Repair the four-part exhibit anatomy in place; report what was wrong.
+
+        The anatomy is: **number → action title → figure → `Note:` → `Source:`**
+        (§3.9). The template already *emitted* all five parts, but nothing
+        *enforced* them, and every part is independently optional in Jinja. So a
+        chart arriving without a caption rendered as a numbered, sourced exhibit
+        with **no title**, and one arriving with neither note nor source
+        rendered with **no footer at all** — no hairline, no provenance. Both
+        were silent: no exception, no log line, and the PDF still looked
+        plausible. Measured before this fix, all five degenerate combinations
+        rendered clean.
+
+        `image_path` was the only part already guarded (a figure-less chart is
+        dropped upstream), which is why the other four are handled here.
+
+        Repair rather than drop, deliberately. Dropping a titleless exhibit
+        would discard real extracted numbers and renumber every later exhibit;
+        the audit's own §3.9 note about insertions shifting numbering applies
+        equally to deletions. Instead:
+
+        * a missing **action title** falls back to the chart id humanised — an
+          honest placeholder that is obviously provisional in review, unlike a
+          confident invented takeaway;
+        * a missing **note** is left empty. A note describes *how* a figure was
+          constructed. Inventing one is the same class of defect as inventing a
+          geography, so the line stays absent and the omission is reported;
+        * a missing **source** is the one that matters most for MBB parity —
+          both benchmark documents carry a source under every single exhibit —
+          so it is filled with the explicit, non-deceptive
+          ``"Source: HYPERION analysis"`` rather than being silently dropped.
+
+        Returns the list of defects found, so callers can log or gate on it.
+        """
+        defects: list[str] = []
+        for section_id, charts in placements.items():
+            for chart in charts:
+                cid = chart.chart_id or "<unnamed>"
+                where = f"{section_id}/{cid}"
+
+                if not (chart.caption or "").strip():
+                    chart.caption = self._humanise_chart_id(cid)
+                    defects.append(f"{where}: no action title (used {chart.caption!r})")
+
+                if not (chart.image_path or "").strip():
+                    # Should be unreachable: figure-less charts are dropped
+                    # before placement. Recorded rather than assumed away.
+                    defects.append(f"{where}: no figure")
+
+                if not (chart.note or "").strip():
+                    defects.append(f"{where}: no Note: line (left absent, not invented)")
+
+                if not (chart.source_citation or "").strip():
+                    chart.source_citation = "Source: HYPERION analysis"
+                    defects.append(f"{where}: no Source: line (defaulted)")
+
+        if defects:
+            self._log(
+                f"DESIGNER: exhibit anatomy repaired on {len(defects)} field(s) — "
+                + "; ".join(defects[:8])
+                + (" …" if len(defects) > 8 else "")
+            )
+        return defects
+
+    @staticmethod
+    def _humanise_chart_id(chart_id: str) -> str:
+        """`revenue_growth_2024` → `Revenue growth 2024`.
+
+        Deliberately plain. The point is a title a reviewer immediately reads as
+        a placeholder, not a fabricated MBB action title.
+        """
+        cleaned = re.sub(r"[_\-]+", " ", chart_id).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned[:1].upper() + cleaned[1:] if cleaned else "Exhibit"
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 6: Render HTML template with Jinja2
