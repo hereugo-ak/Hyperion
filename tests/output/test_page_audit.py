@@ -16,6 +16,7 @@ import fitz  # PyMuPDF
 import pytest
 
 from hyperion.output.page_audit import (
+    BANNED_SUBSTRINGS,
     PageAuditError,
     PageAuditResult,
     audit_pdf,
@@ -337,3 +338,21 @@ def test_toc_correct_page_number_no_toc_violation(tmp_path):
     pdf = make_toc_pdf(tmp_path / "toc_right.pdf", wrong_number=False)
     result = audit_pdf(pdf, background_rgb=CREAM_RGB, fail_closed=False)
     assert not any("TOC entry" in v for v in result.violations)
+
+
+# ---------------------------------------------------------------------------
+# P2-24: the two-stage integrity scans must be consistent. The model-level
+# Quality Gate scan (pre-render) and the PDF-level scan (post-render) are two
+# stages of ONE gate; a phrase banned at the model level that could slip past
+# the PDF level would be exactly the P2-24 hole re-opened.
+# ---------------------------------------------------------------------------
+
+
+def test_model_and_pdf_banned_lists_are_consistent():
+    from hyperion.agents.support.quality_gate import QualityGate
+
+    pdf_tokens = {t.lower() for t in BANNED_SUBSTRINGS}
+    for phrase in QualityGate._BANNED_FILLER:
+        assert phrase.lower() in pdf_tokens, (
+            f"model-level banned filler {phrase!r} missing from PDF-level scan"
+        )

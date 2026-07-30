@@ -60,6 +60,8 @@ BANNED_SUBSTRINGS: tuple[str, ...] = (
     "–",
     "Insufficient evidence to state implications",
     "no specific implications stated",
+    "no specific implications could be derived",
+    "so what? no specific",
     "no competitors identified",
     "accessed_at",
     "\\u20",
