@@ -489,6 +489,14 @@ table, .kpi-value, .data-table, .chart-data-table {{
     padding: 12px 16px;
     margin: 16px 0;
     font-size: 11pt;
+    /* P2-04: the callout is the last child after the column block. With a
+       full-height column block it fragmented onto its own page, alone -
+       6 pages of report B measured 25 words at 2.0% ink. Never start a
+       page with it, never split it. */
+    break-before: avoid;
+    page-break-before: avoid;
+    break-inside: avoid;
+    page-break-inside: avoid;
 }}
 
 /* ── KPI strip (BCG convention) ────────────────────────────────────────────
@@ -986,6 +994,11 @@ table, .kpi-value, .data-table, .chart-data-table {{
        height - 6 pages of report A measured col2=0w against col1=180-297w.
        The old comment claimed balance while the value did the opposite. */
     column-fill: balance;
+    /* P2-04: at least 4 lines of prose must accompany any fragment
+       boundary, so the trailing implication callout can never sit alone
+       on a page with no body text around it. */
+    orphans: 4;
+    widows: 4;
 }}
 
 .section-body h3, .section-body h4 {{
