@@ -6,8 +6,11 @@ system smarter over time — each engagement's findings are saved and
 can be retrieved by future engagements.
 
 This is NOT a generic "read markdown files" wrapper. It:
-- Uses keyword matching with relevance scoring (threshold: 0.15)
-- No embeddings — lightweight and fast
+- Fuses keyword matching (threshold: 0.15) with vector-embedding retrieval
+  (5.4: hyperion/tools/vector_brain.py) so paraphrased prior research is
+  recalled, not just literal-term matches
+- Embeddings index the vault in SQLite (sqlite-vec ANN when the extension is
+  available; deterministic exact cosine scan otherwise)
 - Reads and writes Obsidian-compatible markdown files
 - Organizes by directory structure: engagements/, markets/, competitors/,
   frameworks/, sources/
@@ -32,11 +35,14 @@ Vault structure (§5.5):
   ├── frameworks/           # Analytical framework templates
   └── sources/              # Source library with credibility scores
 
-Retrieval (§5.5):
-- Keyword matching with relevance scoring (threshold: 0.15)
-- No embeddings — lightweight and fast
+Retrieval (§5.5, upgraded 5.4):
+- Keyword matching with relevance scoring (threshold: 0.15), fused with
+  embedding similarity from the vector index — final score is
+  max(keyword, semantic) so semantic recall can only help a note, never
+  hide an exact-match hit
 - The Research Librarian queries the vault at the start of each engagement
-- At the end of each engagement, findings are saved back to the vault
+- At the end of each engagement, findings are saved back to the vault and
+  indexed into the embedding store
 
 Cross-engagement knowledge linking (§5.5):
 "If a new engagement touches a topic researched in a prior engagement
@@ -48,11 +54,16 @@ Used by: Research Librarian, all agents (read) (§5.1)
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from hyperion.tools.vector_brain import VectorStore, backend_name, embed
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -167,7 +178,47 @@ class SecondBrainClient:
             default="vault",
         )
         self._cache: dict[str, tuple[float, VaultSearchResult]] = {}
+        self._vector_store: VectorStore | None = None
         self._ensure_vault_structure()
+
+    def _get_vector_store(self) -> VectorStore:
+        """Lazily open the embedding index (5.4).
+
+        Deferred so a read-only consumer that never searches pays no SQLite
+        cost, and so a vault that is never written stays index-free.
+        """
+        if self._vector_store is None:
+            db_path = self._vault_path / ".embeddings.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._vector_store = VectorStore(db_path)
+            logger.debug(
+                "second_brain: embedding index opened (backend=%s, ann=%s)",
+                backend_name(),
+                self._vector_store.uses_ann,
+            )
+        return self._vector_store
+
+    def _index_note(self, note: VaultNote) -> None:
+        """Embed and upsert a single note into the vector index."""
+        text = f"{note.title}\n{' '.join(note.tags)}\n{note.content}"
+        self._get_vector_store().upsert(note.path, embed(text))
+
+    def _semantic_scores(self, query: str, limit: int = 50) -> dict[str, float]:
+        """Embedding similarity per vault-relative path; {} when index empty.
+
+        A failure to build/query the index degrades to keyword-only search
+        rather than failing the retrieval — the keyword path alone is the
+        pre-5.4 behaviour, which is a safe floor, not an outage.
+        """
+        try:
+            store = self._get_vector_store()
+            if store.count() == 0:
+                return {}
+            hits = store.search(embed(query), limit=limit)
+            return {h.key: h.score for h in hits}
+        except Exception as exc:  # noqa: BLE001 - degrade to keyword-only floor
+            logger.warning("second_brain: semantic search degraded (%s)", exc)
+            return {}
 
     def _ensure_vault_structure(self) -> None:
         """Create the vault directory structure if it doesn't exist."""
@@ -340,6 +391,31 @@ class SecondBrainClient:
                 if score > 0:
                     all_notes.append((note, score))
 
+        # 5.4: fuse keyword score with embedding similarity. max() (not a
+        # weighted sum) so semantic recall can only lift a note above the
+        # threshold, never push an exact keyword match below it — the keyword
+        # path stays authoritative for source titles, URLs and model numbers.
+        semantic = self._semantic_scores(query)
+        if semantic:
+            all_notes = [
+                (note, max(kw, semantic.get(note.path, 0.0)))
+                for note, kw in all_notes
+            ]
+            # Re-add notes the keyword pass scored 0 but the vector index
+            # recalls — the paraphrase case the keyword pass is blind to.
+            known = {note.path for note, _ in all_notes}
+            for category in categories:
+                cat_path = self._vault_path / category
+                if not cat_path.exists():
+                    continue
+                for md_file in cat_path.rglob("*.md"):
+                    rel = str(md_file.relative_to(self._vault_path))
+                    if rel in known or semantic.get(rel, 0.0) < threshold:
+                        continue
+                    note = self._read_note(md_file)
+                    if note is not None:
+                        all_notes.append((note, semantic[rel]))
+
         # Sort by relevance (descending)
         all_notes.sort(key=lambda x: x[1], reverse=True)
 
@@ -432,6 +508,16 @@ class SecondBrainClient:
 
         try:
             file_path.write_text(full_content, encoding="utf-8")
+            # 5.4: keep the embedding index in step with the vault. Indexing
+            # failure must not fail the save — the note is on disk and the
+            # keyword path still retrieves it; the index self-heals on the
+            # next successful write.
+            note = self._read_note(file_path)
+            if note is not None:
+                try:
+                    self._index_note(note)
+                except Exception as exc:  # noqa: BLE001 - index lag degrades to keyword-only
+                    logger.warning("second_brain: note saved but not indexed (%s)", exc)
             return VaultSaveResult(
                 path=str(file_path.relative_to(self._vault_path)),
                 success=True,

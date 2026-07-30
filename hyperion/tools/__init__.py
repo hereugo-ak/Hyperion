@@ -61,6 +61,7 @@ from hyperion.tools.stealth_search import StealthSearchClient, StealthSearchResu
 from hyperion.tools.unified_extract import UnifiedExtract, UnifiedExtractResult
 from hyperion.tools.unified_search import UnifiedSearch, UnifiedSearchResult
 from hyperion.tools.unsplash import UnsplashClient, UnsplashImage, UnsplashSearchResult
+from hyperion.tools.vector_brain import VectorHit, VectorStore, backend_name, embed
 from hyperion.tools.wayback import (
     WaybackClient,
     WaybackContentResult,
@@ -134,6 +135,11 @@ __all__ = [
     "UnsplashImage",
     "UnsplashSearchResult",
     # Second Brain
+    # Vector Brain (5.4)
+    "VectorHit",
+    "VectorStore",
+    "backend_name",
+    "embed",
     "SecondBrainClient",
     "VaultNote",
     "VaultSearchResult",
