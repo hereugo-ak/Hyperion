@@ -301,3 +301,39 @@ def test_audit_raises_on_audit_fixtures(fixture):
         pytest.skip(f"regression fixture not present in this sandbox: {fixture.name}")
     with pytest.raises(PageAuditError):
         audit_pdf(fixture, background_rgb=CREAM_RGB)
+
+
+# ---------------------------------------------------------------------------
+# T-05 TOC fidelity: stated page numbers must match the page the heading is
+# drawn on; phantom entries (no heading anywhere) are flagged.
+# ---------------------------------------------------------------------------
+
+
+def make_toc_pdf(path, *, wrong_number: bool) -> Path:
+    doc = fitz.open()
+    w, h = 595, 842
+    toc = doc.new_page(width=w, height=h)
+    toc.draw_rect(fitz.Rect(0, 0, w, h), fill=_CREAM_FILL, color=None)
+    stated = 4 if wrong_number else 2
+    toc.insert_text(fitz.Point(40, 60), "Contents", fontsize=16)
+    toc.insert_text(fitz.Point(40, 120), f"Market Landscape ........ {stated}", fontsize=11)
+    body = doc.new_page(width=w, height=h)
+    body.draw_rect(fitz.Rect(0, 0, w, h), fill=_CREAM_FILL, color=None)
+    body.insert_text(fitz.Point(40, 60), "Market Landscape", fontsize=16)
+    _insert_text_line(body, fitz.Rect(40, 100, 300, h - 30), _body_words(140))
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def test_toc_wrong_page_number_raises(tmp_path):
+    pdf = make_toc_pdf(tmp_path / "toc_wrong.pdf", wrong_number=True)
+    with pytest.raises(PageAuditError) as exc:
+        audit_pdf(pdf, background_rgb=CREAM_RGB)
+    assert "toc" in str(exc.value).lower() or "stated page" in str(exc.value).lower()
+
+
+def test_toc_correct_page_number_no_toc_violation(tmp_path):
+    pdf = make_toc_pdf(tmp_path / "toc_right.pdf", wrong_number=False)
+    result = audit_pdf(pdf, background_rgb=CREAM_RGB, fail_closed=False)
+    assert not any("TOC entry" in v for v in result.violations)
