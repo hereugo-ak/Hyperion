@@ -215,6 +215,11 @@ class SynthesisLead(BaseAgent):
     7. If score >= 4.0 or max iterations reached, delivers FinalReport
     """
 
+    #: How many vault notes are rendered into the precedent block. The block is
+    #: advisory context, not evidence; an unbounded splice would crowd the real
+    #: findings out of the DEEP-tier context window.
+    PRIOR_PATTERN_LIMIT: int = 5
+
     def __init__(
         self,
         spec: AgentSpec | None = None,
@@ -1396,13 +1401,45 @@ class SynthesisLead(BaseAgent):
         a Tier-2 SaaS market entry, the critical assumption was penetration
         rate and it flipped the recommendation.' This pattern matching makes
         the system smarter over time. (§12.8)
+
+        BUG HISTORY (report-killer). This method is annotated ``-> str`` but
+        returned ``results`` — the raw ``VaultSearchResult`` dataclass from
+        ``SecondBrainClient.search()``. The single consumer,
+        ``_identify_and_draft()``, does ``prior_patterns.strip()`` to decide
+        whether to include the precedent block. A dataclass has no ``.strip``,
+        so every engagement with a non-empty vault raised
+        ``AttributeError: 'VaultSearchResult' object has no attribute 'strip'``
+        out of step 5+6 of ``run()``.
+
+        The blast radius was the whole deliverable, not one prompt block:
+        ``run()`` aborted BEFORE step 8 (``_build_analysis_sections()``), so
+        ``sections`` was never built. The PDF shipped with a cover, an
+        At-a-Glance, an Executive Summary and an appendix — and **zero analysis
+        chapters** ("0 chapters · 0 Analysis Sections" on the deliverable).
+        The `except` clause here could not save it: the raise happens at the
+        *call site*, not inside this method.
+
+        Fixed by rendering the search result to the string the annotation
+        always promised. Coercion is also applied defensively at the call site
+        so a future tool-contract change degrades to a missing precedent block
+        instead of a contentless report.
         """
         try:
             brain = self.get_tool(ToolName.SECOND_BRAIN)
             results = await brain.search(f"synthesis patterns: {question}")
-            return results if results else ""
         except (ValueError, AttributeError, RuntimeError):
             return ""
+
+        notes = getattr(results, "notes", None)
+        if not notes:
+            return ""
+
+        lines: list[str] = []
+        for note, score in notes[: self.PRIOR_PATTERN_LIMIT]:
+            title = getattr(note, "title", "") or "(untitled note)"
+            body = (getattr(note, "content", "") or "").strip().replace("\n", " ")
+            lines.append(f"[relevance {score:.2f}] {title}: {body[:400]}")
+        return "\n".join(lines)
 
     # ─────────────────────────────────────────────────────────────────────
     # D5: Combined critical-path + recommendation (single DEEP call)
@@ -1441,11 +1478,19 @@ class SynthesisLead(BaseAgent):
         # as precedent, explicitly NOT as evidence — a pattern from a previous
         # engagement must not be cited as a finding about this one, or the report
         # would inherit conclusions it did not research.
+        #
+        # Coerced with str() rather than trusted: `prior_patterns` used to arrive
+        # here as a VaultSearchResult (see _query_second_brain_for_patterns) and
+        # the bare `.strip()` turned a cosmetic prompt-block decision into an
+        # AttributeError that destroyed every analysis chapter in the report. A
+        # decorative input must never be able to abort synthesis, so the type is
+        # normalised at the boundary instead of assumed.
+        patterns_text = prior_patterns if isinstance(prior_patterns, str) else str(prior_patterns or "")
         patterns_block = (
             f"Prior-engagement patterns from the vault (precedent, NOT evidence "
             f"for this question — use to sharpen which assumptions to stress-test):\n"
-            f"{prior_patterns}\n\n"
-            if prior_patterns.strip()
+            f"{patterns_text}\n\n"
+            if patterns_text.strip()
             else ""
         )
 
