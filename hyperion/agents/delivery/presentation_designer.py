@@ -960,7 +960,11 @@ table, .kpi-value, .data-table, .chart-data-table {{
 .section-body {{
     column-count: 2;
     column-gap: 7mm;
-    column-fill: auto;  /* balance columns on the final page of the section */
+    /* P2-01: balance, not auto. auto fills column 1 to full column height
+       and never starts column 2 on any chapter shorter than one column
+       height - 6 pages of report A measured col2=0w against col1=180-297w.
+       The old comment claimed balance while the value did the opposite. */
+    column-fill: balance;
 }}
 
 .section-body h3, .section-body h4 {{
