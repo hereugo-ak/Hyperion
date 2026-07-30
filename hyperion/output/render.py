@@ -508,6 +508,78 @@ class PDFRenderer:
 
         return img_pattern.sub(replace_src, html)
 
+    def _apply_pdf_post_pass(
+        self,
+        result: PDFRenderResult,
+        output_path: str,
+        full_html: str,
+    ) -> None:
+        """5.6: PDF/A-2b + bookmarks post-pass via pikepdf.
+
+        Runs after either PDF engine succeeds. Degrades silently-but-recorded:
+        missing pikepdf or a failed pass adds a warning and leaves the
+        un-post-processed (still valid) PDF in place — never a crash, never a
+        half-written deliverable (the pass writes atomically).
+        """
+        import re
+
+        from hyperion.output.pdf_postprocess import (
+            BookmarkSpec,
+            PDFMetadata,
+            postprocess_pdf,
+        )
+
+        # Title: first <title> tag, else first <h1>, else a dated fallback.
+        title = ""
+        for pattern in (r"<title[^>]*>([^<]+)</title>", r"<h1[^>]*>([^<]+)</h1>"):
+            match = re.search(pattern, full_html, re.IGNORECASE)
+            if match and match.group(1).strip():
+                title = match.group(1).strip()
+                break
+        if not title:
+            title = f"HYPERION Report {datetime.now().strftime('%Y-%m-%d')}"
+
+        # Outline from <h1>/<h2> headings mapped onto pages by content order.
+        # Page mapping needs the rendered layout, so we locate each heading's
+        # text in the produced PDF via fitz; headings not found are skipped
+        # rather than guessed.
+        bookmarks: list[BookmarkSpec] = []
+        try:
+            import fitz
+
+            doc = fitz.open(output_path)
+            headings = [
+                (m.group(1).strip(), 1 if m.group(0).lower().startswith("<h1") else 2)
+                for m in re.finditer(r"<h[12][^>]*>([^<]+)</h[12]>", full_html, re.IGNORECASE)
+            ]
+            seen_pages: set[int] = set()
+            for heading_text, _level in headings:
+                clean = re.sub(r"\s+", " ", heading_text)[:80]
+                if not clean:
+                    continue
+                for page_index in range(len(doc)):
+                    if page_index in seen_pages:
+                        continue
+                    if doc[page_index].search_for(clean):
+                        bookmarks.append(BookmarkSpec(title=clean, page=page_index))
+                        seen_pages.add(page_index)
+                        break
+            doc.close()
+        except (ImportError, OSError, ValueError) as exc:
+            result.warnings.append(f"bookmark extraction skipped: {exc!s:.100}")
+
+        post = postprocess_pdf(
+            output_path,
+            PDFMetadata(title=title, keywords="deep research, consulting"),
+            bookmarks=bookmarks,
+        )
+        if post.applied:
+            result.warnings.append(
+                f"PDF/A-2b post-pass applied ({post.bookmarks_written} bookmarks)"
+            )
+        else:
+            result.warnings.append(f"PDF/A-2b post-pass skipped: {post.reason}")
+
     def render_pdf(
         self,
         html: str,
@@ -599,6 +671,7 @@ class PDFRenderer:
             except (ImportError, OSError, ValueError):
                 result.warnings.append("PyMuPDF not available — page count unknown")
 
+            self._apply_pdf_post_pass(result, output_path, full_html)
             return result
 
         except (OSError, ImportError, ValueError, RuntimeError) as exc:
@@ -622,6 +695,7 @@ class PDFRenderer:
             except (ImportError, OSError, ValueError):
                 pass
 
+            self._apply_pdf_post_pass(result, output_path, full_html)
             return result
 
         # ── Both PDF engines failed: emit a real HTML deliverable ──
