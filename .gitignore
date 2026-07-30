@@ -87,4 +87,4 @@ test_render*
 *.sqlite-shm
 *.sqlite-wal
 
-output/
+/output/
