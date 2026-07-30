@@ -1810,12 +1810,57 @@ progress, `[x]` = landed with proof.
     instead of 2.
 
 ### Phase 5 — Hardening
-- [ ] **5.1** `ruff` + `mypy --strict` pre-commit (the process fix for the P0)
-- [ ] **5.2** Golden-PDF regression test on probe metrics
-- [ ] **5.3** Coverage floor; ban bare `except Exception: pass` (ruff `BLE001`/`S110`)
-- [ ] **5.4** Reranker + embeddings + `sqlite-vec` Second Brain
-- [ ] **5.5** OECD/Eurostat/IMF SDMX + `yfinance` to break the FRED US-only ceiling
-- [ ] **5.6** PDF/A-2b post-pass via `pikepdf` + bookmarks
+- [x] **5.1** `ruff` + `mypy --strict` pre-commit (the process fix for the P0)
+      — 5.0: the CI regression gate itself could not run (`c181e04`); 5.1: 8 live
+      defects hiding as "unused variable" lint (`f9d4118`); 5.1b: two models
+      shared one name — Agent 9's horizon scan never ran (`45d3448`); 5.1c:
+      `zip()` dropped every chart series (`7739d86`); 5.1d: three silent-failure
+      defects behind "style" lint (`529a171`); 5.1e: specialists could report
+      success while delivering nothing (`7327f27`); 5.1e-cont: 939→503 E501
+      reflow + SIM105 triage (`6acbdb3`, `99eeda6`, `989372d`, `cd46f85`);
+      5.1f: pre-commit hooks + `ci_gate --lint` + staged mypy allowlist +
+      E501 quarantine ≤60, shrink-never-grow (`7290633`, merged `0120191`).
+- [x] **5.2** Golden-PDF regression test on probe metrics — `tests/golden/
+      pdf_metrics_golden.json` encodes DoD #7–#12 bounds; `test_golden_pdf.py`
+      ships the comparator, instrument-honesty via synthetic fitz PDFs (healthy
+      passes, degraded MUST fail ≥8 checks), and integrity guards (`881533a`).
+- [x] **5.3** Coverage floor; ban bare `except Exception: pass` (ruff `BLE001`/`S110`)
+      — 220 findings triaged: 51 silent handlers converted to recorded failures
+      (S110/S112=0), 169 `noqa: BLE001 - <reason>` on intentional catches;
+      BLE+S110/S112 in the lint select; `test_bare_except_ban.py` gates the ban
+      with a live negative-control probe (`a72ded7`).
+- [x] **5.4** Reranker + embeddings + `sqlite-vec` Second Brain —
+      `vector_brain.py`: dual-backend embeddings (sentence-transformers
+      all-MiniLM-L6-v2 + sqlite-vec vec0 ANN in production; deterministic
+      blake2b bag-of-ngrams hashing + exact cosine blob scan as fallback);
+      `second_brain.py`: max(keyword, semantic) fusion — semantic recall only
+      lifts, never hides exact keyword hits; index-on-save degrades to
+      keyword-only. 12 tests incl. 2 negative controls (`17b98b8`).
+      (Reranker itself was delivered earlier in Phase 2 via content_selector.)
+- [x] **5.5** OECD/Eurostat/IMF SDMX + `yfinance` to break the FRED US-only
+      ceiling — `sdmx.py`: OECDClient (path-key, SDMX-CSV), EurostatClient
+      (query-param, TSV with flag-letter stripping, compare_countries),
+      IMFClient (dot-key, get_exchange_rate for non-US DCF FX), header-driven
+      parser; `market_data.py`: yfinance wrapper, lazy import, thread-executor
+      so the sync library never blocks the AgentBus, 15-min cache,
+      compare_peers for global peer groups. 26 tests incl. US-only-ceiling
+      negative controls + AST registry guards (`9ea5022`).
+- [x] **5.6** PDF/A-2b post-pass via `pikepdf` + bookmarks —
+      `pdf_postprocess.py`: stamps XMP pdfaid:part=2/conformance=B + Dublin
+      Core metadata; outline from BookmarkSpec; lazy pikepdf import; atomic
+      temp-file + os.replace (a failed pass never leaves a half-written
+      deliverable); never raises. Wired into BOTH render engine success paths
+      (WeasyPrint + Playwright) via `_apply_pdf_post_pass`, bookmarks extracted
+      from h1/h2 headings located in the rendered PDF. 16 tests incl.
+      atomicity + refuse negative controls + AST guards (`4dc9820`).
+
+**Final verification (fix0.1 @ 4dc9820):** `ruff` clean; `mypy` clean (135
+files); `ci_gate --lint` PASS. Sharded suite on the 985MB sandbox:
+2171 passed / 49 failed / 1 error / 18 skipped — every failure classified as
+a pre-existing sandbox dependency gap (kaleido/textual absent), zero caused
+by Phase 5; all six Phase 5 test shards green. `audit_render_probe.py`
+requires weasyprint (absent in sandbox) — the live golden-PDF run is the
+user-side step.
 
 ---
 
