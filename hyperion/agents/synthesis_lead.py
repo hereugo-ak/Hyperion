@@ -13,11 +13,17 @@ in the system. The Synthesis Lead:
 - Produces a coherent narrative synthesis with a clear recommendation
 
 A summarizer lists what each agent found. A synthesizer says "Market says
-$2B TAM, Financial says too small, but Financial's model assumes 5%
-penetration while Market's data supports 12% — at 12% penetration the
-market is viable. The recommendation is ENTER, with the critical
-assumption being penetration rate. If penetration falls below 8%, the
-recommendation flips to NO-GO." That is synthesis. (§4.3, Agent 2)
+⟨TAM_FIGURE⟩, Financial says too small, but Financial's model assumes
+⟨LOW_PENETRATION⟩ while Market's data supports ⟨HIGH_PENETRATION⟩ — at
+⟨HIGH_PENETRATION⟩ the market is viable. The recommendation is ⟨VERDICT⟩,
+with the critical assumption being ⟨PIVOT_ASSUMPTION⟩. If
+⟨PIVOT_ASSUMPTION⟩ falls below ⟨FLIP_THRESHOLD⟩, the recommendation flips
+to ⟨OPPOSITE_VERDICT⟩." That is synthesis. (§4.3, Agent 2)
+
+D-02: the concrete numbers that used to illustrate this paragraph leaked
+into delivered reports verbatim (the quality loop regurgitated them over
+the degradation notice). The ⟨…⟩ placeholders show SHAPE, never values —
+they are not transcriber-bait because they are obviously not data.
 
 Model Tier: DEEP (Gemini 3.1 Flash Lite — 250K context window for
 holding all findings simultaneously)
@@ -102,11 +108,11 @@ SYNTHESIS_LEAD_SPEC = AgentSpec(
         SkillSpec(
             name="Cross-source reconciliation",
             description=(
-                "When Market Analyst says 'TAM is $2B' and Financial Analyst says "
+                "When Market Analyst reports ⟨TAM_FIGURE⟩ and Financial Analyst says "
                 "'the market is too small to justify entry,' the Synthesis Lead "
                 "identifies the contradiction, determines which finding is better "
                 "supported by evidence, and resolves it in the final recommendation. "
-                "This is NOT averaging — it is evidence-weighted resolution."
+                "This is NOT averaging — it is evidence-weighted resolution. "
             ),
             inputs=["all_specialist_findings", "fact_check_report"],
             outputs=["contradiction_matrix", "resolved_contradictions"],
@@ -154,11 +160,16 @@ SYNTHESIS_LEAD_SPEC = AgentSpec(
         "4-6 specialists' findings simultaneously, identify contradictions, resolve "
         "them evidence-weighted (NOT by averaging), and produce one answer.\n\n"
         "You are NOT a summarizer. A summarizer lists what each agent found. "
-        "You synthesize. You say: 'Market says $2B TAM, Financial says too small, "
-        "but Financial's model assumes 5% penetration while Market's data supports "
-        "12% — at 12% penetration the market is viable. The recommendation is ENTER, "
-        "with the critical assumption being penetration rate. If penetration falls "
-        "below 8%, the recommendation flips to NO-GO.'\n\n"
+        "You synthesize. You say: 'Market says ⟨TAM_FIGURE⟩, Financial says too small, "
+        "but Financial's model assumes ⟨LOW_PENETRATION⟩ while Market's data supports "
+        "⟨HIGH_PENETRATION⟩ — at ⟨HIGH_PENETRATION⟩ the market is viable. The "
+        "recommendation is ⟨VERDICT⟩, with the critical assumption being "
+        "⟨PIVOT_ASSUMPTION⟩. If ⟨PIVOT_ASSUMPTION⟩ falls below ⟨FLIP_THRESHOLD⟩, the "
+        "recommendation flips to ⟨OPPOSITE_VERDICT⟩.'\n\n"
+        "HARD RULE: ⟨…⟩ are placeholders showing SHAPE, never values. Every number "
+        "you emit must appear verbatim in the findings above. If the findings "
+        "contain no numbers, write the analysis without numbers and say the "
+        "evidence is qualitative — do NOT invent figures to fit the shape.\n\n"
         "Your methodology:\n"
         "1. Build a finding matrix (agent × finding × evidence × confidence)\n"
         "2. Identify contradictions and classify them (data/interpretation/scope)\n"
@@ -242,6 +253,18 @@ class SynthesisLead(BaseAgent):
 
         # The current FinalReport (iteratively refined)
         self._current_report: FinalReport | None = None
+
+        # D-01: analysis sections are built from findings BEFORE the
+        # recommendation call and parked here immediately. If any later step
+        # raises, _minimal_report() carries them into the degraded report —
+        # a synthesis failure costs the recommendation, never the analysis.
+        self._partial_sections: list[AnalysisSection] = []
+
+        # D-02: structural integrity violations observed by the quality loop
+        # (e.g. section_updates for a report whose body was never built).
+        # Recorded, never swallowed — the audit's lesson is that silent
+        # degradation is how a crash became a confident PDF.
+        self._recorded_failures: list[str] = []
 
         # The workflow DAG (for knowing which agents participated)
         self._dag: WorkflowDAG | None = None
@@ -991,7 +1014,7 @@ class SynthesisLead(BaseAgent):
 
     async def _build_analysis_sections(
         self,
-        recommendation_data: dict[str, Any],
+        recommendation_data: dict[str, Any] | None = None,
     ) -> list[AnalysisSection]:
         """Build the analysis sections for the FinalReport.
 
@@ -999,6 +1022,12 @@ class SynthesisLead(BaseAgent):
         so a reader can jump to any section without reading prior sections.
         Each section has: key insight, body, findings, implications, sources.
         (§6.1)
+
+        D-01: sections depend ONLY on the collected findings, never on the
+        recommendation — the ``recommendation_data`` parameter is vestigial
+        (kept optional for call-site compatibility) and is not read anywhere
+        in this method. That independence is what allows the body to be
+        built before the recommendation call and to survive its failure.
 
         The section body is NOT a concatenation of finding strings. It is
         a deep analytical narrative written by the Synthesis Lead LLM,
@@ -1374,6 +1403,30 @@ class SynthesisLead(BaseAgent):
                             if "implications" in update and update["implications"]:
                                 section.implications = update["implications"]
 
+            # D-02: a degraded report may gain STRUCTURE, never CONFIDENCE.
+            # The quality loop has write access to conclusions and no access
+            # to evidence; without this guard it launders a crash into a
+            # confident recommendation — the exact mechanism by which the
+            # few-shot example's fabricated TAM figure overwrote the 07-30
+            # degradation notice (see T-04's FORBIDDEN list for the tokens).
+            # Conclusion fields are restored verbatim; section structure
+            # updates above are allowed to stand.
+            if report.is_degraded:
+                updated.executive_summary = report.executive_summary
+                updated.recommendation_rationale = report.recommendation_rationale
+                updated.limitations = report.limitations
+
+            # D-02 honesty: the loop cannot create sections out of nothing.
+            # If it returned section_updates for a report with 0 sections,
+            # the body was never built (see D-01) — that is a structural
+            # failure, and it must be recorded, not silently dropped by the
+            # no-match loop above.
+            if not updated.sections and section_updates:
+                self._record_failure(
+                    "quality loop returned section_updates for a report with "
+                    "0 sections — body was never built; see D-01"
+                )
+
             await self._transition(
                 AgentState.WORKING,
                 f"Quality iteration {self._quality_iteration + 1}: applied targeted fixes "
@@ -1388,6 +1441,19 @@ class SynthesisLead(BaseAgent):
                 f"keeping current report",
             )
             return report
+
+    def _record_failure(self, message: str) -> None:
+        """Record a structural integrity violation (D-02).
+
+        Not an escalation (those go to the Director and cost a STRONG call)
+        and not a silent log line: the message lands in
+        ``self._recorded_failures`` where the run journal / tests can assert
+        on it, and is logged at error level. The rule from the audit: a
+        synthesis failure may degrade the deliverable, it may never do so
+        invisibly.
+        """
+        logger.error("Synthesis integrity failure: %s", message)
+        self._recorded_failures.append(message)
 
     # ─────────────────────────────────────────────────────────────────────
     # Second Brain — query for prior engagement patterns
@@ -1561,8 +1627,20 @@ class SynthesisLead(BaseAgent):
             logger.warning("Combined identify+draft JSON parse failed: %s", e)
             return fallback_critical, fallback_rec
 
-    def _minimal_report(self, reason: str = "") -> FinalReport:
-        """D5: Always return a valid FinalReport, even on total failure."""
+    def _minimal_report(
+        self,
+        reason: str = "",
+        sections: list[AnalysisSection] | None = None,
+    ) -> FinalReport:
+        """D5: Always return a valid FinalReport, even on total failure.
+
+        D-01: whatever analysis was already built survives the crash. The
+        sections arrive explicitly or fall back to ``self._partial_sections``
+        (populated as soon as ``_build_analysis_sections()`` completes, before
+        the recommendation call). A synthesis failure costs the
+        *recommendation*, never the *analysis*.
+        """
+        carried = sections if sections is not None else self._partial_sections
         return FinalReport(
             engagement_id=self._engagement_id or f"eng_{uuid.uuid4().hex[:12]}",
             question=self._question or "",
@@ -1579,12 +1657,13 @@ class SynthesisLead(BaseAgent):
                 f"The recommendation is INVESTIGATE pending additional research."
             ),
             key_findings=self._get_all_findings()[:5],
-            sections=[],
+            sections=list(carried),
             contradictions=[],
             agents_used=self._get_participating_agents(),
             total_sources=len({s.url for f in self._get_all_findings() for s in f.sources}),
             total_data_points=len(self._get_all_findings()),
             limitations=[f"Synthesis incomplete: {reason}"],
+            is_degraded=True,
         )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -1658,7 +1737,8 @@ class SynthesisLead(BaseAgent):
                 issue="No specialist findings collected — cannot synthesize",
                 suggested_action="Check that specialists completed and published findings",
             )
-            # Return a minimal report
+            # Return a minimal report — INVESTIGATE here is a placeholder,
+            # not a synthesis, so the report is degraded by definition.
             return FinalReport(
                 engagement_id=self._engagement_id,
                 question=self._question,
@@ -1668,6 +1748,7 @@ class SynthesisLead(BaseAgent):
                 confidence=ConfidenceLevel.LOW,
                 confidence_breakdown={},
                 executive_summary="Insufficient data for a recommendation.",
+                is_degraded=True,
             )
 
         # Query Second Brain for prior patterns
@@ -1690,6 +1771,19 @@ class SynthesisLead(BaseAgent):
         )
         resolved_contradictions = await self._resolve_contradictions(contradictions, matrix)
 
+        # D-01 structural fix: build the analysis body BEFORE the
+        # recommendation call. Sections are a pure function of the collected
+        # findings (``_build_analysis_sections`` never reads
+        # ``recommendation_data`` — the parameter is vestigial), so there is
+        # no dependency forcing them after the recommendation. Any raise in
+        # step 5+6 below previously discarded every specialist's work because
+        # the body was only assembled at the old step 8; now it already
+        # exists and ``_minimal_report()`` carries it into the degraded
+        # report.
+        await self._transition(AgentState.WORKING, "Building analysis sections from findings")
+        sections = await self._build_analysis_sections()
+        self._partial_sections = sections
+
         # Step 5+6: Identify critical path AND draft recommendation (single DEEP call)
         await self._transition(AgentState.WORKING, "Identifying critical path + drafting "
             "recommendation")
@@ -1701,9 +1795,8 @@ class SynthesisLead(BaseAgent):
         await self._transition(AgentState.WORKING, "Calibrating system confidence")
         system_confidence, confidence_breakdown = self._calibrate_confidence(resolved_contradictions)
 
-        # Step 8: Build FinalReport
+        # Step 8: Assemble the FinalReport (the body already exists)
         await self._transition(AgentState.WORKING, "Producing FinalReport")
-        sections = await self._build_analysis_sections(recommendation_data)
 
         # Parse recommendation
         try:

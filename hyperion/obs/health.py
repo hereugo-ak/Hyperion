@@ -58,28 +58,69 @@ def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+# D-06: the smoke query is the only honest search health signal.
+SMOKE_QUERY = "india import tariff"
+MIN_SMOKE_RESULTS = 3
+
+
+def _check_searxng(settings: Any) -> ToolHealth:
+    """Smoke-query the engine layer instead of probing the socket (D-06).
+
+    The 07-30 run booted ``✓ SearXNG ready`` because TCP 8888 accepted
+    connections while every engine behind it was dead — DuckDuckGo under a
+    24-hour 403 ban and Bing returning silent-zero. A port probe measures a
+    socket, not a search; the only check that cannot lie about engine
+    availability is a query that must come back with results.
+    """
+    h = ToolHealth(name="searxng")
+    # Host and port come from the configured URL via one shared parser
+    # (`searxng_host` / `searxng_port` properties on settings), so pointing
+    # HYPERION at a SearxNG on another port probes the right one.
+    url = getattr(settings, "searxng_url", "") or "http://localhost:8888"
+    host = getattr(settings, "searxng_host", None) or "localhost"
+    port = getattr(settings, "searxng_port", None) or 8888
+    if not _check_port(host, port):
+        h.status = "OFFLINE"
+        h.detail = f"not reachable at {host}:{port} ({url})"
+        return h
+    try:
+        import httpx
+
+        r = httpx.get(
+            f"{url}/search",
+            params={"q": SMOKE_QUERY, "format": "json"},
+            timeout=20.0,
+        )
+        r.raise_for_status()
+        body = r.json()
+        results = body.get("results", []) or []
+        # SearxNG reports per-engine failures in `unresponsive_engines`.
+        dead = [e[0] for e in body.get("unresponsive_engines", []) if e]
+        live = sorted({res.get("engine") for res in results if res.get("engine")})
+        if len(results) >= MIN_SMOKE_RESULTS:
+            h.status = "OK" if not dead else "DEGRADED"
+            h.detail = f"{len(results)} results from {live}" + (
+                f"; DEAD: {dead}" if dead else ""
+            )
+        else:
+            # Port open, engine layer dead — exactly the 07-30 state.
+            h.status = "OFFLINE"
+            h.detail = (
+                f"reachable but returned {len(results)} results for "
+                f"{SMOKE_QUERY!r}; unresponsive: {dead or 'none reported'}"
+            )
+    except Exception as exc:  # noqa: BLE001 - any probe failure means OFFLINE
+        h.status = "OFFLINE"
+        h.detail = f"smoke query failed: {type(exc).__name__}: {exc!s:.80}"
+    return h
+
+
 def _check_tool(name: str, settings: Any) -> ToolHealth:
     """Check the health of a single tool."""
     h = ToolHealth(name=name)
 
     if name == "searxng":
-        # Host and port come from the configured URL via one shared parser.
-        #
-        # This used to be `url.split(":")` with `parts[2]` as the port, which
-        # breaks on every URL shape except the exact literal default: a trailing
-        # path made `int()` raise, and any URL without an explicit port silently
-        # fell back to a hardcoded 8888. Pointing HYPERION at a SearxNG on
-        # another port therefore probed the wrong port and reported OFFLINE for
-        # a service that was serving perfectly.
-        url = getattr(settings, "searxng_url", "") or "http://localhost:8888"
-        host = getattr(settings, "searxng_host", None) or "localhost"
-        port = getattr(settings, "searxng_port", None) or 8888
-        if _check_port(host, port):
-            h.status = "OK"
-            h.detail = f"{url}"
-        else:
-            h.status = "OFFLINE"
-            h.detail = f"not reachable at {host}:{port} ({url})"
+        return _check_searxng(settings)
 
     elif name == "flaresolverr":
         # Was hardcoded to localhost:8191 regardless of `flaresolverr_url`, so
@@ -118,10 +159,23 @@ def _check_tool(name: str, settings: Any) -> ToolHealth:
                 h.status = "OK"
                 h.detail = resolved
             elif resolved and Path(resolved).is_file():
-                # Present but not runnable here — the honest answer, and the
-                # reason the fallback chain skips Obscura on this platform.
-                h.status = "DEGRADED"
-                h.detail = f"{resolved} present but not executable on {sys.platform}"
+                reason = client.unavailable_detail()
+                if "refused to load" in reason or "PermissionError" in reason:
+                    # D-10: the file EXISTS and is "executable" — but the OS
+                    # refuses to load it. On managed Windows hosts this is
+                    # Defender/SmartScreen blocking the unsigned obscura.exe
+                    # (the 07-30 screenshot). Health could never see that
+                    # before because availability was an existence check; now
+                    # the client probes load time, so health can say BLOCKED —
+                    # the one status that tells the operator to act.
+                    h.status = "BLOCKED"
+                    h.detail = f"{resolved} — {reason[:80]}"
+                else:
+                    # Present but not runnable here — the honest answer, and
+                    # the reason the fallback chain skips Obscura on this
+                    # platform (e.g. the Windows .exe on Linux).
+                    h.status = "DEGRADED"
+                    h.detail = f"{resolved} present but not executable on {sys.platform}"
             else:
                 h.status = "OFFLINE"
                 h.detail = f"binary not found (looked in {obscura_bin_dir()} and PATH)"
@@ -250,7 +304,9 @@ def check_startup_health(settings: Any) -> list[ToolHealth]:
 
     ok_count = sum(1 for t in tool_results if t.status == "OK")
     deg_count = sum(1 for t in tool_results if t.status == "DEGRADED")
-    off_count = sum(1 for t in tool_results if t.status == "OFFLINE")
+    # BLOCKED (D-10: OS refused to load the binary) counts as offline for the
+    # summary — it needs operator action, not just a fallback tier.
+    off_count = sum(1 for t in tool_results if t.status in ("OFFLINE", "BLOCKED"))
     print(f"\n  Tools: {ok_count} OK, {deg_count} degraded, {off_count} offline")
 
     tier_ok = sum(1 for t in tier_results if t.status == "OK")

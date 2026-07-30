@@ -182,6 +182,12 @@ class ObscuraClient:
     # to the binary, so it must run at most once per process rather than on
     # every fetch()/scrape() call. None = not yet probed.
     _platform_supported_cache: bool | None = None
+    # WHY the probe said "no" — "" while unprobed or when the binary runs.
+    # D-10 distinguishes "absent" / "wrong platform" from "present but the OS
+    # refused to load it" (Windows Defender / SmartScreen blocking the
+    # unsigned obscura.exe), which is the difference between "fallback chain
+    # skips it" and "operator must act".
+    _unavailable_reason: str = ""
 
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
@@ -265,6 +271,39 @@ class ObscuraClient:
             )
         return supported
 
+    @staticmethod
+    def _exec_load_probe(binary: str) -> tuple[bool, str]:
+        """Run ``<binary> --version`` and report whether the OS loaded it.
+
+        Returns ``(ran, reason)``. This is a LOAD probe, not an existence
+        check: Windows Defender/SmartScreen blocks the unsigned obscura.exe at
+        load time (ASR rule / ERROR_ACCESS_DENIED / WinError 4551), which only
+        surfaces when the OS tries to map the image — ``os.path.exists`` and
+        ``os.access(X_OK)`` both pass for a binary the OS will refuse to run.
+        The 07-30 run announced "Scraping … (Obscura)" three times and every
+        call was a no-op behind exactly that block (D-10).
+        """
+        try:
+            result = subprocess.run(
+                [binary, "--version"], capture_output=True, timeout=5
+            )
+        except PermissionError as exc:
+            return False, (
+                f"OS refused to load {binary} (PermissionError, likely an "
+                f"antivirus/SmartScreen block on the unsigned binary): {exc}"
+            )
+        except OSError as exc:
+            # Includes exec-format errors on non-Windows and WinError 4551
+            # ("this app has been blocked") on Windows.
+            return False, f"OS refused to load {binary}: {exc}"
+        except subprocess.TimeoutExpired:
+            return False, f"{binary} --version timed out after 5s"
+        except Exception as exc:  # noqa: BLE001 - any failure means "cannot run"
+            return False, f"probe failed: {type(exc).__name__}: {exc}"
+        if result.returncode == 0:
+            return True, ""
+        return False, f"{binary} --version exited {result.returncode}"
+
     def _probe_platform_support(self) -> bool:
         """One-shot platform probe. Never raises.
 
@@ -274,15 +313,38 @@ class ObscuraClient:
         check reports "available" for a binary that cannot run — and every
         Obscura call then fails one at a time instead of the fallback chain
         skipping it once.
+
+        D-10: Windows no longer gets a free pass. The 07-30 audit's probe
+        returned True on ``win32`` without launching anything, and Windows
+        Defender blocked the unsigned obscura.exe at load time — health said
+        OK, the log announced "Scraping … (Obscura)", and every call was a
+        no-op. Now the binary must answer ``--version`` on every platform,
+        and the refusal reason is recorded in ``_unavailable_reason`` so
+        health can say BLOCKED instead of merely OFFLINE.
         """
-        # Windows: the shipped .exe is native.
+        ObscuraClient._unavailable_reason = ""
+
         if sys.platform == "win32":
-            return True
+            binary = self._find_obscura()
+            if not binary or not os.path.exists(binary):
+                ObscuraClient._unavailable_reason = "binary not found"
+                return False
+            ran, reason = self._exec_load_probe(binary)
+            if not ran:
+                ObscuraClient._unavailable_reason = reason
+            return ran
 
         # Non-Windows: a native build may be on PATH (user compiled it).
         try:
-            if shutil.which("obscura"):
-                return True
+            on_path = shutil.which("obscura")
+            if on_path:
+                ran, reason = self._exec_load_probe(on_path)
+                if ran:
+                    return True
+                # A PATH hit that won't execute must not silently "pass" —
+                # but a native binary in obscura-bin/ may still work, so
+                # fall through and remember why the PATH one failed.
+                ObscuraClient._unavailable_reason = reason
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("%s: %s", "_probe_platform_support", exc)
 
@@ -292,16 +354,18 @@ class ObscuraClient:
         try:
             native_binary = obscura_bin_dir() / "obscura"
             if native_binary.is_file():
-                result = subprocess.run(
-                    [str(native_binary), "--version"],
-                    capture_output=True,
-                    timeout=5,
-                )
-                if result.returncode == 0:
+                ran, reason = self._exec_load_probe(str(native_binary))
+                if ran:
+                    ObscuraClient._unavailable_reason = ""
                     return True
+                ObscuraClient._unavailable_reason = reason
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("%s: %s", "_probe_platform_support", exc)
 
+        if not ObscuraClient._unavailable_reason:
+            ObscuraClient._unavailable_reason = (
+                f"no runnable obscura binary on platform {sys.platform}"
+            )
         return False
 
     def _binary_available(self) -> bool:
@@ -314,10 +378,26 @@ class ObscuraClient:
             if not self._is_platform_supported():
                 return False
             obscura_bin = self._find_obscura()
-            return bool(obscura_bin) and os.path.exists(obscura_bin)
+            if not (bool(obscura_bin) and os.path.exists(obscura_bin)):
+                if not ObscuraClient._unavailable_reason:
+                    ObscuraClient._unavailable_reason = "binary not found"
+                return False
+            return True
         except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.debug("Obscura availability check failed: %s: %s", type(e).__name__, e)
             return False
+
+    def unavailable_detail(self) -> str:
+        """Human-readable reason Obscura cannot run, or "" when it can.
+
+        D-10: callers announcing "Scraping … (Obscura)" must announce the
+        ACTUAL tier when Obscura is unavailable, and the reason distinguishes
+        "absent" from "the OS blocked the unsigned binary" — only the second
+        needs operator action.
+        """
+        if self._binary_available():
+            return ""
+        return ObscuraClient._unavailable_reason or "binary not available"
 
     # ─────────────────────────────────────────────────────────────────────
     # CLI Commands — one-shot operations
@@ -339,11 +419,14 @@ class ObscuraClient:
         Returns:
             ObscuraFetchResult with the rendered page content.
         """
-        # Platform guard — skip gracefully if binary not available
+        # Platform guard — skip gracefully if binary not available.
+        # D-10: the error must carry WHY (e.g. an OS/SmartScreen block on the
+        # unsigned binary), not a generic "not available" — the 07-30 log
+        # announced "Scraping … (Obscura)" while every call was a no-op.
         if not self._binary_available():
             return ObscuraFetchResult(
                 url=url,
-                error=f"Obscura binary not available on {sys.platform}",
+                error=f"Obscura unavailable ({self.unavailable_detail()}) — using fallback tiers",
             )
 
         obscura_bin = self._find_obscura()
@@ -435,12 +518,14 @@ class ObscuraClient:
         if isinstance(urls, str):
             urls = [urls]
 
-        # Platform guard — skip gracefully if binary not available
+        # Platform guard — skip gracefully if binary not available (D-10:
+        # carry the real reason so the actual tier is visible downstream).
         if not self._binary_available():
+            detail = self.unavailable_detail()
             return ObscuraScrapeResult(
                 results=[ObscuraFetchResult(
                     url=u,
-                    error=f"Obscura binary not available on {sys.platform}",
+                    error=f"Obscura unavailable ({detail}) — using fallback tiers",
                 ) for u in urls],
                 total=len(urls),
                 failed=len(urls),
