@@ -854,8 +854,14 @@ class SynthesisLead(BaseAgent):
             critical = data.get("critical_findings", [])
             if isinstance(critical, list) and critical:
                 return [str(c) for c in critical[:3]]
-        except (json.JSONDecodeError, ValueError):
-            pass
+        except (json.JSONDecodeError, ValueError) as exc:
+            # P2-11: never a silent pass. The fallback below still runs, but
+            # the parse failure is recorded with the output that caused it.
+            logger.error(
+                "critical-findings JSON parse failed, falling back to "
+                "highest-confidence titles: %s: %s (output head: %.120r)",
+                type(exc).__name__, exc, response.content,
+            )
 
         # Fallback
         all_findings = self._get_all_findings()
@@ -1218,8 +1224,17 @@ class SynthesisLead(BaseAgent):
                         and len(retry_response.content) > min_body_chars
                     ):
                         section_body = retry_response.content
-            except (ValueError, AttributeError, RuntimeError):
-                pass  # Use fallback concatenation
+            except (ValueError, AttributeError, RuntimeError) as exc:
+                # P2-11: never a silent pass. The concatenation fallback
+                # still runs for this engagement, but the synthesis failure
+                # is recorded with the agent and section identity instead
+                # of vanishing. (Phase 4/P2-11 deletes the fallback itself
+                # and raises a structured gap.)
+                logger.error(
+                    "narrative synthesis failed for agent=%s section=%s, "
+                    "using fallback concatenation: %s: %s",
+                    agent, _section_title(agent), type(exc).__name__, exc,
+                )
 
             return AnalysisSection(
                 id=f"section_{agent}",
