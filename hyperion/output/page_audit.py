@@ -283,6 +283,48 @@ def _check_duplicates(text_chunks: list[str]) -> list[str]:
     return violations
 
 
+# P2-34: report B's Methodology page printed 11 empty bullet glyphs because
+# report.agents_used held 11 empty strings and the template loop was
+# unguarded. List markers extracted with no following text are exactly what
+# that looks like on the page.
+_BULLET_MARKERS: tuple[str, ...] = (
+    "\u2022",  # bullet
+    "\u25aa",  # black small square
+    "\u25cf",  # black circle
+    "\u25e6",  # white bullet
+    "\u2013",  # en dash used as a marker
+    "\u2014",  # em dash used as a marker
+    "\u00b7",  # middle dot
+    "-",
+    "\u2010",  # hyphen
+)
+
+_BULLET_ONLY_RE = re.compile(
+    r"^(?:"
+    + "|".join(re.escape(m) for m in _BULLET_MARKERS)
+    + r"|\d{1,2}[.)]"  # numbered list marker
+    + r")\s*$"
+)
+
+
+def _check_empty_list_items(doc: fitz.Document) -> list[str]:
+    """No page may contain a list item with no text content.
+
+    PyMuPDF extracts each marker-only glyph as its own line (the marker and
+    the empty <li> it belongs to are separate spans), so a line that is only
+    a bullet / number marker is an empty list item on the page.
+    """
+    violations: list[str] = []
+    for page in doc:
+        for lineno, line in enumerate(page.get_text().splitlines(), start=1):
+            if _BULLET_ONLY_RE.match(line.strip()):
+                violations.append(
+                    f"page {page.number + 1}: empty list item "
+                    f"(marker-only line {lineno}: {line.strip()!r})"
+                )
+    return violations
+
+
 def audit_pdf(
     pdf_path: str | Path,
     *,
@@ -317,6 +359,7 @@ def audit_pdf(
         violations.extend(_check_trim(doc))
         violations.extend(_check_corners(doc, background_rgb))
         violations.extend(_check_toc(doc))
+        violations.extend(_check_empty_list_items(doc))
         full_text = "\n".join(page.get_text() for page in doc)
         text_chunks = [b[4] for page in doc for b in page.get_text("blocks")]
         metrics["page_count"] = len(doc)

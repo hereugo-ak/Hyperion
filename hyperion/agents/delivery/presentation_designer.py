@@ -1226,7 +1226,9 @@ HTML_TEMPLATE = """\
         <ol class="glance-findings">
             {# Capped at five. An at-a-glance page that runs to two pages is not
                an at-a-glance page. #}
-            {% for finding in report.key_findings[:5] %}
+            {# P2-34: filter falsy entries - an empty <li> glyph is a
+               template-leak defect, not a stylistic choice. #}
+            {% for finding in report.key_findings[:5] if finding %}
             <li>{{ finding.title }}</li>
             {% endfor %}
         </ol>
@@ -1237,7 +1239,7 @@ HTML_TEMPLATE = """\
     <div class="glance-block">
         <div class="glance-label">What this rests on</div>
         <ul class="glance-assumptions">
-            {% for assumption in report.critical_assumptions[:4] %}
+            {% for assumption in report.critical_assumptions[:4] if assumption %}
             <li>{{ assumption }}</li>
             {% endfor %}
         </ul>
@@ -1258,7 +1260,7 @@ HTML_TEMPLATE = """\
         <table>
             <tr><td><a href="#at-a-glance">At a Glance</a></td><td class="toc-page"></td></tr>
             <tr><td><a href="#exec-summary">Executive Summary</a></td><td class="toc-page"></td></tr>
-            {% for section in report.sections %}
+            {% for section in report.sections if section %}
             <tr><td><a href="#sec-{{ loop.index }}">{{ section.title }}</a></td><td class="toc-page"></td></tr>
             {% endfor %}
             {% if report.risk_analysis %}
@@ -1308,10 +1310,13 @@ HTML_TEMPLATE = """\
 
     {{ report.executive_summary | md_to_html }}
 
-    {# Key findings in dashboard grid #}
+    {# Key findings in dashboard grid. P2-34: the heading is suppressed
+       with the list - an empty <h3> is the same defect class as an empty
+       bullet. #}
+    {% if report.key_findings %}
     <h3>Key Findings</h3>
     <div class="dashboard-grid">
-        {% for finding in report.key_findings %}
+        {% for finding in report.key_findings if finding %}
         <div class="dashboard-card">
             <div class="dashboard-card-title">{{ finding.title }}</div>
             <div class="dashboard-card-body">
@@ -1323,11 +1328,12 @@ HTML_TEMPLATE = """\
         </div>
         {% endfor %}
     </div>
+    {% endif %}
 
     {# Critical assumptions as callouts #}
     {% if report.critical_assumptions %}
     <h3>Critical Assumptions</h3>
-    {% for assumption in report.critical_assumptions %}
+    {% for assumption in report.critical_assumptions if assumption %}
     <div class="callout callout--alert">
         <div class="callout-title">Assumption</div>
         {{ assumption }}
@@ -1337,7 +1343,7 @@ HTML_TEMPLATE = """\
 </div>
 
 {# ── Analysis Sections ── #}
-{% for section in report.sections %}
+{% for section in report.sections if section %}
 <div class="page-break" id="sec-{{ loop.index }}">
     {# Section opener. MGI sets a letterspaced "C H A P T E R  O N E" above the
        chapter title; BCG gives each section a full-width opener with generous
@@ -1382,7 +1388,7 @@ HTML_TEMPLATE = """\
        while both benchmark documents carry one under every single exhibit.
        It is emitted only when actually present — an invented source line
        would be the same class of defect as an invented geography. #}
-    {% for chart in section_charts[section.id] %}
+    {% for chart in section_charts[section.id] if chart %}
     <figure class="exhibit no-break">
         <div class="exhibit-number"></div>
         {# Fix 4.4: unconditional. A numbered exhibit with no action title is a
@@ -1437,25 +1443,35 @@ HTML_TEMPLATE = """\
 </div>
 {% endif %}
 
-{# ── Methodology ── #}
+{# ── Methodology ──
+   P2-34: report B printed 11 empty bullet glyphs here because agents_used
+   held 11 empty strings. Both lists are pre-filtered (trim + drop falsy)
+   and the enclosing <h3>/<ul> is suppressed when nothing survives, and
+   page_audit._check_empty_list_items is the render-level backstop. #}
+{% set agents_used_clean = report.agents_used | map('trim') | select | list %}
+{% set limitations_clean = report.limitations | map('trim') | select | list %}
 <div class="page-break" id="methodology">
     <h2>Methodology</h2>
+    {% if agents_used_clean %}
     <h3>Agents Used</h3>
     <ul>
-        {% for agent in report.agents_used %}
+        {% for agent in agents_used_clean if agent %}
         <li>{{ agent }}</li>
         {% endfor %}
     </ul>
+    {% endif %}
     <h3>Sources Accessed</h3>
     <p>Total unique sources: {{ report.total_sources }}</p>
     <h3>Data Points Collected</h3>
     <p>Total data points: {{ report.total_data_points }}</p>
+    {% if limitations_clean %}
     <h3>Limitations</h3>
     <ul>
-        {% for limitation in report.limitations %}
+        {% for limitation in limitations_clean if limitation %}
         <li>{{ limitation }}</li>
         {% endfor %}
     </ul>
+    {% endif %}
 </div>
 
 {# ── Endnotes (fix 4.5) ──
