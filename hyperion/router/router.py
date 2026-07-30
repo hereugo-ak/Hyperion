@@ -43,7 +43,12 @@ from hyperion.config import (
 from hyperion.obs import trace
 from hyperion.router.budget import DailyBudgetPlanner, TaskUrgency
 from hyperion.router.estimator import TokenEstimator
-from hyperion.router.providers.base import BaseProvider, RouterResponse
+from hyperion.router.providers.base import (
+    BaseProvider,
+    ProviderStatus,
+    RouterFailure,
+    RouterResponse,
+)
 from hyperion.router.providers.cerebras import CerebrasProvider
 from hyperion.router.providers.google import GoogleProvider
 from hyperion.router.providers.groq import GroqProvider
@@ -146,6 +151,7 @@ class LLMRouter:
         self._token_usage_by_provider: dict[ProviderType, dict[str, int]] = {
             pt: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "calls": 0}
             for pt in ProviderType
+            if pt is not ProviderType.NONE  # P2-29: NONE never serves traffic
         }
 
         # Model lookup: tier → list of (provider_type, model_spec)
@@ -349,6 +355,9 @@ class LLMRouter:
                 )
             return response
 
+        # P2-29: track every tier walked so a total failure can report it
+        tiers_attempted: list[ModelTier] = [tier]
+
         # Try the requested tier first
         response = await self._try_tier(
             tier=tier,
@@ -367,6 +376,8 @@ class LLMRouter:
 
         # If the requested tier failed, try adjacent tiers (§3.3)
         for adjacent_tier in _TIER_ADJACENCY.get(tier, []):
+            if adjacent_tier not in tiers_attempted:
+                tiers_attempted.append(adjacent_tier)
             # Re-estimate for the adjacent tier (different output budget)
             adjacent_estimated = self.estimator.estimate_tokens(
                 system_prompt=system_prompt,
@@ -393,6 +404,8 @@ class LLMRouter:
         # D9: If all adjacent tiers exhausted, try explicit downgrade
         downgrade_tier = _TIER_DOWNGRADE.get(tier)
         if downgrade_tier is not None:
+            if downgrade_tier not in tiers_attempted:
+                tiers_attempted.append(downgrade_tier)
             downgrade_estimated = self.estimator.estimate_tokens(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -417,14 +430,57 @@ class LLMRouter:
         if response is not None:
             return response
 
+        # P2-29: a total failure is attributed to NO provider. Naming one
+        # (the old ProviderType.GOOGLE "Placeholder") misreported a deleted
+        # API key as quota exhaustion for two entire engagements.
+        failure = RouterFailure(
+            tiers_attempted=tiers_attempted,
+            providers_considered={
+                t.value: [pt.value for pt in self._providers] for t in tiers_attempted
+            },
+            skip_reasons=self._diagnose_skip_reasons(tiers_attempted),
+        )
+        trace(
+            "router",
+            tier=tier.value,
+            agent=agent_name,
+            status="total_failure",
+            detail=failure.render(),
+        )
         return RouterResponse(
             content="",
             model="none",
-            provider=ProviderType.GOOGLE,  # Placeholder
+            provider=ProviderType.NONE,
             tier=tier,
             success=False,
-            error="All providers exhausted across all adjacent tiers",
+            error=f"All providers exhausted across all adjacent tiers ({failure.render()})",
+            failure=failure,
         )
+
+    def _diagnose_skip_reasons(
+        self, tiers_attempted: list[ModelTier]
+    ) -> dict[ProviderType, str]:
+        """Per-provider reason why no candidate could serve the request (P2-29).
+
+        Recomputed from live state at failure time so the operator sees the
+        actual cause (auth, circuit, budget, no model for tier) rather than
+        a quota-exhaustion guess.
+        """
+        reasons: dict[ProviderType, str] = {}
+        for pt, provider in self._providers.items():
+            if provider.health.status == ProviderStatus.UNAUTHENTICATED:
+                reasons[pt] = "unauthenticated"
+            elif not provider.health.is_available():
+                reasons[pt] = "health_open"
+            elif all(
+                not provider.get_models_for_tier(t) for t in tiers_attempted
+            ):
+                reasons[pt] = "no_model_for_tier"
+            elif self._predicted_rate_limited(pt):
+                reasons[pt] = "predicted_rate_limited"
+            else:
+                reasons[pt] = "budget_exhausted"
+        return reasons
 
     async def _try_tier(
         self,
@@ -652,7 +708,7 @@ class LLMRouter:
     def get_tpm_status(self) -> dict[ProviderType, dict[str, float]]:
         """Get TPM usage percentages for all providers — for TUI display (§8.6)."""
         result: dict[ProviderType, dict[str, float]] = {}
-        for provider_type in ProviderType:
+        for provider_type in self._providers:
             result[provider_type] = self.wait_gate.get_tpm_usage_percentage(provider_type)
         return result
 

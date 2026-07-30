@@ -57,13 +57,18 @@ TIER_OUTPUT_BUDGET: dict[ModelTier, int] = {
 
 
 class ProviderType(str, Enum):
-    """The 5 LLM providers. All expose OpenAI-compatible APIs."""
+    """The 5 LLM providers. All expose OpenAI-compatible APIs.
+
+    NONE (P2-29) exists so that a total routing failure can be attributed
+    to nobody instead of naming an innocent provider.
+    """
 
     GOOGLE = "google"
     NVIDIA = "nvidia"
     CEREBRAS = "cerebras"
     GROQ = "groq"
     MISTRAL = "mistral"
+    NONE = "none"
 
 
 class ModelSpec(BaseModel):
