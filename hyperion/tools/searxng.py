@@ -37,6 +37,7 @@ from typing import Any
 
 import httpx
 
+from hyperion.tools.engine_health import get_engine_health
 from hyperion.tools.jina import JinaClient
 from hyperion.tools.query_utils import grounded_search_or_empty
 
@@ -300,6 +301,17 @@ class SearxNGClient:
                         published_date=item.get("publishedDate", ""),
                     ))
 
+                # P2-26: consume unresponsive_engines instead of logging and
+                # discarding. The tracker applies a per-engine cooldown (24h
+                # on a suspended_time 403 ban) and the cooled engine is
+                # excluded from the NEXT request's engines= parameter.
+                unresponsive = data.get("unresponsive_engines", [])
+                if unresponsive or engines_used_set:
+                    get_engine_health().record_response(
+                        unresponsive_engines=unresponsive,
+                        responding_engines=engines_used_set,
+                    )
+
                 if results:
                     results = self._deduplicate(results)[:num_results]
                     return SearchResponse(
@@ -310,8 +322,6 @@ class SearxNGClient:
                         engines_used=sorted(engines_used_set),
                     )
 
-                # Log unresponsive engines for debugging
-                unresponsive = data.get("unresponsive_engines", [])
                 if unresponsive:
                     logger.warning(
                         "SearXNG unresponsive engines for '%s': %s",
@@ -484,6 +494,24 @@ class SearxNGClient:
             effective_engines = self.CATEGORY_ENGINES.get(
                 (categories or "general").lower(), self.RELIABLE_ENGINES
             )
+
+        # P2-26: exclude engines under an active cooldown so a banned engine
+        # (e.g. DuckDuckGo under a 24h 403) stops receiving traffic and the
+        # standby pool carries the load instead.
+        cooled_out = [
+            e.strip()
+            for e in effective_engines.split(",")
+            if e.strip() and not get_engine_health().is_available(e.strip())
+        ]
+        if cooled_out:
+            kept = [
+                e.strip()
+                for e in effective_engines.split(",")
+                if e.strip() and get_engine_health().is_available(e.strip())
+            ]
+            if kept:
+                logger.info("ENGINE HEALTH: skipping cooled engines %s", cooled_out)
+                effective_engines = ",".join(kept)
 
         cache_key = self._cache_key(query, num_results=num_results, categories=categories,
                                      language=language, time_range=time_range, engines=effective_engines)
