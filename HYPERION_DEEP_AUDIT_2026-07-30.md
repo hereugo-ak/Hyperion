@@ -4,6 +4,7 @@
 **Session audited:** `0x5EDA0B` — engagement `eng_1cf32bfa6cc4` — question *"should india import less ?"*
 **Auditor scope:** full stack — search → extraction → specialists → synthesis → quality → delivery → PDF
 **Predecessor:** `HYPERION_DEEP_AUDIT_2026-07-27.md` (fixes from that document are **in** this branch and did **not** resolve the reported symptoms)
+**Revision:** *rev 2* — extended after a second pass over the 74,244-line tree. Adds **D-17 … D-23**, corrects **Phase 4** (the original fix was unimplementable — see D-19), corrects the **T-03** test spec (it emitted 379 false positives as first written), and adds DoD gates 17–24. Method for the second pass: `mypy --strict` with the backlog quarantine lifted (120 errors in 39 files reachable from one entry point), an MRO-resolving AST scan for phantom attributes, and a census of every `max_tokens` / `finish_reason` / `json.loads` / sub-agent-tier site.
 
 ---
 
@@ -42,6 +43,33 @@ And three systemic reasons the system *could not tell you* any of that:
 **The system behaved "like a wrapper" because in this run it *was* one.** With 0 bytes of retrieved
 evidence, every specialist degraded to an unconstrained LLM call, and the one component whose job is
 to notice that (the Quality Gate) is wired to warn and proceed rather than to block.
+
+### 0.1 And one finding that outranks all eight
+
+The eight items above are bugs: things that behave other than as designed. Fixing them gets you a
+report with chapters, charts and a PDF. It does **not** get you a *deep* report — because depth was
+never built. Three facts, each verified against the tree, not inferred:
+
+| Fact | Evidence |
+|---|---|
+| **No LLM call in HYPERION ever specifies an output length.** `max_tokens` is plumbed through five layers and is `None` at every one; the provider omits the field entirely when it is `None`. | `grep -rn "max_tokens=" hyperion/agents/` → **no output** (D-17) |
+| **Truncated output is undetectable in principle.** `RouterResponse` has no `finish_reason` field, so a response cut off mid-JSON is indistinguishable from a complete one — and lands on `except JSONDecodeError: return EmptyModel()` while the agent reports success. | `grep -rn "finish_reason" hyperion/` → **no output** (D-18) |
+| **Sub-agents are *forbidden* from having a large context.** Two validators `raise` if the tier is not MICRO/FAST; all 11 specialists spawn at MICRO (16K ctx); the planner budgets MICRO at **500 output tokens** — against a `MIN_SECTION_WORDS` of 450. | `sub_agent.py:105`, `base.py:894`, `engagement_director.py:1226` (D-19) |
+
+So the honest answer to *"why is the system not working as it was designed?"* has two halves, and
+they point in opposite directions:
+
+> **For content, structure and rendering** — it is not working as designed. One type error, one
+> undeclared dependency and two banned search engines account for the empty 6.6 MB file.
+>
+> **For depth** — it *is* working as designed, and **the design caps it.** §4.7 ("sub-agents don't
+> burn STRONG/DEEP quota") is a cost-control rule hardened into two runtime assertions and 22 call
+> sites. Combined with an absent output budget and an absent word instruction, nothing in the running
+> system ever asks for a specific quantity of analysis.
+
+This is why five months of patches have not produced an MBB-grade report: **every previous fix was
+aimed at the first half.** Phase 4 of this plan is the only part that addresses the second, and it is
+a deliberate policy change, not a bug fix.
 
 ---
 
@@ -536,9 +564,298 @@ misleads the next reader.
 
 ---
 
+### D-17 · S1 · No LLM call in the system ever specifies an output length
+
+**This is the second independent cause of "no deep content", and unlike D-01 it has never been
+touched by any audit.**
+
+`max_tokens` is threaded through all five layers — `base.py:544` → `router.py:285` →
+`providers/base.py:247` — and defaults to `None` at every one of them. At the provider it is
+*conditionally omitted*:
+
+```python
+# hyperion/router/providers/base.py:265
+if max_tokens is not None:
+    kwargs["max_tokens"] = max_tokens      # ← never taken
+```
+
+Verified across the whole tree — no agent, in 74,244 lines, ever sets it:
+
+```
+$ grep -rn "max_tokens=" hyperion/agents/ | grep -v "max_tokens=max_tokens"
+(no output)
+```
+
+So every one of the ~78 LLM call sites requests completions with **no output budget at all**, and the
+generation length is whatever the winning provider happens to default to. Consequences:
+
+- **Depth is unspecified, not merely low.** Nobody decided the reports should be shallow; nobody
+  decided anything.
+- **Depth is non-deterministic across runs.** HYPERION races and fails over between five providers
+  (Google, NVIDIA, Cerebras, Groq, Mistral). Each has a different default cap, so the *same section*
+  can come back at 200 or 3,000 words depending on which provider won — and
+  `speculative_racer.py` makes that a race outcome, not a choice.
+- **It interacts lethally with D-18.** An unbounded request against a provider with a small default
+  cap is precisely how you get truncated JSON.
+
+**Root cause class:** a parameter plumbed end-to-end, defaulted to "no opinion", and never given one.
+The plumbing was mistaken for the feature.
+
+---
+
+### D-18 · S1 · Truncated LLM output is structurally undetectable, and degrades to "empty but successful"
+
+`RouterResponse` is the single type through which every LLM result reaches every agent
+(`providers/base.py:168-198`). Its fields:
+
+```python
+content: str; model: str; provider: ProviderType; tier: ModelTier
+input_tokens: int; output_tokens: int; total_tokens: int
+latency_ms: float; success: bool; error: str | None; raw_response: Any | None
+```
+
+**There is no `finish_reason`.** The provider reads the content and discards the stop reason:
+
+```python
+# hyperion/router/providers/base.py:294
+content = _coerce_content(
+    response.choices[0].message.content if response.choices else None
+)
+```
+
+```
+$ grep -rn "finish_reason" hyperion/
+(no output)
+```
+
+So the system cannot distinguish *"the model finished"* from *"the model was cut off mid-object"*.
+Now follow what a cut-off response does, because the pipeline is a chain of individually-correct
+decisions that compose into silent data loss:
+
+1. Output is truncated mid-JSON (no cap was requested — D-17 — so this is the provider's choice).
+2. `extract_json()` (`structured_validator.py:132`) scans for a *balanced* value and, by explicit
+   design, **refuses to return a fragment**:
+   > *"Never returns a structurally-truncated fragment: a fragment that parses is far more dangerous
+   > than a clean `None`."*
+   That judgement is correct.
+3. `_normalize_json_content()` (`base.py:641`) gets `None`, and — also correctly — returns the
+   **original** string so the caller sees the true response.
+4. The caller does `json.loads(response.content)` (77 of the 87 `json.loads` sites in the tree) and
+   raises `JSONDecodeError`.
+5. The caller's handler returns an empty model: `except (json.JSONDecodeError, ValueError): return
+   FinancialMetric(value="Parse error", ...)`.
+6. **The agent reports success.**
+
+The code's own comment at `base.py:625-628` names this exact outcome:
+
+> *"the agent returns a structurally-valid but EMPTY framework and reports success. That is the §0.3
+> anti-pattern at the scale of every specialist: a Porter's Five Forces with no forces, a VRIO with
+> no resources, a claim list with no claims."*
+
+The author diagnosed the symptom precisely and fixed **one** of its two causes (fence-wrapping, in
+Phase 5.1e). Truncation — the other cause — was never considered, because `finish_reason` is not
+captured, so it is invisible even in principle.
+
+**Root cause class:** every component behaved correctly in isolation; the *composition* converts a
+recoverable provider condition into permanent, unreported content loss. No component owns the
+question "was this response complete?"
+
+---
+
+### D-19 · S2 · Sub-agents are architecturally forbidden from having a large context
+
+The 07-30 audit's own Phase 4 proposal — *route research sub-agents to ≥128K models* — **would crash
+on contact.** Two validators hard-lock the tier, and both `raise`:
+
+```python
+# hyperion/agents/sub_agent.py:105
+if spec.model_tier not in (ModelTier.MICRO, ModelTier.FAST):
+    raise ValueError(
+        f"Sub-agent tier must be MICRO or FAST, got {spec.model_tier.value}. "
+        f"Sub-agents don't burn STRONG/DEEP quota (§4.7)."
+    )
+```
+```python
+# hyperion/agents/base.py:894  — the same rule, enforced again at spawn time
+if spec.model_tier not in (ModelTier.MICRO, ModelTier.FAST):
+    raise ValueError(f"Sub-agent tier must be MICRO or FAST, got {spec.model_tier.value}")
+```
+
+And **all eleven specialists** spawn at the smallest tier — two sites each, 22 in total:
+
+```
+competitive_intel.py:1026,1035      consumer_insights.py:941,950
+financial_analyst.py:1171,1180      innovation_analyst.py:990,999
+ma_analyst.py:1072,1082             market_analyst.py:1104,1114
+operations_analyst.py:966,975       regulatory_analyst.py:1167,1179
+risk_analyst.py:1021,1030           …all `model_tier=ModelTier.MICRO`
+```
+
+MICRO is `context_window=16_000, tpm=16_000` (D-13). The planner's own output budget for it:
+
+```python
+# hyperion/agents/engagement_director.py:1226
+output_budgets = {
+    ModelTier.MICRO: 500,       # ← 500 tokens ≈ 375 words
+    ModelTier.FAST: 2000, ModelTier.STANDARD: 4000,
+    ModelTier.STRONG: 8000, ModelTier.DEEP: 16000,
+}
+```
+
+**A sub-agent is budgeted 500 output tokens while `MIN_SECTION_WORDS` is 450.** One sub-agent cannot
+produce even a single section's worth of prose, by design.
+
+This reframes the whole depth question, and it is the most uncomfortable finding in this document:
+
+> **For depth, HYPERION is not failing to work as designed. It is working exactly as designed, and
+> the design caps depth.** §4.7 is a *cost* constraint ("don't burn STRONG/DEEP quota") that was
+> written into two runtime assertions and 22 call sites, and it directly contradicts the product
+> requirement. No amount of prompt engineering can lift it.
+
+**Root cause class:** a cost-control invariant hardened into an architectural one, in a system whose
+stated purpose is depth. Fixing it is a deliberate policy change, not a bug fix — see revised
+Phase 4.1.
+
+---
+
+### D-20 · S2 · The only word-budget instruction in the system lives in the one function D-01 prevented from running
+
+`page_budget.py` is a genuinely good piece of design: `MIN_SECTION_WORDS = 450`,
+`MAX_SECTION_WORDS = 2600`, `plan_budget()` inverting page-count → words-per-section, and
+`prompt_clause()` to put that in the prompt. It has exactly **one** consumer:
+
+```
+$ grep -rn "prompt_clause" hyperion --include=*.py
+hyperion/agents/synthesis_lead.py:1047:        word_clause = budget.prompt_clause()
+```
+
+Line 1047 is inside **`_build_analysis_sections()`** — step 8 of `_run_synthesis()`. Per D-01, the
+crash lands at step 5+6, so **step 8 never executes**. The causal chain is tighter than the original
+D-01 entry stated:
+
+```
+D-01 raises at step 5+6
+   ├─→ step 8 never runs → sections = []            (the "no content" symptom)
+   └─→ prompt_clause() never applied → the system's ONLY length instruction is never issued
+```
+
+And the specialists — who generate the raw material — have no length instruction whatsoever:
+
+```
+$ grep -rn "words\b" hyperion/agents/specialists/*.py
+(no output)
+```
+
+So with D-17 (no `max_tokens`) and D-20 (no word clause outside the dead path), **there is no
+mechanism anywhere in the running system that asks for a specific amount of text.** Depth was left
+entirely to provider defaults.
+
+**Root cause class:** a correct mechanism wired into a single call site on a fragile path, with no
+enforcement at the boundary where the text is actually produced.
+
+---
+
+### D-21 · S3 · Declared return type is a lie, masked by runtime length-sniffing (the D-01 pattern, third instance)
+
+`market_analyst._cagr_triangulation()` is annotated to return a 2-tuple and returns a 3-tuple on the
+success path:
+
+```
+market_analyst.py:813: error: Incompatible return value type
+  (got  "tuple[FinancialMetric, FinancialMetric, list[KeyFinding]]",
+   expected "tuple[FinancialMetric, list[KeyFinding]]")  [return-value]
+market_analyst.py:837: error: (same)
+```
+
+This does **not** crash today, because the caller sniffs the length at runtime:
+
+```python
+# market_analyst.py:1377-1387
+# Handle both 2-tuple (error case) and 3-tuple (success case)
+if len(triangulated_result) == 3:
+    tam_triangulated, cagr_metric, contradiction_findings = triangulated_result
+else:
+    tam_triangulated, contradiction_findings = triangulated_result
+    cagr_metric = FinancialMetric(name="CAGR", value="Unable to calculate", ...)
+```
+
+It is listed because it is **the same disease as D-01 at a different stage of progression**, and it
+establishes the pattern as systemic rather than incidental. Three confirmed instances of *"declared
+type ≠ actual type at an internal boundary"*:
+
+| Instance | Symptom | Status |
+|---|---|---|
+| `VaultSearchResult` returned where `str` declared | `'VaultSearchResult' object has no attribute 'strip'` | **Killed the 07-30 report** (D-01) |
+| Mistral returns `list` content where `str` declared | `'list' object has no attribute 'strip'` in `ma_analyst` | Patched at the boundary (`_coerce_content`, `providers/base.py:294`) |
+| 3-tuple returned where 2-tuple declared | none — masked by `len()` sniff | **Latent** (this defect) |
+
+The second row is the important one: the team had **already been burned by this exact bug class in
+production** and fixed that one instance with a boundary coercion — a good fix — without asking
+where else the class could occur. D-01 then shipped six days later.
+
+**Root cause class:** unenforced internal type contracts, plus a habit of patching the instance
+rather than closing the class. This is what D-14 (mypy quarantine) exists to prevent and doesn't.
+
+---
+
+### D-22 · S3 · Escalation handler dereferences a nullable DAG
+
+```python
+# hyperion/agents/engagement_director.py:447-448
+f"Current question: {self._current_dag.question}\n"
+f"Current agents: {', '.join(a.value for a in self._current_dag.agents_selected)}\n\n"
+```
+```
+engagement_director.py:448: error: Item "None" of "WorkflowDAG | None" has no attribute "question"
+engagement_director.py:449: error: Item "None" of "WorkflowDAG | None" has no attribute "agents_selected"
+```
+
+`_current_dag` is `WorkflowDAG | None`. Any escalation arriving before the DAG is built, or after it
+is cleared, raises `AttributeError` **inside `_evaluate_escalation()`** — the adaptive-replanning
+path. That path is already fully broken by D-07 (schema mismatch discards every escalation), so this
+is a second, independent failure in the same code path: even a correctly-shaped escalation can die
+here. Fix D-07 alone and this becomes reachable.
+
+---
+
+### D-23 · S4 · The mypy quarantine is hiding 120 errors reachable from a single entry point
+
+D-14 noted the allowlist excludes the modules that broke. Quantified:
+
+```
+$ mypy --strict  (quarantine lifted, follow_imports=normal)  hyperion/agents/synthesis_lead.py
+Found 120 errors in 39 files (checked 1 source file)
+```
+
+`pyproject.toml:202` states the baseline as *"342 errors in 68 files"*. The quarantine list contains,
+verbatim, `hyperion.agents.base`, `hyperion.agents.bus`,
+`hyperion.agents.delivery.presentation_designer`, `hyperion.agents.delivery.render_engine`,
+`hyperion.agents.engagement_director`, `hyperion.orchestrator`, `hyperion.obs.health` — i.e. **every
+module implicated in D-01 through D-09.**
+
+Among the 120, the two that were live crashes on 07-30 were sitting there in plain text the whole
+time:
+
+```
+data_visualizer.py:845:  error: "DataVisualizer" has no attribute "_logger"  [attr-defined]
+data_visualizer.py:1043: error: "DataVisualizer" has no attribute "_logger"  [attr-defined]
+```
+
+**A correctly-configured type checker had already found D-05 and was configured not to say so.** The
+quarantine was introduced as *"the process fix for the original P0"* — it is instead the mechanism by
+which the P0s stayed invisible.
+
+Also present and worth fixing while there (`--strict` output, 39 files): ~40 `no-any-return` in the
+router and specialists, `router.py:353/378/402` assigning `RouterResponse | None` to `RouterResponse`,
+and `render_engine.py:488,495` using the deprecated `Image.LANCZOS` alias — the last of which
+**still works** (verified: Pillow 12.2.0 resolves `Image.LANCZOS` → `1`), so it is latent, not live,
+but `pillow>=10.4.0` permits a future major that removes it.
+
+---
+
 ## 3. Why the 2026-07-27 fixes did not fix this
 
-Not one of the 12 defects above was addressed by the previous audit, and three were **made worse by
+Not one of the 23 defects above was addressed by the previous audit, and three were **made worse by
 it**. This is the pattern to break.
 
 | 07-27 action | Intent | Actual effect on 07-30 run |
@@ -549,13 +866,23 @@ it**. This is the pattern to break.
 | `4dc9820` PDF/A-2b post-pass via pikepdf | Archival-grade PDFs | Post-processes a PDF **that is never produced on Windows** (D-03) |
 | `9ea5022` OECD/Eurostat/IMF SDMX | Break the FRED US-only ceiling | Sources added; **FRED mismatch still doesn't route to them** (D-11) |
 | `17b98b8` embeddings + sqlite-vec Second Brain | Semantic retrieval | Made `search()` return a richer object → **triggered D-01** |
-| `0120191` ruff + `mypy --strict` gate | Process gate | Allowlist **excludes the two files that broke** (D-14) |
+| `0120191` ruff + `mypy --strict` gate | Process gate | Allowlist **excludes the two files that broke** (D-14, D-23) |
 | `881533a` golden-PDF regression test | Catch regressions | Asserts on a **golden PDF**; can't run where PDF generation is impossible (D-03) |
+| Phase 5.1e JSON-wrapper normalization | Stop empty frameworks from fence-wrapped JSON | Fixed **one** of two causes; the other (truncation) is invisible because `finish_reason` is never captured (D-18) |
+| `_coerce_content` at the provider boundary | Fix `'list' object has no attribute 'strip'` | Correct fix, **instance-scoped**; the same bug class then shipped as D-01 six days later (D-21) |
+| `page_budget.py` + `plan_budget()` / `prompt_clause()` | Enforce a 15-20 page contract | Wired into **one** call site, inside the step-8 function D-01 prevents from running (D-20) |
 
 **The structural error:** every fix was verified against the *component* it touched, never against
 the *deliverable*. There has never been an assertion of the form *"the shipped artifact contains N
 analysis chapters, M charts, and cites S distinct real sources."* Without that end-to-end invariant,
 a type error in a decorative prompt block can delete the entire report and every test still passes.
+
+**The second structural error, visible only once the whole register is in view:** fixes were scoped to
+the *instance* rather than the *class*. `_coerce_content` fixed one nullable-content crash without
+asking where else a declared type was unenforced; the answer was D-01 and D-21. Phase 5.1e fixed one
+cause of empty frameworks without asking what else produces unparseable JSON; the answer was D-18.
+The mypy quarantine was introduced as the process fix for exactly this and then configured to exclude
+every affected module (D-23) — it had already found D-05 and was told not to report it.
 
 **The 07-27 document's own §3.1 delivery contract says "15-20 pages".** The 07-30 run shipped 7
 pages with 0 chapters and no test noticed.
@@ -843,15 +1170,43 @@ produces World Bank/IMF data, not a warning.
 
 ---
 
-### PHASE 4 — Depth: fix the context and token starvation (2 days) · fixes D-13
+### PHASE 4 — Depth: fix the context and token starvation (2 days) · fixes D-13, D-17, D-18, D-19, D-20
 
 This is the phase that answers *"make sure we get deep content, give subagents more context windows
-or tokens if needed."* The current sub-agent tier physically cannot produce depth.
+or tokens if needed."* It is the largest phase and the only one that is a **policy change rather than
+a bug fix** — see §0.1. Nothing here is optional if the goal is MBB-grade depth.
 
-**4.1 — Ban MICRO from research roles.** 16K context / 16K TPM cannot hold a SERP plus extracted
-documents. Reserve MICRO for what it is good at (keyword expansion, tag generation, yes/no
-classification) and route all *research* sub-agents to ≥128K models:
+> **Correction to the naive version of this plan.** The obvious fix — "route research sub-agents to
+> ≥128K models" — **raises `ValueError` on contact.** Two validators enforce MICRO/FAST
+> (`sub_agent.py:105`, `base.py:894`) and 22 call sites pass `ModelTier.MICRO`. 4.1 must therefore
+> change the *rule* before it can change the *routing*. This is exactly the class of mistake this
+> document exists to stop: fixing the symptom (routing) without touching the constraint that produces
+> it (§4.7).
 
+**4.1 — Replace the §4.7 tier ban with a capability contract.** The existing rule is binary and
+cost-shaped: *sub-agents may not use STRONG/DEEP.* Replace it with an explicit budget that is
+role-shaped, so cost stays controlled without capping capability. Delete both `raise` sites and
+substitute:
+
+```python
+# hyperion/agents/sub_agent.py — replaces the MICRO/FAST assertion (D-19)
+#
+# The old rule (§4.7) forbade STRONG/DEEP to protect quota. It also made depth
+# unreachable: MICRO is 16K context and the planner budgets it 500 output tokens,
+# against a MIN_SECTION_WORDS of 450. Cost is now controlled by an explicit
+# per-engagement token ledger (4.6) rather than by crippling the tier, so the
+# tier can be chosen on capability.
+if spec.model_tier is ModelTier.DEEP and not spec.deep_justified:
+    raise ValueError(
+        "DEEP tier requires spec.deep_justified with a written reason; "
+        "use STANDARD/STRONG for ordinary research sub-agents."
+    )
+if spec.research_role and spec.model_tier.context_window < SUBAGENT_MIN_CONTEXT:
+    raise ValueError(
+        f"research sub-agent {spec.role!r} needs ≥{SUBAGENT_MIN_CONTEXT:,} ctx, "
+        f"{spec.model_tier.value} provides {spec.model_tier.context_window:,}"
+    )
+```
 ```python
 # hyperion/config.py
 SUBAGENT_MIN_CONTEXT = 128_000
@@ -862,7 +1217,9 @@ MICRO_ALLOWED_ROLES = frozenset({
 # "sub-agent quick tasks" and "fact-check snippets" REMOVED from MICRO roles:
 # a sub-agent that must read source documents is not a quick task. (D-13)
 ```
-And enforce it in the router, so this can never silently regress:
+Then migrate the 22 spawn sites (`model_tier=ModelTier.MICRO` → `ModelTier.STANDARD` for research
+roles, MICRO retained only for the four `MICRO_ALLOWED_ROLES`), and enforce in the router so it cannot
+silently regress:
 ```python
 def select(self, *, role: str, min_context: int = 0, ...):
     candidates = [m for m in pool if m.context_window >= min_context]
@@ -872,7 +1229,21 @@ def select(self, *, role: str, min_context: int = 0, ...):
             f"{max(m.context_window for m in pool):,}")
 ```
 The tree already has 128K–1M models (`config.py:185` is 1,000,000 tokens). Depth was one routing
-decision away the whole time.
+decision and one deleted assertion away the whole time.
+
+**4.1b — Raise the planner's output budgets to match.** `engagement_director.py:1226` must stop
+budgeting 500 tokens for work that has to yield ≥450 words:
+```python
+output_budgets = {                    # was: MICRO 500 / FAST 2000 / STANDARD 4000
+    ModelTier.MICRO: 800,             # classification + keyword work only
+    ModelTier.FAST: 3_000,
+    ModelTier.STANDARD: 8_000,        # the new research sub-agent default
+    ModelTier.STRONG: 16_000,
+    ModelTier.DEEP: 32_000,
+}
+```
+These feed the TPM wait-gate, so they must be *honest* estimates — under-estimating output is how you
+get 429 storms and provider failover mid-report (which in turn changes section length, per D-17).
 
 **4.2 — Give sub-agents an explicit evidence budget.** Replace "quick task" framing with a contract:
 
@@ -900,16 +1271,98 @@ Keep a separate hard wall-clock/attempt ceiling so this can't loop forever.
 `FAILED`, not `COMPLETED`. Nine specialists reported success with zero substance and the DAG called
 it a win.
 
-**4.5 — Enforce the word budget that already exists.** `page_budget.py` defines
-`MIN_SECTION_WORDS = 450` / `MAX_SECTION_WORDS = 2600` and a `prompt_clause()`. Nothing checked it.
-Assert post-generation and re-request short sections once:
+**4.5 — Enforce the word budget that already exists, and move it off the dead path.**
+`page_budget.py` defines `MIN_SECTION_WORDS = 450` / `MAX_SECTION_WORDS = 2600` and a
+`prompt_clause()`. Its only consumer is `synthesis_lead.py:1047`, inside the step-8 function D-01
+prevents from running (D-20). Two changes:
+
 ```python
+# (a) enforce post-generation, in _build_analysis_sections
 if section.word_count < MIN_SECTION_WORDS:
     section = await self._expand_section(section, budget.prompt_clause())
 ```
+```python
+# (b) push the clause down to where the text is actually produced. Specialists
+# currently receive NO length instruction at all:
+#   $ grep -rn "words\b" hyperion/agents/specialists/*.py   -> no output
+# A budget that exists only at synthesis time cannot deepen the material
+# synthesis is given to work with. (D-20)
+class BaseAgent:
+    def _length_clause(self) -> str:
+        return self._budget.prompt_clause() if self._budget else DEFAULT_LENGTH_CLAUSE
+```
+
+**4.6 — Set an explicit output budget on every LLM call.** This is D-17, and it is the single
+highest-leverage line-count change in the whole plan. `max_tokens` must stop defaulting to `None`:
+
+```python
+# hyperion/agents/base.py:_llm_complete
+# Never send max_tokens=None. Omitting the field delegates report depth to
+# whichever provider won the race, so the same section came back at 200 or
+# 3,000 words run-to-run. Depth must be a decision, not a race outcome. (D-17)
+if max_tokens is None:
+    max_tokens = TIER_OUTPUT_BUDGET[self.model_tier]   # 4.1b table
+```
+Add a per-engagement token ledger so lifting the caps cannot run away with cost — this is what
+replaces §4.7's crude tier ban as the actual cost control:
+```python
+class TokenLedger:
+    budget: int                # per engagement, from config
+    spent: int = 0
+    def charge(self, response: RouterResponse) -> None: ...
+    def remaining_for(self, tier: ModelTier) -> int: ...
+    # When the ledger is low, DOWNGRADE the tier and log it loudly.
+    # Never silently shorten output — that reintroduces D-17 by another route.
+```
+
+**4.7 — Capture `finish_reason` and treat truncation as a first-class failure.** This is D-18, and
+without it 4.6 is only half a fix: a budget you cannot verify was respected is a hope.
+
+```python
+# hyperion/router/providers/base.py — add to the RouterResponse construction
+choice = response.choices[0] if response.choices else None
+finish_reason = getattr(choice, "finish_reason", None)
+...
+return RouterResponse(..., finish_reason=finish_reason)
+```
+```python
+# hyperion/router/providers/base.py — RouterResponse gains one field and one property
+finish_reason: str | None = None
+
+@property
+def truncated(self) -> bool:
+    """True when the model stopped because it hit the output cap.
+
+    Before this existed, a response cut off mid-JSON was indistinguishable from
+    a complete one: extract_json() correctly refuses the fragment, returns None,
+    json.loads() raises, and the caller's `except: return EmptyModel()` shipped a
+    Porter's Five Forces with no forces while reporting success. (D-18)
+    """
+    return self.finish_reason in ("length", "max_tokens", "MAX_TOKENS")
+```
+Then act on it in `_llm_complete`, rather than letting it fall through to a silent empty model:
+```python
+if response.truncated:
+    logger.warning(
+        "TRUNCATED: %s at %s tier hit the output cap (%d tokens). Retrying once "
+        "with a raised cap; escalating if it truncates again.",
+        self.name.value, self.model_tier.value, response.output_tokens,
+    )
+    response = await self._retry_with_larger_budget(response, factor=2)
+    if response.truncated:
+        await self._escalate(
+            issue=f"output still truncated at {response.output_tokens} tokens",
+            suggested_action="split the request or raise the tier",
+        )
+```
+**Deliverable-level rule:** a section built from a truncated response is marked
+`degraded=True` and *may not* be presented as a finished chapter. An honest gap beats a fabricated
+one — which is the whole lesson of D-02.
 
 **Exit criteria:** every analysis section ≥450 words; ≥8 sections; total prose ≥60,000 chars;
-no research sub-agent dispatched to a <128K model; specialists returning 0 findings marked FAILED.
+no research sub-agent dispatched to a <128K model; specialists returning 0 findings marked FAILED;
+**every LLM call carries an explicit `max_tokens`**; **zero `finish_reason == "length"` responses reach
+a consumer unflagged**; token ledger reports actual spend against budget at end of engagement.
 
 ---
 
@@ -1052,10 +1505,16 @@ paid LLM keys in CI. Therefore:
 
 | Tier | Marker | Runtime | Needs | Runs |
 |---|---|---|---|---|
-| **T-unit** | *(none)* | < 60 s total | nothing | every commit, sandbox-safe |
+| **T-unit** | *(none)* | < 75 s total | nothing | every commit, sandbox-safe |
 | **T-contract** | `-m contract` | < 90 s | nothing (stubs) | every commit, sandbox-safe |
 | **T-render** | `-m render` | < 3 min | `playwright` + chromium | pre-merge, `HYPERION_E2E=1` |
 | **T-live** | `-m live` | ~20 min | Docker + API keys | nightly / local only |
+
+The rev-2 additions (T-21 … T-26) are deliberately the cheapest tests in the plan: five of the eight
+new assertions are **static source scans or dataclass checks with no I/O and no LLM call**. Measured in
+this sandbox, the heaviest — T-03's MRO-resolving AST walk over all 74,244 lines — runs in **1.8 s** and
+peaks well under 100 MB RSS. Depth defects are cheap to *lock*; they were expensive only to *find*.
+Cache the class index in a session-scoped fixture so T-03 and T-24 share one parse.
 
 ```toml
 # pyproject.toml
@@ -1090,25 +1549,81 @@ async def test_synthesis_failure_preserves_analysis_body(monkeypatch, findings_f
 ```
 
 **T-03 · D-05 · no phantom `self.` attributes** — one AST scan covers ~40 agent files
+
+> **This spec was itself defective in the first draft of this audit and is corrected here.** The naive
+> version — set-difference of `self.x` reads against `self.x =` assignments — reports **379 false
+> positives**, because it counts every *method* call (`self._llm_complete`, `self._transition`) as an
+> unassigned attribute, and it cannot see members inherited from `BaseAgent`. A test with 379 false
+> positives is worse than no test: it gets marked `xfail` in week one. The version below resolves the
+> repo-local MRO first, and was executed against the tree: it reports **exactly one offender — the
+> real D-05 bug — and nothing else.**
+
 ```python
+def _repo_class_index() -> dict[str, list[dict]]:
+    """Index every class in hyperion/: bases, method names, self.X assignments, class vars."""
+    index: dict[str, list[dict]] = {}
+    for py in Path("hyperion").rglob("*.py"):
+        for cls in [n for n in ast.walk(ast.parse(py.read_text(encoding="utf-8")))
+                    if isinstance(n, ast.ClassDef)]:
+            methods, assigned, cvars = set(), set(), set()
+            for n in ast.walk(cls):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    methods.add(n.name)              # ← the fix the naive version omits
+                targets = list(getattr(n, "targets", []))
+                if isinstance(n, (ast.AnnAssign, ast.AugAssign)):
+                    targets.append(n.target)
+                for t in targets:
+                    if (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
+                            and t.value.id == "self"):
+                        assigned.add(t.attr)
+                    elif isinstance(t, ast.Name):
+                        cvars.add(t.id)              # class-level constants / annotations
+            index.setdefault(cls.name, []).append(dict(
+                bases=[b.id for b in cls.bases if isinstance(b, ast.Name)],
+                provides=methods | assigned | cvars))
+    return index
+
+
+def _provided(name: str, index, seen=None) -> set[str]:
+    """Everything `name` and its repo-local ancestors provide. Third-party bases
+    (Textual widgets etc.) are simply absent from the index, so classes that
+    inherit from them resolve to whatever the repo defines and are not asserted
+    on — which is why this scan is scoped to hyperion/agents."""
+    seen = seen or set()
+    if name in seen or name not in index:
+        return set()
+    seen.add(name)
+    out: set[str] = set()
+    for rec in index[name]:
+        out |= rec["provides"]
+        for base in rec["bases"]:
+            out |= _provided(base, index, seen)
+    return out
+
+
 def test_no_phantom_self_attributes():
+    index = _repo_class_index()
     offenders = []
     for py in Path("hyperion/agents").rglob("*.py"):
-        tree = ast.parse(py.read_text())
-        for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-            assigned = {t.attr for n in ast.walk(cls)
-                        for t in getattr(n, "targets", []) + ([n.target] if hasattr(n,"target") else [])
-                        if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
-                        and t.value.id == "self"}
-            read = {n.attr for n in ast.walk(cls)
-                    if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
-                    and n.value.id == "self" and isinstance(n.ctx, ast.Load)
-                    and n.attr.startswith("_")}
-            for attr in read - assigned - BASEAGENT_ATTRS - INHERITED_ATTRS:
-                offenders.append(f"{py}:{cls.name}.self.{attr}")
-    assert not offenders, f"attributes read but never assigned: {offenders}"
+        for cls in [n for n in ast.walk(ast.parse(py.read_text(encoding="utf-8")))
+                    if isinstance(n, ast.ClassDef)]:
+            known = _provided(cls.name, index)
+            reads: dict[str, list[int]] = {}
+            for n in ast.walk(cls):
+                if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                        and n.value.id == "self" and isinstance(n.ctx, ast.Load)):
+                    reads.setdefault(n.attr, []).append(n.lineno)
+            offenders += [f"{py}:{ls[0]} {cls.name}.self.{a}"
+                          for a, ls in reads.items() if a not in known]
+    assert not offenders, f"attributes read but never provided by the MRO: {offenders}"
 ```
-> Catches `self._logger` in `data_visualizer.py` **and** any sibling typo, permanently.
+Executed against `fix0.1` at time of writing:
+```
+OFFENDERS: 1
+   hyperion/agents/support/data_visualizer.py:845 DataVisualizer.self._logger (lines [845, 1043])
+```
+> Catches `self._logger` in `data_visualizer.py` **and** any sibling typo, permanently — with a clean
+> baseline, so it can be merged as a blocking gate on day one rather than as a warning.
 
 **T-04 · D-02 · few-shot leakage tripwire** — *the single test that would have caught the deliverable you received*
 ```python
@@ -1170,7 +1685,7 @@ def test_score_below_floor_blocks_render():
         delivery.run(report, verdict)
 ```
 
-**T-09 · D-13 · research sub-agents are never routed to MICRO**
+**T-09 · D-13/D-19 · research sub-agents are never routed to MICRO, and the tier ban is gone**
 ```python
 def test_no_research_role_on_micro_models():
     for spec in ALL_MODELS:
@@ -1181,6 +1696,26 @@ def test_no_research_role_on_micro_models():
 def test_router_refuses_undersized_context():
     with pytest.raises(NoCapableModelError):
         router.select(role="regulatory research", min_context=262_000, pool=MICRO_ONLY)
+
+def test_subagent_accepts_standard_tier():
+    """The §4.7 MICRO/FAST assertion must be gone, or Phase 4.1 is unimplementable.
+    Guards the exact ValueError that made the naive fix impossible. (D-19)"""
+    spec = SubAgentSpec(role="regulatory research", model_tier=ModelTier.STANDARD,
+                        research_role=True, question="q")
+    SubAgentRunner(spec)                      # must NOT raise
+    with pytest.raises(ValueError, match="deep_justified"):
+        SubAgentRunner(replace(spec, model_tier=ModelTier.DEEP))
+
+def test_no_specialist_spawns_research_at_micro():
+    """Locks the 22 migrated call sites. Source-level, so it costs nothing."""
+    offenders = []
+    for py in Path("hyperion/agents/specialists").rglob("*.py"):
+        src = py.read_text(encoding="utf-8")
+        for m in re.finditer(r"SubAgentSpec\((.*?)\)", src, re.S):
+            block = m.group(1)
+            if "ModelTier.MICRO" in block and "research_role=True" in block:
+                offenders.append(f"{py}:{src[:m.start()].count(chr(10)) + 1}")
+    assert not offenders, f"research sub-agents still spawned at MICRO: {offenders}"
 ```
 
 **T-10 · D-16/5.1 · CSS is print-grade**
@@ -1195,6 +1730,111 @@ def test_css_is_print_grade():
         assert req in css
     assert css.count("@font-face") >= 3
 ```
+
+**T-21 · D-17 · every LLM call carries an explicit output budget** — *pure source scan, 0 tokens spent*
+```python
+def test_max_tokens_is_never_none_at_the_provider():
+    """The 07-30 build sent max_tokens=None on all ~78 call sites, delegating
+    report depth to whichever provider won the race. (D-17)"""
+    captured = {}
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _stub_completion("{}")
+    provider.client.chat.completions.create = fake_create
+    await agent._llm_complete("draft the market sizing section")
+    assert "max_tokens" in captured, "no output budget was requested"
+    assert captured["max_tokens"] >= 4_000, captured["max_tokens"]
+
+def test_every_tier_has_an_output_budget():
+    for tier in ModelTier:
+        assert TIER_OUTPUT_BUDGET[tier] > 0
+    assert TIER_OUTPUT_BUDGET[ModelTier.STANDARD] >= 8_000   # ≥ MIN_SECTION_WORDS
+```
+
+**T-22 · D-18 · truncation is detected, surfaced, and never silently emptied**
+```python
+@pytest.mark.parametrize("reason,expected", [
+    ("length", True), ("max_tokens", True), ("MAX_TOKENS", True),
+    ("stop", False), (None, False),
+])
+def test_finish_reason_maps_to_truncated(reason, expected):
+    assert RouterResponse(content="{", model="m", provider=P, tier=T,
+                          finish_reason=reason).truncated is expected
+
+@pytest.mark.asyncio
+async def test_truncated_json_never_becomes_a_silent_empty_model():
+    """The exact 07-30 degradation path: cut-off JSON -> extract_json refuses the
+    fragment -> json.loads raises -> `except: return EmptyModel()` -> success.
+    A truncated response must raise or flag, never report success. (D-18)"""
+    provider_returns('{"forces": [{"name": "Rivalry", "detail": "hi', finish_reason="length")
+    result = await agent.analyze_five_forces("india imports")
+    assert result.degraded is True
+    assert not result.reported_success, "empty framework must not be reported as success"
+```
+
+**T-23 · D-20 · a length instruction reaches the agent that writes the prose**
+```python
+def test_specialists_receive_a_length_clause():
+    """page_budget's prompt_clause() had exactly one consumer, inside the step-8
+    function D-01 prevented from running. Specialists had no length instruction
+    at all: grep -rn 'words\\b' hyperion/agents/specialists/ -> no output. (D-20)"""
+    prompt = agent._build_user_prompt("india imports", evidence=EVIDENCE_FIXTURE)
+    assert re.search(r"\b\d{3,4}\b[^.]{0,40}words", prompt), \
+        "no word-count instruction in the prompt that generates the analysis"
+
+def test_prompt_clause_is_not_reachable_only_from_one_dead_path():
+    callers = subprocess.run(["grep","-rln","prompt_clause\\|_length_clause","hyperion"],
+                             capture_output=True, text=True).stdout.split()
+    assert len(callers) >= 3, f"length budget still wired into {callers}"
+```
+
+**T-24 · D-21 · declared return types are honoured (closes the D-01 class)**
+```python
+def test_cagr_triangulation_arity_matches_annotation():
+    """Same disease as D-01, currently masked by a runtime len() sniff at
+    market_analyst.py:1378. Locks arity so the mask can be removed. (D-21)"""
+    hints = typing.get_type_hints(MarketAnalyst._cagr_triangulation)
+    declared = len(typing.get_args(hints["return"]))
+    result = asyncio.run(analyst._cagr_triangulation(TAM_TD, TAM_BU, DATA))
+    assert len(result) == declared, f"returns {len(result)}-tuple, declares {declared}"
+
+def test_no_runtime_arity_sniffing_remains():
+    src = Path("hyperion/agents/specialists/market_analyst.py").read_text()
+    assert "len(triangulated_result) == 3" not in src, \
+        "arity sniff still present — the type contract is still a lie"
+```
+
+**T-25 · D-22 · the escalation handler tolerates a missing DAG**
+```python
+@pytest.mark.asyncio
+async def test_escalation_before_dag_does_not_crash():
+    """_current_dag is WorkflowDAG | None; the handler dereferenced .question
+    unguarded, inside the already-broken escalation path. (D-22)"""
+    director = EngagementDirector()
+    assert director._current_dag is None
+    await director._handle_escalation(_valid_escalation())   # must not raise
+```
+
+**T-26 · D-23 · the mypy quarantine can only ever shrink**
+```python
+QUARANTINE_BASELINE = 68          # files, from pyproject.toml:202
+
+def test_mypy_quarantine_never_grows():
+    listed = _mypy_backlog_modules(Path("pyproject.toml"))
+    assert len(listed) <= QUARANTINE_BASELINE, \
+        f"quarantine grew to {len(listed)}; it is a paydown list, not a dumping ground"
+
+@pytest.mark.parametrize("module", [
+    "hyperion.agents.synthesis_lead",       # D-01 lived here
+    "hyperion.agents.support.data_visualizer",  # D-05 lived here, mypy already knew
+])
+def test_p0_modules_are_out_of_quarantine(module):
+    assert module not in _mypy_backlog_modules(Path("pyproject.toml")), \
+        f"{module} shipped an S1 defect that --strict detects; it cannot stay quarantined"
+```
+> T-26's second case is the process lock for the whole audit: a correctly-configured type checker had
+> already found D-05 and was configured not to report it (D-23). Nothing else in this test plan
+> prevents that from recurring.
 
 ---
 
@@ -1365,26 +2005,45 @@ passes. The release gate is the *artifact*, not the test count.
 | 14 | No duplicate agent execution | `T-07` | ❌ regulatory ran 2× |
 | 15 | File < 8 MB, fonts subset | `T-17` | ❌ 6.6 MB, 0.17% content |
 | 16 | `mypy --strict` on delivery path | CI | ❌ not enforced |
+| 17 | **Every LLM call sends an explicit `max_tokens`** | `T-21` | ❌ `None` on all ~78 sites |
+| 18 | **0 truncated responses reach a consumer unflagged** | `T-22` | ❌ undetectable — no `finish_reason` |
+| 19 | **No research sub-agent below 128K context** | `T-09` | ❌ all 11 specialists spawn at MICRO (16K) |
+| 20 | **Sub-agent tier ban lifted; DEEP gated by justification** | `T-09` | ❌ two `raise` sites forbid it |
+| 21 | **Length instruction present in the prompt that writes prose** | `T-23` | ❌ specialists have none |
+| 22 | **No runtime arity/type sniffing at internal boundaries** | `T-24` | ❌ `len(result) == 3` in market_analyst |
+| 23 | **Token ledger reports actual vs budgeted spend** | Phase 4.6 | ❌ no ledger exists |
+| 24 | **P0 modules out of the mypy quarantine** | `T-26` | ❌ both S1 modules quarantined |
+
+Gates 17–24 are new in this revision. **Gates 1–16 make the report exist; 17–24 make it deep.** A
+build that passes 1–16 and fails 17–24 produces exactly what the 07-27 fixes produced: a
+correctly-formatted, well-rendered, shallow document.
 
 ---
 
 ## 7. Sequencing summary
 
 ```
-PHASE 0  Stop lying                ½d   D-06 D-12        → diagnosis becomes possible
-PHASE 1  Restore the report body    1d   D-01 D-02 D-05   → content exists and is honest
-PHASE 2  Produce an actual PDF      1d   D-03            → deliverable is a PDF, not a web page
-PHASE 3  Restore evidence           2d   D-04 D-10 D-11  → content is grounded in real sources
-PHASE 4  Depth (context/tokens)     2d   D-13            → content is deep, not thin
-PHASE 5  Premium output             2d   D-15 D-16       → content is beautiful
-PHASE 6  Make failures impossible   1d   D-07 D-08 D-09 D-14
-                                   ────
-                                   9.5 days
+PHASE 0  Stop lying                ½d   D-06 D-12             → diagnosis becomes possible
+PHASE 1  Restore the report body    1d   D-01 D-02 D-05        → content exists and is honest
+PHASE 2  Produce an actual PDF      1d   D-03                  → deliverable is a PDF, not a web page
+PHASE 3  Restore evidence           2d   D-04 D-10 D-11        → content is grounded in real sources
+PHASE 4  Depth (context/tokens)     3d   D-13 D-17 D-18        → content is deep, not thin
+                                         D-19 D-20
+PHASE 5  Premium output             2d   D-15 D-16             → content is beautiful
+PHASE 6  Make failures impossible  1.5d  D-07 D-08 D-09 D-14
+                                         D-21 D-22 D-23
+                                   ─────
+                                   11 days
 ```
 
+Phase 4 grew from 2 to 3 days and Phase 6 from 1 to 1.5 in this revision: D-17/D-18/D-19/D-20 are all
+depth defects, and D-19 requires deleting a load-bearing architectural assertion plus migrating 22
+call sites — that is not a half-day change.
+
 Phases 0–2 (2.5 days) are the difference between *"a confident report about a market that does not
-exist, delivered as a web page"* and *"an honest, printable PDF."* Phase 3–4 make it worth reading.
-Phase 5 makes it worth paying for. Phase 6 keeps it that way.
+exist, delivered as a web page"* and *"an honest, printable PDF."* Phase 3 makes it true. **Phase 4
+makes it deep, and it is the only phase that has never been attempted.** Phase 5 makes it worth
+paying for. Phase 6 keeps it that way.
 
 **The one-line lesson:** this system has excellent components and no contract between them. Every
 defect above is an interface where one side made a promise the other never checked — a `-> str` that
@@ -1392,3 +2051,11 @@ returned a dataclass, an escalation payload with two shapes, a health check that
 instead of a search, a quality gate with no floor, and a test suite that verified functions instead
 of the artifact. Fix the contracts and the "wrapper" behaviour disappears, because the wrapper
 behaviour *is* the absence of contracts.
+
+**And the harder second lesson, which only the full 23-defect register makes visible:** three of these
+defects are not missing contracts but *missing intentions*. Nobody ever decided how long a section
+should be (D-17), whether a truncated answer counts as an answer (D-18), or how much context a
+research sub-agent needs (D-19). Those were left as framework defaults and a cost-control rule from
+§4.7 — and defaults, compounded across 20 agents and 78 LLM calls, are what "behaving like a wrapper"
+actually feels like from the outside. **A wrapper is what you get when every parameter has a value and
+none of them has a reason.**
