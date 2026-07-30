@@ -1109,10 +1109,16 @@ class WorkflowEngine:
             if current_score is None:
                 break
 
-            # Check if score meets threshold (≥ 4.0/5.0)
-            if current_score.total_score >= 4.0:
-                self._log(f"QUALITY: threshold met at iteration {iteration}")
-                break  # Quality threshold met
+            # P2-22: exit the loop only on the authoritative `approved` flag,
+            # not on the weighted score alone. `approved` already folds in
+            # the score threshold (see QualityGate._determine_approval) AND
+            # the Layer 4 hard-blocker scan (QualityGate._detect_hard_blockers),
+            # which catches leaked objects, banned filler, verdict
+            # contradictions and dishonest confidence. Reading `total_score`
+            # here let reports with `approved=False` ship anyway.
+            if current_score.approved:
+                self._log(f"QUALITY: approved at iteration {iteration}")
+                break  # Quality gate approved
 
             # P7: Content-aware stop — if source count is below floor, stop
             # iterating.  More synthesis passes won't fix thin evidence.
