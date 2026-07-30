@@ -264,8 +264,24 @@ CSS_TEMPLATE = """\
 
 /* The cover carries no running header/footer — a title page with a page
    number and a repeated section name is the clearest tell of an automated
-   document. Both benchmarks leave the cover clean. */
+   document. Both benchmarks leave the cover clean.
+
+   P2-07: full bleed is done the paged-media way, not with an overflowing
+   transform. The first page (and the named `cover` page below) gets
+   margin: 0 so the page content frame IS the 210mm x 297mm trim box, and
+   .cover is sized to exactly that. Before this, the 210mm-wide cover box
+   sat inside a (210 - 19 - 15)mm content frame and bled 328pt off the
+   left edge - a PDF/A and print hazard the pikepdf post-pass cannot clip. */
 @page :first {{
+    margin: 0;
+    @top-center {{ content: none; }}
+    @bottom-center {{ content: none; }}
+}}
+
+/* .cover declares `page: cover`; the named page rule must zero the margins
+   too, or the cover page keeps the body frame and the bleed returns. */
+@page cover {{
+    margin: 0;
     @top-center {{ content: none; }}
     @bottom-center {{ content: none; }}
 }}
@@ -415,7 +431,10 @@ table, .kpi-value, .data-table, .chart-data-table {{
     margin: 0;
     padding: 0;
     position: relative;
-    width: 100%;
+    /* P2-07: exactly the A4 trim box, never a transform or relative width
+       that can paint outside it. overflow: hidden stays as the belt and
+       braces clip for absolutely-positioned children. */
+    width: 210mm;
     height: 297mm;
     overflow: hidden;
 }}
