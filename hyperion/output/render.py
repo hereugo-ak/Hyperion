@@ -672,6 +672,22 @@ class PDFRenderer:
                 result.warnings.append("PyMuPDF not available — page count unknown")
 
             self._apply_pdf_post_pass(result, output_path, full_html)
+
+            # P2-08/P2-G1: render-time page audit, fail closed. This runs
+            # after the PDF/A post-pass so the audited bytes are the shipped
+            # bytes. A violation must never reach the client as a success.
+            from hyperion.output.page_audit import PageAuditError, audit_pdf
+
+            try:
+                audit_pdf(output_path)
+            except PageAuditError as exc:
+                result.success = False
+                result.error = f"page audit failed: {exc}"
+                result.warnings.append(
+                    "PDF withheld: render-time page audit failed (see error)"
+                )
+                return result
+
             return result
 
         except (OSError, ImportError, ValueError, RuntimeError) as exc:
@@ -696,6 +712,22 @@ class PDFRenderer:
                 pass
 
             self._apply_pdf_post_pass(result, output_path, full_html)
+
+            # P2-08/P2-G1: render-time page audit, fail closed (same as the
+            # WeasyPrint path above — the audit applies to whichever engine
+            # produced the bytes).
+            from hyperion.output.page_audit import PageAuditError, audit_pdf
+
+            try:
+                audit_pdf(output_path)
+            except PageAuditError as exc:
+                result.success = False
+                result.error = f"page audit failed: {exc}"
+                result.warnings.append(
+                    "PDF withheld: render-time page audit failed (see error)"
+                )
+                return result
+
             return result
 
         # ── Both PDF engines failed: emit a real HTML deliverable ──
