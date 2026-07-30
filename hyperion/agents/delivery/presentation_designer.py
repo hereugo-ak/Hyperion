@@ -637,17 +637,30 @@ table, .kpi-value, .data-table, .chart-data-table {{
     color: {cream};
 }}
 
-.section-image {{
-    width: 40%;
-    float: right;
-    margin: 0 0 8px 16px;
+/* P2-02: the figure is a column-spanning band INSIDE the multicol
+   .section-body, never a float. A float:right sibling of a column-count
+   container is laid out in the containing block, not the column flow, so
+   WeasyPrint composites the raster over column 2's full-width line boxes
+   (2,773 pt2 of text occluded on every imaged section page of both
+   audited reports). float adjacent to column-count is forbidden here. */
+.section-plate {{
+    column-span: all;
+    width: 100%;
+    margin: 0 0 10px 0;
+    break-inside: avoid;
     page-break-inside: avoid;
 }}
 
-.section-image-caption {{
+.section-plate img {{
+    width: 100%;
+    max-height: 62mm;
+    object-fit: cover;
+    display: block;
+}}
+
+.section-plate figcaption {{
     font-size: 8pt;
     color: {warm_gray};
-    text-align: right;
     margin-top: 4px;
 }}
 
@@ -977,8 +990,11 @@ table, .kpi-value, .data-table, .chart-data-table {{
 }}
 
 /* Full-width anchors inside a two-column section. `column-span: all` is the
-   WeasyPrint-supported spell; the section image sits outside the columned
-   div in the HTML, so it is already full-measure. */
+   WeasyPrint-supported spell. (P2-02 removed a sentence here claiming the
+   section image "sits outside the columned div so it is already
+   full-measure" - outside the columned div is precisely why the float
+   collided with the column flow. The plate now lives inside .section-body
+   with column-span: all like everything else on this list.) */
 .exhibit,
 .kpi-strip,
 .key-insight-box,
@@ -1274,17 +1290,22 @@ HTML_TEMPLATE = """\
         {{ section.key_insight | clean_dict_repr }}
     </div>
 
-    {% if section_images[section.id] %}
-    <img src="{{ section_images[section.id].image_path }}" class="section-image" alt="{{ section_images[section.id].caption }}">
-    <p class="section-image-caption">{{ section_images[section.id].caption }}</p>
-    {% endif %}
-
     {# The prose body is two-column (fix 3.4 — see .section-body in the CSS).
        It was previously wrapped in .no-break, which tried to keep an entire
        2000-word section body on one page — impossible, so WeasyPrint ignored
        it, and it contradicted the column layout. The columns handle their own
-       break etiquette via orphans/widows on the body element. #}
+       break etiquette via orphans/widows on the body element.
+
+       P2-02: the section plate is the FIRST child of the column flow with
+       column-span: all — a full-measure band. It used to be a float:right
+       sibling placed before this div, which collided with the columns. #}
     <div class="section-body">
+        {% if section_images[section.id] %}
+        <figure class="section-plate">
+            <img src="{{ section_images[section.id].image_path }}" alt="{{ section_images[section.id].caption }}">
+            <figcaption>{{ section_images[section.id].caption }}</figcaption>
+        </figure>
+        {% endif %}
         {{ section.body | md_to_html }}
     </div>
 
