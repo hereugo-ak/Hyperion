@@ -38,6 +38,7 @@ from hyperion.tools.google_trends import GoogleTrendsClient, RelatedQuery, Relat
 from hyperion.tools.hackernews import HackerNewsClient, HNComment, HNStory
 from hyperion.tools.http_extract import HttpExtractClient, HttpExtractResult
 from hyperion.tools.jina import JinaClient, JinaReadResult, JinaSearchResponse, JinaSearchResult
+from hyperion.tools.market_data import MarketDataClient, MarketQuote, PriceBar, PriceHistory
 from hyperion.tools.nodriver_client import NodriverClient, NodriverResult
 from hyperion.tools.obscura import ObscuraClient, ObscuraFetchResult, ObscuraScrapeResult
 from hyperion.tools.openalex import OpenAlexClient, OpenAlexInstitution, OpenAlexWork
@@ -50,6 +51,14 @@ from hyperion.tools.reddit import (
     Subreddit,
 )
 from hyperion.tools.scrapling import ScraplingBatchResult, ScraplingClient, ScraplingResult
+from hyperion.tools.sdmx import (
+    EurostatClient,
+    IMFClient,
+    OECDClient,
+    SDMXDataflow,
+    SDMXPoint,
+    SDMXSeries,
+)
 from hyperion.tools.search_budget import SearchBudget
 from hyperion.tools.searxng import SearchResponse, SearchResult, SearxNGClient
 
@@ -186,6 +195,18 @@ __all__ = [
     "WorldBankIndicator",
     "WorldBankIndicatorData",
     "WorldBankCountryProfile",
+    # SDMX (5.5 — OECD / Eurostat / IMF: breaks the FRED US-only ceiling)
+    "OECDClient",
+    "EurostatClient",
+    "IMFClient",
+    "SDMXDataflow",
+    "SDMXPoint",
+    "SDMXSeries",
+    # Market Data (5.5 — yfinance global equities)
+    "MarketDataClient",
+    "MarketQuote",
+    "PriceBar",
+    "PriceHistory",
     # Google Trends
     "GoogleTrendsClient",
     "TrendResult",

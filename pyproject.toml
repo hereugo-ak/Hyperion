@@ -32,6 +32,10 @@ dependencies = [
     # backends are absent (985MB CI sandbox); they are the production path.
     "sentence-transformers>=3.0.0",
     "sqlite-vec>=0.1.0",
+    # 5.5: yfinance global equity data (MarketDataClient). Imported lazily
+    # inside market_data.py so the module stays importable on hosts without
+    # it (985MB CI sandbox); MarketDataClient degrades to available=False.
+    "yfinance>=0.2.40",
 
     # Report generation — 300 DPI PDFs, Plotly charts, Pillow image pipeline
     "weasyprint>=62.0",
@@ -203,7 +207,8 @@ warn_unused_configs = true
 # e.g. duckduckgo_search, fredpy, alpha_vantage, kaleido, instructor,
 # tenacity. 5.4 added sqlite_vec / sentence_transformers (optional
 # production backends for hyperion/tools/vector_brain.py; the deterministic
-# hashing fallback needs neither). 5.5/5.6 will add yfinance / pikepdf.
+# hashing fallback needs neither). 5.5 added yfinance (lazy-imported by
+# hyperion/tools/market_data.py). 5.6 will add pikepdf.
 module = [
     "textual.*", "trafilatura", "weasyprint", "transformers", "plotly.*",
     "matplotlib.*", "PIL.*", "fitz", "pdfplumber",
@@ -212,6 +217,7 @@ module = [
     "websockets", "jinja2", "markupsafe", "openai", "httpx",
     "rich.*", "typer", "PyPDF2", "yaml",
     "sqlite_vec", "sentence_transformers",
+    "yfinance",
 ]
 ignore_missing_imports = true
 
