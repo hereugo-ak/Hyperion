@@ -1427,6 +1427,29 @@ class WorkflowEngine:
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("%s: %s", "run_engagement", exc)
 
+        # P2-29: startup credential preflight. One real minimal completion
+        # per configured provider. A TCP probe or key-presence check cannot
+        # detect a dead key; the deleted Google credential passed every
+        # reachability probe for two entire engagements while every
+        # completion returned 401. A 401/403 marks the provider
+        # UNAUTHENTICATED (distinct from quota) and is logged loudly here.
+        if _settings is not None:
+            try:
+                from hyperion.obs.health import credential_preflight
+                from hyperion.router.router import get_router
+
+                preflight = await credential_preflight(get_router())
+                dead = [pt.value for pt, s in preflight.items() if s == "UNAUTHENTICATED"]
+                if dead:
+                    logger.error(
+                        "CREDENTIAL PREFLIGHT: unauthenticated providers %s — "
+                        "these keys are dead (401/403), NOT rate limited. "
+                        "Replace the key; no quota window will recover them.",
+                        dead,
+                    )
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                logger.warning("%s: %s", "run_engagement", exc)
+
         # D-06/§4 0.2: refuse to start an engagement on a dead research stack.
         # The 07-30 run was allowed to begin with every engine banned and
         # shipped a fabricated report; a stack that returns zero evidence can

@@ -364,11 +364,17 @@ class BaseProvider:
             error_str = str(e)
             latency = (time.time() - start) * 1000
 
-            if "429" in error_str or "rate_limit" in error_str.lower():
+            lower = error_str.lower()
+            if "401" in error_str or "403" in error_str or "api key" in lower or "authentication" in lower or "unauthorized" in lower:
+                # P2-29: a dead key is NOT a rate limit. Stamping 429 on a
+                # credential failure told the operator to wait out a quota
+                # window that did not exist for two entire engagements.
+                self.health.record_auth_error()
+            elif "429" in error_str or "rate_limit" in lower:
                 self.health.record_429()
-            elif "500" in error_str or "503" in error_str or "server_error" in error_str.lower():
+            elif "500" in error_str or "503" in error_str or "server_error" in lower:
                 self.health.record_500()
-            elif "timeout" in error_str.lower() or "timed out" in error_str.lower():
+            elif "timeout" in lower or "timed out" in lower:
                 self.health.record_timeout()
             else:
                 self.health.record_network_error()

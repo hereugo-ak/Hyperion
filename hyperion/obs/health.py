@@ -63,6 +63,93 @@ SMOKE_QUERY = "india import tariff"
 MIN_SMOKE_RESULTS = 3
 
 
+# P2-29: a TCP connect or a key-presence check cannot detect a dead key.
+# The Google credential that triggered Part 2 had been deleted by Google;
+# every reachability probe succeeded for two entire engagements while every
+# completion returned 401, and the failure was misreported as quota
+# exhaustion. The only honest credential signal is one real minimal
+# completion per configured provider.
+_PREFLIGHT_MESSAGES = [
+    {"role": "user", "content": "Reply with exactly the word: ok"},
+]
+
+
+async def credential_preflight(router: Any) -> dict[Any, str]:
+    """One real minimal completion per configured provider (P2-29 / P2-G29).
+
+    For every provider the router holds, dispatch one MICRO-tier ping and
+    classify the outcome:
+
+      "OK"               provider answered
+      "UNAUTHENTICATED"  401/403 — the credential is dead (distinct from quota)
+      "QUOTA"            429 / rate limit
+      "UNAVAILABLE"      anything else (network, server error, no model)
+
+    A dead key is stamped onto ``provider.health`` via ``record_auth_error``
+    so the router diagnoses it as unauthenticated for the rest of the
+    process and never aggregates it into rate-limit reporting.
+    """
+    from hyperion.config import ModelTier
+    from hyperion.router.providers.base import ProviderStatus
+
+    results: dict[Any, str] = {}
+    for provider_type, provider in router._providers.items():
+        models = provider.get_models_for_tier(ModelTier.MICRO)
+        if not models:
+            # Fall back to any non-deprecated model this provider serves
+            models = [
+                m
+                for tier in ModelTier
+                for m in provider.get_models_for_tier(tier)
+            ]
+        if not models:
+            results[provider_type] = "UNAVAILABLE"
+            continue
+        try:
+            resp = await provider.complete(
+                model=models[0].name,
+                messages=_PREFLIGHT_MESSAGES,
+                tier=ModelTier.MICRO,
+                temperature=0.0,
+                max_tokens=8,
+            )
+        except Exception as exc:  # noqa: BLE001 - preflight failure is recorded, never raised
+            results[provider_type] = "UNAVAILABLE"
+            _log_preflight(provider_type, "UNAVAILABLE", f"exception: {type(exc).__name__}")
+            continue
+
+        if resp.success:
+            results[provider_type] = "OK"
+            continue
+
+        error = resp.error or ""
+        lower = error.lower()
+        if "401" in error or "403" in error or "api key" in lower or "unauthorized" in lower or "authentication" in lower:
+            provider.health.record_auth_error()
+            results[provider_type] = "UNAUTHENTICATED"
+        elif "429" in error or "rate_limit" in lower:
+            results[provider_type] = "QUOTA"
+        else:
+            results[provider_type] = "UNAVAILABLE"
+
+        if results[provider_type] == "UNAUTHENTICATED":
+            _log_preflight(provider_type, "UNAUTHENTICATED", error[:100])
+
+    return results
+
+
+def _log_preflight(provider_type: Any, status: str, detail: str) -> None:
+    """Loud startup log for a credential failure — never silent."""
+    from hyperion.obs import trace
+
+    trace(
+        "preflight",
+        provider=getattr(provider_type, "value", str(provider_type)),
+        status=status,
+        detail=detail,
+    )
+
+
 def _check_searxng(settings: Any) -> ToolHealth:
     """Smoke-query the engine layer instead of probing the socket (D-06).
 
