@@ -3040,6 +3040,30 @@ class PresentationDesigner(BaseAgent):
                 f"Quality Gate not approved (score {self._quality_score.total_score:.1f}/5.0"
                 f", iteration {self._quality_score.iteration})"
             )
+            # P2-23: `max_iterations_reached` is NOT a universal bypass. It
+            # partitions into two cases:
+            #   - integrity_blockers present (leaked object, banned filler,
+            #     verdict contradiction, dishonest confidence, broken URL,
+            #     meta-text): NEVER proceed, regardless of iteration count.
+            #     There is no acceptable version of shipping `{'name': ...`
+            #     to a client.
+            #   - only cosmetic/thin-evidence gaps (low score, few sources):
+            #     the max_iterations escalation MAY proceed, with the
+            #     limitation declared on the page.
+            if self._quality_score.integrity_blockers:
+                await self._transition(
+                    AgentState.DONE,
+                    f"{quality_note} — integrity blocker(s) present "
+                    f"({len(self._quality_score.integrity_blockers)}), refusing to render "
+                    "regardless of max_iterations_reached: "
+                    f"{'; '.join(self._quality_score.integrity_blockers[:3])}",
+                )
+                return LayoutPlan(
+                    engagement_id=engagement_id,
+                    confidence=ConfidenceLevel.LOW,
+                    no_blank_pages=False,
+                    no_orphaned_images=False,
+                )
             if self._quality_score.max_iterations_reached:
                 quality_note += " — max iterations reached, proceeding with best report (escalation)"
                 await self._transition(

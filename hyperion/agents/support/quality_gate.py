@@ -1438,6 +1438,11 @@ class QualityGate(BaseAgent):
         gaps = self._identify_gaps(report, dimensions)
         if blockers:
             approved = False
+            # P2-23: keep `blockers` in its own field so downstream delivery
+            # code (presentation_designer) can distinguish "never bypassable"
+            # integrity defects from ordinary gaps. `gaps` still carries a
+            # copy so the Synthesis Lead's existing fix-instruction pipeline
+            # (which reads `gaps`) keeps seeing them.
             gaps = blockers + gaps
         fix_priority = self._build_fix_priority(dimensions)
 
@@ -1515,6 +1520,7 @@ class QualityGate(BaseAgent):
             approved=approved,
             iteration=iteration,
             gaps=gaps,
+            integrity_blockers=blockers,
             critical_dimensions=critical_dims,
             max_iterations_reached=max_reached and not approved,
             escalation_report=escalation_report,

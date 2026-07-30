@@ -2266,6 +2266,22 @@ class QualityScore(BaseModel):
     iteration: int = Field(ge=1, description="Which iteration this is (max 3)")
     gaps: list[str] = Field(default_factory=list, description="Specific gaps identified — "
         "questions unanswered, data missing")
+    # P2-23: integrity blockers are a distinct class from `gaps`. Gaps are
+    # cosmetic or thin-evidence deficits (low score, few sources) that the
+    # `max_iterations_reached` escalation MAY proceed past, with the
+    # limitation declared on the page. Integrity blockers (leaked object,
+    # banned filler, verdict contradiction, dishonest confidence, broken
+    # URL, meta-text) must NEVER be bypassed, regardless of iteration count.
+    # `_detect_hard_blockers()` populates this list; `gaps` still receives a
+    # human-readable copy for the Synthesis Lead's fix-instruction pipeline,
+    # but only `integrity_blockers` is authoritative for the ship/no-ship
+    # decision in `presentation_designer.run()`.
+    integrity_blockers: list[str] = Field(
+        default_factory=list,
+        description="Non-negotiable Layer 4 blockers (leaked object, banned filler, verdict "
+        "contradiction, dishonest confidence, broken URL, meta-text). Never bypassable by "
+        "max_iterations_reached.",
+    )
     critical_dimensions: list[QualityDimensionName] = Field(default_factory=list, description="Dimensions scoring < 3 — forces iteration")
     max_iterations_reached: bool = Field(default=False, description="True if 3 iterations done "
         "without pass")
