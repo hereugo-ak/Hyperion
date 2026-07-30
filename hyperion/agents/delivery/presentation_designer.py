@@ -851,6 +851,22 @@ table, .kpi-value, .data-table, .chart-data-table {{
     border-bottom: 1px dotted {warm_gray};
 }}
 
+/* P2-05: real cross references. WeasyPrint resolves the page number of the
+   anchor target at layout time via target-counter - no arithmetic, no
+   one-page-per-section assumption, cannot drift from the body. */
+.toc-table a {{
+    color: inherit;
+    text-decoration: none;
+}}
+
+.toc-table a::after {{
+    content: target-counter(attr(href), page);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10pt;
+    color: {warm_gray};
+    margin-left: 6px;
+}}
+
 .footer {{
     color: {deep_brown};
     font-size: 8pt;
@@ -1146,7 +1162,7 @@ HTML_TEMPLATE = """\
 
    Counts are computed with Jinja rather than authored, so they cannot drift
    from the body the way the hardcoded TOC page numbers below already do. #}
-<div class="page-break at-a-glance">
+<div class="page-break at-a-glance" id="at-a-glance">
     <h2>At a Glance</h2>
 
     <div class="glance-question">{{ report.question }}</div>
@@ -1210,27 +1226,35 @@ HTML_TEMPLATE = """\
     {% endif %}
 </div>
 
-{# ── Table of Contents ── #}
+{# ── Table of Contents ──
+   P2-05: page numbers are resolved by WeasyPrint via
+   target-counter(attr(href), page) against real anchors - the hardcoded
+   integers and +N arithmetic here assumed one page per section and were
+   wrong by up to 9 pages in the audited fixtures.
+   P2-06: every row is emitted under the same condition as its chapter,
+   so the TOC can never advertise a chapter that does not exist. #}
 <div class="page-break">
     <h2>Table of Contents</h2>
     <div class="data-table toc-table">
         <table>
-            <tr><td>At a Glance</td><td>2</td></tr>
-            <tr><td>Executive Summary</td><td>4</td></tr>
+            <tr><td><a href="#at-a-glance">At a Glance</a></td><td class="toc-page"></td></tr>
+            <tr><td><a href="#exec-summary">Executive Summary</a></td><td class="toc-page"></td></tr>
             {% for section in report.sections %}
-            <tr><td>{{ section.title }}</td><td>{{ loop.index + 4 }}</td></tr>
+            <tr><td><a href="#sec-{{ loop.index }}">{{ section.title }}</a></td><td class="toc-page"></td></tr>
             {% endfor %}
-            <tr><td>Risk Analysis</td><td>{{ report.sections | length + 5 }}</td></tr>
-            <tr><td>Methodology</td><td>{{ report.sections | length + 6 }}</td></tr>
-            <tr><td>Endnotes</td><td>{{ report.sections | length + 7 }}</td></tr>
-            <tr><td>Technical Appendix</td><td>{{ report.sections | length + 8 }}</td></tr>
-            <tr><td>Appendix: Sources</td><td>{{ report.sections | length + 9 }}</td></tr>
+            {% if report.risk_analysis %}
+            <tr><td><a href="#risk-analysis">Risk Analysis</a></td><td class="toc-page"></td></tr>
+            {% endif %}
+            <tr><td><a href="#methodology">Methodology</a></td><td class="toc-page"></td></tr>
+            <tr><td><a href="#endnotes">Endnotes</a></td><td class="toc-page"></td></tr>
+            <tr><td><a href="#technical-appendix">Technical Appendix</a></td><td class="toc-page"></td></tr>
+            <tr><td><a href="#appendix-sources">Appendix: Sources</a></td><td class="toc-page"></td></tr>
         </table>
     </div>
 </div>
 
 {# ── Executive Summary — D27: Rich dashboard layout ── #}
-<div class="page-break">
+<div class="page-break" id="exec-summary">
     <h2>Executive Summary</h2>
 
     {# Recommendation banner #}
@@ -1295,7 +1319,7 @@ HTML_TEMPLATE = """\
 
 {# ── Analysis Sections ── #}
 {% for section in report.sections %}
-<div class="page-break">
+<div class="page-break" id="sec-{{ loop.index }}">
     {# Section opener. MGI sets a letterspaced "C H A P T E R  O N E" above the
        chapter title; BCG gives each section a full-width opener with generous
        whitespace. Neither drops the reader straight into body copy. The number
@@ -1388,14 +1412,14 @@ HTML_TEMPLATE = """\
 
 {# ── Risk Analysis ── #}
 {% if report.risk_analysis %}
-<div class="page-break">
+<div class="page-break" id="risk-analysis">
     <h2>Risk Analysis</h2>
     {{ risk_analysis_html | safe }}
 </div>
 {% endif %}
 
 {# ── Methodology ── #}
-<div class="page-break">
+<div class="page-break" id="methodology">
     <h2>Methodology</h2>
     <h3>Agents Used</h3>
     <ul>
@@ -1420,7 +1444,7 @@ HTML_TEMPLATE = """\
    what makes a claim traceable rather than merely footnoted. Built server-side
    (`endnotes_html`) because the numbering has to be stable across sections and
    Jinja loop indices reset per section. #}
-<div class="page-break">
+<div class="page-break" id="endnotes">
     <h2>Endnotes</h2>
     {{ endnotes_html | safe }}
 </div>
@@ -1432,13 +1456,13 @@ HTML_TEMPLATE = """\
    none of them reached the PDF — the report scored itself and then threw the
    scorecard away. Publishing the contradictions and the residual gaps is the
    difference between a technical appendix and a marketing annex. #}
-<div class="page-break">
+<div class="page-break" id="technical-appendix">
     <h2>Technical Appendix</h2>
     {{ technical_appendix_html | safe }}
 </div>
 
 {# ── Appendix: Sources ── #}
-<div class="page-break">
+<div class="page-break" id="appendix-sources">
     <h2>Appendix: Sources</h2>
     {{ appendix_sources_html | safe }}
 </div>
