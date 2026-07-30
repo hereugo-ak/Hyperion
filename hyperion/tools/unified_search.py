@@ -35,9 +35,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from hyperion.tools.jina import JinaClient, JinaSearchResult
-from hyperion.tools.obscura import ObscuraClient, ObscuraFetchResult
-from hyperion.tools.searxng import SearxNGClient, SearchResult, SearchResponse
+from hyperion.tools.jina import JinaClient
+from hyperion.tools.obscura import ObscuraClient
+from hyperion.tools.searxng import SearxNGClient
 from hyperion.tools.stealth_search import StealthSearchClient
 
 logger = logging.getLogger(__name__)
@@ -185,7 +185,7 @@ class UnifiedSearch:
                 available = StealthSearchClient(settings=self.settings)._check_available()
                 if not available:
                     detail = "playwright not installed"
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             # A probe that raises must not disable a tier outright — attempting
             # it and failing is strictly better than skipping something usable.
             available = True
@@ -326,13 +326,12 @@ class UnifiedSearch:
                 else:
                     errors["searxng"] = "returned no results"
 
-            except Exception as exc:  # noqa: BLE001 — recorded, not swallowed
+            except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
                 errors["searxng"] = f"{type(exc).__name__}: {exc}"
                 logger.debug("searxng search failed: %s", exc)
 
         # Step 2: Jina (if SearxNG returned insufficient results)
-        if searxng_count < min_results and use_jina_fallback:
-            if self._tier_available("jina"):
+        if searxng_count < min_results and use_jina_fallback and self._tier_available("jina"):
                 tools_tried.append("jina")
                 try:
                     jina = await self._get_jina()
@@ -352,7 +351,7 @@ class UnifiedSearch:
                     else:
                         errors["jina"] = "returned no results"
 
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - failure is recorded in errors[], logged
                     errors["jina"] = f"{type(exc).__name__}: {exc}"
                     logger.debug("jina search failed: %s", exc)
 
@@ -386,7 +385,7 @@ class UnifiedSearch:
                     else:
                         errors["obscura"] = "rendered no usable content"
 
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - failure is recorded in errors[], logged
                     errors["obscura"] = f"{type(exc).__name__}: {exc}"
                     logger.debug("obscura enrichment failed: %s", exc)
 
@@ -395,8 +394,7 @@ class UnifiedSearch:
         # (Obscura above can only re-render URLs we already had, so without this
         # tier a dead SearxNG plus a rate-limited Jina meant zero results with
         # no recourse, even though a working fallback existed in the codebase.)
-        if not all_results and use_stealth_fallback:
-            if self._tier_available("stealth"):
+        if not all_results and use_stealth_fallback and self._tier_available("stealth"):
                 tools_tried.append("stealth")
                 try:
                     stealth = await self._get_stealth()
@@ -418,7 +416,7 @@ class UnifiedSearch:
                     else:
                         errors["stealth"] = "returned no results"
 
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - failure is recorded in errors[], logged
                     errors["stealth"] = f"{type(exc).__name__}: {exc}"
                     logger.debug("stealth search failed: %s", exc)
 

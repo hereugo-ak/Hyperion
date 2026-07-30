@@ -47,6 +47,7 @@ base64 `@font-face` data-URIs injected into `CSS_TEMPLATE` (fix 3.2).
 
 from __future__ import annotations
 
+import contextlib
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -239,7 +240,7 @@ class TemplateRenderer:
             try:
                 from jinja2 import Markup  # deprecated fallback for old jinja2
             except ImportError:
-                Markup = str  # fallback — str will be auto-escaped by Jinja2
+                Markup = str  # noqa: N806 — fallback; str will be auto-escaped by Jinja2
 
         import re
 
@@ -380,7 +381,7 @@ class PDFRenderer:
 
         Raises OSError if native GTK libraries are not available (common on Windows).
         """
-        from weasyprint import HTML, CSS
+        from weasyprint import CSS, HTML
 
         return HTML, CSS
 
@@ -436,16 +437,14 @@ class PDFRenderer:
         except ImportError:
             print("[RENDER] Playwright not installed — cannot use PDF fallback")
             return False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best-effort, returns a safe default
             print(f"[RENDER] Playwright PDF fallback failed: {type(exc).__name__}: {exc!s:.200}")
             return False
         finally:
             # Never leave the scratch HTML on disk — it must not be delivered.
             if temp_html and os.path.exists(temp_html):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(temp_html)
-                except OSError:
-                    pass
 
     def _embed_images_as_data_uris(self, html: str) -> str:
         """Convert img src file paths to base64 data URIs (D17 fix).
@@ -460,8 +459,8 @@ class PDFRenderer:
         - <img src="data:image/...">          → already embedded, skip
         - <img src="https://...">             → remote URL, skip
         """
-        import re
         import base64
+        import re
 
         # Match img src attributes
         img_pattern = re.compile(r'<img\s+[^>]*src="([^"]+)"', re.IGNORECASE)
@@ -508,6 +507,78 @@ class PDFRenderer:
                 return match.group(0)
 
         return img_pattern.sub(replace_src, html)
+
+    def _apply_pdf_post_pass(
+        self,
+        result: PDFRenderResult,
+        output_path: str,
+        full_html: str,
+    ) -> None:
+        """5.6: PDF/A-2b + bookmarks post-pass via pikepdf.
+
+        Runs after either PDF engine succeeds. Degrades silently-but-recorded:
+        missing pikepdf or a failed pass adds a warning and leaves the
+        un-post-processed (still valid) PDF in place — never a crash, never a
+        half-written deliverable (the pass writes atomically).
+        """
+        import re
+
+        from hyperion.output.pdf_postprocess import (
+            BookmarkSpec,
+            PDFMetadata,
+            postprocess_pdf,
+        )
+
+        # Title: first <title> tag, else first <h1>, else a dated fallback.
+        title = ""
+        for pattern in (r"<title[^>]*>([^<]+)</title>", r"<h1[^>]*>([^<]+)</h1>"):
+            match = re.search(pattern, full_html, re.IGNORECASE)
+            if match and match.group(1).strip():
+                title = match.group(1).strip()
+                break
+        if not title:
+            title = f"HYPERION Report {datetime.now().strftime('%Y-%m-%d')}"
+
+        # Outline from <h1>/<h2> headings mapped onto pages by content order.
+        # Page mapping needs the rendered layout, so we locate each heading's
+        # text in the produced PDF via fitz; headings not found are skipped
+        # rather than guessed.
+        bookmarks: list[BookmarkSpec] = []
+        try:
+            import fitz
+
+            doc = fitz.open(output_path)
+            headings = [
+                (m.group(1).strip(), 1 if m.group(0).lower().startswith("<h1") else 2)
+                for m in re.finditer(r"<h[12][^>]*>([^<]+)</h[12]>", full_html, re.IGNORECASE)
+            ]
+            seen_pages: set[int] = set()
+            for heading_text, _level in headings:
+                clean = re.sub(r"\s+", " ", heading_text)[:80]
+                if not clean:
+                    continue
+                for page_index in range(len(doc)):
+                    if page_index in seen_pages:
+                        continue
+                    if doc[page_index].search_for(clean):
+                        bookmarks.append(BookmarkSpec(title=clean, page=page_index))
+                        seen_pages.add(page_index)
+                        break
+            doc.close()
+        except (ImportError, OSError, ValueError) as exc:
+            result.warnings.append(f"bookmark extraction skipped: {exc!s:.100}")
+
+        post = postprocess_pdf(
+            output_path,
+            PDFMetadata(title=title, keywords="deep research, consulting"),
+            bookmarks=bookmarks,
+        )
+        if post.applied:
+            result.warnings.append(
+                f"PDF/A-2b post-pass applied ({post.bookmarks_written} bookmarks)"
+            )
+        else:
+            result.warnings.append(f"PDF/A-2b post-pass skipped: {post.reason}")
 
     def render_pdf(
         self,
@@ -563,14 +634,14 @@ class PDFRenderer:
         # ── Attempt 1: WeasyPrint ──
         weasy_error: Exception | None = None
         try:
-            HTML, CSS = self._get_weasyprint()
+            weasy_html, weasy_css = self._get_weasyprint()
 
             # Create WeasyPrint HTML object
-            html_obj = HTML(string=full_html, base_url=str(Path.cwd()))
+            html_obj = weasy_html(string=full_html, base_url=str(Path.cwd()))
 
             # Extra stylesheet only when the caller explicitly passed one;
             # the shipped brand CSS is inline in `full_html` already.
-            css_obj = CSS(string=css_embedded) if css_embedded else None
+            css_obj = weasy_css(string=css_embedded) if css_embedded else None
 
             # Render PDF
             if css_obj:
@@ -600,6 +671,7 @@ class PDFRenderer:
             except (ImportError, OSError, ValueError):
                 result.warnings.append("PyMuPDF not available — page count unknown")
 
+            self._apply_pdf_post_pass(result, output_path, full_html)
             return result
 
         except (OSError, ImportError, ValueError, RuntimeError) as exc:
@@ -623,6 +695,7 @@ class PDFRenderer:
             except (ImportError, OSError, ValueError):
                 pass
 
+            self._apply_pdf_post_pass(result, output_path, full_html)
             return result
 
         # ── Both PDF engines failed: emit a real HTML deliverable ──

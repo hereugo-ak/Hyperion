@@ -80,9 +80,9 @@ from hyperion.schemas.models import (
     DisruptionAnalysis,
     DisruptionPattern,
     FirstMoverAnalysis,
+    HorizonScanItem,
     HypeCyclePhase,
     HypeCyclePosition,
-    HorizonScanItem,
     InnovationAnalysis,
     InnovationPortfolio,
     InnovationPortfolioItem,
@@ -92,7 +92,6 @@ from hyperion.schemas.models import (
     TechnologyTRL,
 )
 from hyperion.tools.query_utils import resolve_subject
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -497,7 +496,7 @@ class InnovationAnalyst(BaseAgent):
 
             # URLs to check historical snapshots for
             trend_urls = [
-                f"https://www.gartner.com/en/research/megatrends",
+                "https://www.gartner.com/en/research/megatrends",
                 f"https://en.wikipedia.org/wiki/{space or sector}_technology",
                 f"https://www.technologyreview.com/topic/{space or sector}/",
             ]
@@ -645,7 +644,8 @@ class InnovationAnalyst(BaseAgent):
         where hype exceeds TRL reality.
         """
         trl_summary = "\n".join(
-            f"- {t.technology}: TRL {t.trl_level} ({'production ready' if t.is_production_ready else 'experimental'})"
+            f"- {t.technology}: TRL {t.trl_level} ({'production '
+                'ready' if t.is_production_ready else 'experimental'})"
             for t in trl_assessments
         )
         tech_list = ", ".join(technologies[:6]) if technologies else "the identified technologies"
@@ -1102,15 +1102,18 @@ class InnovationAnalyst(BaseAgent):
         self._search_results = await self._search_emerging_tech(sector, space)
 
         # Step 2: Scrape patent databases and research portals
-        await self._transition(AgentState.WORKING, "Step 2: Scraping patent databases and research portals (Obscura)")
+        await self._transition(AgentState.WORKING, "Step 2: Scraping patent databases and "
+            "research portals (Obscura)")
         self._patent_data = await self._scrape_patent_databases(space, sector)
 
         # Step 3: Pull historical trend data
-        await self._transition(AgentState.WORKING, "Step 3: Pulling historical trend data (Wayback)")
+        await self._transition(AgentState.WORKING, "Step 3: Pulling historical trend data "
+            "(Wayback)")
         self._historical_data = await self._pull_historical_trends(space, sector)
 
         # Step 4: Assess TRL for each technology
-        await self._transition(AgentState.WORKING, "Step 4: Assessing Technology Readiness Levels (TRL 1-9)")
+        await self._transition(AgentState.WORKING, "Step 4: Assessing Technology Readiness Levels "
+            "(TRL 1-9)")
         trl_assessments, technologies = await self._assess_trl(
             self._question, self._search_results, self._patent_data, self._context,
         )
@@ -1118,13 +1121,16 @@ class InnovationAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel data collection
         if technologies or sector:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning innovation data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning innovation data "
+                "collection sub-agents")
             sub_findings = await self._spawn_innovation_sub_agents(space, sector, technologies)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 5: Plot on hype cycle
-        await self._transition(AgentState.WORKING, "Step 5: Plotting technologies on Gartner hype cycle")
+        await self._transition(AgentState.WORKING, "Step 5: Plotting technologies on Gartner hype "
+            "cycle")
         hype_cycle_positions = await self._plot_hype_cycle(
             self._question, technologies, trl_assessments, self._search_results, self._historical_data,
         )
@@ -1136,7 +1142,8 @@ class InnovationAnalyst(BaseAgent):
         )
 
         # Steps 7+8: Analyze disruption patterns + first-mover + portfolio
-        await self._transition(AgentState.WORKING, "Step 7-8: Analyzing disruption patterns + first-mover advantage + innovation portfolio")
+        await self._transition(AgentState.WORKING, "Step 7-8: Analyzing disruption patterns + "
+            "first-mover advantage + innovation portfolio")
         disruption_analysis, first_mover_analysis, innovation_portfolio = await self._analyze_disruption_and_strategy(
             self._question, technologies, trl_assessments, self._search_results, self._context,
         )

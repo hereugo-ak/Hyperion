@@ -79,7 +79,8 @@ def _stub_tiers(ex: UnifiedExtract, *, succeed: set[str] | None = None, log: lis
         setattr(ex, f"_extract_{tier}", mk(tier))
 
 
-def _sub_agent(tools: list[ToolName], question: str = "Nigeria battery market size 2025") -> SubAgentRunner:
+def _sub_agent(tools: list[ToolName], question: str = "Nigeria battery market size "
+    "2025") -> SubAgentRunner:
     spec = SubAgentSpec(
         question=question,
         parent_agent=AgentName.MARKET_ANALYST,
@@ -655,7 +656,10 @@ class TestDeepSearchDelegates:
 
     def test_tier_labels_survive_delegation(self):
         """Its public provenance vocabulary must not change under the refactor."""
-        client = DeepSearchClient()
+        # D5.1: `client = DeepSearchClient()` was unread (ruff F841) — this test
+        # asserts on class attributes only. Instantiation retained as a smoke
+        # check that the class still constructs, but not bound.
+        DeepSearchClient()
         for tier in DeepSearchClient.EXTRACTION_TIERS:
             assert tier in DeepSearchClient.TIER_LABELS
 

@@ -78,7 +78,6 @@ from hyperion.schemas.models import (
 )
 from hyperion.tools.query_utils import resolve_subject
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1075,10 +1074,12 @@ class OperationsAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel data collection
         if industry or sector:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning operational data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning operational data "
+                "collection sub-agents")
             sub_findings = await self._spawn_ops_sub_agents(industry, sector, process_type)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 1: Search for operational data and benchmarks
         await self._transition(AgentState.WORKING, f"Step 1: Searching operational benchmarks for {industry}")
@@ -1118,7 +1119,8 @@ class OperationsAnalyst(BaseAgent):
             )
 
         # Step 3: Identify bottlenecks
-        await self._transition(AgentState.WORKING, "Step 3: Identifying bottlenecks with $ improvement potential")
+        await self._transition(AgentState.WORKING, "Step 3: Identifying bottlenecks with $ "
+            "improvement potential")
         bottlenecks = await self._identify_bottlenecks(self._question, process_map, self._context)
 
         # Step 4: Calculate capacity utilization
@@ -1134,7 +1136,8 @@ class OperationsAnalyst(BaseAgent):
         )
 
         # Step 6: Identify improvement opportunities (Lean/Six Sigma)
-        await self._transition(AgentState.WORKING, "Step 6: Identifying Lean/Six Sigma improvements")
+        await self._transition(AgentState.WORKING, "Step 6: Identifying Lean/Six Sigma "
+            "improvements")
         improvements, total_value = await self._identify_improvements(
             self._question, process_map, bottlenecks, benchmarks, self._context,
         )

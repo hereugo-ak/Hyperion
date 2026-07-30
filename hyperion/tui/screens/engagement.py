@@ -38,6 +38,8 @@ EngagementScreen provides the spec'd multi-panel alternative.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import random
 from typing import Any
 
@@ -50,13 +52,8 @@ from textual.widgets import Static
 from hyperion.tui.content import build_line, span
 from hyperion.tui.roster import ROSTER
 from hyperion.tui.theme import (
-    BORDER_SUBTLE,
     CLAY,
-    CLAY_DEEP,
     TEXT_DIM,
-    TEXT_GHOST,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
 )
 from hyperion.tui.widgets.agent_grid import AgentGrid
 from hyperion.tui.widgets.findings_stream import FindingsStream
@@ -69,6 +66,8 @@ from hyperion.tui.widgets.prompt import (
 )
 from hyperion.tui.widgets.rule import hr
 from hyperion.tui.widgets.tpm_bar import TPMBar
+
+logger = logging.getLogger(__name__)
 
 
 class EngagementScreen(Screen):
@@ -209,10 +208,11 @@ class EngagementScreen(Screen):
         self._engagement_task = asyncio.create_task(self._run_engagement(question))
 
     async def _run_engagement(self, question: str) -> None:
+        # D5.1: `findings`, `grid` and `tpm` were queried here and never read
+        # (ruff F841) — the bus handler re-queries the widgets it needs. Holding
+        # unread handles in a coroutine that outlives a screen swap also pins
+        # detached widgets, so removing them is a small leak fix, not just tidying.
         mark = self.query_one("#eng-mark", Mark)
-        findings = self.query_one("#eng-findings", FindingsStream)
-        grid = self.query_one("#eng-agents", AgentGrid)
-        tpm = self.query_one("#eng-tpm", TPMBar)
 
         try:
             from hyperion.agents.bus import Channel, get_bus, reset_bus
@@ -245,18 +245,16 @@ class EngagementScreen(Screen):
         except asyncio.CancelledError:
             mark.set_state(MarkState.DORMANT)
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             mark.set_state(MarkState.BLOCKED)
         finally:
             try:
                 from hyperion.agents.bus import get_bus
                 get_bus().unsubscribe(self._bus_sub_id)
-            except Exception:
-                pass
-            try:
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                logger.debug("%s: %s", "_run_engagement", exc)
+            with contextlib.suppress(Exception):
                 self.query_one("#eng-prompt", PromptBar).set_busy(False)
-            except Exception:
-                pass
 
     async def _on_bus_message(self, msg: Any) -> None:
         from hyperion.agents.bus import Channel
@@ -270,8 +268,7 @@ class EngagementScreen(Screen):
             if msg.channel == Channel.STATUS:
                 agent = msg.agent
                 state = (msg.state or "").lower()
-                detail = msg.detail or ""
-                badge = agent_badge(agent)
+                # D5.1: `detail` and `badge` were computed and never used (F841).
                 grid.update_state(agent, state)
                 if state == "working":
                     mark.set_state(MarkState.ORCHESTRATING)
@@ -306,8 +303,8 @@ class EngagementScreen(Screen):
             elif msg.channel == Channel.ESCALATION:
                 mark.set_state(MarkState.BLOCKED)
                 self.set_timer(2.0, lambda: mark.set_state(MarkState.ORCHESTRATING))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_on_bus_message", exc)
 
     # ── demo mode ────────────────────────────────────────────────────────────────
 
@@ -366,10 +363,8 @@ class EngagementScreen(Screen):
             mark.set_state(MarkState.DORMANT)
             raise
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one("#eng-prompt", PromptBar).set_busy(False)
-            except Exception:
-                pass
 
     # ── commands ─────────────────────────────────────────────────────────────────
 

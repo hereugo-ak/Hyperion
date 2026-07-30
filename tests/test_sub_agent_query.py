@@ -22,7 +22,6 @@ import pytest
 
 from hyperion.agents.sub_agent import SubAgentRunner
 
-
 # A deliberately adversarial corpus: em-dash, en-dash, plain hyphen (both
 # standalone and doubled), parentheticals, unicode, mixed punctuation, and
 # realistic full-paragraph sub-agent questions of the kind the audit

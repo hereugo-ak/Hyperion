@@ -1,9 +1,9 @@
 """Support agents — librarian, fact checker, data viz, quality gate."""
 
-from hyperion.agents.support.data_visualizer import DataVisualizer, DATA_VISUALIZER_SPEC
-from hyperion.agents.support.fact_checker import FactChecker, FACT_CHECKER_SPEC
-from hyperion.agents.support.quality_gate import QualityGate, QUALITY_GATE_SPEC
-from hyperion.agents.support.research_librarian import ResearchLibrarian, RESEARCH_LIBRARIAN_SPEC
+from hyperion.agents.support.data_visualizer import DATA_VISUALIZER_SPEC, DataVisualizer
+from hyperion.agents.support.fact_checker import FACT_CHECKER_SPEC, FactChecker
+from hyperion.agents.support.quality_gate import QUALITY_GATE_SPEC, QualityGate
+from hyperion.agents.support.research_librarian import RESEARCH_LIBRARIAN_SPEC, ResearchLibrarian
 
 __all__ = [
     "ResearchLibrarian",

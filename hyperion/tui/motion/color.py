@@ -11,8 +11,7 @@ and fast enough to run per-cell per-frame at 30+ fps.
 
 from __future__ import annotations
 
-import math
-from typing import Sequence
+from collections.abc import Sequence
 
 RGB = tuple[int, int, int]
 
@@ -45,10 +44,14 @@ def _linear_to_srgb(c: float) -> float:
 # ── linear sRGB <-> OKLab (Björn Ottosson) ───────────────────────────────────
 
 def _linear_to_oklab(r: float, g: float, b: float) -> tuple[float, float, float]:
-    l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
-    m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
-    s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
-    l_, m_, s_ = l ** (1 / 3), m ** (1 / 3), s ** (1 / 3)
+    # cone_l / cone_m / cone_s are the Long/Medium/Short LMS cone responses.
+    # Spelled out rather than `l` (ruff E741): in the project's mono font `l`
+    # is indistinguishable from `1`, and this function is dense with float
+    # literals where a misread `1` silently changes the colour transform.
+    cone_l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
+    cone_m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
+    cone_s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
+    l_, m_, s_ = cone_l ** (1 / 3), cone_m ** (1 / 3), cone_s ** (1 / 3)
     return (
         0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
         1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
@@ -56,15 +59,18 @@ def _linear_to_oklab(r: float, g: float, b: float) -> tuple[float, float, float]
     )
 
 
-def _oklab_to_linear(L: float, a: float, b: float) -> tuple[float, float, float]:
-    l_ = L + 0.3963377774 * a + 0.2158037573 * b
-    m_ = L - 0.1055613458 * a - 0.0638541728 * b
-    s_ = L - 0.0894841775 * a - 1.2914855480 * b
-    l, m, s = l_ ** 3, m_ ** 3, s_ ** 3
+def _oklab_to_linear(lightness: float, a: float, b: float) -> tuple[float, float, float]:
+    # `lightness` not `L` (ruff N803) and cone_* not `l`/`m`/`s` (E741) — same
+    # legibility argument as _linear_to_oklab. Coefficients are Ottosson's,
+    # unchanged.
+    l_ = lightness + 0.3963377774 * a + 0.2158037573 * b
+    m_ = lightness - 0.1055613458 * a - 0.0638541728 * b
+    s_ = lightness - 0.0894841775 * a - 1.2914855480 * b
+    cone_l, cone_m, cone_s = l_ ** 3, m_ ** 3, s_ ** 3
     return (
-        +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+        +4.0767416621 * cone_l - 3.3077115913 * cone_m + 0.2309699292 * cone_s,
+        -1.2684380046 * cone_l + 2.6097574011 * cone_m - 0.3413193965 * cone_s,
+        -0.0041960863 * cone_l - 0.7034186147 * cone_m + 1.7076147010 * cone_s,
     )
 
 
@@ -118,8 +124,8 @@ def ramp(stops: Sequence[str], t: float) -> str:
 
 def dim(hex_color: str, factor: float) -> str:
     """Scale a colour toward black in OKLab lightness. factor in [0, 1]."""
-    L, a, b = rgb_to_oklab(hex_to_rgb(hex_color))
-    return rgb_to_hex(oklab_to_rgb((L * factor, a * factor, b * factor)))
+    lightness, a, b = rgb_to_oklab(hex_to_rgb(hex_color))
+    return rgb_to_hex(oklab_to_rgb((lightness * factor, a * factor, b * factor)))
 
 
 def mix(a_hex: str, b_hex: str, t: float) -> str:

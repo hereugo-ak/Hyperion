@@ -28,7 +28,6 @@ Architecture reference: §4.9 Dynamic Workflow Engine, §10.2 Adaptive Replannin
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -40,12 +39,6 @@ from hyperion.agents.engagement_director import EngagementDirector
 from hyperion.agents.synthesis_lead import SynthesisLead
 from hyperion.obs import ArtifactStore, RunJournal, RunManifest, trace
 from hyperion.schemas.agents import AgentName, AgentState
-from hyperion.tools.query_utils import (
-    canonicalize_geographies,
-    clear_engagement_focus,
-    detect_geographies,
-    set_engagement_focus,
-)
 from hyperion.schemas.models import (
     FactCheckReport,
     FinalReport,
@@ -59,6 +52,12 @@ from hyperion.schemas.workflow import (
     TaskNode,
     TaskStatus,
     WorkflowDAG,
+)
+from hyperion.tools.query_utils import (
+    canonicalize_geographies,
+    clear_engagement_focus,
+    detect_geographies,
+    set_engagement_focus,
 )
 
 logger = logging.getLogger(__name__)
@@ -282,8 +281,8 @@ class WorkflowEngine:
                         },
                     )
                 )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_log", exc)
 
     def _publish_dag_to_tui(self, dag: WorkflowDAG) -> None:
         """Publish the full DAG task list to the TUI as a checklist."""
@@ -317,8 +316,8 @@ class WorkflowEngine:
                         },
                     )
                 )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_publish_dag_to_tui", exc)
 
     def _publish_task_update(self, task: TaskNode) -> None:
         """Publish a single task's status change to the TUI."""
@@ -343,8 +342,8 @@ class WorkflowEngine:
                         },
                     )
                 )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_publish_task_update", exc)
 
     def _get_agent(self, agent_name: AgentName) -> Any:
         """Get or instantiate an agent lazily.
@@ -383,7 +382,7 @@ class WorkflowEngine:
         ctx: dict[str, Any] = {}
         try:
             ctx = await agent._enrich_context(dag.question) or {}
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             ctx = {}
 
         # Always union with the deterministic regex pass. The LLM sometimes
@@ -394,8 +393,8 @@ class WorkflowEngine:
             for k, v in regex_ctx.items():
                 if v not in (None, "", [], {}) and ctx.get(k) in (None, "", [], {}):
                     ctx[k] = v
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_get_engagement_context", exc)
 
         # ── Scope: prefer the decomposing agent's decision ──────────────────
         #
@@ -469,8 +468,15 @@ class WorkflowEngine:
                 subject=str(ctx.get("industry") or subject or ""),
                 geography=str(ctx.get("geography") or ""),
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            # If the anchor is never set, every outbound search query goes
+            # out ungrounded — the original P0 failure class. This must be
+            # loud, not silent.
+            logger.error(
+                "engagement focus anchor failed — outbound queries will be "
+                "ungrounded: %s: %s",
+                type(exc).__name__, exc,
+            )
 
         self._log(
             "CONTEXT: "
@@ -589,8 +595,8 @@ class WorkflowEngine:
                         if v in (None, "", [], {}):
                             continue
                         context.setdefault(k, v)
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    logger.warning("%s: %s", "_execute_task", exc)
 
                 # Specialists — use extended timeout (they spawn sub-agents)
                 result = await asyncio.wait_for(
@@ -721,14 +727,21 @@ class WorkflowEngine:
                                 # Designer and Render Engine see the same specs.
                                 try:
                                     final_report.chart_specifications = chart_specs
-                                except Exception:
-                                    pass
+                                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                                    # Mined specs that never reach the report
+                                    # mean a text-only deliverable despite
+                                    # chartable data existing — record it.
+                                    logger.warning(
+                                        "mined chart specs could not be persisted "
+                                        "to the report: %s: %s",
+                                        type(exc).__name__, exc,
+                                    )
                             else:
                                 logger.warning(
                                     "No chartable numeric series found in findings; "
                                     "report will be text-only"
                                 )
-                        except Exception as e:
+                        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                             logger.warning("Chart spec mining failed: %s: %s", type(e).__name__, e)
                 result = await asyncio.wait_for(
                     agent.run(
@@ -806,7 +819,7 @@ class WorkflowEngine:
 
             return result
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timeout_used = (
                 self.SPECIALIST_TIMEOUT_SECONDS
                 if task.agent in (
@@ -919,7 +932,7 @@ class WorkflowEngine:
                 if isinstance(cached_data, dict):
                     return cached_data
                 return cached_data
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             # If reconstruction fails, return raw data — better than crashing
             return cached_data
 
@@ -1066,8 +1079,8 @@ class WorkflowEngine:
             from hyperion.config import get_settings
             _cfg = get_settings()
             source_floor = getattr(_cfg, "quality_source_floor", 3)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_quality_iteration_loop", exc)
 
         for iteration in range(1, self.MAX_QUALITY_ITERATIONS + 1):
             iterations = iteration
@@ -1274,8 +1287,8 @@ class WorkflowEngine:
             return
 
         try:
-            from hyperion.tools.second_brain import SecondBrainClient
             from hyperion.config import get_settings
+            from hyperion.tools.second_brain import SecondBrainClient
 
             settings = get_settings()
             brain = SecondBrainClient(settings=settings)
@@ -1368,8 +1381,8 @@ class WorkflowEngine:
             from hyperion.tools.deep_search import reset_engagement_yield
 
             reset_engagement_yield()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "run_engagement", exc)
         # Seed the search anchor from the raw question immediately, so any
         # search firing before classification completes is still on-topic.
         #
@@ -1392,8 +1405,8 @@ class WorkflowEngine:
                 subject=self._derive_subject_from_question(question),
                 geography=_early_geo[0] if _early_geo else "",
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "run_engagement", exc)
 
         # P10: Durable execution — open journal, artifact store, manifest
         self._journal = RunJournal(self._engagement_id)
@@ -1409,11 +1422,11 @@ class WorkflowEngine:
 
         # P9 GAP-4: Startup health table — check every tool + tier
         try:
-            from hyperion.obs.health import check_startup_health
             from hyperion.config import get_settings
+            from hyperion.obs.health import check_startup_health
             check_startup_health(get_settings())
-        except Exception:
-            pass  # Health check is best-effort — don't block the pipeline
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "run_engagement", exc)
 
         # Reset SearxNG search budget for this engagement
         from hyperion.tools.searxng import SearxNGClient
@@ -1540,7 +1553,7 @@ class WorkflowEngine:
                         self._log(f"DELIVERY: executing {task.agent.value}")
                         try:
                             await self._execute_task(task, dag)
-                        except Exception as e:
+                        except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                             # D4-rest: Escalate delivery failure instead of crashing
                             self._log(f"DELIVERY: {task.agent.value} failed: {e!s:.200}")
                             await self.bus.publish(
@@ -1641,8 +1654,8 @@ class WorkflowEngine:
             try:
                 from hyperion.obs.health import print_completion_health
                 print_completion_health(result)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                logger.warning("%s: %s", "run_engagement", exc)
 
             # P10: Save final manifest metrics
             if self._manifest:
@@ -1670,7 +1683,7 @@ class WorkflowEngine:
 
             return result
 
-        except (ValueError, RuntimeError, OSError, asyncio.TimeoutError) as e:
+        except (TimeoutError, ValueError, RuntimeError, OSError) as e:
             result.error = str(e)
             result.duration_seconds = time.time() - self._start_time
             self._log(f"ENGAGEMENT FAILED: {type(e).__name__}: {e}")
@@ -1722,7 +1735,7 @@ class WorkflowEngine:
             print(f"  Quality Score:   {result.quality_score.total_score:.1f}/5.0")
             print(f"  Quality Iters:   {result.quality_iterations}")
         else:
-            print(f"  Quality Score:   N/A")
+            print("  Quality Score:   N/A")
 
         # Agents & findings
         if result.dag:
@@ -1736,8 +1749,8 @@ class WorkflowEngine:
         if self.router and hasattr(self.router, "get_token_summary"):
             try:
                 token_summary = self.router.get_token_summary()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                logger.debug("token summary unavailable: %s: %s", type(exc).__name__, exc)
 
         total_tokens = token_summary.get("total_tokens", 0)
         total_calls = token_summary.get("total_calls", 0)
@@ -1746,7 +1759,7 @@ class WorkflowEngine:
 
         by_provider = token_summary.get("by_provider", {})
         if by_provider:
-            print(f"\n  Token Breakdown by Provider:")
+            print("\n  Token Breakdown by Provider:")
             print(f"  {'Provider':<16} {'Input':>10} {'Output':>10} {'Total':>12} {'Calls':>8}")
             print(f"  {'-' * 16} {'-' * 10} {'-' * 10} {'-' * 12} {'-' * 8}")
             for provider_name in sorted(by_provider.keys()):
@@ -1769,8 +1782,13 @@ class WorkflowEngine:
             if callable(close_method):
                 try:
                     await close_method()
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    # Teardown must not abort the remaining closes, but a
+                    # leaking tool client should be diagnosable.
+                    logger.debug(
+                        "agent %s close() failed during shutdown: %s: %s",
+                        getattr(agent, "name", "?"), type(exc).__name__, exc,
+                    )
             else:
                 cleanup_method = getattr(agent, "cleanup", None)
                 if callable(cleanup_method):
@@ -1778,8 +1796,8 @@ class WorkflowEngine:
                         result = cleanup_method()
                         if asyncio.iscoroutine(result):
                             await result
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                        logger.warning("%s: %s", "close", exc)
 
     async def __aenter__(self) -> WorkflowEngine:
         return self

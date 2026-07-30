@@ -18,10 +18,9 @@ Response: {"status": "ok", "solution": {"url": "...", "status": 200, "response":
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import httpx
 
@@ -166,7 +165,7 @@ class FlareSolverrClient:
             return FlareSolverrResult(url=url, error=f"HTTP error: {e!s:.100}")
         except (KeyError, ValueError, TypeError) as e:
             return FlareSolverrResult(url=url, error=f"Parse error: {e!s:.100}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             return FlareSolverrResult(url=url, error=f"Unexpected: {e!s:.100}")
 
     async def search_google(self, query: str, num_results: int = 10) -> list[dict]:
@@ -221,7 +220,8 @@ class FlareSolverrClient:
 
         results: list[dict] = []
 
-        # Google result links are in <a href="/url?q=..."> or <a href="https://..."> within result divs
+        # Google result links are in <a href="/url?q=..."> or <a href="https://..."> within result
+        # divs
         # Pattern for Google's result links
         link_pattern = re.compile(
             r'<a[^>]+href="/url\?q=([^&"]+)[^"]*"[^>]*>(.*?)</a>',

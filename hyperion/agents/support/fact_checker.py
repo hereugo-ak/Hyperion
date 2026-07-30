@@ -60,12 +60,11 @@ import re
 from datetime import datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
+from hyperion.router.structured_validator import validate_json_list
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -88,6 +87,7 @@ from hyperion.schemas.models import (
 )
 from hyperion.tools.query_utils import ground_query
 
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -507,32 +507,72 @@ class FactChecker(BaseAgent):
 
                 response = await self._llm_complete(user_prompt=prompt, urgency=TaskUrgency.NORMAL)
                 if response and response.content:
-                    # Parse LLM-extracted claims and merge
-                    import json
-                    try:
-                        llm_claims = json.loads(response.content)
-                        for i, lc in enumerate(llm_claims[:30]):
-                            claim_text = lc.get("claim", "")
-                            agent = lc.get("agent", "")
-                            claim_type_str = lc.get("claim_type", "NUMBER").upper()
-                            try:
-                                claim_type = ClaimType[claim_type_str]
-                            except KeyError:
-                                claim_type = ClaimType.NUMBER
+                    # Phase 5.1d: this was `json.loads(response.content)` guarded
+                    # by `except (JSONDecodeError, TypeError): pass`. Two live
+                    # failures, both silent:
+                    #   1. The prompt asks for "a JSON list" and models fence it
+                    #      (```json ... ```) or preface it with a sentence, so
+                    #      raw json.loads raised and EVERY LLM-extracted claim
+                    #      was discarded — the fact-checker degraded to
+                    #      regex-only claims with no signal that it had.
+                    #   2. `except: pass` meant the drop left no trace at all.
+                    # validate_json_list() handles fences, prose, and the
+                    # `{"claims": [...]}` envelope, and the failure path now
+                    # reports through _log_tool_use.
+                    llm_claims = validate_json_list(response.content)
+                    if llm_claims is None:
+                        await self._log_tool_use(
+                            "llm",
+                            "extract_claims",
+                            "FAIL · response contained no parseable JSON list; "
+                            f"falling back to regex claims only (got {response.content[:120]!r})",
+                            success=False,
+                        )
+                        llm_claims = []
 
-                            claim_id = f"claim_llm_{hashlib.md5(f'{agent}_{claim_text}'.encode()).hexdigest()[:8]}"
+                    malformed = 0
+                    for lc in llm_claims[:30]:
+                        if not isinstance(lc, dict):
+                            # A bare string / number where an object was asked
+                            # for: counted and reported, never quietly skipped.
+                            malformed += 1
+                            continue
 
-                            # Skip duplicates
-                            if not any(c.claim == claim_text for c in all_claims):
-                                all_claims.append(Claim(
-                                    id=claim_id,
-                                    agent=agent,
-                                    claim=claim_text,
-                                    claim_type=claim_type,
-                                    status=ClaimStatus.UNVERIFIED,
-                                ))
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                        claim_text = str(lc.get("claim") or "").strip()
+                        if not claim_text:
+                            malformed += 1
+                            continue
+
+                        agent = str(lc.get("agent") or "").strip()
+                        claim_type_str = str(lc.get("claim_type") or "NUMBER").upper()
+                        try:
+                            claim_type = ClaimType[claim_type_str]
+                        except KeyError:
+                            claim_type = ClaimType.NUMBER
+
+                        digest = hashlib.md5(
+                            f"{agent}_{claim_text}".encode(), usedforsecurity=False
+                        ).hexdigest()[:8]
+                        claim_id = f"claim_llm_{digest}"
+
+                        # Skip duplicates
+                        if not any(c.claim == claim_text for c in all_claims):
+                            all_claims.append(Claim(
+                                id=claim_id,
+                                agent=agent,
+                                claim=claim_text,
+                                claim_type=claim_type,
+                                status=ClaimStatus.UNVERIFIED,
+                            ))
+
+                    if malformed:
+                        await self._log_tool_use(
+                            "llm",
+                            "extract_claims",
+                            f"{malformed}/{len(llm_claims[:30])} LLM claim entries were "
+                            "malformed (not an object, or empty claim text) and skipped",
+                            success=False,
+                        )
 
             except (ValueError, AttributeError, RuntimeError) as e:
                 await self._log_tool_use("llm", "extract_claims", f"FAIL · {e}", success=False)
@@ -979,7 +1019,7 @@ class FactChecker(BaseAgent):
         hallucinated: list[Claim] = []
 
         for claim in claims:
-            if not claim.verification_sources and not claim.status == ClaimStatus.UNVERIFIED:
+            if not claim.verification_sources and claim.status != ClaimStatus.UNVERIFIED:
                 # Claim has no sources at all — potential hallucination
                 claim.evidence_chain_valid = False
                 claim.evidence_chain_break = "No sources cited for claim"

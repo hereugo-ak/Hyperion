@@ -145,9 +145,16 @@ class GoogleTrendsClient:
         if self._pytrends is None:
             try:
                 from pytrends.request import TrendReq
-            except ImportError:
+            except ImportError as exc:
                 logger.error("pytrends not installed. Install with: pip install pytrends")
-                raise ImportError("pytrends is required for GoogleTrendsClient. Install with: pip install pytrends>=4.7.3")
+                # `from exc` (ruff B904): without it the chain is reported as
+                # "During handling of the above exception, another exception
+                # occurred", which hides whether the real cause was a missing
+                # package or a broken transitive import inside pytrends.
+                raise ImportError(
+                    "pytrends is required for GoogleTrendsClient. "
+                    "Install with: pip install pytrends>=4.7.3"
+                ) from exc
 
             self._pytrends = TrendReq(
                 hl="en-US",
@@ -250,7 +257,7 @@ class GoogleTrendsClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Google Trends interest_over_time failed: %s", e)
             return TrendResult(keywords=keywords, timeframe=timeframe, geography=geography)
 
@@ -321,7 +328,7 @@ class GoogleTrendsClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Google Trends related_queries failed: %s", e)
             return []
 
@@ -392,7 +399,7 @@ class GoogleTrendsClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Google Trends related_topics failed: %s", e)
             return []
 
@@ -461,7 +468,7 @@ class GoogleTrendsClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Google Trends interest_by_region failed: %s", e)
             return {}
 

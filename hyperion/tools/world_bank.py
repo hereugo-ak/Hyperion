@@ -308,9 +308,33 @@ class WorldBankClient:
                 country_code=country,
             )
 
-        # World Bank returns [metadata, data_points] for list format
-        metadata = data[0] if len(data) > 0 else {}
+        # World Bank returns [metadata, data_points] for list format.
+        #
+        # D5.1: `metadata = data[0]` was assigned and never read (ruff F841),
+        # and that discarded object is the API's *pagination envelope*:
+        # {"page": 1, "pages": N, "per_page": 1000, "total": T}. With the
+        # default `country="all"` and no `date_range`, World Bank returns ~266
+        # economies x ~65 years — far past a single 1000-row page — so the
+        # client was silently truncating to page 1 and reporting the result as
+        # complete. A caller charting a global indicator got an arbitrary
+        # alphabetical slice with no indication anything was missing. We do not
+        # auto-paginate here (that changes the request budget of an existing
+        # call path), but a silent truncation must at minimum be a loud one.
+        metadata = data[0] if isinstance(data[0], dict) else {}
         raw_points = data[1] if len(data) > 1 else []
+
+        total_available = metadata.get("total")
+        pages = metadata.get("pages")
+        if isinstance(pages, int) and pages > 1:
+            logger.warning(
+                "World Bank %s/%s returned page 1 of %d (%s rows available, %s retrieved) — "
+                "result is TRUNCATED. Narrow with date_range= or a single country= to fit one page.",
+                country,
+                code,
+                pages,
+                total_available,
+                len(raw_points) if isinstance(raw_points, list) else 0,
+            )
 
         if not isinstance(raw_points, list):
             raw_points = []
@@ -462,10 +486,8 @@ class WorldBankClient:
         results: dict[str, float | None] = {}
 
         for country in countries:
-            if year > 0:
-                date_range = str(year)
-            else:
-                date_range = "2000:"  # Get recent data
+            # year <= 0 means "no specific year" → widen to a recent range.
+            date_range = str(year) if year > 0 else "2000:"
 
             indicator_data = await self.get_indicator(
                 indicator_code,

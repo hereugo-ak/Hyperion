@@ -29,10 +29,14 @@ Usage::
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 _SINKS: list[Callable[[dict[str, Any]], None]] = []
@@ -80,8 +84,13 @@ def trace(stage: str, **fields: Any) -> None:
     for fn in sinks:
         try:
             fn(ev)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            # A dead trace sink means telemetry is silently incomplete —
+            # degraded observability, not lost engagement data. Debug level.
+            logger.debug(
+                "trace sink %r raised and event was dropped: %s: %s",
+                getattr(fn, "__name__", fn), type(exc).__name__, exc,
+            )
 
 
 def file_sink(engagement_id: str) -> Callable[[dict[str, Any]], None]:

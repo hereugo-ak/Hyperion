@@ -7,10 +7,14 @@ Tests:
 - Error handling for API failures
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-from hyperion.tools.world_bank import WorldBankClient, WorldBankIndicator, WorldBankIndicatorData, WorldBankCountryProfile
+import pytest
+
+from hyperion.tools.world_bank import (
+    WorldBankClient,
+    WorldBankIndicatorData,
+)
 
 
 class TestWorldBankClient:
@@ -72,7 +76,8 @@ class TestWorldBankClient:
         """Client handles API errors gracefully."""
         client = WorldBankClient()
 
-        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API error"})):
+        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API "
+            "error"})):
             result = await client.get_indicator("gdp", country="US")
             # Should return empty data, not crash
             assert result is not None

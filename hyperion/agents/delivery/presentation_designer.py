@@ -58,7 +58,8 @@ import base64
 import hashlib
 import logging
 import os
-from datetime import datetime
+import re
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +79,6 @@ from hyperion.schemas.agents import (
 from hyperion.schemas.models import (
     AnalysisSection,
     ChartPlacement,
-    ChartSpecification,
     ConfidenceLevel,
     FinalReport,
     ImageSelection,
@@ -167,8 +167,14 @@ SECTION_IMAGE_SEARCH_TERMS: dict[str, str] = {
     "regulatory_analysis": "government building columns",
     "sustainability": "green sustainable business",
     "sustainability_analysis": "green sustainable business",
+    # D5.1b (F601): "consumer_insights" was listed twice in this one dict —
+    # once above as an agent-name key (it is the literal
+    # `AgentName.CONSUMER_INSIGHTS` value) and again here in the topic block.
+    # Both mapped to the same term, so the duplicate was inert rather than a
+    # live bug, but it is exactly the shape that silently overwrites a *differing*
+    # value later. Only the agent-name entry is kept; "consumer" covers the
+    # title-matching fallback.
     "consumer": "consumer shopping retail",
-    "consumer_insights": "consumer shopping retail",
     "ma": "corporate merger acquisition handshake",
     "ma_analysis": "corporate merger acquisition handshake",
     "innovation": "innovation technology lab",
@@ -828,6 +834,104 @@ table, .kpi-value, .data-table, .chart-data-table {{
     page-break-before: always;
 }}
 
+/* ── Front/back matter (fix 4.5) ───────────────────────────────────────────
+   At-a-glance, Endnotes, Technical appendix. These pages are single-column on
+   purpose: the two-column measure from fix 3.4 is right for running prose but
+   wrong for a scannable summary grid and for numbered reference apparatus,
+   both of which are read by jumping rather than reading linearly. The
+   `column-span: all` rules further down keep them full-measure. */
+.at-a-glance .glance-question {{
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 15pt;
+    line-height: 1.35;
+    color: {deep_brown};
+    margin: 0 0 14pt 0;
+    padding-bottom: 10pt;
+    border-bottom: 2px solid {terracotta};
+}}
+
+/* Two columns of paired label/value cells. `table` layout rather than flex so
+   WeasyPrint paginates it predictably — flex fragmentation across pages is not
+   reliably supported in the engine we render with. */
+.glance-grid {{
+    display: table;
+    width: 100%;
+    margin-bottom: 14pt;
+    border-collapse: collapse;
+}}
+.glance-cell {{
+    display: table-cell;
+    width: 25%;
+    padding: 8pt 10pt 8pt 0;
+    vertical-align: top;
+    border-top: 1px solid {beige};
+}}
+.glance-label {{
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 7pt;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: {warm_gray};
+    margin-bottom: 3pt;
+}}
+.glance-value {{
+    font-size: 10.5pt;
+    line-height: 1.3;
+    color: {deep_brown};
+    font-weight: 600;
+}}
+.glance-block {{
+    margin-bottom: 12pt;
+    page-break-inside: avoid;
+}}
+.glance-block p {{ margin: 2pt 0 0 0; font-size: 10pt; line-height: 1.45; }}
+.glance-findings, .glance-assumptions {{
+    margin: 4pt 0 0 0;
+    padding-left: 16pt;
+    font-size: 10pt;
+    line-height: 1.45;
+}}
+.glance-findings li, .glance-assumptions li {{ margin-bottom: 4pt; }}
+
+/* Endnotes. 8pt is the benchmark footnote measure (7-7.5pt) nudged up for the
+   longer URLs we carry; the chapter heading is what makes a note traceable
+   back to the claim it supports. */
+.endnote-chapter {{
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8pt;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: {terracotta};
+    margin: 12pt 0 4pt 0;
+    page-break-after: avoid;
+}}
+.endnote-list {{
+    margin: 0 0 8pt 0;
+    padding-left: 0;
+    list-style: none;
+    font-size: 8pt;
+    line-height: 1.4;
+}}
+.endnote-list li {{
+    margin-bottom: 3pt;
+    padding-left: 20pt;
+    text-indent: -20pt;
+}}
+.endnote-num {{ color: {terracotta}; font-weight: 600; }}
+/* URLs must wrap: an unbreakable 120-char URL otherwise overflows the measure
+   and is silently clipped at the page edge. */
+.endnote-url {{
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 7pt;
+    color: {warm_gray};
+    word-break: break-all;
+}}
+.endnote-empty, .appendix-empty {{
+    font-size: 10pt;
+    font-style: italic;
+    color: {warm_gray};
+}}
+
 /* ── Two-column body (fix 3.4) ─────────────────────────────────────────────
    The audit measured the shipped report at ~87 chars/line in a single
    justified column; the BCG benchmark sits at a median of 56 chars/line in
@@ -980,18 +1084,94 @@ HTML_TEMPLATE = """\
     </div>
 </div>
 
+{# ── At-a-glance (fix 4.5) ──
+   MGI opens with this, BEFORE the table of contents: the whole argument on one
+   spread, so a partner who reads exactly one page still gets the answer. It is
+   deliberately NOT a second executive summary — the exec summary narrates,
+   this enumerates. Every value here is a field that already existed on
+   FinalReport and was simply never surfaced in the PDF.
+
+   Counts are computed with Jinja rather than authored, so they cannot drift
+   from the body the way the hardcoded TOC page numbers below already do. #}
+<div class="page-break at-a-glance">
+    <h2>At a Glance</h2>
+
+    <div class="glance-question">{{ report.question }}</div>
+
+    <div class="glance-grid">
+        <div class="glance-cell">
+            <div class="glance-label">Recommendation</div>
+            <div class="glance-value">
+                {{ report.recommendation.value | replace("_", " ") | title }}
+            </div>
+        </div>
+        <div class="glance-cell">
+            <div class="glance-label">Confidence</div>
+            <div class="glance-value">{{ report.confidence.value | title }}</div>
+        </div>
+        <div class="glance-cell">
+            <div class="glance-label">Evidence base</div>
+            <div class="glance-value">
+                {{ report.total_sources }} sources ·
+                {{ report.total_data_points }} data points
+            </div>
+        </div>
+        <div class="glance-cell">
+            <div class="glance-label">Analysis depth</div>
+            <div class="glance-value">
+                {{ report.sections | length }} chapters ·
+                {{ report.agents_used | length }} agents
+            </div>
+        </div>
+    </div>
+
+    {% if report.recommendation_rationale %}
+    <div class="glance-block">
+        <div class="glance-label">Why</div>
+        <p>{{ report.recommendation_rationale }}</p>
+    </div>
+    {% endif %}
+
+    {% if report.key_findings %}
+    <div class="glance-block">
+        <div class="glance-label">What we found</div>
+        <ol class="glance-findings">
+            {# Capped at five. An at-a-glance page that runs to two pages is not
+               an at-a-glance page. #}
+            {% for finding in report.key_findings[:5] %}
+            <li>{{ finding.title }}</li>
+            {% endfor %}
+        </ol>
+    </div>
+    {% endif %}
+
+    {% if report.critical_assumptions %}
+    <div class="glance-block">
+        <div class="glance-label">What this rests on</div>
+        <ul class="glance-assumptions">
+            {% for assumption in report.critical_assumptions[:4] %}
+            <li>{{ assumption }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+</div>
+
 {# ── Table of Contents ── #}
 <div class="page-break">
     <h2>Table of Contents</h2>
     <div class="data-table toc-table">
         <table>
-            <tr><td>Executive Summary</td><td>3</td></tr>
+            <tr><td>At a Glance</td><td>2</td></tr>
+            <tr><td>Executive Summary</td><td>4</td></tr>
             {% for section in report.sections %}
-            <tr><td>{{ section.title }}</td><td>{{ loop.index + 3 }}</td></tr>
+            <tr><td>{{ section.title }}</td><td>{{ loop.index + 4 }}</td></tr>
             {% endfor %}
-            <tr><td>Risk Analysis</td><td>{{ report.sections | length + 4 }}</td></tr>
-            <tr><td>Methodology</td><td>{{ report.sections | length + 5 }}</td></tr>
-            <tr><td>Appendix</td><td>{{ report.sections | length + 6 }}</td></tr>
+            <tr><td>Risk Analysis</td><td>{{ report.sections | length + 5 }}</td></tr>
+            <tr><td>Methodology</td><td>{{ report.sections | length + 6 }}</td></tr>
+            <tr><td>Endnotes</td><td>{{ report.sections | length + 7 }}</td></tr>
+            <tr><td>Technical Appendix</td><td>{{ report.sections | length + 8 }}</td></tr>
+            <tr><td>Appendix: Sources</td><td>{{ report.sections | length + 9 }}</td></tr>
         </table>
     </div>
 </div>
@@ -1104,11 +1284,20 @@ HTML_TEMPLATE = """\
     {% for chart in section_charts[section.id] %}
     <figure class="exhibit no-break">
         <div class="exhibit-number"></div>
-        {% if chart.caption %}<div class="exhibit-title">{{ chart.caption }}</div>{% endif %}
+        {# Fix 4.4: unconditional. A numbered exhibit with no action title is a
+           chart, not an exhibit — MGI's anatomy requires the takeaway to sit
+           between the number and the figure. `_enforce_exhibit_anatomy`
+           guarantees a non-empty caption, so there is nothing to guard. #}
+        <div class="exhibit-title">{{ chart.caption }}</div>
         <div class="exhibit-figure">
             <img src="{{ chart.image_path }}" alt="{{ chart.caption }}">
         </div>
-        {% if chart.source_citation or chart.note %}
+        {# Fix 4.4: the footer is NOT conditional on note/source being present.
+           It used to be, so an exhibit with neither rendered with no footer at
+           all — no hairline, no provenance — and looked deliberate. The hairline
+           is what visually closes the exhibit in both benchmark documents, so it
+           is now always drawn, and `_enforce_exhibit_anatomy` guarantees a
+           Source: line exists by the time we get here. #}
         <figcaption class="exhibit-footer">
             {# Note before source, as in both benchmarks ("Note: Based on
                McKinsey Industry Classification… Source: …"). Each is emitted
@@ -1130,7 +1319,6 @@ HTML_TEMPLATE = """\
                 {{ chart.source_citation | trim | replace("Source:", "", 1) | trim }}</p>
             {% endif %}
         </figcaption>
-        {% endif %}
     </figure>
     {% endfor %}
 
@@ -1169,10 +1357,31 @@ HTML_TEMPLATE = """\
     </ul>
 </div>
 
-{# ── Appendix ── #}
+{# ── Endnotes (fix 4.5) ──
+   MGI numbers its endnotes and ties each to the chapter that cited it, which is
+   what makes a claim traceable rather than merely footnoted. Built server-side
+   (`endnotes_html`) because the numbering has to be stable across sections and
+   Jinja loop indices reset per section. #}
 <div class="page-break">
-    <h2>Appendix</h2>
-    <h3>Full Source List</h3>
+    <h2>Endnotes</h2>
+    {{ endnotes_html | safe }}
+</div>
+
+{# ── Technical Appendix (fix 4.5) ──
+   The methodology section says WHAT was done; this says how well, and admits
+   what was not achieved. quality_score / confidence_breakdown /
+   contradictions / fact_check_report all already existed on FinalReport and
+   none of them reached the PDF — the report scored itself and then threw the
+   scorecard away. Publishing the contradictions and the residual gaps is the
+   difference between a technical appendix and a marketing annex. #}
+<div class="page-break">
+    <h2>Technical Appendix</h2>
+    {{ technical_appendix_html | safe }}
+</div>
+
+{# ── Appendix: Sources ── #}
+<div class="page-break">
+    <h2>Appendix: Sources</h2>
     {{ appendix_sources_html | safe }}
 </div>
 
@@ -2060,7 +2269,89 @@ class PresentationDesigner(BaseAgent):
                 self._chart_placements[section_id] = []
             self._chart_placements[section_id].append(placement)
 
+        self._enforce_exhibit_anatomy(self._chart_placements)
         return self._chart_placements
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Fix 4.4: MGI exhibit anatomy is a contract, not a suggestion
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _enforce_exhibit_anatomy(
+        self, placements: dict[str, list[ChartPlacement]]
+    ) -> list[str]:
+        """Repair the four-part exhibit anatomy in place; report what was wrong.
+
+        The anatomy is: **number → action title → figure → `Note:` → `Source:`**
+        (§3.9). The template already *emitted* all five parts, but nothing
+        *enforced* them, and every part is independently optional in Jinja. So a
+        chart arriving without a caption rendered as a numbered, sourced exhibit
+        with **no title**, and one arriving with neither note nor source
+        rendered with **no footer at all** — no hairline, no provenance. Both
+        were silent: no exception, no log line, and the PDF still looked
+        plausible. Measured before this fix, all five degenerate combinations
+        rendered clean.
+
+        `image_path` was the only part already guarded (a figure-less chart is
+        dropped upstream), which is why the other four are handled here.
+
+        Repair rather than drop, deliberately. Dropping a titleless exhibit
+        would discard real extracted numbers and renumber every later exhibit;
+        the audit's own §3.9 note about insertions shifting numbering applies
+        equally to deletions. Instead:
+
+        * a missing **action title** falls back to the chart id humanised — an
+          honest placeholder that is obviously provisional in review, unlike a
+          confident invented takeaway;
+        * a missing **note** is left empty. A note describes *how* a figure was
+          constructed. Inventing one is the same class of defect as inventing a
+          geography, so the line stays absent and the omission is reported;
+        * a missing **source** is the one that matters most for MBB parity —
+          both benchmark documents carry a source under every single exhibit —
+          so it is filled with the explicit, non-deceptive
+          ``"Source: HYPERION analysis"`` rather than being silently dropped.
+
+        Returns the list of defects found, so callers can log or gate on it.
+        """
+        defects: list[str] = []
+        for section_id, charts in placements.items():
+            for chart in charts:
+                cid = chart.chart_id or "<unnamed>"
+                where = f"{section_id}/{cid}"
+
+                if not (chart.caption or "").strip():
+                    chart.caption = self._humanise_chart_id(cid)
+                    defects.append(f"{where}: no action title (used {chart.caption!r})")
+
+                if not (chart.image_path or "").strip():
+                    # Should be unreachable: figure-less charts are dropped
+                    # before placement. Recorded rather than assumed away.
+                    defects.append(f"{where}: no figure")
+
+                if not (chart.note or "").strip():
+                    defects.append(f"{where}: no Note: line (left absent, not invented)")
+
+                if not (chart.source_citation or "").strip():
+                    chart.source_citation = "Source: HYPERION analysis"
+                    defects.append(f"{where}: no Source: line (defaulted)")
+
+        if defects:
+            self._log(
+                f"DESIGNER: exhibit anatomy repaired on {len(defects)} field(s) — "
+                + "; ".join(defects[:8])
+                + (" …" if len(defects) > 8 else "")
+            )
+        return defects
+
+    @staticmethod
+    def _humanise_chart_id(chart_id: str) -> str:
+        """`revenue_growth_2024` → `Revenue growth 2024`.
+
+        Deliberately plain. The point is a title a reviewer immediately reads as
+        a placeholder, not a fabricated MBB action title.
+        """
+        cleaned = re.sub(r"[_\-]+", " ", chart_id).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned[:1].upper() + cleaned[1:] if cleaned else "Exhibit"
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 6: Render HTML template with Jinja2
@@ -2156,6 +2447,11 @@ class PresentationDesigner(BaseAgent):
                 "css_content": css_content,
                 "risk_analysis_html": self._build_risk_analysis_html(report),
                 "appendix_sources_html": self._build_appendix_sources_html(report),
+                # Fix 4.5. Both call sites must be fed: this dict and the
+                # fallback env below. Fix 3.5 was exactly this class of bug —
+                # a filter registered in one env and not the other.
+                "endnotes_html": self._build_endnotes_html(report),
+                "technical_appendix_html": self._build_technical_appendix_html(report),
             }
 
             html_content = await jinja2_tool.render_template(
@@ -2183,7 +2479,7 @@ class PresentationDesigner(BaseAgent):
         except (ValueError, AttributeError, RuntimeError):
             # Fallback: render manually with Jinja2
             try:
-                from jinja2 import Environment, BaseLoader
+                from jinja2 import BaseLoader, Environment
 
                 from hyperion.output.render import TemplateRenderer
 
@@ -2210,12 +2506,15 @@ class PresentationDesigner(BaseAgent):
                     css_content=css_content,
                     risk_analysis_html=self._build_risk_analysis_html(report),
                     appendix_sources_html=self._build_appendix_sources_html(report),
+                    endnotes_html=self._build_endnotes_html(report),
+                    technical_appendix_html=self._build_technical_appendix_html(report),
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
                 # Last resort: strip Jinja2 tags and do basic format
                 html_str = HTML_TEMPLATE.replace("{{ css_content | safe }}", css_content)
                 html_str = html_str.replace("{{ report.question }}", str(report.question))
-                html_str = html_str.replace("{{ report.recommendation.value | upper }}", str(report.recommendation.value).upper())
+                html_str = html_str.replace("{{ report.recommendation.value | upper "
+                    "}}", str(report.recommendation.value).upper())
 
             with open(self.HTML_OUTPUT, "w", encoding="utf-8") as f:
                 f.write(html_str)
@@ -2223,30 +2522,92 @@ class PresentationDesigner(BaseAgent):
             return self.HTML_OUTPUT
 
     def _build_risk_analysis_html(self, report: FinalReport) -> str:
-        """Build the risk analysis HTML section."""
+        """Build the risk analysis HTML section.
+
+        Three defects fixed here (D5.1), all of the same family as the ones 4.5
+        fixed in the appendix builders — and all invisible for the same reason:
+
+        1. ``getattr(risk, "name", "Unknown")`` — **`Risk` has no `name` field.**
+           Its descriptive field is ``description``. So this expression could
+           never return anything but the literal string ``"Unknown"``, and the
+           Risk column of the top-risks table printed ``Unknown`` on every row of
+           every report ever produced. ``"Unknown"`` is one of the four tokens
+           ``tools/audit_render_probe.py`` counts as a **template leak**, which
+           §11 exit criterion 11 requires to be zero — so this single wrong field
+           name was silently breaking a headline Definition-of-Done metric.
+           The defensive third argument to ``getattr`` is exactly what hid it: a
+           direct ``risk.name`` would have raised ``AttributeError`` on the first
+           run. Now uses direct attribute access, per the ban 4.5 established.
+        2. Every cell was interpolated **unescaped**. Risk descriptions and
+           mitigations are LLM-authored prose that routinely contains ``&`` and
+           ``<`` (e.g. "margin < 10% & falling"), which would corrupt the table.
+        3. ``risk_score`` and the mitigation ``owner`` were not shown at all,
+           though both are populated — the table showed probability and impact
+           but not their product, which is the number the ranking is *by*.
+
+        The 5×5 matrix's zone counts are now rendered too: the agent computes
+        them (``_build_risk_matrix``) and, until D5.1, threw them away.
+        """
         if not report.risk_analysis:
             return "<p>No risk analysis available.</p>"
 
+        analysis = report.risk_analysis
         html_parts = ["<div class='risk-matrix no-break'>"]
+
+        # Zone summary — the 5x5 matrix's headline, previously discarded.
+        zone_counts = (analysis.risk_matrix or {}).get("zone_counts") or {}
+        if zone_counts:
+            red = int(zone_counts.get("red", 0))
+            yellow = int(zone_counts.get("yellow", 0))
+            green = int(zone_counts.get("green", 0))
+            html_parts.append(
+                "<p class='risk-zone-summary'>"
+                f"<strong>{red}</strong> in the red zone (mitigate now), "
+                f"<strong>{yellow}</strong> amber (plan mitigation), "
+                f"<strong>{green}</strong> green (monitor)."
+                "</p>"
+            )
+
         html_parts.append("<h3>Top Risks</h3>")
         html_parts.append("<table class='data-table'>")
-        html_parts.append("<tr><th>Risk</th><th>Probability</th><th>Impact</th><th>Mitigation</th></tr>")
+        html_parts.append(
+            "<tr><th>Risk</th><th>Category</th><th>P</th><th>I</th>"
+            "<th>Score</th><th>Mitigation</th><th>Owner</th></tr>"
+        )
 
-        risks = getattr(report.risk_analysis, "risks", [])
+        # Prefer the ranked list; fall back to the full list if ranking is absent.
+        risks = analysis.top_risks or analysis.risks
         for risk in risks[:10]:
-            name = getattr(risk, "name", "Unknown")
-            probability = getattr(risk, "probability", "N/A")
-            impact = getattr(risk, "impact", "N/A")
-            mitigation = getattr(risk, "mitigation", "N/A")
             html_parts.append(
-                f"<tr><td>{name}</td><td>{probability}</td><td>{impact}</td><td>{mitigation}</td></tr>"
+                "<tr>"
+                f"<td>{html_escape(risk.description)}</td>"
+                f"<td>{html_escape(risk.category.value.title())}</td>"
+                f"<td>{risk.probability}</td>"
+                f"<td>{risk.impact}</td>"
+                f"<td>{risk.risk_score}</td>"
+                f"<td>{html_escape(risk.mitigation)}</td>"
+                f"<td>{html_escape(risk.owner)}</td>"
+                "</tr>"
             )
 
         html_parts.append("</table></div>")
         return "\n".join(html_parts)
 
     def _build_appendix_sources_html(self, report: FinalReport) -> str:
-        """Build the appendix source list HTML."""
+        """Build the appendix source list HTML.
+
+        Two defects fixed here while adding 4.5's back matter:
+
+        1. The fallback title was the literal string ``"Unknown"``, which
+           ``tools/audit_render_probe.py`` counts as a **template leak** (§11
+           exit criterion 11 requires zero). A source with no title now falls
+           back to its own URL, which is real information; only a source with
+           neither is described as untitled, and it says so in words rather than
+           printing a placeholder that reads like a bug.
+        2. Titles and URLs were interpolated into HTML **unescaped**. A source
+           title containing ``&`` or ``<`` — ordinary in news headlines — would
+           corrupt the table or silently swallow text. Now escaped.
+        """
         html_parts = ["<div class='no-break'><h3>Full Source List</h3>"]
         html_parts.append("<table class='data-table'>")
         html_parts.append("<tr><th>#</th><th>Source</th><th>URL</th></tr>")
@@ -2254,13 +2615,251 @@ class PresentationDesigner(BaseAgent):
         source_num = 1
         for section in report.sections:
             for source in section.sources:
-                title = getattr(source, "title", "Unknown")
-                url = getattr(source, "url", "")
-                html_parts.append(f"<tr><td>{source_num}</td><td>{title}</td><td>{url}</td></tr>")
+                raw_title = (getattr(source, "title", "") or "").strip()
+                raw_url = (getattr(source, "url", "") or "").strip()
+                title = raw_title or raw_url or "Untitled source"
+                html_parts.append(
+                    f"<tr><td>{source_num}</td>"
+                    f"<td>{html_escape(title)}</td>"
+                    f"<td>{html_escape(raw_url)}</td></tr>"
+                )
                 source_num += 1
 
         html_parts.append("</table></div>")
         return "\n".join(html_parts)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Fix 4.5: MBB front/back matter — At-a-glance, Endnotes, Technical appendix
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _build_endnotes_html(self, report: FinalReport) -> str:
+        """Numbered endnotes, each tied to the chapter that cited it.
+
+        A flat source list already existed in the appendix, but it is not an
+        endnote apparatus: it cannot answer "which claim rested on this?".
+        MGI's endnotes are numbered continuously across the document and
+        grouped by chapter, so a reader can walk from an argument to its
+        evidence. Numbering is assigned here, server-side, because Jinja's
+        ``loop.index`` resets per section and would restart at 1 in every
+        chapter.
+
+        Sources are de-duplicated by URL within a chapter — the same URL
+        legitimately supports several findings, and printing it four times
+        makes the apparatus look padded rather than thorough.
+        """
+        chapters: list[tuple[str, list[tuple[int, str, str]]]] = []
+        note_num = 1
+        for section in report.sections:
+            seen: set[str] = set()
+            entries: list[tuple[int, str, str]] = []
+            # Typed attribute access, not ``getattr(..., default)``. While
+            # writing this method the defensive-getattr style silently hid three
+            # wrong field names elsewhere in 4.5 (see
+            # ``_build_technical_appendix_html``): the fallback made a schema
+            # mismatch render as "no data" instead of raising. An AttributeError
+            # here is strictly preferable — it fails loudly at the seam.
+            for source in section.sources:
+                url = (source.url or "").strip()
+                title = (source.title or "").strip()
+                key = url or title
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                entries.append((note_num, title or url or "Untitled source", url))
+                note_num += 1
+            if entries:
+                chapters.append((section.title or "Chapter", entries))
+
+        if not chapters:
+            # Honest emptiness. An endnotes page implying evidence that does not
+            # exist is worse than one that admits the shortfall.
+            return (
+                "<p class='endnote-empty'>No per-chapter sources were recorded "
+                "for this engagement.</p>"
+            )
+
+        parts: list[str] = []
+        for chapter_title, entries in chapters:
+            parts.append(
+                f"<h3 class='endnote-chapter'>{html_escape(chapter_title)}</h3>"
+            )
+            parts.append("<ol class='endnote-list'>")
+            for num, title, url in entries:
+                # The number is emitted explicitly, not left to the <ol> marker,
+                # so it stays correct and citable even if the list is restyled.
+                url_html = (
+                    f" <span class='endnote-url'>{html_escape(url)}</span>" if url else ""
+                )
+                parts.append(
+                    f"<li value='{num}'><span class='endnote-num'>{num}.</span> "
+                    f"{html_escape(title)}{url_html}</li>"
+                )
+            parts.append("</ol>")
+        return "\n".join(parts)
+
+    def _build_technical_appendix_html(self, report: FinalReport) -> str:
+        """Publish the self-assessment the report already computed.
+
+        ``quality_score``, ``confidence_breakdown``, ``contradictions`` and
+        ``fact_check_report`` all existed on ``FinalReport`` and **none of them
+        reached the PDF**: the system graded itself and then discarded the
+        scorecard. Surfacing them — including the unresolved contradictions and
+        the residual gaps — is what separates a technical appendix from a
+        marketing annex.
+
+        WHY THIS METHOD DOES NOT USE ``getattr(obj, "field", default)``
+        --------------------------------------------------------------
+        The first draft of this method did, and the fallbacks concealed three
+        genuinely wrong field names — each of which would have shipped as a
+        silently missing section rather than an error:
+
+        * ``QualityScore.dimensions`` is a ``list[QualityDimension]``, not a
+          ``dict``. The draft guarded with ``isinstance(dimensions, dict)``, so
+          the dimension table would have rendered **never**, on every report.
+        * ``FactCheckReport`` exposes ``total_claims_checked`` /
+          ``verified_count``, not ``claims_checked`` / ``claims_verified``. Both
+          reads returned ``None``, so the whole fact-check block was skipped.
+        * ``Contradiction`` carries ``finding_a`` / ``finding_b``, not
+          ``description`` / ``topic``. The draft's final ``or str(item)``
+          fallback would have dumped a **raw pydantic repr** into the PDF.
+
+        That is the audit's thesis in miniature: a defensive default turns a
+        schema mismatch into a plausible-looking empty section. Direct attribute
+        access is used throughout so a future schema change fails loudly at this
+        seam instead of quietly emptying the appendix.
+        """
+        parts: list[str] = []
+
+        quality = report.quality_score
+        if quality is not None:
+            parts.append("<h3>Quality assessment</h3>")
+            parts.append("<table class='data-table'>")
+            parts.append("<tr><th>Dimension</th><th>Score</th><th>Weight</th></tr>")
+            parts.append(
+                f"<tr><td><strong>Total score</strong></td>"
+                f"<td><strong>{quality.total_score:.1f}</strong></td>"
+                f"<td>threshold {quality.threshold:.1f}</td></tr>"
+            )
+            parts.append(
+                f"<tr><td>Approved</td><td>{'Yes' if quality.approved else 'No'}</td>"
+                f"<td>iteration {quality.iteration}</td></tr>"
+            )
+            # `dimensions` is a LIST of QualityDimension models, not a dict.
+            for dim in quality.dimensions:
+                label = (dim.name or dim.dimension_id or "Dimension").replace("_", " ")
+                critical = " <em>(critical)</em>" if dim.critical else ""
+                parts.append(
+                    # `score` is an int constrained to 1..5 by the schema, so it
+                    # is printed as an integer out of 5 rather than formatted as
+                    # a float — "4/5" is the scale the reader needs, "4.0"
+                    # implies a precision the model does not carry.
+                    f"<tr><td>{html_escape(label.capitalize())}{critical}</td>"
+                    f"<td>{dim.score}/5</td>"
+                    f"<td>{dim.weight:.2f}</td></tr>"
+                )
+            parts.append("</table>")
+
+            if quality.gaps:
+                parts.append("<h3>Residual gaps</h3><ul>")
+                parts.extend(f"<li>{html_escape(str(g))}</li>" for g in quality.gaps)
+                parts.append("</ul>")
+
+        if report.confidence_breakdown:
+            parts.append("<h3>Confidence by dimension</h3>")
+            parts.append("<table class='data-table'>")
+            parts.append("<tr><th>Dimension</th><th>Confidence</th></tr>")
+            for name, level in report.confidence_breakdown.items():
+                label = str(name).replace("_", " ").capitalize()
+                # dict[str, ConfidenceLevel] — enum, so `.value` is the wire form.
+                value = level.value if hasattr(level, "value") else str(level)
+                parts.append(
+                    f"<tr><td>{html_escape(label)}</td>"
+                    f"<td>{html_escape(str(value).replace('_', ' ').title())}</td></tr>"
+                )
+            parts.append("</table>")
+
+        if report.contradictions:
+            # Deliberately published rather than resolved-away. An unreconciled
+            # conflict the reader can see is evidence of rigour; one silently
+            # dropped is a defect. Rendered as the opposed pair it actually is —
+            # two findings and the agents that produced them — because a
+            # contradiction printed as one sentence loses the thing that makes
+            # it a contradiction.
+            parts.append("<h3>Contradictions</h3>")
+            parts.append("<table class='data-table'>")
+            parts.append(
+                "<tr><th>Type</th><th>Position A</th><th>Position B</th>"
+                "<th>Resolution</th></tr>"
+            )
+            for item in report.contradictions:
+                ctype = str(
+                    item.contradiction_type.value
+                    if hasattr(item.contradiction_type, "value")
+                    else item.contradiction_type
+                ).replace("_", " ")
+                resolution = item.resolution or (
+                    "Resolved" if item.resolved else "Unresolved"
+                )
+                parts.append(
+                    f"<tr><td>{html_escape(ctype.title())}</td>"
+                    f"<td>{html_escape(item.finding_a)}"
+                    f"<br/><span class='endnote-url'>{html_escape(item.agent_a)}</span></td>"
+                    f"<td>{html_escape(item.finding_b)}"
+                    f"<br/><span class='endnote-url'>{html_escape(item.agent_b)}</span></td>"
+                    f"<td>{html_escape(resolution)}</td></tr>"
+                )
+            parts.append("</table>")
+
+        fact_check = report.fact_check_report
+        if fact_check is not None:
+            parts.append("<h3>Fact check</h3>")
+            parts.append("<table class='data-table'>")
+            parts.append("<tr><th>Measure</th><th>Value</th></tr>")
+            parts.append(
+                f"<tr><td>Claims checked</td>"
+                f"<td>{fact_check.total_claims_checked}</td></tr>"
+            )
+            parts.append(
+                f"<tr><td>Verified</td><td>{fact_check.verified_count}</td></tr>"
+            )
+            parts.append(
+                f"<tr><td>Unverified</td><td>{fact_check.unverified_count}</td></tr>"
+            )
+            parts.append(
+                f"<tr><td>Contradicted</td>"
+                f"<td>{fact_check.contradicted_count}</td></tr>"
+            )
+            parts.append(
+                f"<tr><td>Verification rate</td>"
+                f"<td>{fact_check.verification_rate:.0%}</td></tr>"
+            )
+            # Hallucinated citations and broken evidence chains are the two
+            # failure modes a reader cannot detect for themselves. Always shown,
+            # including when zero, so that "0" is an affirmative claim rather
+            # than an absent section that might mean either.
+            parts.append(
+                f"<tr><td>Hallucinated citations</td>"
+                f"<td>{fact_check.hallucinated_citation_count}</td></tr>"
+            )
+            parts.append(
+                f"<tr><td>Evidence-chain breaks</td>"
+                f"<td>{fact_check.evidence_chain_break_count}</td></tr>"
+            )
+            parts.append("</table>")
+
+        if report.limitations:
+            parts.append("<h3>Limitations</h3><ul>")
+            parts.extend(
+                f"<li>{html_escape(str(item))}</li>" for item in report.limitations
+            )
+            parts.append("</ul>")
+
+        if not parts:
+            return (
+                "<p class='appendix-empty'>No quality assessment data was "
+                "recorded for this engagement.</p>"
+            )
+        return "\n".join(parts)
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 7: Generate PDF with WeasyPrint
@@ -2303,7 +2902,7 @@ class PresentationDesigner(BaseAgent):
             # PDFRenderer.render_pdf expects HTML string content, not a file path.
             html_content = ""
             try:
-                with open(html_path, "r", encoding="utf-8") as f:
+                with open(html_path, encoding="utf-8") as f:
                     html_content = f.read()
             except (OSError, ValueError) as e:
                 self._log(f"RENDER: cannot read staged HTML {html_path}: {e}")
@@ -2339,7 +2938,7 @@ class PresentationDesigner(BaseAgent):
             )
             return ""
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             # Broad by design: WeasyPrint on Windows raises OSError/ImportError
             # from missing GTK natives, which the old narrow tuple let escape
             # and abort the whole delivery stage.
@@ -2360,14 +2959,17 @@ class PresentationDesigner(BaseAgent):
 
         for page in pages:
             # Check for blank pages (no content blocks and no images)
-            if not page.content_blocks and not page.images and not page.charts:
-                if page.page_type not in (PageType.BACK_COVER,):
-                    no_blank = False
+            if (
+                not page.content_blocks
+                and not page.images
+                and not page.charts
+                and page.page_type not in (PageType.BACK_COVER,)
+            ):
+                no_blank = False
 
             # Check for orphaned images (image without text context on same page)
-            if page.images and not page.content_blocks:
-                if page.page_type != PageType.COVER:
-                    no_orphaned = False
+            if page.images and not page.content_blocks and page.page_type != PageType.COVER:
+                no_orphaned = False
 
         return (no_blank, no_orphaned)
 
@@ -2449,7 +3051,8 @@ class PresentationDesigner(BaseAgent):
         self._pages = self._design_layout_plan(report)
 
         # Step 4: Select Unsplash images
-        await self._transition(AgentState.WORKING, "Step 4: Selecting Unsplash images for cover and sections")
+        await self._transition(AgentState.WORKING, "Step 4: Selecting Unsplash images for cover "
+            "and sections")
         self._cover_image = await self._select_cover_image(report)
         self._section_images = await self._select_section_images(report)
 
@@ -2461,7 +3064,8 @@ class PresentationDesigner(BaseAgent):
                 page.images.append(self._section_images[page.section_id])
 
         # Step 5: Receive chart images from Data Visualizer
-        await self._transition(AgentState.WORKING, "Step 5: Receiving chart images from Data Visualizer")
+        await self._transition(AgentState.WORKING, "Step 5: Receiving chart images from Data "
+            "Visualizer")
         # `report` is passed so homeless charts can be re-homed onto a section
         # that actually exists (fix 3.7) — without it the headline exhibits
         # mined from `key_findings` are rendered by nobody.
@@ -2489,7 +3093,8 @@ class PresentationDesigner(BaseAgent):
         pdf_path = await self._generate_pdf(html_path)
 
         # Step 8: Post-process images with Pillow (via Render Engine)
-        await self._transition(AgentState.WORKING, "Step 8: Post-processing images (handed to Render Engine)")
+        await self._transition(AgentState.WORKING, "Step 8: Post-processing images (handed to "
+            "Render Engine)")
 
         # Collect all chart placements
         all_chart_placements: list[ChartPlacement] = []

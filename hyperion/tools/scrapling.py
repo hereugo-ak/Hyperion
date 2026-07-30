@@ -26,12 +26,14 @@ System requirement: scrapling install (downloads Chromium for StealthyFetcher)
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data Models
@@ -266,8 +268,8 @@ class ScraplingClient:
                     title_el = page.css_select("title")
                     if title_el:
                         title = title_el[0].text or ""
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    logger.warning("%s: %s", "_fetch_with_scrapling", exc)
 
             if not title and html:
                 title = self._extract_title(html)
@@ -294,7 +296,7 @@ class ScraplingClient:
                 selector_recovered=selector_recovered,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             took_ms = int((_time.monotonic() - start) * 1000)
             return ScraplingResult(
                 url=url,
@@ -303,7 +305,7 @@ class ScraplingClient:
                 tool_used="stealthy" if stealth else "dynamic",
                 took_ms=took_ms,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             took_ms = int((_time.monotonic() - start) * 1000)
             return ScraplingResult(
                 url=url,
@@ -343,7 +345,7 @@ class ScraplingClient:
                 took_ms=took_ms,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             took_ms = int((_time.monotonic() - start) * 1000)
             return ScraplingResult(
                 url=url,
@@ -352,7 +354,7 @@ class ScraplingClient:
                 tool_used="httpx-fallback",
                 took_ms=took_ms,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             took_ms = int((_time.monotonic() - start) * 1000)
             return ScraplingResult(
                 url=url,

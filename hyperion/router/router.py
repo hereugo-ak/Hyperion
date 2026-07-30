@@ -31,18 +31,16 @@ tier (up or down based on task urgency).
 
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import Any
 
 from hyperion.config import (
     ModelSpec,
     ModelTier,
-    ProviderConfig,
     ProviderType,
     Settings,
     get_settings,
 )
+from hyperion.obs import trace
 from hyperion.router.budget import DailyBudgetPlanner, TaskUrgency
 from hyperion.router.estimator import TokenEstimator
 from hyperion.router.providers.base import BaseProvider, RouterResponse
@@ -55,8 +53,6 @@ from hyperion.router.semantic_cache import ResponseCache
 from hyperion.router.speculative_racer import SpeculativeRacer
 from hyperion.router.structured_validator import StructuredValidator
 from hyperion.router.wait_gate import ProviderCandidate, SlidingWindowTracker, WaitGate
-from hyperion.obs import trace
-
 
 # Tier adjacency for fallback (§3.3: "> 30s wait: try adjacent tier")
 # When a tier is exhausted, try the next tier up (more capable) or down (less capable)
@@ -254,7 +250,12 @@ class LLMRouter:
         2. Provider must have budget remaining (respecting reserve for non-HIGH urgency)
         3. Provider must have at least one non-deprecated model for the tier
         """
-        available: set[ProviderType] = set()
+        # D5.1: an `available: set[ProviderType] = set()` accumulator sat here
+        # and was never written to or read (ruff F841) — the function builds
+        # `models_by_provider` and delegates the actual filtering to the budget
+        # planner. Removed: an empty accumulator named `available` in a function
+        # named `_get_available_providers` reads like the return value, which
+        # makes the real `return budget_available` look like a bug.
 
         # Get models by provider for this tier
         models_by_provider: dict[ProviderType, list[ModelSpec]] = {}

@@ -96,6 +96,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from hyperion.tools._content_quality import is_quality_content
 from hyperion.tools.camoufox_client import CamoufoxClient
 from hyperion.tools.content_selector import DEFAULT_BUDGET_CHARS, select_relevant_content
 from hyperion.tools.crawl4ai import Crawl4AIClient
@@ -447,7 +448,7 @@ class UnifiedExtract:
 
                 available = importlib.util.find_spec("trafilatura") is not None
                 detail = "" if available else "trafilatura not installed"
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             # A probe that raises must not disable a tier outright — attempting
             # it and failing is strictly better than skipping something usable.
             available = True
@@ -469,17 +470,18 @@ class UnifiedExtract:
         return dict(self._skipped)
 
     def _is_quality_content(self, content: str) -> bool:
-        """Check if extracted content meets quality thresholds."""
-        if not content or len(content) < self.MIN_CONTENT_LENGTH:
-            return False
-        # Check it's not just an error message or boilerplate
-        error_indicators = ["404", "not found", "access denied", "forbidden", "captcha"]
-        content_lower = content.lower()
-        error_count = sum(1 for indicator in error_indicators if indicator in content_lower)
-        # If more than 2 error indicators in first 500 chars, likely an error page
-        if error_count > 2 and len(content) < 500:
-            return False
-        return True
+        """Check if extracted content meets quality thresholds.
+
+        Phase 5.1d: the inline substring counter this replaced accepted a
+        stock ``"404 Not Found. The requested URL was not found on this
+        server."`` body as quality content (only 2 of its 5 indicators
+        matched, and the gate required *more than* 2). Because a "successful"
+        rung stops the ladder descending, that error text became the final
+        extraction result and flowed downstream as evidence. Detection now
+        lives in :mod:`hyperion.tools._content_quality`, shared with
+        `deep_search` so the two ladders cannot drift apart again.
+        """
+        return is_quality_content(content, self.MIN_CONTENT_LENGTH)
 
     def _finish(
         self,
@@ -884,7 +886,7 @@ class UnifiedExtract:
                 result = await extractor(
                     url, extract_tables=extract_tables, extract_links=extract_links
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 # Fail loud (fix 0.3 discipline): never a bare `except: pass`.
                 logger.debug("extraction tier %s failed for %s: %s", tier, url, e)
                 errors.append(f"{tier}: {e}")
@@ -1180,7 +1182,7 @@ class UnifiedExtract:
                 continue
             try:
                 await client.close()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 # Fail loud but never let cleanup abort the caller: a leaf
                 # client that cannot close must not prevent the other nine.
                 logger.debug("closing %s failed: %s", type(client).__name__, e)

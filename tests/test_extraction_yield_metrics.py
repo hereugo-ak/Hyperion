@@ -105,6 +105,7 @@ class TestEngagementAccumulator:
 
     def test_thread_safe_concurrent_recording(self):
         import threading
+
         from hyperion.tools.deep_search import _engagement_yield
 
         def record_many():

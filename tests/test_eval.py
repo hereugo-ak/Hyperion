@@ -2,23 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
 from hyperion.eval.harness import (
+    GOLDEN_SET,
     CheckResult,
     EvalHarness,
     EvalResults,
-    GoldenQuery,
-    GOLDEN_SET,
     QueryEvalResult,
     run_deterministic_checks,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Golden Set Tests

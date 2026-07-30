@@ -26,7 +26,6 @@ from pydantic import BaseModel, Field
 from hyperion.config import ModelTier
 from hyperion.schemas.agents import AgentName, SubAgentSpec
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Question Classification (ARCHITECTURE.md §4.9, Agent 1)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -119,7 +118,8 @@ class TaskNode(BaseModel):
     estimated_llm_calls: int = Field(default=5, description="Estimated LLM calls for this task")
     estimated_tokens: int = Field(default=5000, description="Estimated token consumption")
     started_at: float | None = Field(default=None, description="Unix timestamp when task started")
-    completed_at: float | None = Field(default=None, description="Unix timestamp when task completed")
+    completed_at: float | None = Field(default=None, description="Unix timestamp when task "
+        "completed")
     error: str | None = Field(default=None, description="Error message if task failed")
 
     @property
@@ -223,11 +223,12 @@ class WorkflowDAG(BaseModel):
         failed_ids = {t.id for t in self.tasks if t.status == TaskStatus.FAILED}
         newly_failed: list[TaskNode] = []
         for task in self.tasks:
-            if task.status == TaskStatus.PENDING:
-                if any(dep in failed_ids for dep in task.dependencies):
-                    task.status = TaskStatus.FAILED
-                    task.error = "Upstream dependency failed"
-                    newly_failed.append(task)
+            if task.status == TaskStatus.PENDING and any(
+                dep in failed_ids for dep in task.dependencies
+            ):
+                task.status = TaskStatus.FAILED
+                task.error = "Upstream dependency failed"
+                newly_failed.append(task)
         return newly_failed
 
     def get_running_tasks(self) -> list[TaskNode]:

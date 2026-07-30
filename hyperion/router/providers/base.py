@@ -15,7 +15,7 @@ health checking, error classification, and response normalization.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -156,9 +156,7 @@ class ProviderHealth:
                 self.consecutive_failures = 0
                 return True
             return False
-        if self.status == ProviderStatus.UNAVAILABLE:
-            return False
-        return True
+        return self.status != ProviderStatus.UNAVAILABLE
 
     def uptime_percentage(self) -> float:
         if self.total_requests == 0:
@@ -308,7 +306,7 @@ class BaseProvider:
                 raw_response=response,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             error_str = str(e)
             latency = (time.time() - start) * 1000
 
@@ -343,5 +341,5 @@ class BaseProvider:
                 self.health.status = ProviderStatus.HEALTHY
                 self.health.consecutive_failures = 0
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             return False

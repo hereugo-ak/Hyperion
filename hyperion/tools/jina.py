@@ -47,9 +47,9 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote_plus
 
 import httpx
-from urllib.parse import quote_plus
 
 from hyperion.tools.query_utils import grounded_search_or_empty
 
@@ -298,10 +298,34 @@ class JinaClient:
 
             except (httpx.HTTPError, httpx.RequestError, KeyError, ValueError) as e:
                 last_error = e
+                # D5.1: this was `last_error = e` and nothing else — ruff F841
+                # flagged the variable as assigned-but-never-read, and it was
+                # right: every attempt's cause was recorded into a local that
+                # the function then returned past. Jina is one of the two
+                # discovery legs, so all three attempts could fail on (say) an
+                # expired API key and the caller would receive an empty result
+                # set indistinguishable from "the web has nothing", with not one
+                # line in the log. That is the §0.3 silent-failure pattern that
+                # made the Phase-0 outage invisible, in the search path itself.
+                logger.debug(
+                    "Jina search attempt %d/%d failed for %r: %s",
+                    attempt + 1,
+                    self.MAX_RETRIES,
+                    query,
+                    e,
+                )
                 if attempt < self.MAX_RETRIES - 1:
                     await asyncio.sleep(self.RETRY_DELAY * (attempt + 1))
                 continue
 
+        # All retries exhausted: say so, loudly, with the cause attached.
+        logger.warning(
+            "Jina search exhausted all %d attempts for %r — returning empty. Last error: %s",
+            self.MAX_RETRIES,
+            query,
+            last_error,
+            exc_info=last_error,
+        )
         return JinaSearchResponse(query=query, results=[], total=0)
 
     # ─────────────────────────────────────────────────────────────────────

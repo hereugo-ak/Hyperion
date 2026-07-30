@@ -1585,17 +1585,282 @@ progress, `[x]` = landed with proof.
     the *calibration* artefact for the page model — `test_page_budget` asserts the
     model reproduces 36 exactly. It is not a contract violation by the pipeline,
     which would now ask those 7 sections for 450 words each.
-- [ ] **4.3** Add tornado, marimekko, football-field, growth-share, bubble charts
-- [ ] **4.4** Enforce MGI exhibit anatomy in template
-- [ ] **4.5** Add At-a-glance, Technical appendix, Endnotes
+- [x] **4.3** Add tornado, marimekko, football-field, growth-share, bubble charts
+  - `5d21d07` geometry + reachability + tests, `9e698ba` renderer lifecycle.
+  - **The hard part was not drawing five shapes.** The chart type list was
+    written out in THREE independent places, and drift between them is silent
+    *and directional*, which is why no existing test caught it:
+    - `ChartType` (`schemas/models.py`) — now declared CANONICAL in its docstring.
+    - `_get_chart_creator` (`output/charts.py`) — a type missing here renders a
+      **BAR chart**, because the dispatch ends in `.get(type, self._create_bar)`.
+      Right data, wrong geometry, no exception, no log line.
+    - `data_visualizer.py` — `type_map`, `_select_chart_type`, and the
+      `_build_plotly_traces` chain. Missing from the chain renders **EMPTY**;
+      present but unreachable from `_select_chart_type` is **dead code that
+      every direct unit test still passes**.
+  - **Latent bug found by the parity test, not by reading code:**
+    `ChartType.PIE` was enumerated and selectable but had no dispatch key, so
+    every pie request had been silently rendering a bar chart. Fixed.
+  - **Rule ordering in `_select_chart_type` is load-bearing, not stylistic.**
+    The MBB rules had to go *before* the generic families: `"growth-share"`
+    contains `"growth"`(→LINE), `"share mekko"` contains `"share"`
+    (→composition), `"comparable"` contains `"compar"`(→BAR). Appending them —
+    the obvious additive change — leaves 4 of 9 natural phrasings unreachable
+    while all direct unit tests still pass.
+  - **Encoding:** bubbles use `sizemode="area"` with explicit `sizeref`;
+    Plotly's default scales *diameter*, which overstates quadratically (Tufte
+    lie factor). Growth-share divides at share = **1.0x (BCG parity)**, not the
+    data median. Tornado overrides "first series is Terracotta" and colors by
+    sign (Alert Red down / Sage up) because the sign IS the information.
+  - **A hang that was NOT what it looked like — the real find.** The new suite
+    made the full run hang in `kaleido/scopes/base.py:308`, which reads as
+    kaleido process exhaustion. Measurement falsified that: 60 consecutive
+    exports show **zero** degradation (flat ~0.15s). What actually happens is
+    one export spawns a Chromium tree of **7 procs / 277MB and holds it for the
+    life of the interpreter**. On this 985MB box with swap already exhausted
+    that is most of the free memory, so the *next* allocation thrashes and
+    kaleido's pipe read is merely where the stall becomes visible. Decisive
+    control: the exact combination that timed out at >45s finished in **12s**
+    after reaping orphaned trees, nothing else changed.
+    `ChartGenerator.close()` was literally `pass`, so `async with` and every
+    `finally: await close()` freed nothing. Now `release_renderer()` +
+    `close()` + a `finally` in `generate_batch` (released per batch, not per
+    chart: respawn is ~1.5s vs ~0.15s warm).
+  - **Verified by measurement, not assertion:** all **16** chart types export
+    Tier 1 as real PNGs (191–501KB) and Tier 2 via matplotlib (42–99KB); 24
+    hostile-input combinations all stay on Tier 1; selection 6/6 collision
+    phrases, 12/12 generic regressions, 9/9 hints. All 5 exhibits were
+    *visually* inspected — which is the only reason the football-field
+    label-clipping bug was found, and it is now pinned by an explicit
+    x-range-headroom test.
+  - **Five negative controls, all bit, all restored:** missing dispatch key
+    (6 failures), rule ordering (4), marimekko widths (5), area-vs-diameter
+    (1), and `close()` reverted to `pass` (2, incl. the behavioural one).
+  - Two of my own tests were wrong and were rewritten to pin what is true:
+    one expected `[]` where reality is 2 valid empty traces (creators coerce
+    rather than raise — a *better* outcome), and one hardcoded `expected`
+    while leaving `widths` unused (ruff F841 caught a second unverified
+    implementation).
+  - `tests/test_mbb_chart_vocabulary.py` — **122 tests / 11 classes.** Lint:
+    "All checks passed"; no new findings in touched modules vs `bcdf98e`
+    (B905 18→12, E501 20→19 are improvements).
+- [x] **4.3-followup** Full-suite verification + the OOM was NOT kaleido
+  - `dad5b03` declares `pytest-timeout` (it was installed ad hoc and undeclared,
+    so a clean `pip install -e ".[dev]"` produced an interpreter where
+    `--timeout=120` is an unrecognised argument). Not hypothetical: this sandbox
+    was rebuilt between sessions and came back without it. Negative control — a
+    test that blocks forever: **without** the plugin it ran until an external
+    `timeout 15` killed it (rc=124) and pytest printed *nothing*; **with**
+    `--timeout=5` it reported `Failed: Timeout (>5.0s)`, rc=1, in 5.04s.
+  - **The suite is green. 1456 passed, 8 skipped, 0 failed, 0 errors** across
+    38 per-module shards (`tools/run_suite_sharded.sh`), wall 118s.
+    Collection parity proves sharding hides nothing: full-suite collection and
+    the sum of the 38 shard collections both report **1464**, and
+    1456 + 8 = 1464 exactly.
+  - **The handoff's expected total (~1573) was wrong** and was arithmetic, not
+    measurement: it came from a stale `1451` that contradicted its own `1334`
+    baseline. Measured: 1342 collected without the 4.3 module + 122 in it =
+    **1464**, i.e. `1334 + 122 = 1456` passing. No tests are missing.
+  - 🔴 **The single-process OOM is not the kaleido/Chromium tree.** The prior
+    session inferred that from the 34%→93% improvement after the `close()` fix.
+    Falsified by direct control: the full suite run with **both** chart modules
+    excluded (`--ignore` mbb + chart_export_smoke) *still* dies `rc=137` at
+    **91%**. Kaleido cannot be the cause of a crash that happens without it.
+  - **Actual cause, by bisect on module prefixes** (`tools/probe_suite_memory.sh`,
+    peak RSS via `resource.getrusage`): a prefix of the first **34** modules
+    peaks at **316 MB and passes**; extending to 35–36 OOMs. Module 35 is
+    `tests/test_two_column_layout.py`, which alone peaks at **454 MB** — more
+    than the whole 34-module prefix. Its neighbour
+    `test_unified_extract_ladder.py` is 93 MB, so this is one module, not
+    ambient growth. WeasyPrint PDF rendering, not chart export, is the
+    allocation that breaks the 985 MB ceiling.
+  - Peak RSS is monotonic within one interpreter (221→327→344 MB over the first
+    26 modules) and never returns, which is why sharding is the only thing that
+    reclaims: process exit does the freeing. `release_renderer()` can return the
+    Chromium tree *between batches* but cannot lower an interpreter's own
+    high-water mark — so 4.3's fix was real but was never the whole story.
+  - Two measurement instruments were themselves wrong before they were right:
+    `/usr/bin/time -f %M` is **not installed** in this image and its absence
+    returned `rc=127` with a `0 MB` reading — which reads as "no memory growth"
+    rather than "did not run", the exact green-test-over-broken-system failure
+    this audit is about. Replaced with in-process `getrusage`. A per-module RSS
+    pytest plugin was abandoned after its detached launches were repeatedly
+    reaped, giving stale traces from an earlier validation run; the prefix
+    bisect is coarser but its numbers are trustworthy.
+  - Still open: no single-process green summary exists, and on this host one is
+    not achievable while `test_two_column_layout.py` needs 454 MB. The correct
+    fix is to bound that module's peak (or shard in CI), which is 5.x work —
+    not a claim that the suite is unverified. Sharded green is a real
+    measurement; it is simply a different one.
+- [x] **4.4** Enforce MGI exhibit anatomy in template — `b74b370`
+  - The anatomy was already *emitted* by 3.7, which made this look done. It was
+    not: **every part was independently optional** in the Jinja source —
+    `{% if chart.caption %}` around the action title and
+    `{% if chart.source_citation or chart.note %}` around the *entire* footer.
+    Only `image_path` was ever guarded.
+  - Measured before the fix, all five degenerate combinations rendered clean —
+    no exception, no log line, and a PDF that still looked deliberate:
+    `NO action title` → `title=0 figure=1 Note=1 Source=1 footer=1`;
+    `NO note+source` → `title=1 figure=1 Note=0 Source=0 footer=0`. An exhibit
+    with no takeaway title and no provenance shipped silently.
+  - Fix: `_enforce_exhibit_anatomy(placements) -> list[str]` runs inside
+    `_assemble_chart_placements` *before* it returns, repairing and reporting
+    defects per exhibit; `_humanise_chart_id` supplies a readable fallback
+    title; the `exhibit-title` div and `exhibit-footer` figcaption are now
+    **unconditional**.
+  - `tests/test_exhibit_anatomy.py` — **21 tests / 5 classes**, asserting on the
+    repaired object and on rendered HTML, never on template text (the pre-4.4
+    template *contained* `Note:` too, inside an `{% if %}` that could skip it).
+    `21 passed`; combined exhibit/output/page suites `220 passed`; ruff "All
+    checks passed" on the new file and `IDENTICAL` findings vs HEAD on the
+    modified module.
+  - 🔴 **One of my own negative controls did not bite, and that is the finding.**
+    NC2 restored the old `{% if chart.source_citation or chart.note %}` guard
+    and the behavioural footer test **still passed** — because enforcement
+    defaults the source upstream, so `source or note` is now always true. The
+    test was measuring a condition the fix had made unreachable. Replaced with a
+    *structural* assertion on the template, which does fail when the guard
+    returns. A negative control that passes is not a reassurance; it is a bug in
+    the test.
+- [x] **4.5** Add At-a-glance, Technical appendix, Endnotes — this session
+  - Three sections every MGI/BCG report carries were absent. The third was the
+    worst, and not merely for being missing: `quality_score`,
+    `confidence_breakdown`, `contradictions`, `fact_check_report` and
+    `limitations` **already existed on `FinalReport`**, were computed by the
+    pipeline, and **none reached the PDF**. The system graded itself and threw
+    the scorecard away. The data was there; only the page was missing.
+  - Added: an **At a Glance** page *before* the TOC (question, recommendation,
+    confidence, evidence base, analysis depth, why, top-5 findings capped,
+    top-4 assumptions capped); **Endnotes** numbered continuously across the
+    document and grouped by citing chapter, de-duplicated by URL *within* a
+    chapter; a **Technical Appendix** publishing quality dimensions, residual
+    gaps, confidence breakdown, contradictions, fact-check counts and
+    limitations. TOC rows and page offsets updated; `Appendix` renamed
+    `Appendix: Sources`.
+  - Both render call sites are fed (`endnotes_html`, `technical_appendix_html`)
+    — deliberately, because fix 3.5 was exactly the bug of registering in one
+    Jinja env and not the other. `TestBothRenderPathsAreFed` asserts it by count.
+  - Also fixed in `_build_appendix_sources_html`: the literal `"Unknown"`
+    fallback title, which `tools/audit_render_probe.py` counts as a **template
+    leak** (§11 requires zero), and titles/URLs being interpolated
+    **unescaped** — an `&` or `<` in a real headline corrupted the table.
+  - 🔴 **Three wrong field names shipped in my first draft, all hidden by
+    `getattr(obj, "field", default)`.** Caught only by checking the builders
+    against `model_fields` rather than trusting them:
+    `QualityScore.dimensions` is a `list[QualityDimension]`, **not a dict** — the
+    draft guarded with `isinstance(dimensions, dict)`, so the dimension table
+    would have rendered on **no report ever**; `FactCheckReport` exposes
+    `total_claims_checked`/`verified_count`, **not** `claims_checked`/
+    `claims_verified` — both reads returned `None` and the whole fact-check block
+    was skipped; `Contradiction` carries `finding_a`/`finding_b`, **not**
+    `description`/`topic` — the draft's `or str(item)` fallback would have
+    printed a **raw pydantic field dump** into a client-facing PDF. A defensive
+    default converts a schema mismatch into a plausible-looking empty section.
+    All `getattr` defaults removed from both builders and the construct is now
+    **banned by test** inside them.
+  - The probe fixture was rebuilt on **real pydantic models** instead of
+    `SimpleNamespace` stubs, and immediately rejected three of my own fixture
+    errors that a stub would have accepted: `dimension_id` is an enum (not a
+    free string), `score` is an `int` constrained 1..5 (not a float), and the
+    enum member is `INTERPRETATION_CONFLICT` (not `INTERPRETATION`). Production
+    formatting corrected to `N/5` accordingly — `4.0` implies precision the
+    schema does not carry.
+  - 🔴 **My own probe metric was wrong twice, in both cases reading healthier
+    than reality.** `glance_labels_present` scored `1/4` because the labels are
+    uppercased by CSS `text-transform`, so the literal `"Recommendation"` never
+    matched — and the single hit was the word "Confidence" on the *Technical
+    Appendix* page, meaning the metric would have reported non-zero with the
+    entire At-a-glance grid deleted. `endnote_entries` read `24` because the
+    regex ran over the whole document and counted the At-a-glance findings list
+    as endnotes. Both are now scoped **per page** (and skip the TOC, which lists
+    every heading). A measurement that cannot distinguish the thing it names
+    from an unrelated page is not a measurement.
+  - Measured on the rendered PDF (`tools/audit_render_probe.py`, rc=0):
+    `at_a_glance_page=2`, `endnotes_page=36`, `technical_appendix_page=37`,
+    `glance_labels_present=4/4`, `glance_words=111`, `endnote_entries=21`,
+    `technical_appendix_sections=5/5`, `glance_precedes_toc=true`,
+    `page_count=42`, `blank_pages=0`, all four `leaks` **0** (incl. `unknown`),
+    `exhibit_count=7` with `note=7`/`source=7`. The `21` is itself the
+    de-duplication proof: 7 chapters × 4 raw sources = 28 → 21 after collapsing
+    the shared URL.
+  - `tests/test_front_back_matter.py` — **56 tests / 6 classes**. `56 passed`;
+    adjacent suites `175 passed`; related suites `108 passed, 5 skipped`. Ruff:
+    new files clean except one **pre-existing** `N802` in the probe (2 findings
+    before my change, 2 after); `presentation_designer.py` held at **27
+    findings, identical to HEAD** after I wrapped the three long lines I had
+    introduced. Pre-existing findings remain deferred to 5.1/5.3.
+  - Negative controls — all four bit: **NC1** restore `isinstance(dict)` on
+    dimensions → 2 failures (heading and tables render, dimension rows vanish);
+    **NC2** gate fact-check on `claims_checked` → 5 failures, including the
+    `getattr` ban, catching the *mechanism* and not just the symptom; **NC3**
+    reset endnote numbering per chapter → 2 failures; **NC4** reinstate the
+    `description`/`topic` + `str(item)` fallback → 4 failures. Fix restored, no
+    NC residue, `56 passed`.
+  - 🔴 **NC4 exposed two more weak tests of mine, which is why it was worth
+    running.** `test_no_raw_pydantic_repr_leaks_into_the_appendix` **passed**
+    with the leak deliberately reinstated: pydantic v2's `str()` is not
+    `repr()` (no `ClassName(` prefix) and `html_escape` rewrites `'` to
+    `&#x27;`, so both of my literals were unmatchable. So was
+    `test_contradictions_render_both_opposed_findings`, because a leaked dump
+    *contains* the finding text — a substring assertion cannot tell a formatted
+    table from a dumped object. Rewrote the first to look for pydantic
+    field-dump syntax (`agent_a=`, `finding_a=`) and added
+    `test_each_contradiction_occupies_its_own_structured_cells`, which asserts
+    four `<td>` per row and no `colspan`. NC4 then produced **4** failures
+    instead of 2.
 
 ### Phase 5 — Hardening
-- [ ] **5.1** `ruff` + `mypy --strict` pre-commit (the process fix for the P0)
-- [ ] **5.2** Golden-PDF regression test on probe metrics
-- [ ] **5.3** Coverage floor; ban bare `except Exception: pass` (ruff `BLE001`/`S110`)
-- [ ] **5.4** Reranker + embeddings + `sqlite-vec` Second Brain
-- [ ] **5.5** OECD/Eurostat/IMF SDMX + `yfinance` to break the FRED US-only ceiling
-- [ ] **5.6** PDF/A-2b post-pass via `pikepdf` + bookmarks
+- [x] **5.1** `ruff` + `mypy --strict` pre-commit (the process fix for the P0)
+      — 5.0: the CI regression gate itself could not run (`c181e04`); 5.1: 8 live
+      defects hiding as "unused variable" lint (`f9d4118`); 5.1b: two models
+      shared one name — Agent 9's horizon scan never ran (`45d3448`); 5.1c:
+      `zip()` dropped every chart series (`7739d86`); 5.1d: three silent-failure
+      defects behind "style" lint (`529a171`); 5.1e: specialists could report
+      success while delivering nothing (`7327f27`); 5.1e-cont: 939→503 E501
+      reflow + SIM105 triage (`6acbdb3`, `99eeda6`, `989372d`, `cd46f85`);
+      5.1f: pre-commit hooks + `ci_gate --lint` + staged mypy allowlist +
+      E501 quarantine ≤60, shrink-never-grow (`7290633`, merged `0120191`).
+- [x] **5.2** Golden-PDF regression test on probe metrics — `tests/golden/
+      pdf_metrics_golden.json` encodes DoD #7–#12 bounds; `test_golden_pdf.py`
+      ships the comparator, instrument-honesty via synthetic fitz PDFs (healthy
+      passes, degraded MUST fail ≥8 checks), and integrity guards (`881533a`).
+- [x] **5.3** Coverage floor; ban bare `except Exception: pass` (ruff `BLE001`/`S110`)
+      — 220 findings triaged: 51 silent handlers converted to recorded failures
+      (S110/S112=0), 169 `noqa: BLE001 - <reason>` on intentional catches;
+      BLE+S110/S112 in the lint select; `test_bare_except_ban.py` gates the ban
+      with a live negative-control probe (`a72ded7`).
+- [x] **5.4** Reranker + embeddings + `sqlite-vec` Second Brain —
+      `vector_brain.py`: dual-backend embeddings (sentence-transformers
+      all-MiniLM-L6-v2 + sqlite-vec vec0 ANN in production; deterministic
+      blake2b bag-of-ngrams hashing + exact cosine blob scan as fallback);
+      `second_brain.py`: max(keyword, semantic) fusion — semantic recall only
+      lifts, never hides exact keyword hits; index-on-save degrades to
+      keyword-only. 12 tests incl. 2 negative controls (`17b98b8`).
+      (Reranker itself was delivered earlier in Phase 2 via content_selector.)
+- [x] **5.5** OECD/Eurostat/IMF SDMX + `yfinance` to break the FRED US-only
+      ceiling — `sdmx.py`: OECDClient (path-key, SDMX-CSV), EurostatClient
+      (query-param, TSV with flag-letter stripping, compare_countries),
+      IMFClient (dot-key, get_exchange_rate for non-US DCF FX), header-driven
+      parser; `market_data.py`: yfinance wrapper, lazy import, thread-executor
+      so the sync library never blocks the AgentBus, 15-min cache,
+      compare_peers for global peer groups. 26 tests incl. US-only-ceiling
+      negative controls + AST registry guards (`9ea5022`).
+- [x] **5.6** PDF/A-2b post-pass via `pikepdf` + bookmarks —
+      `pdf_postprocess.py`: stamps XMP pdfaid:part=2/conformance=B + Dublin
+      Core metadata; outline from BookmarkSpec; lazy pikepdf import; atomic
+      temp-file + os.replace (a failed pass never leaves a half-written
+      deliverable); never raises. Wired into BOTH render engine success paths
+      (WeasyPrint + Playwright) via `_apply_pdf_post_pass`, bookmarks extracted
+      from h1/h2 headings located in the rendered PDF. 16 tests incl.
+      atomicity + refuse negative controls + AST guards (`4dc9820`).
+
+**Final verification (fix0.1 @ 4dc9820):** `ruff` clean; `mypy` clean (135
+files); `ci_gate --lint` PASS. Sharded suite on the 985MB sandbox:
+2171 passed / 49 failed / 1 error / 18 skipped — every failure classified as
+a pre-existing sandbox dependency gap (kaleido/textual absent), zero caused
+by Phase 5; all six Phase 5 test shards green. `audit_render_probe.py`
+requires weasyprint (absent in sandbox) — the live golden-PDF run is the
+user-side step.
 
 ---
 

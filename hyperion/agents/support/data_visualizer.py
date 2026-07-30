@@ -57,13 +57,11 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import datetime
 from typing import Any
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
-from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -81,7 +79,6 @@ from hyperion.schemas.models import (
     KeyFinding,
     VisualizationOutput,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HYPERION Chart Color Sequence (§7.3 — STRICT)
@@ -107,6 +104,36 @@ PDF_PALETTE = {
     "deep_brown": "#3D3530",
     "alert_red": "#B5533C",
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MBB exhibit vocabulary (fix 4.3, audit §3.9)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The five exhibit types whose geometry lives in `hyperion.output.charts`
+# rather than being hand-built in `_build_plotly_traces` below. Declared once,
+# as a frozenset, so the trace builder and the Tufte checker cannot disagree
+# about which types are delegated.
+_MBB_CHART_TYPES = frozenset({
+    ChartType.TORNADO,
+    ChartType.MARIMEKKO,
+    ChartType.FOOTBALL_FIELD,
+    ChartType.GROWTH_SHARE,
+    ChartType.BUBBLE,
+})
+
+# Chart types with no meaningful *value* axis to label. Used by the Tufte
+# compliance check: demanding an axis label from a treemap or a pie is not
+# rigour, it is a false negative that would mark a correct exhibit
+# non-compliant. TORNADO is included for the y-axis only — its categories are
+# driver names, which are self-labelling — but its x-axis (the swing in the
+# output metric) very much does need a label, so it is NOT exempt from that.
+_NO_CARTESIAN_AXES = frozenset({
+    ChartType.TREEMAP,
+    ChartType.SANKEY,
+    ChartType.PIE,
+    ChartType.RADAR,
+    ChartType.MARIMEKKO,  # Axes are composed dimensions, labelled in-figure
+})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -382,18 +409,80 @@ class DataVisualizer(BaseAgent):
                 "sankey": ChartType.SANKEY,
                 "stacked_bar": ChartType.STACKED_BAR,
                 "pie": ChartType.PIE,
+                # MBB exhibit vocabulary (fix 4.3, audit §3.9)
+                "tornado": ChartType.TORNADO,
+                "sensitivity": ChartType.TORNADO,      # common alias
+                "marimekko": ChartType.MARIMEKKO,
+                "mekko": ChartType.MARIMEKKO,          # common alias
+                "football_field": ChartType.FOOTBALL_FIELD,
+                "football": ChartType.FOOTBALL_FIELD,  # common alias
+                "growth_share": ChartType.GROWTH_SHARE,
+                "bcg_matrix": ChartType.GROWTH_SHARE,  # common alias
+                "bubble": ChartType.BUBBLE,
             }
             if hint_lower in type_map:
                 return type_map[hint_lower]
 
         shape_lower = data_shape.lower() if data_shape else ""
 
+        # ── MBB exhibit vocabulary (fix 4.3, audit §3.9) ──────────────────
+        # These are matched FIRST, before the generic families below, and the
+        # order is load-bearing rather than stylistic. The generic rules use
+        # broad substring matches that swallow the specific ones:
+        #
+        #   "growth-share matrix"    contains "growth" -> would match TREND -> LINE
+        #   "market share mekko"     contains "share"  -> would match COMPOSITION
+        #   "valuation range by ..." contains "compar" in "comparable" -> BAR
+        #   "bubble: size vs growth" contains "growth" -> LINE
+        #
+        # So a purely additive change that appended these to the end of the
+        # chain would have left every one of them unreachable for its most
+        # natural phrasing — the same class of silent, test-passing dead code
+        # the audit is about. Specific-before-generic is the invariant;
+        # `tests/test_mbb_chart_vocabulary.py::TestSpecificShapesBeatGenericOnes`
+        # pins it with the exact colliding phrases above.
+
+        # Sensitivity → tornado (which driver moves the answer most)
+        if any(w in shape_lower for w in [
+            "sensitivity", "tornado", "driver", "swing", "what-if", "elasticity",
+        ]):
+            return ChartType.TORNADO
+
+        # Valuation range → football field
+        if any(w in shape_lower for w in [
+            "football field", "football", "valuation range", "valuation",
+            "price target", "fair value",
+        ]):
+            return ChartType.FOOTBALL_FIELD
+
+        # Portfolio → growth-share matrix (BCG)
+        if any(w in shape_lower for w in [
+            "growth-share", "growth share", "bcg", "portfolio matrix",
+            "portfolio", "star", "cash cow",
+        ]):
+            return ChartType.GROWTH_SHARE
+
+        # Two-dimensional composition → marimekko
+        if any(w in shape_lower for w in [
+            "marimekko", "mekko", "two-dimensional composition",
+            "share by segment", "weighted composition",
+        ]):
+            return ChartType.MARIMEKKO
+
+        # Three variables with magnitude → bubble
+        if any(w in shape_lower for w in [
+            "bubble", "three-variable", "three variable", "size-encoded",
+            "sized by",
+        ]):
+            return ChartType.BUBBLE
+
         # Comparison → bar
         if any(w in shape_lower for w in ["comparison", "compare", "versus", "vs", "benchmark"]):
             return ChartType.BAR
 
         # Trend → line
-        if any(w in shape_lower for w in ["trend", "time", "over time", "growth", "decline", "trajectory"]):
+        if any(w in shape_lower for w in ["trend", "time", "over "
+            "time", "growth", "decline", "trajectory"]):
             return ChartType.LINE
 
         # Distribution → histogram
@@ -559,16 +648,7 @@ class DataVisualizer(BaseAgent):
         for i, series in enumerate(chart_spec.data_series):
             color = series.color or CHART_COLORS[i % len(CHART_COLORS)]
 
-            if chart_spec.chart_type == ChartType.BAR:
-                traces.append({
-                    "type": "bar",
-                    "name": series.name,
-                    "x": series.labels,
-                    "y": series.values,
-                    "marker": {"color": color},
-                })
-
-            elif chart_spec.chart_type == ChartType.STACKED_BAR:
+            if chart_spec.chart_type == ChartType.BAR or chart_spec.chart_type == ChartType.STACKED_BAR:
                 traces.append({
                     "type": "bar",
                     "name": series.name,
@@ -678,8 +758,7 @@ class DataVisualizer(BaseAgent):
                         },
                     })
 
-            elif chart_spec.chart_type == ChartType.PIE:
-                if i == 0:
+            elif chart_spec.chart_type == ChartType.PIE and i == 0:
                     traces.append({
                         "type": "pie",
                         "name": series.name,
@@ -690,7 +769,142 @@ class DataVisualizer(BaseAgent):
                         "textposition": "outside",
                     })
 
+        # ── MBB exhibit vocabulary (fix 4.3, audit §3.9) ──────────────────
+        # Delegated to `hyperion.output.charts.ChartGenerator` rather than
+        # hand-built here. The five MBB exhibits are not "a trace with a
+        # different type string" — a tornado sorts its drivers by swing, a
+        # marimekko puts columns on a continuous axis at computed centers, a
+        # football field draws floating spans from a computed base, and both
+        # bubble forms need an area `sizeref`. Reimplementing that geometry
+        # inline would create a fourth place for the same logic to drift,
+        # which is the defect this fix exists to remove — the branch chain
+        # above is already a duplicate of `charts.py`'s creators.
+        #
+        # Note this is a genuine behavioural fix as well as a structural one:
+        # the chain above is `if/elif` over the chart type, so ANY type it
+        # does not name returns an EMPTY trace list, which exports as a blank
+        # chart (not a bar-chart substitute, as in `_get_chart_creator`).
+        # Without this branch the five new types would render as empty
+        # exhibits — the `has_exhibits: false` family of failure again.
+        if chart_spec.chart_type in _MBB_CHART_TYPES:
+            return self._build_mbb_traces(chart_spec)
+
         return traces
+
+    def _build_mbb_traces(
+        self,
+        chart_spec: ChartSpecification,
+    ) -> list[dict[str, Any]]:
+        """Build traces for the MBB exhibit types via the shared ChartGenerator.
+
+        Converts this agent's `ChartSpecification` (series-of-labelled-values)
+        into `charts.ChartSpec` (parallel rows in `y_data`), builds the figure
+        with the single canonical implementation, and returns its traces as
+        plain dicts so the caller's existing figure-assembly and export path
+        is unchanged.
+
+        The row mapping follows each creator's documented layout: the first
+        data series supplies `x_data` labels, and each series' values become
+        one `y_data` row in order — which is exactly how the creators read
+        their `y_data[0]`, `y_data[1]`, `y_data[2]`.
+        """
+        import plotly.graph_objects as go
+
+        from hyperion.output.charts import ChartGenerator
+        from hyperion.output.charts import ChartSpec as OutputChartSpec
+
+        series = chart_spec.data_series
+        labels: list[str] = []
+        for s in series:
+            if s.labels:
+                labels = [str(lab) for lab in s.labels]
+                break
+
+        spec = OutputChartSpec(
+            chart_type=chart_spec.chart_type.value,
+            title=chart_spec.title,
+            x_label=chart_spec.x_axis_label,
+            y_label=chart_spec.y_axis_label,
+            x_data=labels,
+            y_data=[list(s.values) for s in series],
+            series_names=[s.name for s in series],
+            source=chart_spec.source_citation,
+        )
+
+        try:
+            creator = ChartGenerator()._get_chart_creator(spec.chart_type)
+            fig = creator(spec, go)
+            # `to_plotly_json()` gives serialisable dicts, matching the shape
+            # the hand-built branches above produce.
+            return [dict(trace) for trace in fig.to_plotly_json().get("data", [])]
+        except (ValueError, TypeError, AttributeError, KeyError, ImportError) as e:
+            # Consistent with `_generate_chart_with_plotly`'s own handler:
+            # never let one malformed exhibit abort the whole visualization
+            # run. An empty trace list degrades to a blank chart, which the
+            # caller already tolerates.
+            self._logger.warning(
+                f"MBB trace construction failed for {chart_spec.id} "
+                f"({chart_spec.chart_type.value}): {e}"
+            )
+            return []
+
+    def _mbb_layout_overrides(
+        self,
+        chart_spec: ChartSpecification,
+    ) -> dict[str, Any]:
+        """Extract the geometry-bearing layout keys from an MBB figure.
+
+        Only the keys that carry meaning are copied — `barmode`, `bargap`,
+        `shapes`, and axis settings the creator computed (reversed autorange,
+        array tickvals). Brand styling (colors, fonts, margins) deliberately
+        stays with `_build_plotly_layout`, which is this agent's own
+        responsibility and already correct.
+        """
+        import plotly.graph_objects as go
+
+        from hyperion.output.charts import ChartGenerator
+        from hyperion.output.charts import ChartSpec as OutputChartSpec
+
+        series = chart_spec.data_series
+        labels: list[str] = []
+        for s in series:
+            if s.labels:
+                labels = [str(lab) for lab in s.labels]
+                break
+
+        spec = OutputChartSpec(
+            chart_type=chart_spec.chart_type.value,
+            title=chart_spec.title,
+            x_data=labels,
+            y_data=[list(s.values) for s in series],
+            series_names=[s.name for s in series],
+        )
+
+        overrides: dict[str, Any] = {}
+        try:
+            creator = ChartGenerator()._get_chart_creator(spec.chart_type)
+            layout = creator(spec, go).to_plotly_json().get("layout", {})
+        except (ValueError, TypeError, AttributeError, KeyError, ImportError):
+            return overrides
+
+        for key in ("barmode", "bargap", "shapes"):
+            if key in layout:
+                overrides[key] = layout[key]
+
+        # Axis keys are merged rather than replaced so the brand gridcolor,
+        # tickfont, and title set by `_build_plotly_layout` survive.
+        for axis in ("xaxis", "yaxis"):
+            src = layout.get(axis)
+            if not isinstance(src, dict):
+                continue
+            merged = {
+                k: v for k, v in src.items()
+                if k in ("autorange", "tickmode", "tickvals", "ticktext", "range")
+            }
+            if merged:
+                overrides[axis] = merged
+
+        return overrides
 
     def _build_annotations(
         self,
@@ -786,6 +1000,19 @@ class DataVisualizer(BaseAgent):
         # For stacked bar, set barmode
         if chart_spec.chart_type == ChartType.STACKED_BAR:
             layout["barmode"] = "stack"
+
+        # Fix 4.3: the MBB exhibits carry layout state that is part of their
+        # geometry, not decoration — `barmode="overlay"` for a tornado's
+        # back-to-back bars, `barmode="stack"` + `bargap=0` for a marimekko's
+        # abutting columns, the reversed x-axis on a growth-share matrix, and
+        # the quadrant/reference `shapes`. `_build_plotly_layout` above builds
+        # its layout from the spec alone and knows none of that, so merging
+        # the creator's own layout in is what keeps the exported figure the
+        # same shape as the one `charts.py` produces. Without this, a
+        # marimekko would export with default gaps between columns — i.e. a
+        # plain stacked bar, silently discarding the width dimension.
+        if chart_spec.chart_type in _MBB_CHART_TYPES:
+            layout.update(self._mbb_layout_overrides(chart_spec))
 
         # Generate chart using Plotly tool
         chart_id = chart_spec.id
@@ -960,16 +1187,29 @@ class DataVisualizer(BaseAgent):
         - Axes labeled
         - Source cited
         """
-        # Check for required elements
-        if not chart_spec.x_axis_label and chart_spec.chart_type not in (
-            ChartType.TREEMAP, ChartType.SANKEY, ChartType.PIE, ChartType.RADAR
-        ):
+        # Check for required elements.
+        #
+        # Fix 4.3: the exempt sets were two inline tuples that had to be kept
+        # in step with each other and with the enum by hand. They are now
+        # derived from `_NO_CARTESIAN_AXES`, declared once at module level.
+        # The five new MBB types are deliberately NOT blanket-exempt: a
+        # football field's x-axis is a valuation in currency units, a
+        # growth-share matrix's axes are relative share and growth rate, and
+        # a tornado's x-axis is the swing in the output metric. Those labels
+        # are exactly what makes the exhibit readable, so requiring them is
+        # the correct strictness. Only the y-axes that are categorical (the
+        # driver/methodology names on a horizontal bar) are exempt, because a
+        # label there would restate the tick labels.
+        _y_exempt = _NO_CARTESIAN_AXES | {
+            ChartType.HISTOGRAM,          # y is always "frequency"
+            ChartType.TORNADO,            # y is the driver names
+            ChartType.FOOTBALL_FIELD,     # y is the methodology names
+        }
+
+        if not chart_spec.x_axis_label and chart_spec.chart_type not in _NO_CARTESIAN_AXES:
             return False
 
-        if not chart_spec.y_axis_label and chart_spec.chart_type not in (
-            ChartType.TREEMAP, ChartType.SANKEY, ChartType.PIE, ChartType.RADAR,
-            ChartType.HISTOGRAM,
-        ):
+        if not chart_spec.y_axis_label and chart_spec.chart_type not in _y_exempt:
             return False
 
         if not chart_spec.source_citation:
@@ -980,10 +1220,7 @@ class DataVisualizer(BaseAgent):
         for series in chart_spec.data_series:
             if series.color:
                 unique_colors.add(series.color)
-        if len(unique_colors) > 5:
-            return False
-
-        return True
+        return len(unique_colors) <= 5
 
     # ─────────────────────────────────────────────────────────────────────
     # Axis calibration
@@ -1001,6 +1238,25 @@ class DataVisualizer(BaseAgent):
         - No truncated y-axes that exaggerate differences
         - Axis ranges show full data context
         - No log scales without labeling
+
+        Fix 4.3 note: the MBB exhibit types fall through this function
+        untouched, and that is deliberate rather than an omission. Forcing a
+        zero-based y-range here would be actively wrong for three of them:
+
+        - `GROWTH_SHARE` — the y-axis is a market growth *rate*; anchoring it
+          at zero flattens the entire portfolio against the top of the plot
+          and destroys the quadrant read, and the creator already draws its
+          own growth-midpoint divider.
+        - `FOOTBALL_FIELD` — the bars are floating spans; a range starting at
+          zero compresses every valuation into the right-hand margin, which
+          is exactly the distortion the exhibit form exists to avoid.
+        - `TORNADO` — the axis is signed by construction (downside is
+          negative), so a `(0, max)` range would clip every downside bar.
+
+        `MARIMEKKO` and `BUBBLE` set their own axis state in the creator
+        (computed tick positions, area `sizeref`), which `_calibrate_axes`
+        must not overwrite. If a future change extends the BAR branch below,
+        it must not fold these in by treating "has bars" as "is a bar chart".
         """
         if chart_spec.chart_type in (ChartType.BAR, ChartType.STACKED_BAR):
             # Y-axis must start at zero for bar charts

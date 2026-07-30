@@ -454,7 +454,10 @@ def mine_chart_specs(
         used_signatures.add(signature)
 
         values = [v for v, _u, _l in group]
-        labels = [l for _v, _u, l in group]
+        # `label` not `l`: E741 bans `l` because in most fonts it is
+        # indistinguishable from `1` and `I`, and this comprehension sits two
+        # lines from a `values` list of numbers.
+        labels = [label for _v, _u, label in group]
         unit = group[0][1]
         shape, hint = _infer_shape(labels, unit)
 

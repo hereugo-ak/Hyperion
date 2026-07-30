@@ -66,20 +66,18 @@ from hyperion.schemas.agents import (
     SkillSpec,
     ToolName,
 )
-from hyperion.schemas.models import KeyFinding, ConfidenceLevel
+from hyperion.schemas.workflow import (
+    QuestionType,
+    ResearchDomain,
+    TaskNode,
+    TaskStatus,
+    WorkflowDAG,
+)
 from hyperion.tools.query_utils import (
     canonicalize_geographies,
     detect_geographies,
     is_contentless,
 )
-from hyperion.schemas.workflow import (
-    QuestionType,
-    TaskNode,
-    TaskStatus,
-    WorkflowDAG,
-    ResearchDomain,
-)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -92,7 +90,8 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
     display_name="Engagement Director",
     model_tier=ModelTier.STRONG,
     tools=[
-        # Orchestrator — needs SECOND_BRAIN for prior research context, DEEP_SEARCH for initial scoping
+        # Orchestrator — needs SECOND_BRAIN for prior research context, DEEP_SEARCH for initial
+        # scoping
         ToolName.SECOND_BRAIN,
         ToolName.DEEP_SEARCH,
     ],
@@ -419,7 +418,7 @@ class EngagementDirector(BaseAgent):
         # Use LLM to evaluate the escalation and determine adaptation
         try:
             adaptation = await self._evaluate_escalation(issue, suggested_action)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             # An escalation handler must never itself abort the engagement.
             self._log(
                 f"DIRECTOR: escalation evaluation failed "
@@ -430,7 +429,7 @@ class EngagementDirector(BaseAgent):
         if adaptation:
             try:
                 await self._apply_adaptation(adaptation)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
                 self._log(
                     f"DIRECTOR: applying adaptation failed "
                     f"({type(e).__name__}: {e!s:.150}); continuing"
@@ -518,8 +517,10 @@ class EngagementDirector(BaseAgent):
                 if task.agent.value == reroute_from:
                     # Add dependency on the reroute_to agent's task
                     for dep_task in self._current_dag.tasks:
-                        if dep_task.agent.value == reroute_to:
-                            if dep_task.id not in task.dependencies:
+                        if (
+                            dep_task.agent.value == reroute_to
+                            and dep_task.id not in task.dependencies
+                        ):
                                 task.dependencies.append(dep_task.id)
                                 self._current_dag.adapted = True
                                 self._current_dag.adaptation_log.append(
@@ -624,7 +625,8 @@ class EngagementDirector(BaseAgent):
             types.append(QuestionType.COMPARISON)
 
         # Forecast patterns
-        forecast_patterns = ["forecast", "predict", "future", "will", "by 20", "next year", "outlook"]
+        forecast_patterns = ["forecast", "predict", "future", "will", "by "
+            "20", "next year", "outlook"]
         if any(p in q_lower for p in forecast_patterns):
             types.append(QuestionType.FORECAST)
 
@@ -634,7 +636,8 @@ class EngagementDirector(BaseAgent):
             types.append(QuestionType.DIAGNOSTIC)
 
         # Optimization patterns
-        optimization_patterns = ["optimize", "improve", "efficient", "reduce cost", "increase", "enhance"]
+        optimization_patterns = ["optimize", "improve", "efficient", "reduce "
+            "cost", "increase", "enhance"]
         if any(p in q_lower for p in optimization_patterns):
             types.append(QuestionType.OPTIMIZATION)
 
@@ -799,13 +802,13 @@ class EngagementDirector(BaseAgent):
                         selected_agents.append(ea)
 
             # Ensure minimum of 6 agents for comprehensive analysis
-            MIN_AGENTS = 6
-            if len(selected_agents) < MIN_AGENTS:
+            min_agents = 6
+            if len(selected_agents) < min_agents:
                 defaults = QUESTION_TYPE_AGENTS.get(question_types[0], QUESTION_TYPE_AGENTS[QuestionType.GENERAL])
                 for da in defaults:
                     if da not in selected_agents:
                         selected_agents.append(da)
-                    if len(selected_agents) >= MIN_AGENTS:
+                    if len(selected_agents) >= min_agents:
                         break
 
             key_question = data.get("key_question", question)
@@ -982,19 +985,18 @@ class EngagementDirector(BaseAgent):
         # Wave 5: Presentation Designer + Data Viz (depends on Quality Gate pass)
         # Wave 6: Render Engine (depends on Presentation Designer)
 
-        wave_0_agents = [
-            AgentName.MARKET_ANALYST,
-            AgentName.COMPETITIVE_INTEL,
-            AgentName.RISK_ANALYST,
-            AgentName.CONSUMER_INSIGHTS,
-            AgentName.TECHNOLOGY_ANALYST,
-            AgentName.OPERATIONS_ANALYST,
-            AgentName.REGULATORY_ANALYST,
-            AgentName.SUSTAINABILITY_ANALYST,
-            AgentName.INNOVATION_ANALYST,
-            AgentName.MA_ANALYST,
-            AgentName.STRATEGY_ANALYST,
-        ]
+        # D5.1: a `wave_0_agents = [...]` list of 11 AgentNames sat here,
+        # assigned and never read (ruff F841). It was not merely unused — it was
+        # actively *misleading*: it listed MA_ANALYST and STRATEGY_ANALYST as
+        # wave-0 (independent) agents, while the dependency edges built below
+        # give M&A a dependency on Financial and Strategy dependencies on Market
+        # and Competitive. So the dead list contradicted the live logic, and a
+        # reader trusting it would conclude the graph was wrong.
+        #
+        # Waves are not declared anywhere; they *emerge* from the `dependencies`
+        # edges assigned per task below, which is the correct design — one source
+        # of truth. The comment block above documents the resulting shape; this
+        # list pretended to implement it and did not.
 
         # Create tasks for each selected agent
         task_ids_by_agent: dict[AgentName, str] = {}

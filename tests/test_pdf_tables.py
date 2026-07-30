@@ -22,7 +22,6 @@ from hyperion.tools.pdf_tables import (
     tables_to_prose,
 )
 
-
 # ── In-memory PDF builders ───────────────────────────────────────────────────
 
 def _pdf_with_text_table() -> bytes:
@@ -60,7 +59,8 @@ def _pdf_with_text_table() -> bytes:
 def _pdf_prose_only() -> bytes:
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_text(fitz.Point(72, 100), "This report contains no tables, only prose.", fontsize=11)
+    page.insert_text(fitz.Point(72, 100), "This report contains no tables, only "
+        "prose.", fontsize=11)
     data = doc.tobytes()
     doc.close()
     return data

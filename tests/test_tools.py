@@ -10,8 +10,6 @@ Tests:
 Architecture reference: §5 Tool Registry
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
 
 from hyperion.schemas.agents import ToolName
 
@@ -42,8 +40,8 @@ class TestToolInstantiation:
 
     def test_searxng_client_init(self):
         """SearxNGClient should initialize with settings."""
-        from hyperion.tools.searxng import SearxNGClient
         from hyperion.config import get_settings
+        from hyperion.tools.searxng import SearxNGClient
 
         settings = get_settings()
         client = SearxNGClient(settings=settings)
@@ -52,8 +50,8 @@ class TestToolInstantiation:
 
     def test_jina_client_init(self):
         """JinaClient should initialize with settings."""
-        from hyperion.tools.jina import JinaClient
         from hyperion.config import get_settings
+        from hyperion.tools.jina import JinaClient
 
         settings = get_settings()
         client = JinaClient(settings=settings)
@@ -61,8 +59,8 @@ class TestToolInstantiation:
 
     def test_unified_search_init(self):
         """UnifiedSearch should initialize."""
-        from hyperion.tools.unified_search import UnifiedSearch
         from hyperion.config import get_settings
+        from hyperion.tools.unified_search import UnifiedSearch
 
         settings = get_settings()
         search = UnifiedSearch(settings=settings)
@@ -70,8 +68,8 @@ class TestToolInstantiation:
 
     def test_unified_extract_init(self):
         """UnifiedExtract should initialize."""
-        from hyperion.tools.unified_extract import UnifiedExtract
         from hyperion.config import get_settings
+        from hyperion.tools.unified_extract import UnifiedExtract
 
         settings = get_settings()
         extract = UnifiedExtract(settings=settings)
@@ -79,8 +77,8 @@ class TestToolInstantiation:
 
     def test_second_brain_init(self):
         """SecondBrainClient should initialize."""
-        from hyperion.tools.second_brain import SecondBrainClient
         from hyperion.config import get_settings
+        from hyperion.tools.second_brain import SecondBrainClient
 
         settings = get_settings()
         client = SecondBrainClient(settings=settings)
@@ -88,8 +86,8 @@ class TestToolInstantiation:
 
     def test_deep_search_init(self):
         """DeepSearchClient should initialize."""
-        from hyperion.tools.deep_search import DeepSearchClient
         from hyperion.config import get_settings
+        from hyperion.tools.deep_search import DeepSearchClient
 
         settings = get_settings()
         client = DeepSearchClient(settings=settings)
@@ -106,8 +104,8 @@ class TestToolInstantiation:
 
     def test_sec_edgar_init(self):
         """SECEdgarClient should initialize with settings."""
-        from hyperion.tools.sec_edgar import SECEdgarClient
         from hyperion.config import get_settings
+        from hyperion.tools.sec_edgar import SECEdgarClient
 
         settings = get_settings()
         client = SECEdgarClient(settings=settings)
@@ -115,8 +113,8 @@ class TestToolInstantiation:
 
     def test_semantic_scholar_init(self):
         """SemanticScholarClient should initialize with settings."""
-        from hyperion.tools.semantic_scholar import SemanticScholarClient
         from hyperion.config import get_settings
+        from hyperion.tools.semantic_scholar import SemanticScholarClient
 
         settings = get_settings()
         client = SemanticScholarClient(settings=settings)
@@ -124,8 +122,8 @@ class TestToolInstantiation:
 
     def test_openalex_init(self):
         """OpenAlexClient should initialize with settings."""
-        from hyperion.tools.openalex import OpenAlexClient
         from hyperion.config import get_settings
+        from hyperion.tools.openalex import OpenAlexClient
 
         settings = get_settings()
         client = OpenAlexClient(settings=settings)
@@ -133,8 +131,8 @@ class TestToolInstantiation:
 
     def test_world_bank_init(self):
         """WorldBankClient should initialize with settings."""
-        from hyperion.tools.world_bank import WorldBankClient
         from hyperion.config import get_settings
+        from hyperion.tools.world_bank import WorldBankClient
 
         settings = get_settings()
         client = WorldBankClient(settings=settings)
@@ -142,8 +140,8 @@ class TestToolInstantiation:
 
     def test_google_trends_init(self):
         """GoogleTrendsClient should initialize with settings."""
-        from hyperion.tools.google_trends import GoogleTrendsClient
         from hyperion.config import get_settings
+        from hyperion.tools.google_trends import GoogleTrendsClient
 
         settings = get_settings()
         client = GoogleTrendsClient(settings=settings)
@@ -151,8 +149,8 @@ class TestToolInstantiation:
 
     def test_hackernews_init(self):
         """HackerNewsClient should initialize with settings."""
-        from hyperion.tools.hackernews import HackerNewsClient
         from hyperion.config import get_settings
+        from hyperion.tools.hackernews import HackerNewsClient
 
         settings = get_settings()
         client = HackerNewsClient(settings=settings)
@@ -160,8 +158,8 @@ class TestToolInstantiation:
 
     def test_reddit_init(self):
         """RedditClient should initialize with settings."""
-        from hyperion.tools.reddit import RedditClient
         from hyperion.config import get_settings
+        from hyperion.tools.reddit import RedditClient
 
         settings = get_settings()
         client = RedditClient(settings=settings)
@@ -173,8 +171,8 @@ class TestOutputTools:
 
     def test_chart_generator_init(self):
         """ChartGenerator should initialize with settings."""
-        from hyperion.output.charts import ChartGenerator
         from hyperion.config import get_settings
+        from hyperion.output.charts import ChartGenerator
 
         settings = get_settings()
         gen = ChartGenerator(settings=settings)
@@ -182,8 +180,8 @@ class TestOutputTools:
 
     def test_image_processor_init(self):
         """ImageProcessor should initialize with settings."""
-        from hyperion.output.images import ImageProcessor
         from hyperion.config import get_settings
+        from hyperion.output.images import ImageProcessor
 
         settings = get_settings()
         proc = ImageProcessor(settings=settings)
@@ -191,8 +189,8 @@ class TestOutputTools:
 
     def test_pdf_renderer_init(self):
         """PDFRenderer should initialize with settings."""
-        from hyperion.output.render import PDFRenderer
         from hyperion.config import get_settings
+        from hyperion.output.render import PDFRenderer
 
         settings = get_settings()
         renderer = PDFRenderer(settings=settings)
@@ -200,8 +198,8 @@ class TestOutputTools:
 
     def test_template_renderer_init(self):
         """TemplateRenderer should initialize with settings."""
-        from hyperion.output.render import TemplateRenderer
         from hyperion.config import get_settings
+        from hyperion.output.render import TemplateRenderer
 
         settings = get_settings()
         renderer = TemplateRenderer(settings=settings)

@@ -40,7 +40,6 @@ from hyperion.agents.specialists.regulatory_analyst import RegulatoryAnalyst
 from hyperion.agents.specialists.risk_analyst import RiskAnalyst
 from hyperion.tools.query_utils import clear_engagement_focus, set_engagement_focus
 
-
 QUESTION = "Should a mid-size Vietnamese seafood exporter expand into the EU market?"
 SUBJECT = "Vietnamese seafood export"
 

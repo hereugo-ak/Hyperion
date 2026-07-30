@@ -2,24 +2,20 @@
 
 from __future__ import annotations
 
-import json
 import time
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import BaseModel
 
 from hyperion.config import ModelTier
 from hyperion.router.providers.base import ProviderType, RouterResponse
-from hyperion.router.semantic_cache import ResponseCache, _exact_key, _semantic_key
+from hyperion.router.semantic_cache import ResponseCache, _semantic_key
 from hyperion.router.structured_validator import (
     StructuredValidator,
-    ValidationResult,
     extract_json,
     validate_json,
     validate_pydantic,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ResponseCache Tests

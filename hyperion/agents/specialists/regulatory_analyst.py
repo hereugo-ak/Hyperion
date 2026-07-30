@@ -48,9 +48,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import uuid
 from typing import Any
+
+from pydantic import ValidationError
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
@@ -69,16 +72,18 @@ from hyperion.schemas.models import (
     ComplianceItem,
     ConfidenceLevel,
     EnforcementPrecedent,
-    HorizonScanItem,
     JurisdictionComparison,
     KeyFinding,
     Regulation,
     RegulationType,
     RegulatoryAnalysis,
+    RegulatoryHorizonItem,
     Source,
     SourceCredibility,
 )
 from hyperion.tools.query_utils import resolve_subject
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -480,7 +485,7 @@ class RegulatoryAnalyst(BaseAgent):
                             f"REGULATORY: discovered {len(urls_to_scrape)} official "
                             f"source(s) by search for unmapped jurisdiction(s): {unmapped}"
                         )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
                     self._log(
                         f"REGULATORY: portal discovery search failed "
                         f"({type(e).__name__}); continuing with curated portals only"
@@ -590,7 +595,8 @@ class RegulatoryAnalyst(BaseAgent):
         prompt = (
             "You are the HYPERION Regulatory Analyst mapping regulations by jurisdiction.\n\n"
             f"Question: {question}\n\n"
-            f"Jurisdictions: {', '.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
+            f"Jurisdictions: {', '
+                ''.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
             f"Search results:\n{search_summary}\n\n"
             f"Government portal data:\n{gov_summary}\n\n"
             "Map ALL applicable regulations across jurisdictions:\n"
@@ -768,7 +774,7 @@ class RegulatoryAnalyst(BaseAgent):
         historical_snapshots: list[dict[str, Any]],
         jurisdictions: list[str],
         context: dict[str, Any],
-    ) -> list[HorizonScanItem]:
+    ) -> list[RegulatoryHorizonItem]:
         """Scan the regulatory horizon for pending and proposed regulations.
 
         Identifies pending regulations, proposed rules, and regulatory trends
@@ -788,9 +794,11 @@ class RegulatoryAnalyst(BaseAgent):
         prompt = (
             "You are the HYPERION Regulatory Analyst scanning the regulatory horizon.\n\n"
             f"Question: {question}\n\n"
-            f"Jurisdictions: {', '.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
+            f"Jurisdictions: {', '
+                ''.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
             f"Current regulatory search results:\n{search_summary}\n\n"
-            f"Historical regulatory evolution (Wayback Machine):\n{historical_summary or 'No historical data available'}\n\n"
+            f"Historical regulatory evolution (Wayback Machine):\n{historical_summary or 'No '
+                'historical data available'}\n\n"
             "Identify pending regulations, proposed rules, and regulatory trends (1-3 year horizon):\n"
             "For each item:\n"
             "- regulation_name: name of pending/proposed regulation\n"
@@ -823,17 +831,68 @@ class RegulatoryAnalyst(BaseAgent):
             response_format={"type": "json_object"},
         )
 
-        horizon_items: list[HorizonScanItem] = []
+        horizon_items: list[RegulatoryHorizonItem] = []
 
         if not response.success or not response.content:
             return horizon_items
 
+        # D5.1: this block used to end in `except (json.JSONDecodeError,
+        # ValueError, TypeError): pass`, and that silence is what let the
+        # HorizonScanItem name collision (see RegulatoryHorizonItem's docstring)
+        # hide for the project's entire life. `ValidationError` subclasses
+        # `ValueError`, so *every* item failed construction and every failure was
+        # swallowed — `horizon_scan` was structurally guaranteed `[]` with nothing
+        # logged anywhere.
+        #
+        # Two changes make that impossible to repeat:
+        #   1. Per-item construction, so one malformed item costs one item rather
+        #      than aborting the whole batch at the first bad element.
+        #   2. Loud logging, and a `ValidationError` is logged as a *schema* error
+        #      (a bug on our side) rather than lumped in with bad model output.
         try:
             data = json.loads(response.content)
-            for item in data.get("horizon_items", []):
-                horizon_items.append(HorizonScanItem(
-                    regulation_name=item.get("regulation_name", "Unknown"),
-                    jurisdiction=item.get("jurisdiction", "Unknown"),
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "Regulatory horizon scan: model returned unparseable JSON: %s", exc
+            )
+            return horizon_items
+
+        raw_items = data.get("horizon_items", []) if isinstance(data, dict) else []
+        if not isinstance(raw_items, list):
+            logger.warning(
+                "Regulatory horizon scan: 'horizon_items' is %s, expected list",
+                type(raw_items).__name__,
+            )
+            return horizon_items
+
+        for item in raw_items:
+            if not isinstance(item, dict):
+                logger.debug("Regulatory horizon scan: skipping non-dict item %r", item)
+                continue
+
+            # D5.1b: these two fields used to default to the literal string
+            # "Unknown". That is wrong twice over. First, "Unknown" is one of the
+            # template-leak tokens the render probe counts and §11 criterion 11
+            # requires to be zero, so an unnamed item would print as a regulation
+            # called "Unknown" in a client-facing compliance deliverable. Second
+            # and worse: a horizon item whose regulation cannot be named is not a
+            # finding at all — emitting it fabricates a phantom regulation the
+            # model never actually identified. An unnamed item is dropped, loudly.
+            regulation_name = str(item.get("regulation_name") or "").strip()
+            jurisdiction = str(item.get("jurisdiction") or "").strip()
+            if not regulation_name:
+                logger.warning(
+                    "Regulatory horizon scan: dropping item with no "
+                    "regulation_name (keys offered: %s) — an unnameable "
+                    "regulation is not a finding",
+                    sorted(item),
+                )
+                continue
+
+            try:
+                horizon_items.append(RegulatoryHorizonItem(
+                    regulation_name=regulation_name,
+                    jurisdiction=jurisdiction or "Not specified",
                     status=item.get("status", "proposed"),
                     timeline=item.get("timeline", ""),
                     probability=item.get("probability", "medium"),
@@ -841,8 +900,28 @@ class RegulatoryAnalyst(BaseAgent):
                     recommended_action=item.get("recommended_action", ""),
                     sources=self._sources[:2],
                 ))
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+            except ValidationError:
+                # A schema mismatch is OUR bug, not bad model output. Log it as
+                # such, with a stack trace, so it can never again be mistaken for
+                # "the LLM returned nothing useful".
+                logger.error(
+                    "Regulatory horizon scan: RegulatoryHorizonItem rejected a "
+                    "well-formed item — this is a SCHEMA defect, not model output. "
+                    "Keys offered: %s",
+                    sorted(item),
+                    exc_info=True,
+                )
+            except (ValueError, TypeError) as exc:
+                logger.warning("Regulatory horizon scan: skipping malformed item: %s", exc)
+
+        if raw_items and not horizon_items:
+            # The exact shape of the outage this fix closes: the model produced
+            # items and none survived construction.
+            logger.error(
+                "Regulatory horizon scan: %d items offered, 0 constructed — "
+                "horizon_scan will be empty",
+                len(raw_items),
+            )
 
         return horizon_items
 
@@ -1214,21 +1293,25 @@ class RegulatoryAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel regulatory research
         if jurisdictions and industry:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning regulatory research sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning regulatory research "
+                "sub-agents")
             sub_findings = await self._spawn_regulatory_sub_agents(jurisdictions, industry)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 1: Search for applicable regulations
         await self._transition(AgentState.WORKING, f"Step 1: Searching regulations for {industry} in {jurisdictions}")
         self._search_results = await self._search_regulations(industry, jurisdictions)
 
         # Step 2: Scrape government portals
-        await self._transition(AgentState.WORKING, "Step 2: Scraping government regulatory portals (Obscura)")
+        await self._transition(AgentState.WORKING, "Step 2: Scraping government regulatory "
+            "portals (Obscura)")
         self._government_data = await self._scrape_government_portals(jurisdictions)
 
         # Step 3: Pull historical regulatory data
-        await self._transition(AgentState.WORKING, "Step 3: Pulling historical regulatory snapshots (Wayback)")
+        await self._transition(AgentState.WORKING, "Step 3: Pulling historical regulatory "
+            "snapshots (Wayback)")
         self._historical_snapshots = await self._pull_historical_data(jurisdictions, industry)
 
         # Step 4: Map regulations by jurisdiction
@@ -1239,13 +1322,15 @@ class RegulatoryAnalyst(BaseAgent):
         )
 
         # Step 5: Build compliance checklist
-        await self._transition(AgentState.WORKING, "Step 5: Building structured compliance checklist")
+        await self._transition(AgentState.WORKING, "Step 5: Building structured compliance "
+            "checklist")
         compliance_checklist = await self._build_compliance_checklist(
             self._question, regulations, self._context,
         )
 
         # Step 6: Scan regulatory horizon
-        await self._transition(AgentState.WORKING, "Step 6: Scanning regulatory horizon (1-3 years)")
+        await self._transition(AgentState.WORKING, "Step 6: Scanning regulatory horizon (1-3 "
+            "years)")
         horizon_scan = await self._scan_horizon(
             self._question, self._search_results, self._historical_snapshots,
             jurisdictions, self._context,

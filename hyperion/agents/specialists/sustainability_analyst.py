@@ -62,7 +62,6 @@ from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
-from hyperion.tools.query_utils import detect_geographies, resolve_subject
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -86,7 +85,7 @@ from hyperion.schemas.models import (
     SourceCredibility,
     SustainabilityAnalysis,
 )
-
+from hyperion.tools.query_utils import detect_geographies, resolve_subject
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -986,7 +985,8 @@ class SustainabilityAnalyst(BaseAgent):
                 context={"sector": sector},
             ),
             SubAgentSpec(
-                question=f"Find sustainability regulations for {', '.join(jurisdictions)} — CSRD, SEC climate disclosure, TCFD, CDP requirements, mandatory vs voluntary",
+                question=f"Find sustainability regulations for {', '
+                    ''.join(jurisdictions)} — CSRD, SEC climate disclosure, TCFD, CDP requirements, mandatory vs voluntary",
                 parent_agent=self.name,
                 model_tier=ModelTier.FAST,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
@@ -1099,10 +1099,12 @@ class SustainabilityAnalyst(BaseAgent):
         # phase. With `sector` now resolved from the question, that gate can
         # only close when there is genuinely no subject at all.
         if sector or company:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning ESG data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning ESG data collection "
+                "sub-agents")
             sub_findings = await self._spawn_sustainability_sub_agents(company, sector, jurisdictions)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
         else:
             self._log("No resolvable subject or company — skipping ESG sub-agents")
 
@@ -1111,33 +1113,39 @@ class SustainabilityAnalyst(BaseAgent):
         self._search_results = await self._search_esg_data(company, sector)
 
         # Step 2: Scrape ESG rating platforms
-        await self._transition(AgentState.WORKING, "Step 2: Scraping ESG rating platforms (Obscura)")
+        await self._transition(AgentState.WORKING, "Step 2: Scraping ESG rating platforms "
+            "(Obscura)")
         self._esg_platform_data = await self._scrape_esg_platforms(company, sector)
 
         # Step 3: Pull environmental economic data
-        await self._transition(AgentState.WORKING, "Step 3: Pulling environmental economic data (FRED)")
+        await self._transition(AgentState.WORKING, "Step 3: Pulling environmental economic data "
+            "(FRED)")
         self._fred_data = await self._pull_fred_data()
 
         # Step 4: Score on relevant ESG framework
-        await self._transition(AgentState.WORKING, "Step 4: Scoring on ESG frameworks (MSCI, SASB, TCFD, GRI, CSRD, CDP)")
+        await self._transition(AgentState.WORKING, "Step 4: Scoring on ESG frameworks (MSCI, "
+            "SASB, TCFD, GRI, CSRD, CDP)")
         esg_scores, most_relevant_framework = await self._score_esg(
             self._question, self._search_results, self._esg_platform_data, self._context,
         )
 
         # Step 5: Calculate carbon footprint
-        await self._transition(AgentState.WORKING, "Step 5: Calculating carbon footprint (Scope 1/2/3) with abatement costs")
+        await self._transition(AgentState.WORKING, "Step 5: Calculating carbon footprint (Scope "
+            "1/2/3) with abatement costs")
         carbon_footprint = await self._calculate_carbon_footprint(
             self._question, self._search_results, self._fred_data, self._context,
         )
 
         # Step 6: Map reporting requirements
-        await self._transition(AgentState.WORKING, "Step 6: Mapping sustainability reporting requirements")
+        await self._transition(AgentState.WORKING, "Step 6: Mapping sustainability reporting "
+            "requirements")
         reporting_requirements = await self._map_reporting_requirements(
             self._question, self._search_results, jurisdictions, self._context,
         )
 
         # Step 7: Identify green financing + circular economy
-        await self._transition(AgentState.WORKING, "Step 7: Identifying green financing opportunities and circular economy models")
+        await self._transition(AgentState.WORKING, "Step 7: Identifying green financing "
+            "opportunities and circular economy models")
         green_financing, circular_economy, total_savings, impact_summary = (
             await self._identify_green_financing(
                 self._question, self._fred_data, carbon_footprint, self._context,

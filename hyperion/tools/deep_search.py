@@ -35,6 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from hyperion.tools._content_quality import is_quality_content
 from hyperion.tools.content_selector import select_relevant_content
 from hyperion.tools.evidence_scorer import EvidenceScorer, EvidenceSummary, ScoredResult
 from hyperion.tools.query_utils import grounded_search_or_empty
@@ -467,7 +468,7 @@ class DeepSearchClient:
                     available = bool(probe())
                     if not available:
                         detail = "crawl4ai not installed"
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             # A probe that raises must not disable a tier outright — attempting
             # it and failing is strictly better than skipping something usable.
             available = True
@@ -818,7 +819,7 @@ class DeepSearchClient:
 
             urls = [r.url for r in response.results if r.url]
             return (urls, "searxng", "" if urls else "returned no results")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("SearxNG discovery failed: %s", e)
             return ([], "searxng", f"{type(e).__name__}: {e}")
 
@@ -834,7 +835,7 @@ class DeepSearchClient:
 
             urls = [r.url for r in response.results if r.url]
             return (urls, "jina", "" if urls else "returned no results")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Jina discovery failed: %s", e)
             return ([], "jina", f"{type(e).__name__}: {e}")
 
@@ -1027,16 +1028,15 @@ class DeepSearchClient:
         return selection.content
 
     def _is_quality_content(self, content: str) -> bool:
-        """Check if extracted content meets quality thresholds."""
-        if not content or len(content) < self.MIN_CONTENT_LENGTH:
-            return False
-        # Check it's not just an error message or boilerplate
-        error_indicators = ["404", "not found", "access denied", "forbidden", "captcha"]
-        content_lower = content.lower()
-        error_count = sum(1 for indicator in error_indicators if indicator in content_lower)
-        if error_count > 2 and len(content) < 500:
-            return False
-        return True
+        """Check if extracted content meets quality thresholds.
+
+        Phase 5.1d: shared with `unified_extract` via
+        :mod:`hyperion.tools._content_quality`. The previous inline substring
+        counter let 404/403/captcha bodies through as successful extractions,
+        which both poisoned the evidence base and prevented the ladder from
+        descending to a stronger rung.
+        """
+        return is_quality_content(content, self.MIN_CONTENT_LENGTH)
 
     async def _extract_jina(self, semaphore: asyncio.Semaphore, url: str) -> ExtractedContent:
         """Extract via Jina Reader — fast, keyless, reliable extraction."""
@@ -1054,7 +1054,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="jina-reader",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("Jina Reader extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="jina-reader")
 
@@ -1074,7 +1074,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="http-extract",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("HTTP extract failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="http-extract")
 
@@ -1094,7 +1094,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="obscura",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("Obscura extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="obscura")
 
@@ -1114,7 +1114,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="scrapling",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("Scrapling extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="scrapling")
 
@@ -1134,7 +1134,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="crawl4ai",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("Crawl4AI extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="crawl4ai")
 
@@ -1156,7 +1156,7 @@ class DeepSearchClient:
                             markdown=text,
                             tool_used="flaresolverr",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("FlareSolverr extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="flaresolverr")
 

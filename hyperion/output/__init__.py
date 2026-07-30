@@ -12,10 +12,15 @@ typography (Instrument Serif for headers, JetBrains Mono for body).
 No blue. No purple. No AI slop. (§7)
 """
 
-from hyperion.output.charts import ChartGenerator, ChartResult, ChartSpec, CHART_COLORS
+from hyperion.output.charts import CHART_COLORS, ChartGenerator, ChartResult, ChartSpec
 from hyperion.output.images import ImageProcessor, ImageProcessResult, ImageTooSmallError
 from hyperion.output.markdown import MarkdownExporter, MarkdownExportResult
-from hyperion.output.render import PDFRenderer, PDFRenderResult, TemplateRenderer, TemplateRenderResult
+from hyperion.output.render import (
+    PDFRenderer,
+    PDFRenderResult,
+    TemplateRenderer,
+    TemplateRenderResult,
+)
 
 __all__ = [
     # Image processing

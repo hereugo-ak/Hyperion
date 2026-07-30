@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json as json_module
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ from rich.table import Table
 from rich.text import Text
 
 from hyperion.config import ProviderType, get_settings
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="hyperion",
@@ -82,9 +85,13 @@ def shell(
     """
     try:
         from hyperion.tui.app import HyperionApp
-    except ImportError:
+    except ImportError as exc:
         console.print(f"[{ERROR}]Textual not installed. Run: pip install textual rich[/{ERROR}]")
-        raise typer.Exit(code=1)
+        # `from exc` (ruff B904): an ImportError here is not always "textual is
+        # missing" — it is just as often a broken import *inside* the TUI
+        # package. Chaining keeps that traceback reachable instead of replacing
+        # it with a misleading install hint.
+        raise typer.Exit(code=1) from exc
 
     # Teardown is guaranteed here as well as inside the app.
     #
@@ -152,8 +159,8 @@ def _ensure_services_stopped() -> None:
                     f"[{WARN}]these containers are still running: {names} — "
                     f"remove with `docker rm -f {names}`[/{WARN}]"
                 )
-    except Exception:  # noqa: BLE001 - verification is advisory only
-        pass
+    except Exception as exc:  # noqa: BLE001 - verification is advisory only
+        logger.warning("%s: %s", "_ensure_services_stopped", exc)
 
 
 @app.command()
@@ -191,19 +198,23 @@ def consult(
 
     if result.success:
         lines = [
-            Text.assemble(("recommendation  ", DIM), (str(getattr(getattr(result.final_report, "recommendation", None), "value", "—")), f"bold {SUCCESS}")),
+            Text.assemble(("recommendation  "
+                "", DIM), (str(getattr(getattr(result.final_report, "recommendation", None), "value", "—")), f"bold {SUCCESS}")),
         ]
         if result.pdf_path:
             lines.append(Text.assemble(("pdf             ", DIM), (result.pdf_path, MAGENTA)))
         if result.quality_score is not None:
-            lines.append(Text.assemble(("quality         ", DIM), (f"{result.quality_score.weighted_total:.1f}/5.0", CYAN)))
-        lines.append(Text.assemble(("duration        ", DIM), (f"{result.duration_seconds:.0f}s", DIM)))
+            lines.append(Text.assemble(("quality         "
+                "", DIM), (f"{result.quality_score.weighted_total:.1f}/5.0", CYAN)))
+        lines.append(Text.assemble(("duration        "
+            "", DIM), (f"{result.duration_seconds:.0f}s", DIM)))
         body = Text("\n").join(lines)
         console.print(Panel(body, title=Text("done", style=SUCCESS), border_style=SUCCESS))
         if markdown and result.markdown_path:
             console.print(f"[{DIM}]markdown → {result.markdown_path}[/{DIM}]")
     else:
-        console.print(Panel(Text(result.error or "engagement failed", style=ERROR), title=Text("error", style=ERROR), border_style=ERROR))
+        console.print(Panel(Text(result.error or "engagement "
+            "failed", style=ERROR), title=Text("error", style=ERROR), border_style=ERROR))
         raise typer.Exit(code=1)
 
 
@@ -325,7 +336,7 @@ def vault(
         console.print(table)
     except Exception as exc:
         console.print(f"[{ERROR}]vault error: {exc}[/{ERROR}]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
 
 # ── export ───────────────────────────────────────────────────────────────────

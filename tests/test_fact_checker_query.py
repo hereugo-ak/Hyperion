@@ -105,7 +105,7 @@ class TestFactCheckerQueryConstruction:
         called_query = spy_searxng.search.await_args.args[0]
         # No dangling partial word fragments like the historical "illi" from
         # a mid-word slice of "billion".
-        assert not called_query.split()[-1].strip() == "" if called_query else True
+        assert called_query.split()[-1].strip() != "" if called_query else True
         for word in called_query.split():
             assert word.isascii()  # sanity: well-formed tokens, not slice debris
 

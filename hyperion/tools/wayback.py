@@ -34,12 +34,14 @@ Used by: Regulatory, Innovation, Competitive Intel (§5.1)
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
-from urllib.parse import quote_plus
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -237,8 +239,29 @@ class WaybackClient:
                 return WaybackAvailabilityResult(url=url, available=False)
 
             except (httpx.HTTPError, httpx.RequestError, KeyError, ValueError) as e:
+                # D5.1: ruff F841 (`as e` never read) exposed the same broken
+                # retry loop as unsplash.py — an unconditional `return` after the
+                # sleep, so the function gave up on the FIRST failure while
+                # appearing to retry twice. Wayback is the citation-rot fallback:
+                # when a cited URL 404s, this is what recovers it, so a
+                # first-transient-failure surrender means avoidable dead
+                # citations in the report's endnotes.
+                logger.debug(
+                    "Wayback availability attempt %d/%d failed for %s: %s",
+                    attempt + 1,
+                    self.MAX_RETRIES,
+                    url,
+                    e,
+                )
                 if attempt < self.MAX_RETRIES - 1:
                     await asyncio.sleep(self.RETRY_DELAY)
+                    continue  # actually retry
+                logger.warning(
+                    "Wayback availability exhausted all %d attempts for %s. Last error: %s",
+                    self.MAX_RETRIES,
+                    url,
+                    e,
+                )
                 return WaybackAvailabilityResult(url=url, available=False)
 
         return WaybackAvailabilityResult(url=url, available=False)
@@ -291,8 +314,24 @@ class WaybackClient:
                 snapshots: list[WaybackSnapshot] = []
 
                 for row in data[1:]:
-                    row_dict = dict(zip(headers, row))
-                    status_code = int(row_dict.get("statuscode", 0))
+                    # D5.1c (ruff B905): `zip` without `strict` silently
+                    # tolerates a row that does not match the header row. A
+                    # SHORT row leaves `statuscode` absent, which the `.get`
+                    # below turns into `0` — and `0` is not "unknown", it is a
+                    # value `filter_status` then quietly discards, so a
+                    # malformed CDX row vanished from the timeline without a
+                    # word. A LONG row silently dropped its trailing fields.
+                    # Neither is fatal to the other rows, so this logs and
+                    # continues rather than raising — but it can no longer
+                    # happen invisibly.
+                    if len(row) != len(headers):
+                        logger.warning(
+                            "Wayback CDX row arity mismatch for %s: %d fields vs %d headers "
+                            "— fields will be missing or dropped (row=%r)",
+                            url, len(row), len(headers), row[:8],
+                        )
+                    row_dict = dict(zip(headers, row, strict=False))
+                    status_code = int(row_dict.get("statuscode", 0) or 0)
 
                     if filter_status and status_code not in filter_status:
                         continue
@@ -318,8 +357,20 @@ class WaybackClient:
                 )
 
             except (httpx.HTTPError, httpx.RequestError, KeyError, ValueError, IndexError) as e:
+                # D5.1: same dead-retry defect (the `return` below the sleep was
+                # unconditional). Unlike the two sibling legs this one at least
+                # propagated `str(e)` into the result, so the cause was not lost
+                # — only the retry was.
+                logger.debug(
+                    "Wayback timeline attempt %d/%d failed for %s: %s",
+                    attempt + 1,
+                    self.MAX_RETRIES,
+                    url,
+                    e,
+                )
                 if attempt < self.MAX_RETRIES - 1:
                     await asyncio.sleep(self.RETRY_DELAY)
+                    continue  # actually retry
                 return WaybackTimelineResult(url=url, error=str(e))
 
         return WaybackTimelineResult(url=url, error="All retries exhausted")
@@ -378,8 +429,20 @@ class WaybackClient:
                 )
 
             except (httpx.HTTPError, httpx.RequestError) as e:
+                # D5.1: third instance of the dead-retry defect in this module.
+                # This one is the actual content fetch, so surrendering on the
+                # first transient error is the difference between recovering a
+                # rotted citation's text and reporting the source as unavailable.
+                logger.debug(
+                    "Wayback snapshot fetch attempt %d/%d failed for %s: %s",
+                    attempt + 1,
+                    self.MAX_RETRIES,
+                    snapshot_url,
+                    e,
+                )
                 if attempt < self.MAX_RETRIES - 1:
                     await asyncio.sleep(self.RETRY_DELAY)
+                    continue  # actually retry
                 return WaybackContentResult(
                     url=url,
                     snapshot_url=snapshot_url,

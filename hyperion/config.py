@@ -20,7 +20,6 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Model Tiers — the 5 intelligence levels (ARCHITECTURE.md §2.5)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,7 +80,8 @@ class ModelSpec(BaseModel):
     tpm: int = Field(description="Tokens per minute limit")
     rpd: int | None = Field(default=None, description="Requests per day limit (None if unlimited)")
     tpd: int | None = Field(default=None, description="Tokens per day limit (None if unlimited)")
-    speed_tps: float | None = Field(default=None, description="Tokens per second (for speed-aware routing)")
+    speed_tps: float | None = Field(default=None, description="Tokens per second (for speed-aware "
+        "routing)")
     tier: ModelTier = Field(description="Primary tier this model serves")
     roles: list[str] = Field(default_factory=list, description="What this model is used for")
     deprecated: bool = Field(default=False, description="If true, never route to this model")
@@ -119,7 +119,8 @@ GOOGLE_MODELS: list[ModelSpec] = [
         tpm=16_000,
         rpd=14_400,
         tier=ModelTier.MICRO,
-        roles=["query generation", "fact-check snippets", "simple extraction", "sub-agent quick tasks", "keyword expansion", "tag generation"],
+        roles=["query "
+            "generation", "fact-check snippets", "simple extraction", "sub-agent quick tasks", "keyword expansion", "tag generation"],
     ),
     ModelSpec(
         name="gemma-4-26b",
@@ -420,7 +421,8 @@ class WaitGateConfig(BaseModel):
 
     # Daily budget reserve percentage — preserved on every provider for
     # critical end-of-engagement tasks (§3.5)
-    budget_reserve: float = Field(default=0.20, description="Fraction of daily budget reserved (0.20 = 20%)")
+    budget_reserve: float = Field(default=0.20, description="Fraction of daily budget reserved "
+        "(0.20 = 20%)")
 
     # Cooldown after a 429 in seconds (§3.6)
     rate_limit_cooldown: int = 60

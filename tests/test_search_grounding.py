@@ -37,7 +37,6 @@ from hyperion.tools.query_utils import (
     set_engagement_focus,
 )
 
-
 # A query that grounds to "" — no engagement focus set, and the raw string
 # contains no alphabetic subject at all (pure digits/punctuation), so there
 # is genuinely nothing to rebuild a query from. ("vendor comparison 2024

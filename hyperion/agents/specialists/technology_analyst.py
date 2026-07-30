@@ -59,7 +59,6 @@ from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
-from hyperion.tools.query_utils import detect_geographies, resolve_subject
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -80,7 +79,7 @@ from hyperion.schemas.models import (
     TechnologyAssessment,
     VendorComparison,
 )
-
+from hyperion.tools.query_utils import detect_geographies, resolve_subject
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -562,7 +561,8 @@ class TechnologyAnalyst(BaseAgent):
                 # Without a subject these become bare site names
                 # ("developer review reddit"), which return noise. Returning
                 # early is the honest outcome.
-                self._log("No resolvable technology subject — skipping practitioner-sentiment search")
+                self._log("No resolvable technology subject — skipping practitioner-sentiment "
+                    "search")
                 return results
 
             def _q(*parts: str) -> str:
@@ -1218,10 +1218,12 @@ class TechnologyAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel vendor data collection
         if vendors or technology:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning vendor data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning vendor data collection "
+                "sub-agents")
             sub_findings = await self._spawn_vendor_sub_agents(vendors, technology)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 1: Search for vendor/technology options
         await self._transition(AgentState.WORKING, f"Step 1: Searching for {technology_category} options (SearxNG + Jina)")
@@ -1238,7 +1240,8 @@ class TechnologyAnalyst(BaseAgent):
             self._developer_reviews = await self._search_developer_reviews(technology)
 
         # Step 4: Build vendor comparison matrix
-        await self._transition(AgentState.WORKING, "Step 4: Building vendor comparison matrix (7 dimensions)")
+        await self._transition(AgentState.WORKING, "Step 4: Building vendor comparison matrix (7 "
+            "dimensions)")
         vendor_matrix = await self._build_vendor_matrix(
             self._question, self._search_results, self._vendor_pricing,
             self._developer_reviews, self._context,
@@ -1259,13 +1262,15 @@ class TechnologyAnalyst(BaseAgent):
         # Step 7: Assess architecture if applicable
         architecture_review = None
         if self._context.get("architecture_description"):
-            await self._transition(AgentState.WORKING, "Step 7: Assessing architecture against business requirements")
+            await self._transition(AgentState.WORKING, "Step 7: Assessing architecture against "
+                "business requirements")
             architecture_review = await self._assess_architecture(
                 self._question, self._context, self._search_results,
             )
 
         # Platform assessment and lock-in risk summary
-        await self._transition(AgentState.WORKING, "Assessing platform vs. point solution and lock-in risk")
+        await self._transition(AgentState.WORKING, "Assessing platform vs. point solution and "
+            "lock-in risk")
         platform_assessment, lock_in_summary = await self._assess_platform_and_lockin(
             self._question, vendor_matrix, self._context,
         )

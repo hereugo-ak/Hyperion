@@ -24,7 +24,8 @@ terminal handles selection & copy natively.
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
+import logging
 from typing import Any
 
 from textual.app import App
@@ -36,7 +37,6 @@ from hyperion.tui.screens.session import SessionScreen
 from hyperion.tui.screens.splash import SplashScreen
 from hyperion.tui.theme import (
     BG_CANVAS,
-    BG_SURFACE,
     CLAY,
     CLAY_DEEP,
     CLAY_SOFT,
@@ -45,6 +45,8 @@ from hyperion.tui.theme import (
     SIG_WARN,
     TEXT_PRIMARY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class HyperionApp(App):
@@ -111,7 +113,7 @@ class HyperionApp(App):
 
     def on_mount(self) -> None:
         # Apply brand accents to Textual's theme variables where possible.
-        try:
+        with contextlib.suppress(Exception):
             self.theme_variables.update(
                 {
                     "primary": CLAY,
@@ -122,8 +124,6 @@ class HyperionApp(App):
                     "error": SIG_ERROR,
                 }
             )
-        except Exception:
-            pass
         self.push_screen(
             SplashScreen(reduced_motion=self._reduced_motion)
             if self._use_splash
@@ -153,7 +153,8 @@ class HyperionApp(App):
             self.copy_to_clipboard(text)
             n = len(text.splitlines()) or 1
             self._toast(f"copied {len(text)} chars · {n} line(s)")
-        except Exception as exc:  # pragma: no cover - clipboard is best-effort
+        # Clipboard write is best-effort; a failure must never propagate.
+        except Exception as exc:  # noqa: BLE001 - best-effort, must not propagate  # pragma: no cover
             self._toast(f"copy failed: {exc}")
 
     def action_select_all(self) -> None:
@@ -163,8 +164,8 @@ class HyperionApp(App):
             if isinstance(screen, SessionScreen):
                 screen.select_all_transcript()
                 self._toast("transcript selected — Ctrl+Shift+C to copy")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "action_select_all", exc)
 
     def _gather_selection(self) -> str:
         """Return the currently selected text, if the Textual version exposes it."""
@@ -175,22 +176,20 @@ class HyperionApp(App):
                 sel = get_sel()
                 if sel:
                     return sel
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_gather_selection", exc)
         # Fallback: ask the session screen for its transcript selection.
         try:
             screen = self.screen
             if isinstance(screen, SessionScreen):
                 return screen.selected_transcript_text()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_gather_selection", exc)
         return ""
 
     def _toast(self, msg: str) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.notify(msg, timeout=3)
-        except Exception:
-            pass
 
     async def action_quit(self) -> None:
         """Tear down every service BEFORE the app exits.
@@ -233,10 +232,8 @@ class HyperionApp(App):
         except Exception as exc:  # noqa: BLE001 - shutdown must never block exit
             # Surfaced, not silently swallowed: a failed teardown leaves real
             # containers running and the user needs to know.
-            try:
+            with contextlib.suppress(Exception):
                 self.log(f"service teardown failed: {type(exc).__name__}: {exc}")
-            except Exception:
-                pass
 
     async def on_unmount(self) -> None:
         """Safety net for exits that do not pass through `action_quit`.

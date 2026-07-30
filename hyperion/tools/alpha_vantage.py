@@ -206,7 +206,8 @@ class AlphaVantageClient:
 
         # Check rate limit
         if not self._check_rate_limit():
-            return {"error": "Alpha Vantage daily API call limit reached (25/day free tier). Use cached data or upgrade to premium."}
+            return {"error": "Alpha Vantage daily API call limit reached (25/day free tier). Use "
+                "cached data or upgrade to premium."}
 
         # Add API key
         params["apikey"] = self._api_key

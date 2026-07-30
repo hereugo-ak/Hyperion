@@ -19,8 +19,8 @@ roster init, vault prime) and transitions to the engagement screen when ready.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
-from pathlib import Path
 from typing import Any
 
 from textual.app import ComposeResult
@@ -29,17 +29,11 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Static
 
-from hyperion.tui.banner import WORDMARK, TAGLINE
+from hyperion.tui.banner import TAGLINE, WORDMARK
 from hyperion.tui.content import build, build_line, line, span
 from hyperion.tui.motion.color import ramp
 from hyperion.tui.theme import (
-    BG_CANVAS,
-    BORDER_SUBTLE,
-    CLAY,
-    CLAY_DEEP,
-    CLAY_SOFT,
     LOGO_STOPS,
-    ROSE,
     SAGE,
     SIG_ERROR,
     SIG_SUCCESS,
@@ -49,6 +43,8 @@ from hyperion.tui.theme import (
     TEXT_PRIMARY,
     TEXT_SECONDARY,
 )
+
+logger = logging.getLogger(__name__)
 
 _LOGO_WIDTH = max(len(s) for s in WORDMARK)
 
@@ -156,7 +152,8 @@ class SplashScreen(Screen):
             yield SplashStatus("VAULT", id="stat-vault")
             yield SplashStatus("SEARXNG", id="stat-searxng")
             yield SplashStatus("OBSCURA", id="stat-obscura")
-        yield Static(build_line(span("  press any key to start  ·  esc to skip", TEXT_GHOST)), id="splash-hint")
+        yield Static(build_line(span("  press any key to start  ·  esc to "
+            "skip", TEXT_GHOST)), id="splash-hint")
 
     def on_mount(self) -> None:
         self._boot_task = asyncio.create_task(self._run_boot())
@@ -174,10 +171,17 @@ class SplashScreen(Screen):
             up = [str(k).split(".")[-1].lower() for k, v in health.items() if v.get("available")]
             down = [str(k).split(".")[-1].lower() for k, v in health.items() if not v.get("available")]
             if up:
-                prov.set_status(f"online: {', '.join(up)}", ok=True)
+                # D5.1: `down` was computed and never displayed (ruff F841). A
+                # partial outage — 1 of 4 providers up — rendered identically to
+                # full health, so the boot screen actively concealed degradation
+                # at the one moment the operator is looking at it.
+                status = f"online: {', '.join(up)}"
+                if down:
+                    status += f" | offline: {', '.join(down)}"
+                prov.set_status(status, ok=True)
             else:
                 prov.set_status("no providers available — check API keys", ok=False)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             prov.set_status(f"check failed: {e!s:.40}", ok=False)
 
         await asyncio.sleep(0.2 if not self._reduced else 0.02)
@@ -185,15 +189,16 @@ class SplashScreen(Screen):
         # ── Vault ───────────────────────────────────────────────────────────────
         vault = self.query_one("#stat-vault", SplashStatus)
         try:
-            from hyperion.config import get_settings
             from pathlib import Path
+
+            from hyperion.config import get_settings
             settings = get_settings()
             vault_path = getattr(settings, "second_brain_vault", None)
             if vault_path and Path(vault_path).exists():
                 vault.set_status(f"connected · {vault_path}", ok=True)
             else:
                 vault.set_status("not found (optional)", ok=None)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             vault.set_status("check skipped", ok=None)
 
         await asyncio.sleep(0.2 if not self._reduced else 0.02)
@@ -229,7 +234,7 @@ class SplashScreen(Screen):
                         searx.set_status(f"running · localhost:{SEARXNG_PORT}", ok=True)
                     else:
                         searx.set_status("container stopped — will auto-start", ok=None)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             searx.set_status("check skipped", ok=None)
 
         await asyncio.sleep(0.2 if not self._reduced else 0.02)
@@ -257,7 +262,7 @@ class SplashScreen(Screen):
                 )
             else:
                 obs.set_status("not found (optional for JS pages)", ok=None)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             obs.set_status("check skipped", ok=None)
 
         # ── Done ────────────────────────────────────────────────────────────────
@@ -268,8 +273,8 @@ class SplashScreen(Screen):
                 span("  press any key to start  ·  ", SAGE),
                 span("all systems checked", f"bold {SAGE}"),
             ))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_run_boot", exc)
 
     def on_key(self, event) -> None:
         """Any key transitions to the engagement screen."""

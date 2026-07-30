@@ -11,19 +11,18 @@ Per ARCHITECTURE.md §8.2 (Deliverable View).
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Static
-from textual.widget import Widget
 from textual.message import Message
+from textual.widget import Widget
+from textual.widgets import Button, Static
 
-from hyperion.tui.content import build, build_line, line, span
+from hyperion.tui.content import build, line, span
 from hyperion.tui.theme import (
     CLAY,
-    CLAY_DEEP,
-    SAGE,
     SIG_ERROR,
     SIG_SUCCESS,
     SIG_WARN,
@@ -32,6 +31,8 @@ from hyperion.tui.theme import (
     TEXT_PRIMARY,
     TEXT_SECONDARY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ExportRequested(Message):
@@ -108,12 +109,11 @@ class DeliverableView(Widget):
         yield Static(self._build_header(), id="dv-header")
         yield Static(self._render_markdown(), id="dv-report")
         yield Static(self._build_quality(), id="dv-quality")
-        with Vertical(id="dv-actions"):
-            with Horizontal():
-                yield Button("Export PDF", id="btn-pdf", variant="primary")
-                yield Button("Export Markdown", id="btn-md", variant="default")
-                yield Button("Export JSON", id="btn-json", variant="default")
-                yield Button("Open PDF", id="btn-open", variant="success")
+        with Vertical(id="dv-actions"), Horizontal():
+            yield Button("Export PDF", id="btn-pdf", variant="primary")
+            yield Button("Export Markdown", id="btn-md", variant="default")
+            yield Button("Export JSON", id="btn-json", variant="default")
+            yield Button("Open PDF", id="btn-open", variant="success")
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -139,8 +139,8 @@ class DeliverableView(Widget):
             self.query_one("#dv-header", Static).update(self._build_header())
             self.query_one("#dv-report", Static).update(self._render_markdown())
             self.query_one("#dv-quality", Static).update(self._build_quality())
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_refresh_all", exc)
 
     # ── builders ──────────────────────────────────────────────────────────────
 

@@ -217,7 +217,11 @@ class RedditClient:
         "crash", "bug", "issue", "problem", "concern", "worried",
         "bearish", "pessimistic", "decline", "loss", "unprofitable",
         "inefficient", "confusing", "complicated", "difficult", "poor",
-        "weak", "flawed", "disappointing", "underwhelming", "mediocre",
+        # D5.1b (B033): "disappointing" was listed twice in this set literal
+        # (also on the "hate"/"terrible" line above). Harmless in a set, but it
+        # signals the list was extended without checking, so the dedupe is a
+        # correctness-preserving tidy rather than a behaviour change.
+        "weak", "flawed", "underwhelming", "mediocre",
     }
 
     def __init__(self, settings: Any | None = None) -> None:
@@ -242,12 +246,18 @@ class RedditClient:
         if self._reddit is None:
             try:
                 import praw
-            except ImportError:
+            except ImportError as exc:
                 logger.error("praw not installed. Install with: pip install praw")
-                raise ImportError("praw is required for RedditClient. Install with: pip install praw>=7.7.0")
+                # `from exc` (ruff B904): preserves whether praw is absent or
+                # merely failed to import (a broken dependency of its own).
+                raise ImportError(
+                    "praw is required for RedditClient. "
+                    "Install with: pip install praw>=7.7.0"
+                ) from exc
 
             if not self._client_id or not self._client_secret:
-                logger.warning("Reddit credentials not configured. Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in .env")
+                logger.warning("Reddit credentials not configured. Set REDDIT_CLIENT_ID and "
+                    "REDDIT_CLIENT_SECRET in .env")
 
             self._reddit = praw.Reddit(
                 client_id=self._client_id,
@@ -323,7 +333,7 @@ class RedditClient:
                         over18=sub.over18 or False,
                         url=f"https://reddit.com/r/{sub.display_name}" if sub.display_name else "",
                     ))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.warning("Reddit subreddit search failed: %s", e)
 
             return results
@@ -332,7 +342,7 @@ class RedditClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Reddit search_subreddits failed: %s", e)
             return []
 
@@ -375,10 +385,7 @@ class RedditClient:
             results: list[RedditPost] = []
 
             try:
-                if subreddit:
-                    search_target = reddit.subreddit(subreddit)
-                else:
-                    search_target = reddit
+                search_target = reddit.subreddit(subreddit) if subreddit else reddit
 
                 for submission in search_target.search(
                     query,
@@ -387,7 +394,8 @@ class RedditClient:
                     limit=limit,
                 ):
                     created_utc = submission.created_utc or 0.0
-                    created_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(created_utc)) if created_utc else ""
+                    created_str = time.strftime("%Y-%m-%d "
+                        "%H:%M:%S", time.gmtime(created_utc)) if created_utc else ""
 
                     results.append(RedditPost(
                         post_id=submission.id or "",
@@ -406,7 +414,7 @@ class RedditClient:
                         is_self=submission.is_self or False,
                         over18=submission.over_18 or False,
                     ))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.warning("Reddit post search failed: %s", e)
 
             return results
@@ -415,7 +423,7 @@ class RedditClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Reddit search_posts failed: %s", e)
             return []
 
@@ -464,7 +472,8 @@ class RedditClient:
                         continue
 
                     created_utc = comment.created_utc or 0.0
-                    created_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(created_utc)) if created_utc else ""
+                    created_str = time.strftime("%Y-%m-%d "
+                        "%H:%M:%S", time.gmtime(created_utc)) if created_utc else ""
 
                     results.append(RedditComment(
                         comment_id=comment.id or "",
@@ -477,7 +486,7 @@ class RedditClient:
                         post_id=post_id,
                     ))
                     count += 1
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.warning("Reddit get_comments failed: %s", e)
 
             return results
@@ -486,7 +495,7 @@ class RedditClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Reddit get_comments failed: %s", e)
             return []
 
@@ -545,7 +554,9 @@ class RedditClient:
             "over", "under", "again", "further", "then", "once", "here",
             "there", "about", "my", "your", "his", "her", "its", "our", "their",
             "if", "because", "while", "any", "also", "them", "me", "him",
-            "us", "am", "been", "being", "myself", "yourself",
+            # D5.1b (B033): "been"/"being" already appear on the
+            # "be", "been", "being", "have"... line above.
+            "us", "am", "myself", "yourself",
         }
 
         word_freq: dict[str, int] = {}

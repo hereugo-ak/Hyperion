@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Project root resolution
 # ─────────────────────────────────────────────────────────────────────────────
@@ -602,7 +601,7 @@ class TestContainerSpecs:
         async def _pull(image, timeout=600.0):
             # Simulate the primary pin having been reaped from the registry.
             if image == spec.image:
-                return False, "manifest for %s not found" % image
+                return False, f"manifest for {image} not found"
             return True, ""
 
         monkeypatch.setattr(services, "image_present_locally", _absent)

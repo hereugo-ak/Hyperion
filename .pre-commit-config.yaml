@@ -1,0 +1,41 @@
+# HYPERION pre-commit — the process fix for the original P0 (audit §11 DoD #13).
+#
+# The P0's root cause was lint findings (F401/F841/B905) that hid live outages
+# accumulating with no enforcement. This gate runs the same checks CI runs so
+# nothing lands locally that CI would reject.
+#
+# Install:  pip install pre-commit && pre-commit install
+# Run all:  pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      # Lint — mirrors `ruff check hyperion tests tools` in CI. No --fix:
+      # the 5.1e triage proved ruff's fixes can be semantics-changing (UP042,
+      # TC00x); a hook that silently rewrites code on commit re-creates the
+      # exact class of surprise this gate exists to prevent.
+      - id: ruff
+        args: [hyperion, tests, tools]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.16.1
+    hooks:
+      # Type gate — mirrors `mypy hyperion` (strict, staged allowlist) in CI.
+      # additional_dependencies pins the same mypy the project targets.
+      - id: mypy
+        args: [hyperion]
+        additional_dependencies:
+          - pydantic>=2.7.0
+          - pydantic-settings>=2.3.0
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      # Structural guard: pyproject must stay parseable and the two tool
+      # configs (ruff select, mypy strict) must not be silently weakened.
+      - id: pyproject-gate-config
+        name: pyproject gate config intact
+        entry: python -c "import tomllib,sys; c=tomllib.load(open('pyproject.toml','rb')); assert c['tool']['ruff']['lint']['select'] and c['tool']['mypy']['strict'], 'gate config weakened'; print('gate config ok')"
+        language: system
+        pass_filenames: false

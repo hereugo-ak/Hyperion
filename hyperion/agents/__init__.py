@@ -22,12 +22,51 @@ No agent is generic. No tool is idle. No skill is decorative. (§4.1)
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import AgentBus, BusMessage, Channel, MessageType, get_bus, reset_bus
-from hyperion.agents.engagement_director import EngagementDirector, ENGAGEMENT_DIRECTOR_SPEC
+from hyperion.agents.delivery import (
+    PRESENTATION_DESIGNER_SPEC,
+    RENDER_ENGINE_SPEC,
+    PresentationDesigner,
+    RenderEngine,
+)
+from hyperion.agents.engagement_director import ENGAGEMENT_DIRECTOR_SPEC, EngagementDirector
+from hyperion.agents.specialists import (
+    COMPETITIVE_INTEL_SPEC,
+    CONSUMER_INSIGHTS_SPEC,
+    FINANCIAL_ANALYST_SPEC,
+    INNOVATION_ANALYST_SPEC,
+    MA_ANALYST_SPEC,
+    MARKET_ANALYST_SPEC,
+    OPERATIONS_ANALYST_SPEC,
+    REGULATORY_ANALYST_SPEC,
+    RISK_ANALYST_SPEC,
+    STRATEGY_ANALYST_SPEC,
+    SUSTAINABILITY_ANALYST_SPEC,
+    TECHNOLOGY_ANALYST_SPEC,
+    CompetitiveIntel,
+    ConsumerInsightsAnalyst,
+    FinancialAnalyst,
+    InnovationAnalyst,
+    MAAnalyst,
+    MarketAnalyst,
+    OperationsAnalyst,
+    RegulatoryAnalyst,
+    RiskAnalyst,
+    StrategyAnalyst,
+    SustainabilityAnalyst,
+    TechnologyAnalyst,
+)
 from hyperion.agents.sub_agent import SubAgentRunner
-from hyperion.agents.specialists import CompetitiveIntel, COMPETITIVE_INTEL_SPEC, ConsumerInsightsAnalyst, CONSUMER_INSIGHTS_SPEC, FinancialAnalyst, FINANCIAL_ANALYST_SPEC, InnovationAnalyst, INNOVATION_ANALYST_SPEC, MAAnalyst, MA_ANALYST_SPEC, MarketAnalyst, MARKET_ANALYST_SPEC, OperationsAnalyst, OPERATIONS_ANALYST_SPEC, RegulatoryAnalyst, REGULATORY_ANALYST_SPEC, RiskAnalyst, RISK_ANALYST_SPEC, StrategyAnalyst, STRATEGY_ANALYST_SPEC, SustainabilityAnalyst, SUSTAINABILITY_ANALYST_SPEC, TechnologyAnalyst, TECHNOLOGY_ANALYST_SPEC
-from hyperion.agents.delivery import PRESENTATION_DESIGNER_SPEC, PresentationDesigner, RENDER_ENGINE_SPEC, RenderEngine
-from hyperion.agents.support import DataVisualizer, DATA_VISUALIZER_SPEC, FactChecker, FACT_CHECKER_SPEC, QualityGate, QUALITY_GATE_SPEC, ResearchLibrarian, RESEARCH_LIBRARIAN_SPEC
-from hyperion.agents.synthesis_lead import SynthesisLead, SYNTHESIS_LEAD_SPEC
+from hyperion.agents.support import (
+    DATA_VISUALIZER_SPEC,
+    FACT_CHECKER_SPEC,
+    QUALITY_GATE_SPEC,
+    RESEARCH_LIBRARIAN_SPEC,
+    DataVisualizer,
+    FactChecker,
+    QualityGate,
+    ResearchLibrarian,
+)
+from hyperion.agents.synthesis_lead import SYNTHESIS_LEAD_SPEC, SynthesisLead
 
 __all__ = [
     "BaseAgent",

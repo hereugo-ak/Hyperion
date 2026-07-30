@@ -145,7 +145,7 @@ class SpeculativeRacer:
                     return result
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug(f"Speculative race task error: {e}")
 
         # If no task succeeded, try the normal path as fallback

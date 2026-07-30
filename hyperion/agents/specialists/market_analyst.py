@@ -66,7 +66,6 @@ from hyperion.schemas.models import (
 )
 from hyperion.tools.query_utils import resolve_subject
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1109,7 +1108,8 @@ class MarketAnalyst(BaseAgent):
                 context={"market_query": market_query},
             ),
             SubAgentSpec(
-                question=f"Find {geography or 'target geography'} spending data for: {market_query}",
+                question=f"Find {geography or 'target '
+                    'geography'} spending data for: {market_query}",
                 parent_agent=self.name,
                 model_tier=ModelTier.MICRO,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
@@ -1236,8 +1236,10 @@ class MarketAnalyst(BaseAgent):
 
         if not response.success or not response.content:
             return (
-                FinancialMetric(name="SAM", value="Unable to estimate", unit="$", assumptions=["SAM calculation failed"]),
-                FinancialMetric(name="SOM", value="Unable to estimate", unit="$", assumptions=["SOM calculation failed"]),
+                FinancialMetric(name="SAM", value="Unable to "
+                    "estimate", unit="$", assumptions=["SAM calculation failed"]),
+                FinancialMetric(name="SOM", value="Unable to "
+                    "estimate", unit="$", assumptions=["SOM calculation failed"]),
             )
 
         try:
@@ -1265,8 +1267,10 @@ class MarketAnalyst(BaseAgent):
             return sam, som
         except (json.JSONDecodeError, ValueError):
             return (
-                FinancialMetric(name="SAM", value="Parse error", unit="$", assumptions=["SAM parsing failed"]),
-                FinancialMetric(name="SOM", value="Parse error", unit="$", assumptions=["SOM parsing failed"]),
+                FinancialMetric(name="SAM", value="Parse "
+                    "error", unit="$", assumptions=["SAM parsing failed"]),
+                FinancialMetric(name="SOM", value="Parse "
+                    "error", unit="$", assumptions=["SOM parsing failed"]),
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -1348,7 +1352,8 @@ class MarketAnalyst(BaseAgent):
         # Step 4: Pull public company revenue data
         tickers = self._context.get("tickers", [])
         if tickers:
-            await self._transition(AgentState.WORKING, "Step 4: Pulling company data (Alpha Vantage)")
+            await self._transition(AgentState.WORKING, "Step 4: Pulling company data (Alpha "
+                "Vantage)")
             self._public_company_data = await self._pull_public_company_data(tickers)
 
         # Combine all data for sizing

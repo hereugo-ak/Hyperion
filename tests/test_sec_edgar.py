@@ -7,10 +7,11 @@ Tests:
 - Error handling for API failures
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-from hyperion.tools.sec_edgar import SECEdgarClient, SECFiling, SECFilingContent, SECCompanyInfo
+import pytest
+
+from hyperion.tools.sec_edgar import SECEdgarClient, SECFiling
 
 
 class TestSECEdgarClient:
@@ -86,7 +87,8 @@ class TestSECEdgarClient:
         """Client handles API errors gracefully."""
         client = SECEdgarClient()
 
-        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API error"})):
+        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API "
+            "error"})):
             results = await client.search_full_text("test query")
             assert results == []
 

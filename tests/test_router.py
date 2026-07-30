@@ -12,12 +12,10 @@ Tests:
 Architecture reference: §3 LLM Router, §3.1-3.4
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from hyperion.config import ModelTier, ProviderType
 from hyperion.router.budget import TaskUrgency
-from hyperion.router.router import LLMRouter, get_router, reset_router
+from hyperion.router.router import get_router, reset_router
 
 
 class TestRouterInitialization:
@@ -97,7 +95,7 @@ class TestTPMStatus:
         reset_router()
         router = get_router()
         status = router.get_tpm_status()
-        for provider_type, data in status.items():
+        for data in status.values():
             assert isinstance(data, dict)
             assert len(data) > 0  # At least one model tracked
 
@@ -117,6 +115,6 @@ class TestProviderHealth:
         reset_router()
         router = get_router()
         health = router.get_provider_health()
-        for provider_type, data in health.items():
+        for data in health.values():
             assert "status" in data
             assert "available" in data

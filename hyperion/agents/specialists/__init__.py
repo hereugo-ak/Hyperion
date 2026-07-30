@@ -1,17 +1,35 @@
 """Specialist agents — 12 domain experts with proprietary analytical skills."""
 
-from hyperion.agents.specialists.competitive_intel import CompetitiveIntel, COMPETITIVE_INTEL_SPEC
-from hyperion.agents.specialists.consumer_insights import ConsumerInsightsAnalyst, CONSUMER_INSIGHTS_SPEC
-from hyperion.agents.specialists.financial_analyst import FinancialAnalyst, FINANCIAL_ANALYST_SPEC
-from hyperion.agents.specialists.innovation_analyst import InnovationAnalyst, INNOVATION_ANALYST_SPEC
-from hyperion.agents.specialists.ma_analyst import MAAnalyst, MA_ANALYST_SPEC
-from hyperion.agents.specialists.market_analyst import MarketAnalyst, MARKET_ANALYST_SPEC
-from hyperion.agents.specialists.operations_analyst import OperationsAnalyst, OPERATIONS_ANALYST_SPEC
-from hyperion.agents.specialists.regulatory_analyst import RegulatoryAnalyst, REGULATORY_ANALYST_SPEC
-from hyperion.agents.specialists.risk_analyst import RiskAnalyst, RISK_ANALYST_SPEC
-from hyperion.agents.specialists.strategy_analyst import StrategyAnalyst, STRATEGY_ANALYST_SPEC
-from hyperion.agents.specialists.sustainability_analyst import SustainabilityAnalyst, SUSTAINABILITY_ANALYST_SPEC
-from hyperion.agents.specialists.technology_analyst import TechnologyAnalyst, TECHNOLOGY_ANALYST_SPEC
+from hyperion.agents.specialists.competitive_intel import COMPETITIVE_INTEL_SPEC, CompetitiveIntel
+from hyperion.agents.specialists.consumer_insights import (
+    CONSUMER_INSIGHTS_SPEC,
+    ConsumerInsightsAnalyst,
+)
+from hyperion.agents.specialists.financial_analyst import FINANCIAL_ANALYST_SPEC, FinancialAnalyst
+from hyperion.agents.specialists.innovation_analyst import (
+    INNOVATION_ANALYST_SPEC,
+    InnovationAnalyst,
+)
+from hyperion.agents.specialists.ma_analyst import MA_ANALYST_SPEC, MAAnalyst
+from hyperion.agents.specialists.market_analyst import MARKET_ANALYST_SPEC, MarketAnalyst
+from hyperion.agents.specialists.operations_analyst import (
+    OPERATIONS_ANALYST_SPEC,
+    OperationsAnalyst,
+)
+from hyperion.agents.specialists.regulatory_analyst import (
+    REGULATORY_ANALYST_SPEC,
+    RegulatoryAnalyst,
+)
+from hyperion.agents.specialists.risk_analyst import RISK_ANALYST_SPEC, RiskAnalyst
+from hyperion.agents.specialists.strategy_analyst import STRATEGY_ANALYST_SPEC, StrategyAnalyst
+from hyperion.agents.specialists.sustainability_analyst import (
+    SUSTAINABILITY_ANALYST_SPEC,
+    SustainabilityAnalyst,
+)
+from hyperion.agents.specialists.technology_analyst import (
+    TECHNOLOGY_ANALYST_SPEC,
+    TechnologyAnalyst,
+)
 
 __all__ = [
     "MarketAnalyst",

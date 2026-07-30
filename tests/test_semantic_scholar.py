@@ -7,10 +7,11 @@ Tests:
 - Error handling for API failures
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-from hyperion.tools.semantic_scholar import SemanticScholarClient, AcademicPaper, CitationGraph
+import pytest
+
+from hyperion.tools.semantic_scholar import AcademicPaper, SemanticScholarClient
 
 
 class TestSemanticScholarClient:
@@ -89,7 +90,8 @@ class TestSemanticScholarClient:
         """Client handles API errors gracefully."""
         client = SemanticScholarClient()
 
-        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API error"})):
+        with patch.object(client, "_make_request", new=AsyncMock(return_value={"error": "API "
+            "error"})):
             results = await client.search("test query")
             assert results == []
 

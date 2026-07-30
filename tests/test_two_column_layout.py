@@ -15,12 +15,31 @@ These tests cover:
      so the columns actually resolve to the 52–60 char band.
   3. End-to-end: a real WeasyPrint render of the production template path
      measures 2 column bands and a median line measure inside 52–60 chars.
+
+The end-to-end render runs in a SUBPROCESS (`tools/measure_two_column.py`).
+That is a memory requirement, not a style preference. Measured on this host:
+
+    baseline interpreter          10 MB
+    + weasyprint/hyperion imports 113 MB
+    + jinja render (2.3 MB HTML)  138 MB
+    + WeasyPrint write_pdf        245 MB   (+107 MB)
+    + one fitz get_text sweep     414 MB   (+169 MB)
+
+Neither library returns that memory to the OS, and the original class-scoped
+fixture re-ran the fitz sweep once per test (299 → 332 → 340 MB), so this one
+module peaked at **454 MB** — more than the other 37 modules combined. On a
+985 MB host that is what OOM-killed the whole single-process suite at 91%.
+Streaming the pages and `gc.collect()` were both tried and neither helped;
+process exit is the only thing that reclaims it. The parent now retains just
+the handful of numbers it asserts on, and stays at ~17 MB.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
-import statistics
+import subprocess
 import sys
 from pathlib import Path
 
@@ -99,69 +118,96 @@ class TestTwoColumnStructure:
 
 class TestRenderedTwoColumnMeasure:
     """The audit's exit criterion measured on a real render of the production
-    template path (same payload as tools/audit_render_probe.py)."""
+    template path (same payload as tools/audit_render_probe.py).
+
+    The render+measure happens once, in a child process, and this class asserts
+    on the JSON it returns. See the module docstring for the memory numbers
+    that force that design.
+    """
 
     @pytest.fixture(scope="class")
-    def rendered_pdf(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    def metrics(self, tmp_path_factory: pytest.TempPathFactory) -> dict[str, float]:
         pytest.importorskip("weasyprint")
         pytest.importorskip("fitz")
-        import audit_render_probe
+        script = ROOT / "tools" / "measure_two_column.py"
+        assert script.is_file(), f"missing measurement script: {script}"
+        out_pdf = tmp_path_factory.mktemp("pdf") / "two_column_test.pdf"
+        env = {**os.environ, "MPLBACKEND": "Agg"}
 
-        from jinja2 import BaseLoader, Environment
-        from weasyprint import HTML
+        def phase(flag: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(  # noqa: S603
+                [sys.executable, str(script), flag, str(out_pdf)],
+                capture_output=True,
+                text=True,
+                cwd=str(ROOT),
+                timeout=300,
+                check=False,
+                env=env,
+            )
 
-        from hyperion.agents.delivery.presentation_designer import PDF_PALETTE
-        from hyperion.output.render import TemplateRenderer
-
-        payload = audit_render_probe.build_payload()
-        env = Environment(loader=BaseLoader(), autoescape=True)
-        env.filters["md_to_html"] = TemplateRenderer()._markdown_to_html
-        env.filters["clean_dict_repr"] = lambda v: str(v) if v else ""
-        html = env.from_string(HTML_TEMPLATE).render(
-            css_content=CSS_TEMPLATE,
-            palette=PDF_PALETTE,
-            risk_analysis_html="<p>No risk analysis available.</p>",
-            appendix_sources_html="<p>No sources.</p>",
-            **payload,
+        # Drive the two phases from here rather than letting the script fan out,
+        # so the parent pytest process never has two heavyweight children alive
+        # at the same time. rc=-9 means the CHILD was OOM-killed, which is a
+        # host-capacity signal and reads nothing like an assertion failure —
+        # hence the explicit decoding below.
+        rendered = phase("--render")
+        assert rendered.returncode == 0, (
+            f"render phase failed rc={rendered.returncode}"
+            f"{' (OOM-killed by the host)' if rendered.returncode == -9 else ''}\n"
+            f"stderr tail:\n{rendered.stderr[-2000:]}"
         )
-        out = tmp_path_factory.mktemp("pdf") / "two_column_test.pdf"
-        HTML(string=html, base_url=str(ROOT)).write_pdf(str(out))
-        return out
+        assert out_pdf.is_file() and out_pdf.stat().st_size > 50_000, (
+            f"render produced no usable PDF: "
+            f"{out_pdf.stat().st_size if out_pdf.exists() else 'missing'} bytes"
+        )
 
-    @staticmethod
-    def _measure(pdf_path: Path) -> tuple[list[int], int]:
-        import fitz
+        measured = phase("--measure")
+        assert measured.returncode == 0, (
+            f"measure phase failed rc={measured.returncode}"
+            f"{' (OOM-killed by the host)' if measured.returncode == -9 else ''}\n"
+            f"stderr tail:\n{measured.stderr[-2000:]}"
+        )
+        data = json.loads(measured.stdout)
+        # A child that renders nothing would otherwise sail through every
+        # assertion below on empty data.
+        assert data["line_count"] > 200, (
+            f"only {data['line_count']} body lines measured — the render "
+            f"produced no measurable prose, so the numbers below are vacuous"
+        )
+        assert data["pages"] > 0
+        return data
 
-        line_chars: list[int] = []
-        bands: set[int] = set()
-        with fitz.open(str(pdf_path)) as doc:
-            for page in doc:
-                for b in page.get_text("dict")["blocks"]:
-                    if b["type"] != 0:
-                        continue
-                    for line in b["lines"]:
-                        spans = [s for s in line["spans"] if 9.0 <= s["size"] <= 11.0]
-                        text = "".join(s["text"] for s in spans).strip()
-                        if len(text) < 25:
-                            continue
-                        line_chars.append(len(text))
-                        x0 = min(s["bbox"][0] for s in spans)
-                        bands.add(0 if x0 < 297.6 else 1)
-        return line_chars, len(bands)
+    def test_two_column_bands(self, metrics: dict[str, float]) -> None:
+        assert metrics["bands"] == 2, (
+            f"{metrics['bands']} column band(s) — body prose is not two-column"
+        )
 
-    def test_two_column_bands(self, rendered_pdf: Path) -> None:
-        _, bands = self._measure(rendered_pdf)
-        assert bands == 2
-
-    def test_median_chars_per_line_in_benchmark_band(self, rendered_pdf: Path) -> None:
-        line_chars, _ = self._measure(rendered_pdf)
-        assert line_chars, "no body-measure lines found"
-        median = statistics.median(line_chars)
+    def test_median_chars_per_line_in_benchmark_band(self, metrics: dict[str, float]) -> None:
+        median = metrics["median"]
         assert 52 <= median <= 60, f"median {median} chars/line outside 52-60"
 
-    def test_no_wall_of_text_lines(self, rendered_pdf: Path) -> None:
+    def test_no_wall_of_text_lines(self, metrics: dict[str, float]) -> None:
         """p90 must stay inside the band too — a handful of 87-char lines is
         the single-column wall of text sneaking back."""
-        line_chars, _ = self._measure(rendered_pdf)
-        p90 = sorted(line_chars)[int(len(line_chars) * 0.9)]
+        p90 = metrics["p90"]
         assert p90 <= 64, f"p90 {p90} chars/line — wide single-column lines remain"
+
+    def test_render_stays_within_a_child_process_memory_budget(
+        self, metrics: dict[str, float]
+    ) -> None:
+        """The isolation itself is the fix, so it is pinned.
+
+        If someone inlines the render back into this interpreter, the parent's
+        peak RSS jumps from ~17 MB to ~414 MB and the single-process suite is
+        OOM-killed again on a 985 MB host. Asserting on the parent's own peak
+        is what makes that regression visible here rather than as an
+        unexplained rc=137 in CI 37 modules later.
+        """
+        import resource
+
+        peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+        assert peak_mb < 300, (
+            f"this test process peaked at {peak_mb} MB — the WeasyPrint/fitz "
+            f"render appears to have moved back in-process; keep it in "
+            f"tools/measure_two_column.py"
+        )

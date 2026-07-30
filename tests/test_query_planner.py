@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -696,7 +697,7 @@ class TestSubAgentUsesThePlanner:
     def test_sub_agent_module_references_the_planner(self):
         import hyperion.agents.sub_agent as mod
 
-        src = open(mod.__file__).read()
+        src = Path(mod.__file__).read_text()
         assert "query_planner" in src
         assert "plan_queries" in src
 

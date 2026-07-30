@@ -11,8 +11,9 @@ Tests:
 Architecture reference: §6 Output Pipeline, §7 Brand System
 """
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from hyperion.config import get_settings
 
@@ -25,7 +26,10 @@ class TestChartGenerator:
         from hyperion.output.charts import ChartGenerator
 
         settings = get_settings()
-        gen = ChartGenerator(settings=settings)
+        # D5.1: constructing the generator proves it accepts these settings; the
+        # assertions below read `settings.brand` directly, so the instance was
+        # unread (ruff F841). Kept as a smoke construction, not bound.
+        ChartGenerator(settings=settings)
 
         for color in settings.brand.chart_colors:
             # Convert to RGB and check it's not blue-dominant or purple

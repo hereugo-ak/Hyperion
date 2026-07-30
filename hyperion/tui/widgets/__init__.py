@@ -12,7 +12,7 @@ from hyperion.tui.widgets.deliverable import (
     ExportRequested,
     OpenPDFRequested,
 )
-from hyperion.tui.widgets.findings_stream import FindingsStream, FindingEntry
+from hyperion.tui.widgets.findings_stream import FindingEntry, FindingsStream
 from hyperion.tui.widgets.header import HeaderBar
 from hyperion.tui.widgets.mark import Mark, MarkState
 from hyperion.tui.widgets.metrics import AgentState, MetricsRail, Telemetry

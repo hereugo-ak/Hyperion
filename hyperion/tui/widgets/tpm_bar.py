@@ -15,19 +15,22 @@ Per ARCHITECTURE.md §8.6.
 
 from __future__ import annotations
 
+import contextlib
+import logging
+
 from textual.widgets import Static
 
-from hyperion.tui.content import build, line, span
+from hyperion.tui.content import build, span
 from hyperion.tui.theme import (
-    CLAY,
     ROSE,
     SAGE,
     SIG_WARN,
     TEXT_DIM,
     TEXT_GHOST,
-    TEXT_PRIMARY,
     TEXT_SECONDARY,
 )
+
+logger = logging.getLogger(__name__)
 
 _FPS = 4
 _BAR_WIDTH = 10
@@ -92,14 +95,12 @@ class TPMBar(Static):
             usage = router.get_tpm_usage()  # dict[provider_name, fraction]
             if usage:
                 self._providers = dict(usage)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_poll_providers", exc)
 
     def _repaint(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.update(self._render_bars())
-        except Exception:
-            pass
 
     def set_usage(self, provider: str, fraction: float) -> None:
         """Manually set a provider's TPM usage (for demo/testing)."""

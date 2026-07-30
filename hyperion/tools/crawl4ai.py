@@ -191,7 +191,7 @@ class Crawl4AIClient:
             # Crawl4AI not installed — fall back to httpx + basic extraction
             return await self._fallback_extract(url, output_format, extract_tables, extract_links)
 
-        except (RuntimeError, asyncio.TimeoutError, ValueError) as e:
+        except (TimeoutError, RuntimeError, ValueError) as e:
             # Crawl4AI failed — try fallback
             fallback = await self._fallback_extract(url, output_format, extract_tables, extract_links)
             if fallback.error:
@@ -285,9 +285,13 @@ class Crawl4AIClient:
 
         # Headers
         for i in range(6, 0, -1):
+
+            def _header_repl(m: re.Match[str], level: int = i) -> str:
+                return "\n" + "#" * level + " " + m.group(1).strip() + "\n"
+
             html = re.sub(
                 rf"<h{i}[^>]*>(.*?)</h{i}>",
-                lambda m, level=i: "\n" + "#" * level + " " + m.group(1).strip() + "\n",
+                _header_repl,
                 html,
                 flags=re.DOTALL | re.IGNORECASE,
             )

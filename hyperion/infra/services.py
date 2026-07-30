@@ -52,10 +52,13 @@ probe that is polled until it actually answers.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
 import shutil
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,6 +67,8 @@ from hyperion.infra.paths import (
     searxng_limiter_file,
     searxng_settings_file,
 )
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ports and images — ONE definition, imported by every caller
@@ -236,11 +241,9 @@ async def run_command(cmd: list[str], timeout: float = 30.0) -> tuple[int, str, 
 
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        try:
+    except TimeoutError:
+        with contextlib.suppress(Exception):
             proc.kill()
-        except Exception:
-            pass
         return 124, "", f"timed out after {timeout:.0f}s"
     return (
         proc.returncode or 0,
@@ -361,11 +364,11 @@ async def ensure_docker_engine(
     """
 
     def _progress(message: str) -> None:
+        # Progress callbacks are UI concerns — a broken one must never abort
+        # an infra operation, so the suppression is intentional.
         if callable(on_progress):
-            try:
+            with suppress(Exception):
                 on_progress(message)  # type: ignore[misc]
-            except Exception:
-                pass
 
     if not docker_available():
         return DockerStatus(
@@ -496,8 +499,8 @@ async def wait_until_ready(spec: ContainerSpec) -> bool:
                 # answers 200 on `/`; FlareSolverr answers 200 on `/health`.
                 if response.status_code < 500:
                     return True
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                logger.warning("%s: %s", "wait_until_ready", exc)
             await asyncio.sleep(1.0)
     return False
 
@@ -512,12 +515,10 @@ async def _wait_tcp(spec: ContainerSpec) -> bool:
                 asyncio.open_connection("127.0.0.1", spec.host_port), timeout=3.0
             )
             writer.close()
-            try:
+            with contextlib.suppress(Exception):
                 await writer.wait_closed()
-            except Exception:
-                pass
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - retry/poll loop, failure advances the loop
             await asyncio.sleep(1.0)
     return False
 
@@ -566,11 +567,11 @@ async def ensure_container(
     """Bring ``spec`` up from a clean slate and wait until it truly serves."""
 
     def _progress(message: str) -> None:
+        # Progress callbacks are UI concerns — a broken one must never abort
+        # an infra operation, so the suppression is intentional.
         if callable(on_progress):
-            try:
+            with suppress(Exception):
                 on_progress(message)  # type: ignore[misc]
-            except Exception:
-                pass
 
     status = ServiceStatus(name=spec.name)
 
@@ -655,7 +656,7 @@ async def stop_services() -> dict[str, bool]:
         try:
             await remove_container(name)
             removed[name] = True
-        except Exception:
+        except Exception:  # noqa: BLE001 - failure is recorded in the result
             removed[name] = False
     return removed
 

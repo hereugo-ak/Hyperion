@@ -27,7 +27,8 @@ class TestSubstringInflationIsGone:
     @pytest.mark.parametrize("content", ["said", "chain", "maintain", "again", "detail", "portrait"])
     def test_ai_keyword_does_not_match_substrings(self, content):
         """The audit's named examples: 'ai' must not match inside these words."""
-        assert scorer._score_relevance("AI regulation", f"The {content} was noted.") == pytest.approx(
+        assert scorer._score_relevance("AI "
+            "regulation", f"The {content} was noted.") == pytest.approx(
             scorer._score_relevance("AI regulation", "Nothing relevant here.")
         )
 

@@ -32,8 +32,7 @@ Used by: Render Engine (PILLOW tool), Data Visualizer (PILLOW tool) (§5.1)
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -134,7 +133,7 @@ class ImageProcessor:
 
     def _import_pillow(self) -> tuple[Any, Any, Any]:
         """Import Pillow components. Returns (Image, ImageFilter, ImageEnhance)."""
-        from PIL import Image, ImageFilter, ImageEnhance
+        from PIL import Image, ImageEnhance, ImageFilter
 
         return Image, ImageFilter, ImageEnhance
 
@@ -156,7 +155,7 @@ class ImageProcessor:
         Returns:
             Filtered PIL Image.
         """
-        Image, ImageFilter, ImageEnhance = self._import_pillow()
+        pil_image, _, pil_enhance = self._import_pillow()
 
         # Convert to RGB if necessary
         if img.mode != "RGB":
@@ -166,18 +165,18 @@ class ImageProcessor:
         r, g, b = img.split()
 
         # Boost red channel
-        r_enhancer = ImageEnhance.Brightness(r)
+        r_enhancer = pil_enhance.Brightness(r)
         r = r_enhancer.enhance(1.0 + intensity)
 
         # Reduce blue channel
-        b_enhancer = ImageEnhance.Brightness(b)
+        b_enhancer = pil_enhance.Brightness(b)
         b = b_enhancer.enhance(1.0 - intensity * 0.7)
 
         # Slightly boost green for natural warmth
-        g_enhancer = ImageEnhance.Brightness(g)
+        g_enhancer = pil_enhance.Brightness(g)
         g = g_enhancer.enhance(1.0 + intensity * 0.3)
 
-        return Image.merge("RGB", (r, g, b))
+        return pil_image.merge("RGB", (r, g, b))
 
     def center_crop(self, img: Any, target_width: int, target_height: int) -> Any:
         """Center-weighted crop preserving the most visually interesting region.
@@ -240,7 +239,7 @@ class ImageProcessor:
             ImageTooSmallError: If the image is smaller than target dimensions.
             FileNotFoundError: If the input image doesn't exist.
         """
-        Image, ImageFilter, ImageEnhance = self._import_pillow()
+        pil_image, pil_filter, _ = self._import_pillow()
 
         result = ImageProcessResult(
             input_path=image_path,
@@ -250,7 +249,7 @@ class ImageProcessor:
 
         # Step 1: Open and verify resolution
         try:
-            img = Image.open(image_path)
+            img = pil_image.open(image_path)
         except (OSError, ValueError) as e:
             result.error = f"Failed to open image: {e}"
             return result
@@ -272,7 +271,7 @@ class ImageProcessor:
             img = img.convert("RGB")
 
         # Step 2: Resize (downscale only, LANCZOS for best quality)
-        img = img.resize((target_width, target_height), Image.LANCZOS)
+        img = img.resize((target_width, target_height), pil_image.LANCZOS)
 
         # Step 3: Crop (center-weighted)
         # After resize, the image is exactly target size, so crop is only
@@ -288,7 +287,7 @@ class ImageProcessor:
         # Step 5: Sharpen (unsharp mask for print clarity)
         if sharpen:
             img = img.filter(
-                ImageFilter.UnsharpMask(
+                pil_filter.UnsharpMask(
                     radius=self.SHARPEN_RADIUS,
                     percent=self.SHARPEN_PERCENT,
                     threshold=self.SHARPEN_THRESHOLD,
@@ -383,10 +382,10 @@ class ImageProcessor:
         Used before processing to check if an image is high enough
         resolution. Returns True if the image is large enough.
         """
-        Image, _, _ = self._import_pillow()
+        pil_image, _, _ = self._import_pillow()
 
         try:
-            with Image.open(image_path) as img:
+            with pil_image.open(image_path) as img:
                 return img.width >= min_width and img.height >= min_height
         except (OSError, ValueError):
             return False
@@ -396,10 +395,10 @@ class ImageProcessor:
 
         Returns width, height, mode, format, and DPI info.
         """
-        Image, _, _ = self._import_pillow()
+        pil_image, _, _ = self._import_pillow()
 
         try:
-            with Image.open(image_path) as img:
+            with pil_image.open(image_path) as img:
                 dpi = img.info.get("dpi", (0, 0))
                 return {
                     "path": image_path,

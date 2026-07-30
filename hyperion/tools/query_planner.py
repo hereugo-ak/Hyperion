@@ -49,6 +49,7 @@ DESIGN CONSTRAINTS (from the audit)
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -248,10 +249,8 @@ class _PlanCache:
                 return None
             self.hits += 1
             # Refresh recency
-            try:
+            with contextlib.suppress(ValueError):
                 self._order.remove(key)
-            except ValueError:
-                pass
             self._order.append(key)
             # Return a copy flagged as cached so the caller can tell.
             return plan.model_copy(update={"cached": True})
@@ -683,7 +682,7 @@ async def plan_queries(
             from hyperion.router.router import get_router
 
             router = get_router()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("query planner: no router available (%s); using deterministic plan", e)
             router = None
 

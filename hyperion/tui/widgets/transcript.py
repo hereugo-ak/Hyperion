@@ -41,6 +41,7 @@ Each event is one header line, optionally followed by nested detail lines:
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass, field
 
@@ -157,7 +158,7 @@ class Transcript(ScrollView):
         for _ in range(blank_after):
             self._append(("content", Content("")))
 
-    def write(self, content, **_kwargs) -> "Transcript":
+    def write(self, content, **_kwargs) -> Transcript:
         """RichLog-compatible write, so existing callers keep working."""
         if isinstance(content, str):
             content = Content(content)
@@ -229,7 +230,7 @@ class Transcript(ScrollView):
             self._live.remove(row)
         self._rewrite_row(row)
 
-    def clear(self) -> "Transcript":
+    def clear(self) -> Transcript:
         self._rows.clear()
         self._blocks.clear()
         self._live.clear()
@@ -255,11 +256,9 @@ class Transcript(ScrollView):
             self.screen.selections = {self: SELECT_ALL}
             self._render_cache.clear()
             self.refresh()
-        except Exception:
-            try:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
+            with contextlib.suppress(Exception):
                 self.text_select_all()
-            except Exception:
-                pass
 
     # ── selection ──────────────────────────────────────────────────────────
 
@@ -268,7 +267,7 @@ class Transcript(ScrollView):
         """The active selection for this widget, if any."""
         try:
             return self.screen.selections.get(self)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             return None
 
     def _plain_lines(self) -> list[str]:
@@ -285,7 +284,7 @@ class Transcript(ScrollView):
         try:
             text = "\n".join(self._plain)
             return selection.extract(text), "\n"
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             return None
 
     def selected_text(self, selection) -> str:
@@ -435,7 +434,7 @@ class Transcript(ScrollView):
             else:
                 self._render_cache.clear()
                 self.refresh_lines(start, len(strips))
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             self.refresh()
 
     # ── rendering ──────────────────────────────────────────────────────────
@@ -468,7 +467,7 @@ class Transcript(ScrollView):
             end = len(plain)
         try:
             selection_style = self.screen.get_component_rich_style("screen--selection")
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             selection_style = Style(reverse=True)
 
         text = Text(plain, no_wrap=True, end="")

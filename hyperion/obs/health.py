@@ -22,10 +22,8 @@ Usage::
 
 from __future__ import annotations
 
-import os
 import socket
 import sys
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -56,7 +54,7 @@ def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return False
 
 
@@ -127,7 +125,7 @@ def _check_tool(name: str, settings: Any) -> ToolHealth:
             else:
                 h.status = "OFFLINE"
                 h.detail = f"binary not found (looked in {obscura_bin_dir()} and PATH)"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure is recorded in the result
             h.status = "OFFLINE"
             h.detail = f"probe failed: {type(exc).__name__}: {exc}"[:80]
 
@@ -155,8 +153,10 @@ def _check_tool(name: str, settings: Any) -> ToolHealth:
         # D15: Smoke-test WeasyPrint at startup to detect missing GTK
         # libraries (common on Windows — libgobject-2.0 not available).
         try:
+            import os as _os
+            import tempfile
+
             from weasyprint import HTML
-            import tempfile, os as _os
             tmp = _os.path.join(tempfile.gettempdir(), "hyperion_wp_smoke.pdf")
             HTML(string="<p>smoke</p>").write_pdf(tmp)
             if _os.path.exists(tmp):
@@ -169,7 +169,7 @@ def _check_tool(name: str, settings: Any) -> ToolHealth:
         except OSError as exc:
             h.status = "DEGRADED"
             h.detail = f"GTK libs missing: {str(exc)[:40]}"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure is recorded in the result
             h.status = "DEGRADED"
             h.detail = f"smoke-test failed: {str(exc)[:40]}"
 
@@ -290,12 +290,12 @@ def print_completion_health(
         print(f"  Quality:     {qs.total_score:.1f}/{qs.threshold:.1f} "
               f"(iterations: {getattr(result, 'quality_iterations', '?')})")
     else:
-        print(f"  Quality:     N/A")
+        print("  Quality:     N/A")
 
     if hasattr(result, 'pdf_path') and result.pdf_path:
         print(f"  PDF:         {result.pdf_path}")
     else:
-        print(f"  PDF:         NOT GENERATED")
+        print("  PDF:         NOT GENERATED")
 
     # Metadata
     if hasattr(result, 'metadata') and result.metadata:
@@ -320,20 +320,23 @@ def print_completion_health(
                 tier_usage[tier] = tier_usage.get(tier, 0) + 1
 
         if tool_usage:
-            print(f"\n  TOOL USAGE:")
+            print("\n  TOOL USAGE:")
             for tool, count in sorted(tool_usage.items(), key=lambda x: -x[1]):
                 print(f"    {tool:<20} {count} calls")
 
         if tier_usage:
-            print(f"\n  TIER USAGE:")
+            print("\n  TIER USAGE:")
             for tier, count in sorted(tier_usage.items()):
                 print(f"    {tier:<20} {count} calls")
 
     # Degraded status
     if not getattr(result, 'success', False):
         print(f"\n  ⚠ ENGAGEMENT FAILED: {getattr(result, 'error', 'unknown')[:60]}")
-    elif hasattr(result, 'quality_score') and result.quality_score:
-        if result.quality_score.total_score < result.quality_score.threshold:
-            print(f"\n  ⚠ Quality below threshold — report delivered with caveats.")
+    elif (
+        hasattr(result, 'quality_score')
+        and result.quality_score
+        and result.quality_score.total_score < result.quality_score.threshold
+    ):
+            print("\n  ⚠ Quality below threshold — report delivered with caveats.")
 
     print("=" * 72 + "\n")

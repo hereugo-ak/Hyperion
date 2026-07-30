@@ -85,7 +85,6 @@ from hyperion.schemas.models import (
 )
 from hyperion.tools.query_utils import resolve_subject
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
 # ─────────────────────────────────────────────────────────────────────────────
@@ -903,7 +902,8 @@ class MAAnalyst(BaseAgent):
             f"Question: {question}\n\n"
             f"Acquirer: {acquirer}\n"
             f"Top target: {top_target.company_name}\n\n"
-            f"Cultural data (Glassdoor, LinkedIn):\n{cultural_summary or 'No cultural data available — use general knowledge'}\n\n"
+            f"Cultural data (Glassdoor, LinkedIn):\n{cultural_summary or 'No cultural data '
+                'available — use general knowledge'}\n\n"
             "Assess cultural compatibility:\n"
             "- acquirer_culture_summary: acquirer culture from public data\n"
             "- target_culture_summary: target culture from public data\n"
@@ -1076,7 +1076,8 @@ class MAAnalyst(BaseAgent):
                 context={"criteria": criteria, "sector": sector},
             ),
             SubAgentSpec(
-                question=f"Pull financials for targets: {', '.join(target_tickers) or ', '.join(target_names)} — income statement, balance sheet, cash flow, company overview",
+                question=f"Pull financials for targets: {', '
+                    ''.join(target_tickers) or ', '.join(target_names)} — income statement, balance sheet, cash flow, company overview",
                 parent_agent=self.name,
                 model_tier=ModelTier.MICRO,
                 tools=[ToolName.ALPHA_VANTAGE],
@@ -1085,7 +1086,8 @@ class MAAnalyst(BaseAgent):
                 context={"tickers": target_tickers, "companies": target_names},
             ),
             SubAgentSpec(
-                question=f"Find cultural reviews for {', '.join(target_names)} — Glassdoor reviews, LinkedIn company pages, employee sentiment, culture ratings",
+                question=f"Find cultural reviews for {', '
+                    ''.join(target_names)} — Glassdoor reviews, LinkedIn company pages, employee sentiment, culture ratings",
                 parent_agent=self.name,
                 model_tier=ModelTier.FAST,
                 tools=[ToolName.OBSCURA],
@@ -1183,11 +1185,13 @@ class MAAnalyst(BaseAgent):
         )
 
         # Step 1: Define acquisition criteria
-        await self._transition(AgentState.WORKING, "Step 1: Defining acquisition criteria with Engagement Director")
+        await self._transition(AgentState.WORKING, "Step 1: Defining acquisition criteria with "
+            "Engagement Director")
         self._acquisition_criteria = await self._define_acquisition_criteria(self._question, self._context)
 
         # Step 2: Search for potential targets
-        await self._transition(AgentState.WORKING, "Step 2: Searching for potential targets (SearxNG + Jina + Obscura)")
+        await self._transition(AgentState.WORKING, "Step 2: Searching for potential targets "
+            "(SearxNG + Jina + Obscura)")
         self._search_results, self._deal_database_data = await self._search_targets(self._acquisition_criteria, sector)
 
         # Step 3: Build long list → short list
@@ -1198,29 +1202,35 @@ class MAAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel data collection on short-listed targets
         if short_list:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning M&A data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning M&A data collection "
+                "sub-agents")
             sub_findings = await self._spawn_ma_sub_agents(self._acquisition_criteria, sector, short_list)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 4: Pull financial data for targets
-        await self._transition(AgentState.WORKING, "Step 4: Pulling financial data for short-listed targets (Alpha Vantage)")
+        await self._transition(AgentState.WORKING, "Step 4: Pulling financial data for "
+            "short-listed targets (Alpha Vantage)")
         self._target_financials = await self._pull_target_financials(short_list)
 
         # Step 5: Run synergy analysis
-        await self._transition(AgentState.WORKING, "Step 5: Running synergy analysis with reality discount")
+        await self._transition(AgentState.WORKING, "Step 5: Running synergy analysis with reality "
+            "discount")
         synergy_analysis = await self._run_synergy_analysis(
             self._question, short_list, self._target_financials, self._context,
         )
 
         # Step 6: Run accretion/dilution + valuation gap
-        await self._transition(AgentState.WORKING, "Step 6: Running accretion/dilution + valuation gap analysis")
+        await self._transition(AgentState.WORKING, "Step 6: Running accretion/dilution + "
+            "valuation gap analysis")
         accretion_dilution, valuation_gap = await self._run_accretion_dilution_and_valuation(
             self._question, short_list, self._target_financials, synergy_analysis, self._context,
         )
 
         # Step 7: Assess cultural fit
-        await self._transition(AgentState.WORKING, "Step 7: Assessing cultural fit (Glassdoor, LinkedIn, employee sentiment)")
+        await self._transition(AgentState.WORKING, "Step 7: Assessing cultural fit (Glassdoor, "
+            "LinkedIn, employee sentiment)")
         cultural_fit = await self._assess_cultural_fit(
             self._question, short_list, self._cultural_data, self._context,
         )

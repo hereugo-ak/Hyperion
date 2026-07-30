@@ -55,7 +55,6 @@ from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
-from hyperion.tools.query_utils import detect_geographies, resolve_subject
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -74,7 +73,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
-
+from hyperion.tools.query_utils import detect_geographies, resolve_subject
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -423,7 +422,7 @@ class RiskAnalyst(BaseAgent):
                     f"RISK: discovered {len(urls)} official source(s) by search "
                     f"for jurisdiction {jurisdiction!r}"
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             self._log(
                 f"RISK: portal discovery failed for {jurisdiction!r} "
                 f"({type(e).__name__}); no portal data for this jurisdiction"
@@ -1143,10 +1142,12 @@ class RiskAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel risk data collection
         if industry or space:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning risk data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning risk data collection "
+                "sub-agents")
             sub_findings = await self._spawn_risk_sub_agents(industry, jurisdiction, space)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 1: Search for known risks
         await self._transition(AgentState.WORKING, f"Step 1: Searching for known risks in {industry or space}")
@@ -1220,7 +1221,8 @@ class RiskAnalyst(BaseAgent):
         )
 
         # Run Monte Carlo simulation (skill #2)
-        await self._transition(AgentState.WORKING, "Running Monte Carlo simulation on key variables")
+        await self._transition(AgentState.WORKING, "Running Monte Carlo simulation on key "
+            "variables")
         monte_carlo = await self._run_monte_carlo(self._question, risks, self._context)
 
         # Identify top 10 risks (sorted by score)
@@ -1244,6 +1246,11 @@ class RiskAnalyst(BaseAgent):
             black_swan_scenarios=black_swans,
             residual_risk_summary=residual_summary,
             scenario_plan=scenario_plan,
+            # D5.1: both of these were computed above and then dropped on the
+            # floor. `monte_carlo` in particular cost a NORMAL-tier LLM call per
+            # engagement whose entire output was garbage-collected unread.
+            risk_matrix=risk_matrix,
+            monte_carlo=monte_carlo,
             confidence=confidence,
             sources=self._sources,
         )
@@ -1297,6 +1304,10 @@ class RiskAnalyst(BaseAgent):
                 "top_risk_count": len(top_10),
                 "black_swan_count": len(black_swans),
                 "residual_summary": residual_summary,
+                # D5.1: surface the zone counts on the bus so the Synthesis Lead
+                # and Quality Gate can see the shape of the risk profile without
+                # having to re-derive it from the risk list.
+                "risk_zone_counts": risk_matrix.get("zone_counts", {}),
                 "confidence": confidence.value,
             },
         )

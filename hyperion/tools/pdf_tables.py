@@ -146,7 +146,8 @@ class PDFTable:
         for row in self.rows:
             cells = [c for c in row if c]
             if cells:
-                lines.append(": ".join([cells[0], " | ".join(cells[1:])]) if len(cells) > 1 else cells[0])
+                lines.append(": "
+                    "".join([cells[0], " | ".join(cells[1:])]) if len(cells) > 1 else cells[0])
         return lines
 
 
@@ -198,7 +199,7 @@ def extract_tables_from_bytes(
                     break
                 try:
                     raw_tables = page.extract_tables()
-                except Exception as e:  # per-page isolation: one bad page ≠ abort
+                except Exception as e:  # per-page isolation: one bad page ≠ abort  # noqa: BLE001 - failure is logged, not swallowed
                     logger.debug("table extraction failed on page %d: %s", page_idx, e)
                     continue
                 for raw in raw_tables or []:

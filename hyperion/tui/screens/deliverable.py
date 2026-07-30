@@ -12,6 +12,8 @@ Per ARCHITECTURE.md §8.2 (Deliverable View):
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import subprocess
 import sys
@@ -23,23 +25,21 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Static
 
-from hyperion.tui.content import build, build_line, line, span
+from hyperion.tui.content import build_line, span
 from hyperion.tui.theme import (
     CLAY,
     SAGE,
-    SIG_SUCCESS,
     TEXT_DIM,
     TEXT_GHOST,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
 )
 from hyperion.tui.widgets.deliverable import (
     DeliverableView,
     ExportRequested,
     OpenPDFRequested,
 )
-from hyperion.tui.widgets.mark import Mark, MarkState
 from hyperion.tui.widgets.rule import hr
+
+logger = logging.getLogger(__name__)
 
 
 class DeliverableScreen(Screen):
@@ -147,8 +147,8 @@ class DeliverableScreen(Screen):
                 "pdf": result.pdf_path or "",
             }
             pdf_path = result.pdf_path or ""
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_populate", exc)
 
         dv.set_report(
             markdown=md_text,
@@ -163,10 +163,8 @@ class DeliverableScreen(Screen):
 
     def on_export_requested(self, event: ExportRequested) -> None:
         """Handle export button clicks."""
-        try:
+        with contextlib.suppress(Exception):
             self.app.notify(f"Exporting {event.fmt}…", timeout=2)
-        except Exception:
-            pass
 
     def on_open_pdf_requested(self, event: OpenPDFRequested) -> None:
         """Open the PDF in the system viewer."""
@@ -174,14 +172,12 @@ class DeliverableScreen(Screen):
         try:
             dv = self.query_one("#del-body", DeliverableView)
             pdf_path = dv._pdf_path
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "on_open_pdf_requested", exc)
 
         if not pdf_path:
-            try:
+            with contextlib.suppress(Exception):
                 self.app.notify("No PDF available to open", timeout=2)
-            except Exception:
-                pass
             return
 
         try:
@@ -191,11 +187,9 @@ class DeliverableScreen(Screen):
                 subprocess.Popen(["open", pdf_path])
             else:
                 subprocess.Popen(["xdg-open", pdf_path])
-        except Exception as e:
-            try:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
+            with contextlib.suppress(Exception):
                 self.app.notify(f"Failed to open PDF: {e}", timeout=3)
-            except Exception:
-                pass
 
     # ── actions ──────────────────────────────────────────────────────────────────
 

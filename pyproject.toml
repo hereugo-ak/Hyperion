@@ -27,6 +27,19 @@ dependencies = [
     "curl_cffi>=0.7.0",
     "transformers>=4.44.0",
     "websockets>=12.0",
+    # 5.4: vector-retrieval Second Brain. vector_brain.py degrades to a
+    # deterministic hashing embedder + exact SQLite scan when these heavy
+    # backends are absent (985MB CI sandbox); they are the production path.
+    "sentence-transformers>=3.0.0",
+    "sqlite-vec>=0.1.0",
+    # 5.5: yfinance global equity data (MarketDataClient). Imported lazily
+    # inside market_data.py so the module stays importable on hosts without
+    # it (985MB CI sandbox); MarketDataClient degrades to available=False.
+    "yfinance>=0.2.40",
+    # 5.6: PDF/A-2b + bookmarks post-pass (hyperion/output/pdf_postprocess.py).
+    # Lazy-imported so the module stays importable without it; the render path
+    # degrades to the un-post-processed PDF with a recorded warning.
+    "pikepdf>=9.0.0",
 
     # Report generation — 300 DPI PDFs, Plotly charts, Pillow image pipeline
     "weasyprint>=62.0",
@@ -55,6 +68,11 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
+    # D4.3: the kaleido/Chromium renderer can stall on a pipe read when the host
+    # is out of memory (kaleido/scopes/base.py:308). A hang is indistinguishable
+    # from a slow test without a hard per-test deadline, so --timeout is not
+    # optional tooling — it is how that failure mode stays diagnosable in CI.
+    "pytest-timeout>=2.3.0",
     "ruff>=0.5.0",
     "mypy>=1.10.0",
 ]
@@ -78,7 +96,97 @@ target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
+# BLE + S110/S112 added by 5.3 (audit §11 DoD #13): ban blind
+# `except Exception:` (BLE001) and try-except-pass/continue (S110/S112).
+# The 5.3 triage converted every silent handler to a recorded one and
+# justified each remaining blanket catch with a per-site
+# `noqa: BLE001 - <reason>`, so any NEW blind catch or silent swallow fails
+# the gate. Only S110/S112 are selected, not the whole S family — the rest
+# of bandit (S603 subprocess et al., 2000+ findings) is a separate audit.
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH", "BLE", "S110", "S112"]
+
+# Rule families judged semantics-changing in this codebase during the
+# 5.1e-continuation triage (see commits 989372d, 6acbdb3):
+#   UP042 — str(StrEnum) interpolates as the value where str(str,Enum)-mixin
+#           interpolates as "ClassName.MEMBER"; this codebase interpolates
+#           enum members into prompts, paths, and exhibit text, so blanket
+#           conversion silently rewrites client-facing strings.
+#   TC001/TC002/TC003 — 7 of the 9 flagged production files define pydantic
+#           BaseModels or dataclasses whose annotations are evaluated at
+#           runtime; moving the import into TYPE_CHECKING breaks model
+#           construction with NameError.
+#   SIM112 — infra/services.py:279-281 reads genuine Windows env vars
+#           (ProgramFiles, ProgramFiles(x86), ProgramW6432); "fixing" the
+#           capitalization reads a different, empty variable on Windows.
+# The 5.1e-continuation backlog (503 E501 long lines + 3 pre-judged benign
+# sites) is quarantined per-file in [tool.ruff.lint.per-file-ignores] below
+# so that NEW findings in these families still fail the gate.
+ignore = ["UP042", "TC001", "TC002", "TC003", "SIM112"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-judged benign sites (documented in 989372d):
+"hyperion/router/wait_gate.py" = ["E501", "SIM103"]      # :128 deliberate nested condition
+"hyperion/agents/delivery/render_engine.py" = ["E501", "SIM102"]  # :752 mirrors PyPDF2 fallback branch
+"tools/audit_render_probe.py" = ["N802"]                 # def V — known-benign probe helper
+# 5.1e-continuation E501 backlog (503 lines: 281 complete-code, 158 f-string,
+# 52 no-open-bracket, 8 triple-quoted, 4 url/docstring — documented 6acbdb3).
+# Quarantined so new long lines elsewhere fail; shrink this list as files are
+# reflowed under a runnable test suite.
+"hyperion/agents/base.py" = ["E501"]
+"hyperion/cli.py" = ["E501"]
+"hyperion/config.py" = ["E501"]
+"hyperion/eval/harness.py" = ["E501"]
+"hyperion/output/chart_specs.py" = ["E501"]
+"hyperion/router/providers/base.py" = ["E501"]
+"hyperion/schemas/research.py" = ["E501"]
+"hyperion/schemas/workflow.py" = ["E501"]
+"hyperion/tools/crawl4ai.py" = ["E501"]
+"hyperion/tools/google_trends.py" = ["E501"]
+"hyperion/agents/delivery/presentation_designer.py" = ["E501"]
+"hyperion/agents/engagement_director.py" = ["E501"]
+"hyperion/agents/specialists/*.py" = ["E501"]
+"hyperion/agents/sub_agent.py" = ["E501"]
+"hyperion/agents/synthesis_lead.py" = ["E501"]
+"hyperion/agents/support/data_visualizer.py" = ["E501"]
+"hyperion/agents/support/fact_checker.py" = ["E501"]
+"hyperion/agents/support/quality_gate.py" = ["E501"]
+"hyperion/agents/support/research_librarian.py" = ["E501"]
+"hyperion/infra/services.py" = ["E501"]
+"hyperion/obs/health.py" = ["E501"]
+"hyperion/orchestrator.py" = ["E501"]
+"hyperion/output/charts.py" = ["E501"]
+"hyperion/output/images.py" = ["E501"]
+"hyperion/output/markdown.py" = ["E501"]
+"hyperion/output/render.py" = ["E501"]
+"hyperion/router/router.py" = ["E501"]
+"hyperion/schemas/models.py" = ["E501"]
+"hyperion/tools/camoufox_client.py" = ["E501"]
+"hyperion/tools/content_selector.py" = ["E501"]
+"hyperion/tools/deep_search.py" = ["E501"]
+"hyperion/tools/evidence_scorer.py" = ["E501"]
+"hyperion/tools/hackernews.py" = ["E501"]
+"hyperion/tools/pdf_tables.py" = ["E501"]
+"hyperion/tools/query_planner.py" = ["E501"]
+"hyperion/tools/query_utils.py" = ["E501"]
+"hyperion/tools/reddit.py" = ["E501"]
+"hyperion/tools/scrapling.py" = ["E501"]
+"hyperion/tools/searxng.py" = ["E501"]
+"hyperion/tools/second_brain.py" = ["E501"]
+"hyperion/tools/stealth_search.py" = ["E501"]
+"hyperion/tools/unsplash.py" = ["E501"]
+"hyperion/tools/wayback.py" = ["E501"]
+"hyperion/tools/world_bank.py" = ["E501"]
+"hyperion/tools/__init__.py" = ["E501"]
+"hyperion/tui/boot.py" = ["E501"]
+"hyperion/tui/screens/engagement.py" = ["E501"]
+"hyperion/tui/screens/splash.py" = ["E501"]
+"hyperion/tui/widgets/metrics.py" = ["E501"]
+"tests/test_evidence_scorer_relevance.py" = ["E501"]
+"tests/test_font_embedding.py" = ["E501"]
+"tests/test_p13.py" = ["E501"]
+"tests/test_tools.py" = ["E501"]
+"tests/test_unified_extract_ladder.py" = ["E501"]
+"tests/test_wait_gate.py" = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -89,3 +197,105 @@ python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+# 5.1f staged allowlist — the process fix for the original P0.
+# 342 errors in 68 files at baseline (174 in hyperion/tui). Every NEW module
+# is checked strict by default; the backlog modules below are quarantined
+# with ignore_errors and must be removed one by one as they are annotated.
+# Third-party packages without stubs get ignore_missing_imports only — the
+# code that imports them is still checked.
+[[tool.mypy.overrides]]
+# Only packages actually imported by modules NOT in the backlog quarantine
+# appear here (warn_unused_configs flags the rest). When a quarantined module
+# leaves the list below, its third-party imports may need re-adding here —
+# e.g. duckduckgo_search, fredpy, alpha_vantage, kaleido, instructor,
+# tenacity. 5.4 added sqlite_vec / sentence_transformers (optional
+# production backends for hyperion/tools/vector_brain.py; the deterministic
+# hashing fallback needs neither). 5.5 added yfinance (lazy-imported by
+# hyperion/tools/market_data.py). 5.6 added pikepdf (lazy-imported by
+# hyperion/output/pdf_postprocess.py).
+module = [
+    "textual.*", "trafilatura", "weasyprint", "transformers", "plotly.*",
+    "matplotlib.*", "PIL.*", "fitz", "pdfplumber",
+    "crawl4ai", "curl_cffi", "praw",
+    "nodriver", "camoufox", "playwright.*", "aiohttp",
+    "websockets", "jinja2", "markupsafe", "openai", "httpx",
+    "rich.*", "typer", "PyPDF2", "yaml",
+    "sqlite_vec", "sentence_transformers",
+    "yfinance", "pikepdf",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Backlog quarantine — 68 files with strict errors at the 5.1f baseline.
+# Shrink this list; never grow it.
+module = [
+    "hyperion.agents.base",
+    "hyperion.agents.bus",
+    "hyperion.agents.delivery.presentation_designer",
+    "hyperion.agents.delivery.render_engine",
+    "hyperion.agents.engagement_director",
+    "hyperion.agents.specialists.competitive_intel",
+    "hyperion.agents.specialists.market_analyst",
+    "hyperion.agents.specialists.risk_analyst",
+    "hyperion.agents.support.data_visualizer",
+    "hyperion.agents.synthesis_lead",
+    "hyperion.eval.ci_gate",
+    "hyperion.eval.harness",
+    "hyperion.infra.services",
+    "hyperion.obs.health",
+    "hyperion.orchestrator",
+    "hyperion.output.chart_specs",
+    "hyperion.output.charts",
+    "hyperion.output.images",
+    "hyperion.output.markdown",
+    "hyperion.output.render",
+    "hyperion.router.providers.base",
+    "hyperion.router.router",
+    "hyperion.router.speculative_racer",
+    "hyperion.router.structured_validator",
+    "hyperion.tools.alpha_vantage",
+    "hyperion.tools.camoufox_client",
+    "hyperion.tools.curl_cffi_client",
+    "hyperion.tools.deep_search",
+    "hyperion.tools.flaresolverr",
+    "hyperion.tools.fred",
+    "hyperion.tools.google_trends",
+    "hyperion.tools.hackernews",
+    "hyperion.tools.http_extract",
+    "hyperion.tools.jina",
+    "hyperion.tools.nodriver_client",
+    "hyperion.tools.obscura",
+    "hyperion.tools.openalex",
+    "hyperion.tools.reddit",
+    "hyperion.tools.scrapling",
+    "hyperion.tools.searxng",
+    "hyperion.tools.sec_edgar",
+    "hyperion.tools.second_brain",
+    "hyperion.tools.semantic_scholar",
+    "hyperion.tools.stealth_search",
+    "hyperion.tools.unified_extract",
+    "hyperion.tools.unified_search",
+    "hyperion.tools.world_bank",
+    "hyperion.tui.app",
+    "hyperion.tui.banner",
+    "hyperion.tui.boot",
+    "hyperion.tui.content",
+    "hyperion.tui.motion.easing",
+    "hyperion.tui.motion.indicators",
+    "hyperion.tui.screens.deliverable",
+    "hyperion.tui.screens.engagement",
+    "hyperion.tui.screens.session",
+    "hyperion.tui.screens.splash",
+    "hyperion.tui.widgets.agent_grid",
+    "hyperion.tui.widgets.deliverable",
+    "hyperion.tui.widgets.findings_stream",
+    "hyperion.tui.widgets.header",
+    "hyperion.tui.widgets.mark",
+    "hyperion.tui.widgets.metrics",
+    "hyperion.tui.widgets.prompt",
+    "hyperion.tui.widgets.rule",
+    "hyperion.tui.widgets.tpm_bar",
+    "hyperion.tui.widgets.transcript",
+]
+ignore_errors = true

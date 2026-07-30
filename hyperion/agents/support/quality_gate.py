@@ -79,7 +79,6 @@ from hyperion.schemas.agents import (
     ToolName,
 )
 from hyperion.schemas.models import (
-    ClaimStatus,
     ConfidenceLevel,
     FactCheckReport,
     FinalReport,
@@ -89,7 +88,6 @@ from hyperion.schemas.models import (
     QualityScore,
     VisualizationOutput,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dimension metadata — names, descriptions, and scoring criteria
@@ -492,7 +490,8 @@ class QualityGate(BaseAgent):
         if not report.sections:
             score = 1
             feedback_parts.append("No analysis sections present in the report.")
-            fix_parts.append("Add specialist analysis sections (Market, Competitive, Financial, etc.).")
+            fix_parts.append("Add specialist analysis sections (Market, Competitive, Financial, "
+                "etc.).")
         else:
             # Check section count — a standard engagement should have 4-8 sections
             section_count = len(report.sections)
@@ -587,7 +586,8 @@ class QualityGate(BaseAgent):
                 )
 
         if not feedback_parts:
-            feedback_parts.append("Every claim has ≥1 source, key claims have ≥2 independent sources.")
+            feedback_parts.append("Every claim has ≥1 source, key claims have ≥2 independent "
+                "sources.")
 
         return QualityDimension(
             dimension_id=QualityDimensionName.EVIDENCE_SUFFICIENCY,
@@ -671,7 +671,8 @@ class QualityGate(BaseAgent):
                 await self._log_tool_use("llm", "score", f"FAIL · {e}", success=False)
 
         if not feedback_parts:
-            feedback_parts.append("Deep analysis with frameworks applied correctly, 'so what?' implications throughout.")
+            feedback_parts.append("Deep analysis with frameworks applied correctly, 'so what?' "
+                "implications throughout.")
 
         return QualityDimension(
             dimension_id=QualityDimensionName.ANALYTICAL_DEPTH,
@@ -696,7 +697,8 @@ class QualityGate(BaseAgent):
         if not report.recommendation_rationale or len(report.recommendation_rationale) < 100:
             score = min(score, 2)
             feedback_parts.append("Recommendation rationale is missing or too brief.")
-            fix_parts.append("Expand the recommendation rationale — trace the evidence chain from findings to recommendation.")
+            fix_parts.append("Expand the recommendation rationale — trace the evidence chain from "
+                "findings to recommendation.")
 
         # Check if key findings support the recommendation
         if report.key_findings and report.recommendation_rationale:
@@ -717,11 +719,14 @@ class QualityGate(BaseAgent):
         # Check critical assumptions
         if not report.critical_assumptions:
             score = min(score, 3)
-            feedback_parts.append("No critical assumptions listed — what would flip the recommendation if wrong?")
-            fix_parts.append("Add 2-3 critical assumptions that would change the recommendation if proven wrong.")
+            feedback_parts.append("No critical assumptions listed — what would flip the "
+                "recommendation if wrong?")
+            fix_parts.append("Add 2-3 critical assumptions that would change the recommendation "
+                "if proven wrong.")
 
         if not feedback_parts:
-            feedback_parts.append("Recommendations logically follow from findings, no gaps in reasoning.")
+            feedback_parts.append("Recommendations logically follow from findings, no gaps in "
+                "reasoning.")
 
         return QualityDimension(
             dimension_id=QualityDimensionName.LOGICAL_CONSISTENCY,
@@ -763,7 +768,8 @@ class QualityGate(BaseAgent):
                 fix_parts.append(f"Resolve {len(fc_unresolved)} contradiction(s) identified by the Fact Checker.")
 
         if not feedback_parts:
-            feedback_parts.append("All contradictions resolved evidence-weighted with clear rationale.")
+            feedback_parts.append("All contradictions resolved evidence-weighted with clear "
+                "rationale.")
 
         return QualityDimension(
             dimension_id=QualityDimensionName.CONTRADICTION_RESOLUTION,
@@ -824,7 +830,8 @@ class QualityGate(BaseAgent):
             fix_parts.append(f"Soften {absolute_count} absolute statement(s) — consulting-grade is confident, not absolute.")
 
         if not feedback_parts:
-            feedback_parts.append("Confident, specific, evidence-based throughout. No hedging or generic statements.")
+            feedback_parts.append("Confident, specific, evidence-based throughout. No hedging or "
+                "generic statements.")
 
         return QualityDimension(
             dimension_id=QualityDimensionName.TONE_AND_VOICE,
@@ -883,7 +890,8 @@ class QualityGate(BaseAgent):
             fix_parts.append("Add limitations to the methodology section.")
 
         if not feedback_parts:
-            feedback_parts.append("Perfect premium structure: cover → TOC → exec summary → sections → risk → methodology → appendix.")
+            feedback_parts.append("Perfect premium structure: cover → TOC → exec summary → "
+                "sections → risk → methodology → appendix.")
 
         return QualityDimension(
             dimension_id=QualityDimensionName.STRUCTURAL_QUALITY,
@@ -934,10 +942,12 @@ class QualityGate(BaseAgent):
                 if not black_swans:
                     score = min(score, 4)
                     feedback_parts.append("No black swan scenarios identified.")
-                    fix_parts.append("Add 1-2 black swan scenarios — low-probability, high-impact events.")
+                    fix_parts.append("Add 1-2 black swan scenarios — low-probability, high-impact "
+                        "events.")
 
         if not feedback_parts:
-            feedback_parts.append("Top risks identified with specific, actionable mitigations and residual risk assessment.")
+            feedback_parts.append("Top risks identified with specific, actionable mitigations and "
+                "residual risk assessment.")
 
         return QualityDimension(
             dimension_id=QualityDimensionName.RISK_COVERAGE,
@@ -966,7 +976,8 @@ class QualityGate(BaseAgent):
                 if fc.verification_rate < 0.4:
                     score = min(score, 2)
                     feedback_parts.append(f"Only {fc.verification_rate:.0%} of claims verified — below 40% threshold.")
-                    fix_parts.append("Verify more claims with independent sources, especially key numbers and dates.")
+                    fix_parts.append("Verify more claims with independent sources, especially key "
+                        "numbers and dates.")
                 elif fc.verification_rate < 0.7:
                     score = min(score, 3)
                     feedback_parts.append(f"{fc.verification_rate:.0%} of claims verified — could be higher.")
@@ -981,7 +992,8 @@ class QualityGate(BaseAgent):
             if fc.statistical_red_flags:
                 score = min(score, 3 if len(fc.statistical_red_flags) > 3 else 4)
                 feedback_parts.append(f"{len(fc.statistical_red_flags)} statistical red flag(s): {fc.statistical_red_flags[:2]}")
-                fix_parts.append("Address statistical red flags — verify suspicious numbers with primary sources.")
+                fix_parts.append("Address statistical red flags — verify suspicious numbers with "
+                    "primary sources.")
 
             # Check evidence chain breaks
             if fc.evidence_chain_break_count > 0:
@@ -999,7 +1011,8 @@ class QualityGate(BaseAgent):
             fix_parts.append("Run the Fact Checker before quality gating.")
 
         if not feedback_parts:
-            feedback_parts.append("All claims verified, no hallucinated citations, no statistical red flags.")
+            feedback_parts.append("All claims verified, no hallucinated citations, no statistical "
+                "red flags.")
 
         return QualityDimension(
             dimension_id=QualityDimensionName.DATA_ACCURACY,
@@ -1031,31 +1044,38 @@ class QualityGate(BaseAgent):
             if not viz.all_brand_compliant:
                 score = min(score, 2)
                 feedback_parts.append("Not all charts use the HYPERION brand color sequence.")
-                fix_parts.append("Re-generate charts with colorway=CHART_COLORS (Terracotta, Sage, Deep Brown, Warm Gray, Beige, Alert Red).")
+                fix_parts.append("Re-generate charts with colorway=CHART_COLORS (Terracotta, "
+                    "Sage, Deep Brown, Warm Gray, Beige, Alert Red).")
 
             if not viz.all_tufte_compliant:
                 score = min(score, 3)
-                feedback_parts.append("Not all charts follow Tufte principles (chartjunk, 3D effects, gradient fills).")
-                fix_parts.append("Remove chartjunk, 3D effects, and gradient fills from non-compliant charts.")
+                feedback_parts.append("Not all charts follow Tufte principles (chartjunk, 3D "
+                    "effects, gradient fills).")
+                fix_parts.append("Remove chartjunk, 3D effects, and gradient fills from "
+                    "non-compliant charts.")
 
             if viz.total_charts == 0:
                 score = min(score, 2)
                 feedback_parts.append("No charts generated for the report.")
-                fix_parts.append("Generate charts for key data visualizations — a report without charts is not McKinsey/BCG-grade.")
+                fix_parts.append("Generate charts for key data visualizations — a report without "
+                    "charts is not McKinsey/BCG-grade.")
 
             # Check sections have charts
             sections_with_charts = sum(1 for s in report.sections if s.charts)
             if report.sections and sections_with_charts < len(report.sections) // 2:
                 score = min(score, 3)
                 feedback_parts.append(f"Only {sections_with_charts}/{len(report.sections)} sections have charts.")
-                fix_parts.append("Add charts to more sections — visual data is critical for consulting-grade reports.")
+                fix_parts.append("Add charts to more sections — visual data is critical for "
+                    "consulting-grade reports.")
         else:
             score = min(score, 3)
-            feedback_parts.append("No Visualization Output received — cannot verify visual quality.")
+            feedback_parts.append("No Visualization Output received — cannot verify visual "
+                "quality.")
             fix_parts.append("Run the Data Visualizer before quality gating.")
 
         if not feedback_parts:
-            feedback_parts.append("All charts brand-compliant, 300 DPI, Tufte-compliant, properly placed.")
+            feedback_parts.append("All charts brand-compliant, 300 DPI, Tufte-compliant, properly "
+                "placed.")
 
         return QualityDimension(
             dimension_id=QualityDimensionName.VISUAL_QUALITY,
@@ -1250,21 +1270,22 @@ class QualityGate(BaseAgent):
 
         # Check for missing critical sections
         if not report.risk_analysis:
-            gaps.append("Risk analysis section is missing — top risks must be identified with mitigations.")
+            gaps.append("Risk analysis section is missing — top risks must be identified with "
+                "mitigations.")
 
         if not report.critical_assumptions:
-            gaps.append("No critical assumptions listed — what would flip the recommendation if wrong?")
+            gaps.append("No critical assumptions listed — what would flip the recommendation if "
+                "wrong?")
 
         if not report.limitations:
             gaps.append("No limitations listed — what couldn't be researched?")
 
         # Cross-reference with Fact Checker
-        if self._fact_check_report:
-            if self._fact_check_report.hallucinated_citation_count > 0:
-                gaps.append(
-                    f"{self._fact_check_report.hallucinated_citation_count} hallucinated citation(s) "
-                    f"must be replaced with real sources."
-                )
+        if self._fact_check_report and self._fact_check_report.hallucinated_citation_count > 0:
+            gaps.append(
+                f"{self._fact_check_report.hallucinated_citation_count} hallucinated citation(s) "
+                f"must be replaced with real sources."
+            )
 
         return gaps
 
@@ -1306,13 +1327,13 @@ class QualityGate(BaseAgent):
         low_dims = [d for d in dimensions if d.score < 4 and not d.critical]
 
         report_parts = [
-            f"QUALITY GATE ESCALATION REPORT",
-            f"=" * 50,
-            f"",
+            "QUALITY GATE ESCALATION REPORT",
+            "=" * 50,
+            "",
             f"Iterations attempted: {iteration} (max {self.MAX_ITERATIONS})",
             f"Final score: {total_score}/{self.APPROVAL_THRESHOLD}",
-            f"Status: FAILED — escalation required",
-            f"",
+            "Status: FAILED — escalation required",
+            "",
             f"CRITICAL DIMENSIONS (score < {self.CRITICAL_THRESHOLD}):",
         ]
 
@@ -1321,21 +1342,21 @@ class QualityGate(BaseAgent):
             if d.fix_instructions:
                 report_parts.append(f"    Fix: {d.fix_instructions}")
 
-        report_parts.append(f"")
-        report_parts.append(f"DIMENSIONS NEEDING IMPROVEMENT (score < 4):")
+        report_parts.append("")
+        report_parts.append("DIMENSIONS NEEDING IMPROVEMENT (score < 4):")
 
         for d in low_dims:
             report_parts.append(f"  - {d.name} (score {d.score}/5): {d.feedback}")
             if d.fix_instructions:
                 report_parts.append(f"    Fix: {d.fix_instructions}")
 
-        report_parts.append(f"")
-        report_parts.append(f"RECOMMENDATION: Manual review required. The report has failed")
+        report_parts.append("")
+        report_parts.append("RECOMMENDATION: Manual review required. The report has failed")
         report_parts.append(f"quality gating after {iteration} iterations. The Synthesis Lead")
-        report_parts.append(f"should review the specific issues above and determine whether to:")
-        report_parts.append(f"  1. Make manual fixes and resubmit")
-        report_parts.append(f"  2. Accept the report with documented limitations")
-        report_parts.append(f"  3. Restart the engagement with a different approach")
+        report_parts.append("should review the specific issues above and determine whether to:")
+        report_parts.append("  1. Make manual fixes and resubmit")
+        report_parts.append("  2. Accept the report with documented limitations")
+        report_parts.append("  3. Restart the engagement with a different approach")
 
         return "\n".join(report_parts)
 
@@ -1527,7 +1548,8 @@ class QualityGate(BaseAgent):
                 f"Quality Gate {'approved' if approved else 'rejected'} the report. "
                 f"Total score: {total_score}/{self.APPROVAL_THRESHOLD}. "
                 f"Iteration: {iteration}/{self.MAX_ITERATIONS}. "
-                f"Critical dimensions: {', '.join(d.value for d in critical_dims) if critical_dims else 'none'}. "
+                f"Critical dimensions: {', '
+                    ''.join(d.value for d in critical_dims) if critical_dims else 'none'}. "
                 f"Gaps identified: {len(gaps)}. "
                 f"{'Max iterations reached — escalated.' if max_reached and not approved else ''}"
             ),
@@ -1542,7 +1564,8 @@ class QualityGate(BaseAgent):
             f"iteration {iteration}/{self.MAX_ITERATIONS}, "
             f"critical_dims: {len(critical_dims)}, "
             f"gaps: {len(gaps)}, "
-            f"{'escalated' if max_reached and not approved else 'sent back for iteration' if not approved else 'approved for delivery'}",
+            f"{'escalated' if max_reached and not approved else 'sent back for '
+                'iteration' if not approved else 'approved for delivery'}",
         )
 
         return quality_score

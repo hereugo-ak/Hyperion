@@ -63,6 +63,7 @@ Extraction fallback chain (§5.2):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -282,8 +283,8 @@ class ObscuraClient:
         try:
             if shutil.which("obscura"):
                 return True
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_probe_platform_support", exc)
 
         # Or a non-.exe binary in obscura-bin/ — but verify it truly executes
         # rather than being the Windows .exe renamed. Only the extensionless
@@ -298,9 +299,8 @@ class ObscuraClient:
                 )
                 if result.returncode == 0:
                     return True
-        except Exception:
-            # Exec format errors, permission errors, timeouts — all mean "no".
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_probe_platform_support", exc)
 
         return False
 
@@ -315,7 +315,7 @@ class ObscuraClient:
                 return False
             obscura_bin = self._find_obscura()
             return bool(obscura_bin) and os.path.exists(obscura_bin)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.debug("Obscura availability check failed: %s: %s", type(e).__name__, e)
             return False
 
@@ -390,13 +390,13 @@ class ObscuraClient:
                     error=error,
                 )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ObscuraFetchResult(
                 url=url,
                 status_code=408,
                 error=f"Obscura fetch timed out after {self.CLI_TIMEOUT}s",
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             # Catch BROADLY. The old `(OSError, FileNotFoundError)` tuple missed
             # NotImplementedError — which is exactly what asyncio raises when a
             # subprocess is created on a Windows SelectorEventLoop — so the
@@ -508,13 +508,13 @@ class ObscuraClient:
                     failed=len(urls),
                 )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ObscuraScrapeResult(
                 results=[ObscuraFetchResult(url=u, error="Timeout") for u in urls],
                 total=len(urls),
                 failed=len(urls),
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             # Broad on purpose — see the matching comment in fetch(). Notably
             # NotImplementedError (Windows SelectorEventLoop subprocesses) was
             # escaping the old narrow tuple and aborting the agent step.
@@ -577,7 +577,7 @@ class ObscuraClient:
                 await self.stop_serve()
                 return False
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             # Broad on purpose — see fetch(). A CDP server that won't start is
             # a degraded capability, never a fatal engagement error.
             logger.warning(
@@ -608,7 +608,7 @@ class ObscuraClient:
                 self._serve_proc.terminate()
                 await asyncio.wait_for(self._serve_proc.wait(), timeout=5.0)
                 logger.info("Obscura serve stopped (pid=%d)", self._serve_proc.pid)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._serve_proc.kill()
                 logger.warning("Obscura serve killed (did not terminate gracefully)")
             except (OSError, ProcessLookupError):
@@ -683,7 +683,7 @@ class ObscuraClient:
                 except ImportError:
                     # websockets not available — try aiohttp
                     try:
-                        from aiohttp import ClientSession, WSMsgType
+                        from aiohttp import ClientSession
 
                         session = ClientSession()
                         self._cdp_ws = await session.ws_connect(ws_url)
@@ -736,7 +736,7 @@ class ObscuraClient:
                     )
                 # Ignore events and other responses
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return CDPResponse(id=cmd_id, error="CDP command timed out")
         except (ConnectionError, json.JSONDecodeError, RuntimeError) as e:
             return CDPResponse(id=cmd_id, error=str(e))
@@ -898,14 +898,10 @@ class ObscuraClient:
     async def close_browser(self) -> None:
         """Close the browser instance. (MCP tool: browser_close)"""
         if self._cdp_ws:
-            try:
+            with contextlib.suppress(ConnectionError, RuntimeError):
                 await self._send_cdp_command("Browser.close")
-            except (ConnectionError, RuntimeError):
-                pass
-            try:
+            with contextlib.suppress(ConnectionError, RuntimeError):
                 await self._cdp_ws.close()
-            except (ConnectionError, RuntimeError):
-                pass
             self._cdp_ws = None
 
         if self._cdp_client and not self._cdp_client.is_closed:

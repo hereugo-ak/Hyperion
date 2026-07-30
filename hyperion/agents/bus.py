@@ -31,14 +31,18 @@ Subscription pattern (§4.8):
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import time
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from hyperion.schemas.agents import AgentName, AgentState
 from hyperion.schemas.models import KeyFinding
 
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Channel and Message Type Definitions (§4.8)
@@ -218,7 +222,7 @@ class AgentBus:
         while self._running:
             try:
                 msg = await asyncio.wait_for(queue.get(), timeout=0.5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
             # Deliver to all subscribers of this channel
@@ -226,8 +230,17 @@ class AgentBus:
                 if channel in sub.channels:
                     try:
                         await sub.callback(msg)
-                    except Exception:
-                        pass  # Subscriber errors don't crash the bus
+                    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                        # Subscriber errors don't crash the bus, but they
+                        # must not vanish either — a dead subscriber that
+                        # nobody notices is the exact silent-failure class
+                        # behind the original P0.
+                        logger.warning(
+                            "bus subscriber %s (agent=%s) on %s raised: %s: %s",
+                            sub.subscriber_id,
+                            sub.agent.value if sub.agent else "system",
+                            channel.value, type(exc).__name__, exc,
+                        )
 
             queue.task_done()
 
@@ -270,8 +283,8 @@ class AgentBus:
                         loop.create_task(callback(msg))
                     else:
                         _asyncio.run(callback(msg))
-                except Exception:
-                    pass  # Replay errors don't crash the bus
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    logger.warning("%s: %s", "subscribe", exc)
 
     def unsubscribe(self, subscriber_id: str) -> None:
         """Remove a subscription."""
@@ -308,10 +321,8 @@ class AgentBus:
         # Update agent state cache if this is a status message
         if channel == Channel.STATUS and "state" in payload:
             state_str = payload.get("state", "")
-            try:
+            with contextlib.suppress(ValueError):
                 self._agent_states[sender] = AgentState(state_str)
-            except ValueError:
-                pass
 
         await self._queues[channel].put(msg)
 

@@ -88,7 +88,6 @@ from hyperion.schemas.models import (
 )
 from hyperion.tools.query_utils import resolve_subject
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
 # ─────────────────────────────────────────────────────────────────────────────
@@ -895,7 +894,8 @@ class ConsumerInsightsAnalyst(BaseAgent):
                     demand_at_current_price=demand_data.get("demand_at_current_price", ""),
                     demand_at_optimal_price=demand_data.get("demand_at_optimal_price", ""),
                     revenue_forecast=demand_data.get("revenue_forecast", ""),
-                    methodology=demand_data.get("methodology", "Conjoint analysis proxy + price elasticity from market data"),
+                    methodology=demand_data.get("methodology", "Conjoint analysis proxy + price "
+                        "elasticity from market data"),
                 )
 
             wtp_data = data.get("wtp")
@@ -906,7 +906,8 @@ class ConsumerInsightsAnalyst(BaseAgent):
                     too_expensive_price=wtp_data.get("too_expensive_price", ""),
                     acceptable_range=wtp_data.get("acceptable_range", ""),
                     revenue_at_optimal=wtp_data.get("revenue_at_optimal", ""),
-                    methodology=wtp_data.get("methodology", "Van Westendorp Price Sensitivity Meter"),
+                    methodology=wtp_data.get("methodology", "Van Westendorp Price Sensitivity "
+                        "Meter"),
                     data_basis=wtp_data.get("data_basis", ""),
                 )
 
@@ -1054,39 +1055,46 @@ class ConsumerInsightsAnalyst(BaseAgent):
 
         # Spawn sub-agents for parallel data collection
         if sector or company:
-            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning consumer data collection sub-agents")
+            await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning consumer data "
+                "collection sub-agents")
             sub_findings = await self._spawn_consumer_sub_agents(company, sector, product_category, segment)
             self._sub_agent_findings = sub_findings
-            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
+            await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
+                "analysis")
 
         # Step 1: Search for consumer research
         await self._transition(AgentState.WORKING, f"Step 1: Searching consumer research for {company or sector}")
         self._search_results = await self._search_consumer_research(company, sector, product_category)
 
         # Step 2: Scrape review sites and forums
-        await self._transition(AgentState.WORKING, "Step 2: Scraping review sites (G2, Capterra, Trustpilot, Reddit)")
+        await self._transition(AgentState.WORKING, "Step 2: Scraping review sites (G2, Capterra, "
+            "Trustpilot, Reddit)")
         self._review_data = await self._scrape_review_sites(company, sector)
 
         # Step 3: Build personas from data
-        await self._transition(AgentState.WORKING, "Step 3: Building data-driven personas from scraped review data")
+        await self._transition(AgentState.WORKING, "Step 3: Building data-driven personas from "
+            "scraped review data")
         personas = await self._build_personas(
             self._question, self._search_results, self._review_data, self._context,
         )
 
         # Step 4: Map customer journey
-        await self._transition(AgentState.WORKING, "Step 4: Mapping customer journey from awareness to advocacy")
+        await self._transition(AgentState.WORKING, "Step 4: Mapping customer journey from "
+            "awareness to advocacy")
         journey_map = await self._map_journey(
             self._question, self._search_results, self._review_data, self._context,
         )
 
         # Step 5: Segment the market + NPS analysis
-        await self._transition(AgentState.WORKING, "Step 5: Segmenting market (demographic, behavioral, psychographic) + NPS analysis")
+        await self._transition(AgentState.WORKING, "Step 5: Segmenting market (demographic, "
+            "behavioral, psychographic) + NPS analysis")
         segments, most_predictive, nps_analysis = await self._segment_and_nps(
             self._question, self._search_results, self._review_data, self._context,
         )
 
         # Step 6: Estimate demand and willingness-to-pay
-        await self._transition(AgentState.WORKING, "Step 6: Estimating demand (TAM/SAM/SOM) and willingness-to-pay (Van Westendorp)")
+        await self._transition(AgentState.WORKING, "Step 6: Estimating demand (TAM/SAM/SOM) and "
+            "willingness-to-pay (Van Westendorp)")
         demand_estimate, willingness_to_pay = await self._estimate_demand_and_wtp(
             self._question, self._search_results, self._wtp_studies, self._context,
         )

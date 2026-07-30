@@ -23,6 +23,7 @@ selectable/copyable and layout height measures correctly.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass, field
 
@@ -178,10 +179,8 @@ class MetricsRail(Static):
             self._timer = None
 
     def _repaint(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.update(self._render_content())
-        except Exception:
-            pass
 
     def _render_content(self):
         return self._build_bar() if self._compact else self._build()

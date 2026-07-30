@@ -60,7 +60,6 @@ from urllib.parse import urlparse
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
-from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -77,7 +76,6 @@ from hyperion.schemas.models import (
     SourceCollection,
     SourceCredibility,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -272,6 +270,15 @@ class ResearchLibrarian(BaseAgent):
         # Prior research from vault
         self._prior_research: list[PriorResearchLink] = []
 
+        # D5.1: inbound `prior_research` requests from other agents. The bus
+        # handler used to read `topic`/`from_agent` off the payload into locals
+        # and drop them with the comment "Will be handled in run()" — but nothing
+        # was stored, so run() had nothing to handle (ruff F841 caught both
+        # locals). Step 2 of this agent's own documented methodology is "retrieve
+        # relevant notes and return to requesting agent"; without a queue that
+        # step had no requesters to answer and silently degraded to a no-op.
+        self._pending_requests: list[dict[str, str]] = []
+
         # Vault note path
         self._vault_note_path: str = ""
 
@@ -315,11 +322,13 @@ class ResearchLibrarian(BaseAgent):
 
             request_type = payload.get("request_type", "")
             if request_type == "prior_research":
-                # An agent is requesting prior research on a topic
-                topic = payload.get("topic", "")
-                requesting_agent = payload.get("from_agent", "")
-                # Will be handled in run()
-                pass
+                # An agent is requesting prior research on a topic. Queue it so
+                # run() can actually answer (D5.1 — previously these two fields
+                # were read into locals and discarded, so the request vanished).
+                self._pending_requests.append({
+                    "topic": str(payload.get("topic", "")),
+                    "from_agent": str(payload.get("from_agent", "")),
+                })
 
         elif msg.channel == Channel.FINDINGS:
             finding = msg.finding
@@ -713,6 +722,32 @@ tags: {", ".join(tags)}
                 },
             )
 
+        # D5.1: answer the agents that explicitly asked. The broadcast above goes
+        # to FINDINGS, which is a fan-out — it does not tell a requester "this is
+        # the reply to *your* question", and an agent awaiting a directed
+        # response on REQUESTS would never see it. Now each queued request gets
+        # an addressed reply, which is what Step 2 ("return to requesting agent")
+        # actually promises. Requests are drained so a re-run cannot double-answer.
+        pending, self._pending_requests = self._pending_requests, []
+        for req in pending:
+            await self.bus.publish(
+                channel=Channel.REQUESTS,
+                # There is no MessageType.RESPONSE in the bus vocabulary; REQUEST
+                # is the message type carried on the REQUESTS channel, and the
+                # direction is expressed by `to_agent`/`from_agent` in the payload
+                # (the same convention `_handle_bus_message` uses to filter).
+                msg_type=MessageType.REQUEST,
+                sender=self.name,
+                payload={
+                    "to_agent": req["from_agent"],
+                    "from_agent": self.name.value,
+                    "request_type": "prior_research",
+                    "topic": req["topic"] or self._topic,
+                    "prior_research": notes,
+                    "count": len(notes),
+                },
+            )
+
         # Step 3: Collect all sources
         await self._transition(AgentState.WORKING, f"Step 3: Collecting sources ({len(self._all_sources)} sources)")
         total_before = len(self._all_sources)
@@ -739,7 +774,8 @@ tags: {", ".join(tags)}
         vault_saved = bool(self._vault_note_path)
 
         # Step 7: Format citation list
-        await self._transition(AgentState.WORKING, "Step 7: Formatting citation list for final report")
+        await self._transition(AgentState.WORKING, "Step 7: Formatting citation list for final "
+            "report")
         citations = self._format_citations(deduplicated)
 
         # Calibrate confidence
@@ -812,7 +848,8 @@ tags: {", ".join(tags)}
                 content=(
                     f"Found {len(self._prior_research)} prior engagement(s) "
                     f"with relevant research. Top: "
-                    f"{', '.join(f'{p.topic} (relevance: {p.relevance_score})' for p in self._prior_research[:3])}"
+                    f"{', '
+                        ''.join(f'{p.topic} (relevance: {p.relevance_score})' for p in self._prior_research[:3])}"
                 ),
                 confidence=ConfidenceLevel.MEDIUM,
             )

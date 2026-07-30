@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 from pathlib import Path
 
 import pytest
+
+logger = logging.getLogger(__name__)
 
 # The verbatim question from the failing 34-minute run. Every grounding test
 # uses it so the assertions describe a real engagement, not a synthetic one.
@@ -166,11 +169,20 @@ class TestNoHardcodedGeographyDefaults:
             args = node.args
             # Positional args pair with defaults right-aligned.
             positional = args.posonlyargs + args.args
+            # `strict=True` on both (ruff B905): the slice is right-aligned to
+            # `len(args.defaults)` and the AST guarantees `kw_defaults` is
+            # exactly as long as `kwonlyargs` (padded with None). Both are
+            # equal-length by construction, so asserting it costs nothing and
+            # turns a future off-by-one in this scanner into a loud error
+            # rather than a silently under-scanned function signature.
             paired = list(
-                zip(positional[len(positional) - len(args.defaults):], args.defaults)
+                zip(positional[len(positional) - len(args.defaults):], args.defaults,
+                    strict=True)
             )
             paired += [
-                (a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None
+                (a, d)
+                for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+                if d is not None
             ]
             for arg, default in paired:
                 if arg.arg.lower() not in self.GEO_KEYS:
@@ -670,8 +682,8 @@ class TestDeliverableGuarantee:
             import weasyprint  # noqa: F401
 
             pytest.skip("WeasyPrint present in this environment")
-        except Exception:
-            pass  # expected
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "test_weasyprint_is_genuinely_absent", exc)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1596,7 +1608,7 @@ class TestSubjectResolutionIsExplicit:
         # prompt) has adjacent interpolations by design: an absent unit there is
         # cosmetic, whereas an absent term in a query changes what is searched.
         # The discriminator is whether the f-string carries query vocabulary.
-        QUERY_WORDS = (
+        query_words = (
             "acquisition", "criteria", "market", "competitor", "companies",
             "top", "best", "industry", "report", "analysis", "data",
             "forecast", "benchmark", "trends", "news", "regulation",
@@ -1611,7 +1623,7 @@ class TestSubjectResolutionIsExplicit:
                 for v in node.values
                 if isinstance(v, ast.Constant) and isinstance(v.value, str)
             ).lower()
-            if not any(word in literal for word in QUERY_WORDS):
+            if not any(word in literal for word in query_words):
                 continue
             # Two interpolations separated only by a single space: if either is
             # empty the result gains a doubled space or silently loses a term.
@@ -1751,7 +1763,7 @@ class TestPronounUsCannotAnchorGeography:
         wrapper = re.compile(
             r"^\(\?<!\[A-Za-z0-9\]\)(?P<alias>.*)\(\?!\[A-Za-z0-9\]\)$"
         )
-        for pattern, canonical in _GEO_PATTERNS:
+        for pattern, _canonical in _GEO_PATTERNS:
             match = wrapper.match(pattern.pattern)
             if not match:
                 continue

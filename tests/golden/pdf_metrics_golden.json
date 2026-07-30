@@ -1,0 +1,26 @@
+{
+  "_comment": "5.2 golden baseline for tools/audit_render_probe.py metrics, encoding audit §11 DoD #7-#12. Bounds are the pass criteria; the live regression test renders the probe PDF and asserts every metric falls inside. Regenerate ONLY by re-measuring a known-good render, never by editing to fit a broken one (same rule as test_page_budget).",
+  "page_count": {"exact": 36, "dod": "10", "note": "7 sections x 4 sheets + 8 front/back matter, as measured by the audit and reproduced arithmetically in test_page_budget"},
+  "blank_pages": {"max": 0, "dod": "11"},
+  "chars_per_line_median": {"min": 52, "max": 60, "dod": "8"},
+  "column_bands": {"exact": 2, "dod": "8"},
+  "has_exhibits": {"exact": true, "dod": "9"},
+  "exhibit_count": {"min": 7, "dod": "9", "note": ">=1 exhibit per section, 7 probe sections"},
+  "exhibit_note_count": {"min": 7, "dod": "9", "note": "every exhibit carries Note:"},
+  "exhibit_source_count": {"min": 7, "dod": "9", "note": "every exhibit carries Source:"},
+  "embedded_images": {"min": 7, "dod": "9", "note": "300-DPI charts, one per section; section imagery (DoD #12, >=2000px) is not exercised by the probe payload (section_images=None) and is covered by test_font_embedding/test imagery checks"},
+  "leaks": {
+    "raw_dict": {"max": 0, "dod": "11"},
+    "none_url": {"max": 0, "dod": "11"},
+    "literal_brace_page": {"max": 0, "dod": "11"},
+    "unknown": {"max": 0, "dod": "11"}
+  },
+  "fonts_embedded": {"min_count": 1, "forbidden": ["DejaVu", "Liberation"], "dod": "7"},
+  "front_back_matter": {
+    "glance_labels_present": {"exact": 4, "dod": "11"},
+    "technical_appendix_sections": {"exact": 5, "dod": "11"},
+    "glance_precedes_toc": {"exact": true, "dod": "11"},
+    "endnote_entries": {"min": 1, "dod": "11"},
+    "glance_words": {"min": 20, "dod": "11"}
+  }
+}
