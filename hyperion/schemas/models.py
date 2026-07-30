@@ -2297,9 +2297,15 @@ class FinalReport(BaseModel):
 
     Produced by the Synthesis Lead after reconciling all specialist findings.
     This is not a summary — it is a synthesis. A summarizer lists what each
-    agent found. A synthesizer says "Market says $2B TAM, Financial says too
-    small, but Financial's model assumes 5% penetration while Market's data
-    supports 12% — at 12% penetration the market is viable." (§4.3, Agent 2)
+    agent found. A synthesizer says "Market says ⟨TAM_FIGURE⟩, Financial says
+    too small, but Financial's model assumes ⟨LOW_PENETRATION⟩ while Market's
+    data supports ⟨HIGH_PENETRATION⟩ — at ⟨HIGH_PENETRATION⟩ the market is
+    viable." (§4.3, Agent 2)
+
+    D-02: the ⟨…⟩ tokens are shape placeholders, never values. The concrete
+    numbers that used to illustrate this docstring leaked into delivered
+    reports verbatim (see synthesis_lead.py, HARD RULE). Every number in a
+    real report must appear verbatim in a specialist finding.
 
     This structure drives the PDF generation pipeline:
     - Presentation Designer uses it to design the layout
@@ -2332,6 +2338,20 @@ class FinalReport(BaseModel):
 
     # Risk analysis (§6.1) — 2-3 pages
     risk_analysis: RiskAnalysis | None = Field(default=None, description="Risk section")
+
+    # D-01/D-02: degradation flag. Set ONLY by SynthesisLead._minimal_report()
+    # when synthesis crashed mid-run. A degraded report may legitimately carry
+    # the full analysis body (sections built from findings before the crash)
+    # but its recommendation is the INVESTIGATE placeholder, so downstream
+    # consumers — above all the quality-iteration loop — must never treat its
+    # conclusions as synthesised output. The quality loop has write access to
+    # conclusions and no access to evidence; without this flag it launders a
+    # crash into a confident recommendation (D-02).
+    is_degraded: bool = Field(
+        default=False,
+        description="True when synthesis failed and the recommendation is a "
+        "placeholder; the analysis sections may still be complete",
+    )
 
     # Reconciliation artifacts
     contradictions: list[Contradiction] = Field(default_factory=list, description="All "

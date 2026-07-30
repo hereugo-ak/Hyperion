@@ -56,6 +56,7 @@ most impressive.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from typing import Any
 
@@ -79,6 +80,8 @@ from hyperion.schemas.models import (
     KeyFinding,
     VisualizationOutput,
 )
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HYPERION Chart Color Sequence (§7.3 — STRICT)
@@ -842,7 +845,10 @@ class DataVisualizer(BaseAgent):
             # never let one malformed exhibit abort the whole visualization
             # run. An empty trace list degrades to a blank chart, which the
             # caller already tolerates.
-            self._logger.warning(
+            # D-05: BaseAgent defines no self._logger — logging is module-
+            # level. The old attribute read raised AttributeError out of this
+            # except-path, turning a degraded chart into a crashed run.
+            logger.warning(
                 f"MBB trace construction failed for {chart_spec.id} "
                 f"({chart_spec.chart_type.value}): {e}"
             )
@@ -1039,8 +1045,9 @@ class DataVisualizer(BaseAgent):
             return output_path
 
         except (ValueError, AttributeError, RuntimeError) as e:
-            # If Plotly tool fails, log and return empty path
-            self._logger.warning(f"Plotly chart generation failed for {chart_id}: {e}")
+            # If Plotly tool fails, log and return empty path (D-05: module
+            # logger — BaseAgent has no self._logger).
+            logger.warning(f"Plotly chart generation failed for {chart_id}: {e}")
             return ""
 
     # ─────────────────────────────────────────────────────────────────────

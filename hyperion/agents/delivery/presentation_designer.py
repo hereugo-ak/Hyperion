@@ -218,8 +218,20 @@ CSS_TEMPLATE = """\
      • string-set + string() — the running section title. `h2` sets a named
        string as it flows; the margin box echoes the most recent value, which
        is exactly the "current section" semantics a consulting report wants.
-   Both degrade gracefully in Chromium/Playwright: counter(page) is supported,
-   and an unsupported string() simply yields empty rather than literal junk. */
+
+   D-03 CORRECTION — the previous sentence here claimed "Both degrade
+   gracefully in Chromium/Playwright". That was FALSE for the margin boxes:
+   Chromium's page.pdf() does NOT implement CSS paged-media margin boxes, so
+   @top-center / @bottom-center are SILENTLY DROPPED — installing Playwright
+   alone would yield a PDF with no running heads and no page numbers. The
+   comment's own "unsupported string() yields empty" caveat was the tell: it
+   described the content expression, not the box. When rendering through
+   Playwright the running header and the `n / N` footer MUST come from
+   page.pdf(header_template=..., footer_template=...) with explicit top/
+   bottom margins (Chromium's <span class="pageNumber">/<span class=
+   "totalPages"> substitution hooks), NOT from these margin boxes. These
+   margin boxes remain correct for the WeasyPrint path, which is the one
+   that honours them. (D-03) */
 @page {{
     size: A4;
     dpi: 300;

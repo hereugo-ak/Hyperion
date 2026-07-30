@@ -618,6 +618,36 @@ class DeepSearchClient:
 
         num_sources = self.DEPTH_SOURCES.get(depth, 6)
         start_time = time.time()
+
+        # D-12: every exit from a search attempt must be counted — success,
+        # zero discovery, or an exception anywhere in the ladder. The 07-30
+        # run issued dozens of real SearXNG queries and the engagement metric
+        # read "0 search calls" because the only recorder sat at the end of
+        # the success path. Success and zero-discovery record inside
+        # _search_execute(); this except closes the last hole (a raise
+        # mid-ladder) so no future exit path can bypass the counter.
+        try:
+            return await self._search_execute(
+                query, depth, geography, num_sources, start_time, cache_key
+            )
+        except Exception:
+            _engagement_yield.record(YieldMetrics(urls_discovered=0))
+            raise
+
+    async def _search_execute(
+        self,
+        query: str,
+        depth: str,
+        geography: str | None,
+        num_sources: int,
+        start_time: float,
+        cache_key: str,
+    ) -> DeepSearchResult:
+        """The discovery→extraction→scoring phases of :meth:`search`.
+
+        Split out so :meth:`search` can guarantee per-attempt yield recording
+        at every exit (D-12). Behaviour is unchanged.
+        """
         tools_used: list[str] = []
         tools_tried: list[str] = []
         errors: dict[str, str] = {}
@@ -635,6 +665,16 @@ class DeepSearchClient:
             # before, so callers could not tell a broken deployment from a
             # legitimately obscure question.
             detail = "; ".join(f"{k}: {v}" for k, v in errors.items())
+            # D-12: record the yield HERE, not only at the end of the success
+            # path. The 07-30 run issued dozens of real SearXNG queries that
+            # all returned zero URLs, and this early-return skipped the
+            # recorder at the bottom of search() — so the engagement metric
+            # read "0 search calls" while Docker logged dozens. A search that
+            # finds nothing still counts as a search call; the zero-URL
+            # YieldMetrics is exactly what the zero-evidence hard error
+            # downstream needs to see.
+            zero_yield = YieldMetrics(urls_discovered=0)
+            _engagement_yield.record(zero_yield)
             result = DeepSearchResult(
                 query=query,
                 depth=depth,

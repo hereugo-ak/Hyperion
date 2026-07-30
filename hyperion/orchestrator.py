@@ -1408,6 +1408,29 @@ class WorkflowEngine:
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("%s: %s", "run_engagement", exc)
 
+        # P9 GAP-4: Startup health table — check every tool + tier. Runs BEFORE
+        # the journal/artifact setup so a refusal aborts in seconds with no
+        # engagement artifacts written (D-06/§4 0.2).
+        _settings = None
+        try:
+            from hyperion.config import get_settings
+            from hyperion.obs.health import check_startup_health
+
+            _settings = get_settings()
+            check_startup_health(_settings)
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "run_engagement", exc)
+
+        # D-06/§4 0.2: refuse to start an engagement on a dead research stack.
+        # The 07-30 run was allowed to begin with every engine banned and
+        # shipped a fabricated report; a stack that returns zero evidence can
+        # only produce ungrounded output. Raises BEFORE any DAG or journal is
+        # built. DEGRADED (some engines answering) is allowed through.
+        if _settings is not None:
+            from hyperion.infra.preflight import assert_research_stack_usable
+
+            assert_research_stack_usable(_settings)
+
         # P10: Durable execution — open journal, artifact store, manifest
         self._journal = RunJournal(self._engagement_id)
         self._journal.open()
@@ -1419,14 +1442,6 @@ class WorkflowEngine:
         )
         self._manifest.save()
         trace("durable", run_id=self._engagement_id, status="journal_opened")
-
-        # P9 GAP-4: Startup health table — check every tool + tier
-        try:
-            from hyperion.config import get_settings
-            from hyperion.obs.health import check_startup_health
-            check_startup_health(get_settings())
-        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
-            logger.warning("%s: %s", "run_engagement", exc)
 
         # Reset SearxNG search budget for this engagement
         from hyperion.tools.searxng import SearxNGClient
@@ -1639,6 +1654,24 @@ class WorkflowEngine:
                     f"(avg {ym['avg_chars_per_source']:.0f} chars/source, "
                     f"{ym['search_calls']} search calls)"
                 )
+
+                # D-12: zero searches AND zero evidence is a hard failure, not
+                # a tidy "0%" log line. The 07-30 run read exactly this state —
+                # every engine banned, 0 URLs, 0 chars — yet the metric was
+                # instrumented on a path that never executed, so it read 0/0
+                # and the run reported SUCCESS over a fabricated report. Now
+                # that every search call is recorded (deep_search.search
+                # records on every exit, including the zero-discovery early
+                # return), this state is real and must flip the run to FAILED.
+                failure = zero_evidence_failure(ym)
+                if failure:
+                    result.success = False
+                    result.error = failure
+                    self._log(
+                        "EXTRACTION YIELD: HARD FAILURE — 0 search calls and 0 "
+                        "chars retained. Marking engagement FAILED (ungrounded "
+                        "output must not report success)."
+                    )
             except Exception as e:
                 logger.warning("extraction-yield report failed: %s", e, exc_info=True)
 
@@ -1809,6 +1842,24 @@ class WorkflowEngine:
 # ─────────────────────────────────────────────────────────────────────────────
 # Convenience function — run a single engagement
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def zero_evidence_failure(ym: dict[str, Any]) -> str | None:
+    """D-12: return an error message when the yield report proves zero evidence.
+
+    Zero search calls AND zero chars retained means the research stack was
+    non-functional for the entire engagement — the 07-30 state that previously
+    formatted as a tidy "0/0 URLs (0%)" and let the run report SUCCESS over a
+    fabricated report. Extracted as a module-level function so the gate is
+    testable without stubbing the whole pipeline.
+    """
+    if ym.get("search_calls", 0) == 0 and ym.get("chars_retained", 0) == 0:
+        return (
+            "Zero evidence retrieved: the engagement made no successful "
+            "search calls and retained 0 chars. The research stack is "
+            "non-functional — the report is ungrounded. See D-04/D-12."
+        )
+    return None
 
 
 async def run_engagement(
