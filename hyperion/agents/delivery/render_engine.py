@@ -682,7 +682,7 @@ class RenderEngine(BaseAgent):
                 self._log(f"RENDER: PDFRenderer failed: {error_msg}")
                 return ""
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is recorded in the result
             # Catch BROADLY on purpose. WeasyPrint on Windows raises OSError /
             # ImportError from missing GTK natives (libgobject-2.0), which the
             # old narrow `(ValueError, AttributeError, RuntimeError)` tuple let
@@ -696,7 +696,7 @@ class RenderEngine(BaseAgent):
                 HTML(filename=html_path).write_pdf(self._pdf_path, dpi=300)
                 if os.path.exists(self._pdf_path) and os.path.getsize(self._pdf_path) > 0:
                     return self._pdf_path
-            except Exception as e2:
+            except Exception as e2:  # noqa: BLE001 - best-effort, failure must not propagate
                 self._log(f"RENDER: Direct WeasyPrint also failed: {type(e2).__name__}: {e2!s:.200}")
 
             # Fallback B: Playwright Chromium. This is the path that actually
@@ -714,7 +714,7 @@ class RenderEngine(BaseAgent):
                     if result and result.success:
                         self._log("RENDER: PDF produced via direct PDFRenderer fallback")
                         return self._pdf_path
-            except Exception as e3:
+            except Exception as e3:  # noqa: BLE001 - best-effort, failure must not propagate
                 self._log(f"RENDER: PDFRenderer fallback failed: {type(e3).__name__}: {e3!s:.200}")
 
             return ""

@@ -418,7 +418,7 @@ class EngagementDirector(BaseAgent):
         # Use LLM to evaluate the escalation and determine adaptation
         try:
             adaptation = await self._evaluate_escalation(issue, suggested_action)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             # An escalation handler must never itself abort the engagement.
             self._log(
                 f"DIRECTOR: escalation evaluation failed "
@@ -429,7 +429,7 @@ class EngagementDirector(BaseAgent):
         if adaptation:
             try:
                 await self._apply_adaptation(adaptation)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
                 self._log(
                     f"DIRECTOR: applying adaptation failed "
                     f"({type(e).__name__}: {e!s:.150}); continuing"

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import random
 from typing import Any
 
@@ -65,6 +66,8 @@ from hyperion.tui.widgets.prompt import (
 )
 from hyperion.tui.widgets.rule import hr
 from hyperion.tui.widgets.tpm_bar import TPMBar
+
+logger = logging.getLogger(__name__)
 
 
 class EngagementScreen(Screen):
@@ -242,14 +245,14 @@ class EngagementScreen(Screen):
         except asyncio.CancelledError:
             mark.set_state(MarkState.DORMANT)
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             mark.set_state(MarkState.BLOCKED)
         finally:
             try:
                 from hyperion.agents.bus import get_bus
                 get_bus().unsubscribe(self._bus_sub_id)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                logger.debug("%s: %s", "_run_engagement", exc)
             with contextlib.suppress(Exception):
                 self.query_one("#eng-prompt", PromptBar).set_busy(False)
 
@@ -300,8 +303,8 @@ class EngagementScreen(Screen):
             elif msg.channel == Channel.ESCALATION:
                 mark.set_state(MarkState.BLOCKED)
                 self.set_timer(2.0, lambda: mark.set_state(MarkState.ORCHESTRATING))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_on_bus_message", exc)
 
     # ── demo mode ────────────────────────────────────────────────────────────────
 

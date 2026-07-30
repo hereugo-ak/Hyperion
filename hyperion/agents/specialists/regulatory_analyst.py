@@ -485,7 +485,7 @@ class RegulatoryAnalyst(BaseAgent):
                             f"REGULATORY: discovered {len(urls_to_scrape)} official "
                             f"source(s) by search for unmapped jurisdiction(s): {unmapped}"
                         )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
                     self._log(
                         f"REGULATORY: portal discovery search failed "
                         f"({type(e).__name__}); continuing with curated portals only"

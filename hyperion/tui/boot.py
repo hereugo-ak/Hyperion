@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from typing import Any
 
 from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
@@ -73,6 +74,8 @@ from hyperion.infra.services import (
     stop_services as _infra_stop_services,
 )
 from hyperion.tui.widgets.transcript import LogRow, Transcript
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "FLARESOLVERR_IMAGE",
@@ -155,8 +158,8 @@ async def run_boot_sequence(
         try:
             metrics.set_phase("boot")
             metrics._repaint()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_start_step", exc)
         return step
 
     def _progress_for(step: BootStep):
@@ -290,7 +293,7 @@ async def run_boot_sequence(
         else:
             tools_warn.append("searxng(container not ready)")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
         _finish_step(step, WARN, f"tool check partial: {e!s:.50}")
         results["tools"] = (WARN, str(e)[:80])
     else:
@@ -320,7 +323,7 @@ async def run_boot_sequence(
                 provider_status.append(name)
             else:
                 provider_warns.append(name)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - best-effort, returns a safe default
         _finish_step(step, WARN, f"provider check partial: {e!s:.50}")
         results["providers"] = (WARN, str(e)[:80])
         provider_status = []
@@ -350,7 +353,7 @@ async def run_boot_sequence(
         count = len(ROSTER)
         _finish_step(step, OK, f"{count} specialist agents online")
         results["agents"] = (OK, f"{count} agents")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
         _finish_step(step, FAIL, f"roster init failed: {e!s:.50}")
         results["agents"] = (FAIL, str(e)[:80])
 
@@ -392,7 +395,7 @@ async def run_boot_sequence(
             else:
                 _finish_step(step, WARN, f"vault path unavailable: {vault}")
                 results["vault"] = (WARN, "path missing")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
         _finish_step(step, WARN, f"vault check skipped: {e!s:.40}")
         results["vault"] = (WARN, str(e)[:60])
 
@@ -492,24 +495,24 @@ def reset_process_state() -> int:
 
         clear_engagement_focus()
         reset += 1
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+        logger.debug("%s: %s", "reset_process_state", exc)
 
     try:
         from hyperion.router.router import reset_router
 
         reset_router()
         reset += 1
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+        logger.debug("%s: %s", "reset_process_state", exc)
 
     try:
         from hyperion.agents.bus import reset_bus
 
         reset_bus()
         reset += 1
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+        logger.debug("%s: %s", "reset_process_state", exc)
 
     try:
         from hyperion.tools.search_budget import SearchBudget
@@ -517,8 +520,8 @@ def reset_process_state() -> int:
         # `start()` replaces the instance outright, zeroing per-engine spend.
         SearchBudget.start()
         reset += 1
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+        logger.debug("%s: %s", "reset_process_state", exc)
 
     return reset
 
@@ -552,8 +555,8 @@ async def stop_services() -> None:
         # Drop the singleton so a relaunch in the same interpreter builds fresh
         # clients rather than reusing ones whose transports are now closed.
         reset_router()
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+        logger.debug("%s: %s", "stop_services", exc)
 
     # ── 2. Stop and REMOVE the containers ────────────────────────────────────
     # `rm` as well as `stop`: a stopped-but-present container keeps its cached
@@ -594,7 +597,8 @@ async def _close_tool_clients() -> None:
                 result = fn()
                 if asyncio.iscoroutine(result):
                     await result
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_close_tool_clients", exc)
             continue
 
 

@@ -204,8 +204,8 @@ class BaseAgent(ABC):
             ctx = await self._enrich_context_llm(question)
             if ctx:
                 return ctx
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_enrich_context", exc)
 
         # Fallback: regex keyword matching (original implementation)
         return self._enrich_context_regex(question)
@@ -455,9 +455,8 @@ class BaseAgent(ABC):
             task = loop.create_task(coro)
             # Prevent "Task exception was never retrieved" noise.
             task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
-        except Exception:
-            # Logging must never propagate. Swallow everything.
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_log", exc)
 
     async def _publish_findings(self, findings: list[KeyFinding]) -> None:
         """Publish multiple findings."""
@@ -594,8 +593,8 @@ class BaseAgent(ABC):
                     "success": response.success,
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_llm_complete", exc)
 
         if not response.success:
             await self._transition(

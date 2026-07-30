@@ -381,7 +381,7 @@ class SubAgentRunner:
                 snapshots = await wayback.search(self._condense_query(self.spec.question))
                 if snapshots:
                     raw_data.append(f"Historical snapshots:\n{snapshots}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"Wayback: {e!s:.80}")
 
         # Financial data — Alpha Vantage
@@ -391,7 +391,7 @@ class SubAgentRunner:
                 financials = await av.search(self._condense_query(self.spec.question))
                 if financials:
                     raw_data.append(f"Financial data:\n{financials}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"AlphaVantage: {e!s:.80}")
 
         # Macro data — FRED
@@ -401,7 +401,7 @@ class SubAgentRunner:
                 macro = await fred.search(self._condense_query(self.spec.question))
                 if macro:
                     raw_data.append(f"Macro data:\n{macro}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"FRED: {e!s:.80}")
 
         # ── Phase 2 Data Sources ────────────────────────────────────────
@@ -433,7 +433,7 @@ class SubAgentRunner:
                             budget_chars=SEC_FILING_BUDGET_CHARS,
                         )
                         raw_data.append(f"SEC filing content ({filings[0].filing_type} {filings[0].company_name}):\n{body}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"SEC EDGAR: {e!s:.80}")
 
         # Semantic Scholar — academic papers
@@ -447,7 +447,7 @@ class SubAgentRunner:
                         for p in papers[:10]
                     )
                     raw_data.append(f"Semantic Scholar papers:\n{formatted}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"SemanticScholar: {e!s:.80}")
 
         # OpenAlex — scholarly works
@@ -461,7 +461,7 @@ class SubAgentRunner:
                         for w in works[:10]
                     )
                     raw_data.append(f"OpenAlex works:\n{formatted}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"OpenAlex: {e!s:.80}")
 
         # World Bank — macro indicators
@@ -476,7 +476,7 @@ class SubAgentRunner:
                         for dp in indicator.data_points[:15]
                     )
                     raw_data.append(f"World Bank data ({indicator.indicator_name}):\n{formatted}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"WorldBank: {e!s:.80}")
 
         # Google Trends — demand signals
@@ -501,7 +501,7 @@ class SubAgentRunner:
                         f"- {r.query} ({r.value})" for r in related[:10]
                     )
                     raw_data.append(f"Google Trends rising queries:\n{rel_formatted}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"GoogleTrends: {e!s:.80}")
 
         # HackerNews — tech community sentiment
@@ -515,7 +515,7 @@ class SubAgentRunner:
                         for s in stories[:15]
                     )
                     raw_data.append(f"HackerNews stories:\n{formatted}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"HackerNews: {e!s:.80}")
 
         # Reddit — community sentiment
@@ -531,7 +531,7 @@ class SubAgentRunner:
                         for p in posts[:15]
                     )
                     raw_data.append(f"Reddit posts:\n{formatted}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"Reddit: {e!s:.80}")
 
         # Second Brain — prior research
@@ -541,7 +541,7 @@ class SubAgentRunner:
                 prior = await brain.search(self._condense_query(self.spec.question))
                 if prior:
                     raw_data.append(f"Prior research from vault:\n{prior}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"SecondBrain: {e!s:.80}")
 
         if errors:
@@ -855,7 +855,7 @@ class SubAgentRunner:
         finally:
             try:
                 await extractor.close()
-            except Exception as close_err:
+            except Exception as close_err:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("Closing extraction ladder failed: %s", close_err)
 
         for result in outcome.results:

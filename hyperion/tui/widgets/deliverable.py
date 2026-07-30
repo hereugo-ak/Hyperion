@@ -11,6 +11,7 @@ Per ARCHITECTURE.md §8.2 (Deliverable View).
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from textual.app import ComposeResult
@@ -30,6 +31,8 @@ from hyperion.tui.theme import (
     TEXT_PRIMARY,
     TEXT_SECONDARY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ExportRequested(Message):
@@ -136,8 +139,8 @@ class DeliverableView(Widget):
             self.query_one("#dv-header", Static).update(self._build_header())
             self.query_one("#dv-report", Static).update(self._render_markdown())
             self.query_one("#dv-quality", Static).update(self._build_quality())
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_refresh_all", exc)
 
     # ── builders ──────────────────────────────────────────────────────────────
 

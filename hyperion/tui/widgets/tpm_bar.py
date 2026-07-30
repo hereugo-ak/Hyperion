@@ -16,6 +16,7 @@ Per ARCHITECTURE.md §8.6.
 from __future__ import annotations
 
 import contextlib
+import logging
 
 from textual.widgets import Static
 
@@ -28,6 +29,8 @@ from hyperion.tui.theme import (
     TEXT_GHOST,
     TEXT_SECONDARY,
 )
+
+logger = logging.getLogger(__name__)
 
 _FPS = 4
 _BAR_WIDTH = 10
@@ -92,8 +95,8 @@ class TPMBar(Static):
             usage = router.get_tpm_usage()  # dict[provider_name, fraction]
             if usage:
                 self._providers = dict(usage)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_poll_providers", exc)
 
     def _repaint(self) -> None:
         with contextlib.suppress(Exception):

@@ -120,7 +120,7 @@ class NodriverClient:
             if wait_for:
                 try:
                     await page.wait_for(wait_for, timeout=timeout)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                     # Selector not found — proceed anyway, but record it.
                     logger.debug(
                         "nodriver wait_for %r failed: %s: %s",
@@ -151,7 +151,7 @@ class NodriverClient:
                 rendered=True,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             took_ms = int((time.time() - start) * 1000)
             trace("extract", tool="nodriver", url=url, status="error",
                   error=str(e)[:200], took_ms=took_ms)
@@ -174,8 +174,8 @@ class NodriverClient:
                 return text
         except ImportError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_html_to_text", exc)
 
         # Fallback: regex-based HTML to text
         import re
@@ -192,6 +192,6 @@ class NodriverClient:
         if self._browser is not None:
             try:
                 self._browser.stop()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("nodriver browser stop failed: %s: %s", type(exc).__name__, exc)
             self._browser = None

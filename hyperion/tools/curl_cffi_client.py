@@ -130,7 +130,7 @@ class CurlCffiClient:
                 impersonated=imp,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             took_ms = int((time.time() - start) * 1000)
             trace("extract", tool="curl_cffi", url=url, status="error",
                   error=str(e)[:200], took_ms=took_ms)
@@ -149,8 +149,8 @@ class CurlCffiClient:
                 return text
         except ImportError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_html_to_text", exc)
 
         import re
         html = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)

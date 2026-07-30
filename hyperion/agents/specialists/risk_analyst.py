@@ -422,7 +422,7 @@ class RiskAnalyst(BaseAgent):
                     f"RISK: discovered {len(urls)} official source(s) by search "
                     f"for jurisdiction {jurisdiction!r}"
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             self._log(
                 f"RISK: portal discovery failed for {jurisdiction!r} "
                 f"({type(e).__name__}); no portal data for this jurisdiction"

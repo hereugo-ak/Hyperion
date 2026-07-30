@@ -468,7 +468,7 @@ class DeepSearchClient:
                     available = bool(probe())
                     if not available:
                         detail = "crawl4ai not installed"
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             # A probe that raises must not disable a tier outright — attempting
             # it and failing is strictly better than skipping something usable.
             available = True
@@ -819,7 +819,7 @@ class DeepSearchClient:
 
             urls = [r.url for r in response.results if r.url]
             return (urls, "searxng", "" if urls else "returned no results")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("SearxNG discovery failed: %s", e)
             return ([], "searxng", f"{type(e).__name__}: {e}")
 
@@ -835,7 +835,7 @@ class DeepSearchClient:
 
             urls = [r.url for r in response.results if r.url]
             return (urls, "jina", "" if urls else "returned no results")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Jina discovery failed: %s", e)
             return ([], "jina", f"{type(e).__name__}: {e}")
 
@@ -1054,7 +1054,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="jina-reader",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("Jina Reader extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="jina-reader")
 
@@ -1074,7 +1074,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="http-extract",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("HTTP extract failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="http-extract")
 
@@ -1094,7 +1094,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="obscura",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("Obscura extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="obscura")
 
@@ -1114,7 +1114,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="scrapling",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("Scrapling extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="scrapling")
 
@@ -1134,7 +1134,7 @@ class DeepSearchClient:
                             markdown=result.markdown or content,
                             tool_used="crawl4ai",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("Crawl4AI extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="crawl4ai")
 
@@ -1156,7 +1156,7 @@ class DeepSearchClient:
                             markdown=text,
                             tool_used="flaresolverr",
                         )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("FlareSolverr extraction failed for %s: %s", url, e)
             return ExtractedContent(url=url, tool_used="flaresolverr")
 

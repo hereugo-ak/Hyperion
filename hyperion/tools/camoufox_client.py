@@ -116,7 +116,7 @@ class CamoufoxClient:
             if wait_for:
                 try:
                     await page.wait_for_selector(wait_for, timeout=timeout * 1000)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                     # Selector never appeared — we still extract whatever
                     # rendered, but the miss should be diagnosable.
                     logger.debug(
@@ -147,7 +147,7 @@ class CamoufoxClient:
                 rendered=True,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             took_ms = int((time.time() - start) * 1000)
             trace("extract", tool="camoufox", url=url, status="error",
                   error=str(e)[:200], took_ms=took_ms)
@@ -166,8 +166,8 @@ class CamoufoxClient:
                 return text
         except ImportError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_html_to_text", exc)
 
         import re
         html = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
@@ -180,6 +180,6 @@ class CamoufoxClient:
         if self._browser is not None:
             try:
                 await self._browser.stop()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("camoufox browser stop failed: %s: %s", type(exc).__name__, exc)
             self._browser = None

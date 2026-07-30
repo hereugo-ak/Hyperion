@@ -535,7 +535,7 @@ class EvidenceScorer:
             # Unknown domain — default
             return 0.40
 
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             return 0.30
 
     def _score_freshness(self, published_date: str | None) -> float:
@@ -573,7 +573,7 @@ class EvidenceScorer:
             decay = math.exp(-age_days / 365.0)
             return max(decay, 0.1)
 
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             return 0.50
 
     def _determine_stance(self, query: str, content: str) -> str:

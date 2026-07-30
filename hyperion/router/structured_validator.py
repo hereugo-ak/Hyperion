@@ -298,7 +298,7 @@ class StructuredValidator:
             if model_cls is not None:
                 try:
                     model_cls.model_validate(data)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
                     # JSON is valid but doesn't match schema — try repair
                     trace("structured", agent=agent_name, status="schema_mismatch",
                           error=str(e)[:200])
@@ -343,7 +343,7 @@ class StructuredValidator:
             if model_cls and data is not None:
                 try:
                     model_cls.model_validate(data)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
                     error_msg = str(e)[:300]
 
             repair_messages = list(messages) + [
@@ -369,7 +369,8 @@ class StructuredValidator:
                     if model_cls is not None:
                         try:
                             model_cls.model_validate(data)
-                        except Exception:
+                        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                            logger.warning("%s: %s", "validate_and_repair", exc)
                             continue  # Still doesn't match schema
                     trace("structured", agent=agent_name, status="repaired",
                           repair_attempts=attempt)
@@ -379,7 +380,7 @@ class StructuredValidator:
                         repair_attempts=attempt,
                         original_content=content,
                     )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug(f"Repair attempt {attempt} failed: {e}")
                 continue
 

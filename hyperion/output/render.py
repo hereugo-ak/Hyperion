@@ -437,7 +437,7 @@ class PDFRenderer:
         except ImportError:
             print("[RENDER] Playwright not installed — cannot use PDF fallback")
             return False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best-effort, returns a safe default
             print(f"[RENDER] Playwright PDF fallback failed: {type(exc).__name__}: {exc!s:.200}")
             return False
         finally:

@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import shutil
 import subprocess
@@ -66,6 +67,8 @@ from hyperion.infra.paths import (
     searxng_limiter_file,
     searxng_settings_file,
 )
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ports and images — ONE definition, imported by every caller
@@ -496,8 +499,8 @@ async def wait_until_ready(spec: ContainerSpec) -> bool:
                 # answers 200 on `/`; FlareSolverr answers 200 on `/health`.
                 if response.status_code < 500:
                     return True
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                logger.warning("%s: %s", "wait_until_ready", exc)
             await asyncio.sleep(1.0)
     return False
 
@@ -515,7 +518,7 @@ async def _wait_tcp(spec: ContainerSpec) -> bool:
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - retry/poll loop, failure advances the loop
             await asyncio.sleep(1.0)
     return False
 
@@ -653,7 +656,7 @@ async def stop_services() -> dict[str, bool]:
         try:
             await remove_container(name)
             removed[name] = True
-        except Exception:
+        except Exception:  # noqa: BLE001 - failure is recorded in the result
             removed[name] = False
     return removed
 

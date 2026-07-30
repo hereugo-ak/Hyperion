@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 from pathlib import Path
 
 import pytest
+
+logger = logging.getLogger(__name__)
 
 # The verbatim question from the failing 34-minute run. Every grounding test
 # uses it so the assertions describe a real engagement, not a synthetic one.
@@ -679,8 +682,8 @@ class TestDeliverableGuarantee:
             import weasyprint  # noqa: F401
 
             pytest.skip("WeasyPrint present in this environment")
-        except Exception:
-            pass  # expected
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "test_weasyprint_is_genuinely_absent", exc)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

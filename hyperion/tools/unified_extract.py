@@ -448,7 +448,7 @@ class UnifiedExtract:
 
                 available = importlib.util.find_spec("trafilatura") is not None
                 detail = "" if available else "trafilatura not installed"
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             # A probe that raises must not disable a tier outright — attempting
             # it and failing is strictly better than skipping something usable.
             available = True
@@ -886,7 +886,7 @@ class UnifiedExtract:
                 result = await extractor(
                     url, extract_tables=extract_tables, extract_links=extract_links
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 # Fail loud (fix 0.3 discipline): never a bare `except: pass`.
                 logger.debug("extraction tier %s failed for %s: %s", tier, url, e)
                 errors.append(f"{tier}: {e}")
@@ -1182,7 +1182,7 @@ class UnifiedExtract:
                 continue
             try:
                 await client.close()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 # Fail loud but never let cleanup abort the caller: a leaf
                 # client that cannot close must not prevent the other nine.
                 logger.debug("closing %s failed: %s", type(client).__name__, e)

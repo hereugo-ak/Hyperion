@@ -283,8 +283,8 @@ class ObscuraClient:
         try:
             if shutil.which("obscura"):
                 return True
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_probe_platform_support", exc)
 
         # Or a non-.exe binary in obscura-bin/ — but verify it truly executes
         # rather than being the Windows .exe renamed. Only the extensionless
@@ -299,9 +299,8 @@ class ObscuraClient:
                 )
                 if result.returncode == 0:
                     return True
-        except Exception:
-            # Exec format errors, permission errors, timeouts — all mean "no".
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.warning("%s: %s", "_probe_platform_support", exc)
 
         return False
 
@@ -316,7 +315,7 @@ class ObscuraClient:
                 return False
             obscura_bin = self._find_obscura()
             return bool(obscura_bin) and os.path.exists(obscura_bin)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.debug("Obscura availability check failed: %s: %s", type(e).__name__, e)
             return False
 
@@ -397,7 +396,7 @@ class ObscuraClient:
                 status_code=408,
                 error=f"Obscura fetch timed out after {self.CLI_TIMEOUT}s",
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             # Catch BROADLY. The old `(OSError, FileNotFoundError)` tuple missed
             # NotImplementedError — which is exactly what asyncio raises when a
             # subprocess is created on a Windows SelectorEventLoop — so the
@@ -515,7 +514,7 @@ class ObscuraClient:
                 total=len(urls),
                 failed=len(urls),
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             # Broad on purpose — see the matching comment in fetch(). Notably
             # NotImplementedError (Windows SelectorEventLoop subprocesses) was
             # escaping the old narrow tuple and aborting the agent step.
@@ -578,7 +577,7 @@ class ObscuraClient:
                 await self.stop_serve()
                 return False
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             # Broad on purpose — see fetch(). A CDP server that won't start is
             # a degraded capability, never a fatal engagement error.
             logger.warning(

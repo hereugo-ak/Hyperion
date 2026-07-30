@@ -2509,7 +2509,7 @@ class PresentationDesigner(BaseAgent):
                     endnotes_html=self._build_endnotes_html(report),
                     technical_appendix_html=self._build_technical_appendix_html(report),
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
                 # Last resort: strip Jinja2 tags and do basic format
                 html_str = HTML_TEMPLATE.replace("{{ css_content | safe }}", css_content)
                 html_str = html_str.replace("{{ report.question }}", str(report.question))
@@ -2938,7 +2938,7 @@ class PresentationDesigner(BaseAgent):
             )
             return ""
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             # Broad by design: WeasyPrint on Windows raises OSError/ImportError
             # from missing GTK natives, which the old narrow tuple let escape
             # and abort the whole delivery stage.

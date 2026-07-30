@@ -324,7 +324,7 @@ class HttpExtractClient:
                     error=f"Extraction error: {e!s:.200}",
                 )
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 # curl_cffi errors or other unexpected exceptions
                 logger.debug("HTTP extract failed for %s (attempt %d): %s", url, attempt + 1, e)
                 if attempt < MAX_RETRIES - 1:
@@ -379,7 +379,7 @@ class HttpExtractClient:
         if self._curl_cffi_session is not None:
             try:
                 await self._curl_cffi_session.close()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("curl_cffi session close failed: %s: %s", type(exc).__name__, exc)
             self._curl_cffi_session = None
 

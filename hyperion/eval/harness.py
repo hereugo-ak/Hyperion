@@ -516,7 +516,7 @@ class EvalHarness:
                 total = len(result.deterministic_checks)
                 result.overall_score = (passed / total) * 5.0 if total > 0 else 0.0
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is recorded in the result
             result.success = False
             result.error = str(e)[:500]
 

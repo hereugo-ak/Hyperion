@@ -230,7 +230,7 @@ class AgentBus:
                 if channel in sub.channels:
                     try:
                         await sub.callback(msg)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                         # Subscriber errors don't crash the bus, but they
                         # must not vanish either — a dead subscriber that
                         # nobody notices is the exact silent-failure class
@@ -283,8 +283,8 @@ class AgentBus:
                         loop.create_task(callback(msg))
                     else:
                         _asyncio.run(callback(msg))
-                except Exception:
-                    pass  # Replay errors don't crash the bus
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    logger.warning("%s: %s", "subscribe", exc)
 
     def unsubscribe(self, subscriber_id: str) -> None:
         """Remove a subscription."""

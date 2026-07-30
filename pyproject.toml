@@ -83,7 +83,14 @@ target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
+# BLE + S110/S112 added by 5.3 (audit §11 DoD #13): ban blind
+# `except Exception:` (BLE001) and try-except-pass/continue (S110/S112).
+# The 5.3 triage converted every silent handler to a recorded one and
+# justified each remaining blanket catch with a per-site
+# `noqa: BLE001 - <reason>`, so any NEW blind catch or silent swallow fails
+# the gate. Only S110/S112 are selected, not the whole S family — the rest
+# of bandit (S603 subprocess et al., 2000+ findings) is a separate audit.
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH", "BLE", "S110", "S112"]
 
 # Rule families judged semantics-changing in this codebase during the
 # 5.1e-continuation triage (see commits 989372d, 6acbdb3):

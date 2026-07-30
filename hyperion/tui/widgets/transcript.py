@@ -256,7 +256,7 @@ class Transcript(ScrollView):
             self.screen.selections = {self: SELECT_ALL}
             self._render_cache.clear()
             self.refresh()
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             with contextlib.suppress(Exception):
                 self.text_select_all()
 
@@ -267,7 +267,7 @@ class Transcript(ScrollView):
         """The active selection for this widget, if any."""
         try:
             return self.screen.selections.get(self)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             return None
 
     def _plain_lines(self) -> list[str]:
@@ -284,7 +284,7 @@ class Transcript(ScrollView):
         try:
             text = "\n".join(self._plain)
             return selection.extract(text), "\n"
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             return None
 
     def selected_text(self, selection) -> str:
@@ -434,7 +434,7 @@ class Transcript(ScrollView):
             else:
                 self._render_cache.clear()
                 self.refresh_lines(start, len(strips))
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             self.refresh()
 
     # ── rendering ──────────────────────────────────────────────────────────
@@ -467,7 +467,7 @@ class Transcript(ScrollView):
             end = len(plain)
         try:
             selection_style = self.screen.get_component_rich_style("screen--selection")
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             selection_style = Style(reverse=True)
 
         text = Text(plain, no_wrap=True, end="")

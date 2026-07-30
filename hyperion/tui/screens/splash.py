@@ -19,6 +19,7 @@ roster init, vault prime) and transitions to the engagement screen when ready.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from typing import Any
 
@@ -42,6 +43,8 @@ from hyperion.tui.theme import (
     TEXT_PRIMARY,
     TEXT_SECONDARY,
 )
+
+logger = logging.getLogger(__name__)
 
 _LOGO_WIDTH = max(len(s) for s in WORDMARK)
 
@@ -178,7 +181,7 @@ class SplashScreen(Screen):
                 prov.set_status(status, ok=True)
             else:
                 prov.set_status("no providers available — check API keys", ok=False)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             prov.set_status(f"check failed: {e!s:.40}", ok=False)
 
         await asyncio.sleep(0.2 if not self._reduced else 0.02)
@@ -195,7 +198,7 @@ class SplashScreen(Screen):
                 vault.set_status(f"connected · {vault_path}", ok=True)
             else:
                 vault.set_status("not found (optional)", ok=None)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             vault.set_status("check skipped", ok=None)
 
         await asyncio.sleep(0.2 if not self._reduced else 0.02)
@@ -231,7 +234,7 @@ class SplashScreen(Screen):
                         searx.set_status(f"running · localhost:{SEARXNG_PORT}", ok=True)
                     else:
                         searx.set_status("container stopped — will auto-start", ok=None)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             searx.set_status("check skipped", ok=None)
 
         await asyncio.sleep(0.2 if not self._reduced else 0.02)
@@ -259,7 +262,7 @@ class SplashScreen(Screen):
                 )
             else:
                 obs.set_status("not found (optional for JS pages)", ok=None)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             obs.set_status("check skipped", ok=None)
 
         # ── Done ────────────────────────────────────────────────────────────────
@@ -270,8 +273,8 @@ class SplashScreen(Screen):
                 span("  press any key to start  ·  ", SAGE),
                 span("all systems checked", f"bold {SAGE}"),
             ))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_run_boot", exc)
 
     def on_key(self, event) -> None:
         """Any key transitions to the engagement screen."""

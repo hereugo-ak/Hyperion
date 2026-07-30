@@ -13,6 +13,7 @@ Per ARCHITECTURE.md §8.2 (Deliverable View):
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import subprocess
 import sys
@@ -37,6 +38,8 @@ from hyperion.tui.widgets.deliverable import (
     OpenPDFRequested,
 )
 from hyperion.tui.widgets.rule import hr
+
+logger = logging.getLogger(__name__)
 
 
 class DeliverableScreen(Screen):
@@ -144,8 +147,8 @@ class DeliverableScreen(Screen):
                 "pdf": result.pdf_path or "",
             }
             pdf_path = result.pdf_path or ""
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_populate", exc)
 
         dv.set_report(
             markdown=md_text,
@@ -169,8 +172,8 @@ class DeliverableScreen(Screen):
         try:
             dv = self.query_one("#del-body", DeliverableView)
             pdf_path = dv._pdf_path
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "on_open_pdf_requested", exc)
 
         if not pdf_path:
             with contextlib.suppress(Exception):
@@ -184,7 +187,7 @@ class DeliverableScreen(Screen):
                 subprocess.Popen(["open", pdf_path])
             else:
                 subprocess.Popen(["xdg-open", pdf_path])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             with contextlib.suppress(Exception):
                 self.app.notify(f"Failed to open PDF: {e}", timeout=3)
 

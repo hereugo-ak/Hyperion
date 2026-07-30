@@ -199,7 +199,7 @@ def extract_tables_from_bytes(
                     break
                 try:
                     raw_tables = page.extract_tables()
-                except Exception as e:  # per-page isolation: one bad page ≠ abort
+                except Exception as e:  # per-page isolation: one bad page ≠ abort  # noqa: BLE001 - failure is logged, not swallowed
                     logger.debug("table extraction failed on page %d: %s", page_idx, e)
                     continue
                 for raw in raw_tables or []:

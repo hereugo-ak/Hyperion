@@ -787,7 +787,7 @@ def select_relevant_content(
             kept_indices=[c.index for c in kept],
             scores=[round(c.score, 6) for c in kept],
         )
-    except Exception as e:  # noqa: BLE001 — never-raises contract, logged loud
+    except Exception as e:  # noqa: BLE001 - never-raises contract, logged loud
         logger.warning(
             "content_selector: rerank failed for a %d-char document, falling "
             "back to head-slice: %s",

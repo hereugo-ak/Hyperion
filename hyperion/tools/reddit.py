@@ -333,7 +333,7 @@ class RedditClient:
                         over18=sub.over18 or False,
                         url=f"https://reddit.com/r/{sub.display_name}" if sub.display_name else "",
                     ))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.warning("Reddit subreddit search failed: %s", e)
 
             return results
@@ -342,7 +342,7 @@ class RedditClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Reddit search_subreddits failed: %s", e)
             return []
 
@@ -414,7 +414,7 @@ class RedditClient:
                         is_self=submission.is_self or False,
                         over18=submission.over_18 or False,
                     ))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.warning("Reddit post search failed: %s", e)
 
             return results
@@ -423,7 +423,7 @@ class RedditClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Reddit search_posts failed: %s", e)
             return []
 
@@ -486,7 +486,7 @@ class RedditClient:
                         post_id=post_id,
                     ))
                     count += 1
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.warning("Reddit get_comments failed: %s", e)
 
             return results
@@ -495,7 +495,7 @@ class RedditClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Reddit get_comments failed: %s", e)
             return []
 

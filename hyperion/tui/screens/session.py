@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import random
 from typing import Any
 
@@ -61,6 +62,8 @@ from hyperion.tui.widgets.prompt import (
 )
 from hyperion.tui.widgets.rule import hr
 from hyperion.tui.widgets.transcript import LogRow, Transcript
+
+logger = logging.getLogger(__name__)
 
 _HELP_LINES = [
     "consult          →  just type a question, e.g.  should India enter the EV market?",
@@ -202,7 +205,7 @@ class SessionScreen(Screen):
             log.add_entry("WARN", "boot sequence interrupted", icon="▸")
             metrics.finish(ok=False)
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             log.add_entry("ERROR", f"boot error: {type(exc).__name__}: {exc}", icon="✗")
             log.add_entry("READY", "core ready (partial boot) · type to begin", icon="▸")
             metrics.set_phase("idle")
@@ -226,14 +229,14 @@ class SessionScreen(Screen):
         """
         try:
             log = self._log()
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             return ""
         try:
             selection = log.text_selection
             if selection is None:
                 return ""
             return log.selected_text(selection) or ""
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             return ""
 
     # ── prompt handling ──────────────────────────────────────────────────────────
@@ -345,7 +348,8 @@ class SessionScreen(Screen):
             log.add_entry("WARN", "engagement cancelled", icon="▸")
             self._metrics().finish(ok=False)
             raise
-        except Exception as exc:  # surfaced inline, never blanks the screen
+        # Failure is surfaced inline; the screen must never blank.
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             log.add_entry("ERROR", f"{type(exc).__name__}: {exc}", icon="✗")
             log.add_entry(
                 "SYSTEM",
@@ -359,8 +363,8 @@ class SessionScreen(Screen):
                 from hyperion.agents.bus import get_bus
 
                 get_bus().unsubscribe(self._bus_sub_id)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                logger.debug("%s: %s", "_run_engagement", exc)
             with contextlib.suppress(Exception):
                 self.query_one("#prompt", PromptBar).set_busy(False)
 
@@ -546,8 +550,8 @@ class SessionScreen(Screen):
                 )
             elif msg.channel == Channel.ESCALATION:
                 log.add_entry("WARN", f"{agent_badge(msg.agent)}: {msg.issue}", icon="▸")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_on_bus_message", exc)
 
     # ── DAG task checklist ──────────────────────────────────────────────────────
 
@@ -694,7 +698,7 @@ class SessionScreen(Screen):
                     self._metrics().touch_provider(p)
             else:
                 log.add_entry("WARN", "no providers report available — check API keys", icon="▸")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             log.add_entry("WARN", f"provider status unavailable: {exc}", icon="▸")
 
     def _run_vault(self, value: str) -> None:

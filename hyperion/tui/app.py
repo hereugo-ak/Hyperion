@@ -25,6 +25,7 @@ terminal handles selection & copy natively.
 from __future__ import annotations
 
 import contextlib
+import logging
 from typing import Any
 
 from textual.app import App
@@ -44,6 +45,8 @@ from hyperion.tui.theme import (
     SIG_WARN,
     TEXT_PRIMARY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class HyperionApp(App):
@@ -150,7 +153,8 @@ class HyperionApp(App):
             self.copy_to_clipboard(text)
             n = len(text.splitlines()) or 1
             self._toast(f"copied {len(text)} chars · {n} line(s)")
-        except Exception as exc:  # pragma: no cover - clipboard is best-effort
+        # Clipboard write is best-effort; a failure must never propagate.
+        except Exception as exc:  # noqa: BLE001 - best-effort, must not propagate  # pragma: no cover
             self._toast(f"copy failed: {exc}")
 
     def action_select_all(self) -> None:
@@ -160,8 +164,8 @@ class HyperionApp(App):
             if isinstance(screen, SessionScreen):
                 screen.select_all_transcript()
                 self._toast("transcript selected — Ctrl+Shift+C to copy")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "action_select_all", exc)
 
     def _gather_selection(self) -> str:
         """Return the currently selected text, if the Textual version exposes it."""
@@ -172,15 +176,15 @@ class HyperionApp(App):
                 sel = get_sel()
                 if sel:
                     return sel
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_gather_selection", exc)
         # Fallback: ask the session screen for its transcript selection.
         try:
             screen = self.screen
             if isinstance(screen, SessionScreen):
                 return screen.selected_transcript_text()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+            logger.debug("%s: %s", "_gather_selection", exc)
         return ""
 
     def _toast(self, msg: str) -> None:

@@ -682,7 +682,7 @@ async def plan_queries(
             from hyperion.router.router import get_router
 
             router = get_router()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("query planner: no router available (%s); using deterministic plan", e)
             router = None
 

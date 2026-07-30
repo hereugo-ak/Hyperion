@@ -84,7 +84,7 @@ def trace(stage: str, **fields: Any) -> None:
     for fn in sinks:
         try:
             fn(ev)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             # A dead trace sink means telemetry is silently incomplete —
             # degraded observability, not lost engagement data. Debug level.
             logger.debug(

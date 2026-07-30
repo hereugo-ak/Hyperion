@@ -99,7 +99,7 @@ class StealthSearchClient:
             self._available = True
         except ImportError:
             self._available = False
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             self._available = False
         return self._available
 
@@ -259,7 +259,7 @@ class StealthSearchClient:
 
             return []
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Stealth search failed: %s", e)
             return []
 
@@ -279,7 +279,7 @@ class StealthSearchClient:
                 return []
 
             return await self._parse_ddg_dom(page, num_results)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Stealth DDG failed: %s", e)
             return []
 
@@ -292,12 +292,12 @@ class StealthSearchClient:
             # Wait for Bing to render results via JS
             try:
                 await page.wait_for_selector("li.b_algo, .b_algo", timeout=10000)
-            except Exception:
+            except Exception:  # noqa: BLE001 - retry/poll loop, failure advances the loop
                 # Fallback: just wait and try
                 await asyncio.sleep(5)
 
             return await self._parse_bing_dom(page, num_results)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Stealth Bing failed: %s", e)
             return []
 
@@ -317,7 +317,7 @@ class StealthSearchClient:
                 return []
 
             return await self._parse_google_dom(page, num_results)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Stealth Google failed: %s", e)
             return []
 
@@ -364,7 +364,7 @@ class StealthSearchClient:
                             try:
                                 title_text = await parent.evaluate("el => "
                                     "el.querySelector('h3')?.textContent || ''")
-                            except Exception:
+                            except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
                                 title_text = ""
 
                     if not title_text:
@@ -389,8 +389,8 @@ class StealthSearchClient:
                                     return text;
                                 }
                             """)
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                        logger.warning("%s: %s", "_parse_google_dom", exc)
 
                     results.append(StealthSearchResult(
                         title=title_text.strip()[:200],
@@ -402,10 +402,11 @@ class StealthSearchClient:
                     if len(results) >= max_results:
                         break
 
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    logger.warning("%s: %s", "_parse_google_dom", exc)
                     continue
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Stealth Google DOM parse failed: %s", e)
 
         return results
@@ -449,8 +450,8 @@ class StealthSearchClient:
                             snippet_el = await parent.query_selector(".result__snippet")
                             if snippet_el:
                                 snippet = await snippet_el.inner_text()
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                        logger.warning("%s: %s", "_parse_ddg_dom", exc)
 
                     results.append(StealthSearchResult(
                         title=title.strip()[:200],
@@ -461,10 +462,11 @@ class StealthSearchClient:
 
                     if len(results) >= max_results:
                         break
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    logger.warning("%s: %s", "_parse_ddg_dom", exc)
                     continue
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Stealth DDG DOM parse failed: %s", e)
 
         return results
@@ -502,7 +504,8 @@ class StealthSearchClient:
                                 href = real_url
                             else:
                                 continue
-                        except Exception:
+                        except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                            logger.warning("%s: %s", "_parse_bing_dom", exc)
                             continue
                     else:
                         if "bing.com" in href or "microsoft.com" in href:
@@ -527,8 +530,8 @@ class StealthSearchClient:
                                 ".b_captionpara")
                             if snippet_el:
                                 snippet = await snippet_el.inner_text()
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                        logger.warning("%s: %s", "_parse_bing_dom", exc)
 
                     results.append(StealthSearchResult(
                         title=title.strip()[:200],
@@ -539,10 +542,11 @@ class StealthSearchClient:
 
                     if len(results) >= max_results:
                         break
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    logger.warning("%s: %s", "_parse_bing_dom", exc)
                     continue
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Stealth Bing DOM parse failed: %s", e)
 
         return results
@@ -552,12 +556,12 @@ class StealthSearchClient:
         if self._browser:
             try:
                 await self._browser.close()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("stealth browser close failed: %s: %s", type(exc).__name__, exc)
             self._browser = None
         if self._playwright:
             try:
                 await self._playwright.stop()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.debug("playwright stop failed: %s: %s", type(exc).__name__, exc)
             self._playwright = None

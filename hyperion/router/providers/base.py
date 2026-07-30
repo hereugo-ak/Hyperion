@@ -306,7 +306,7 @@ class BaseProvider:
                 raw_response=response,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             error_str = str(e)
             latency = (time.time() - start) * 1000
 
@@ -341,5 +341,5 @@ class BaseProvider:
                 self.health.status = ProviderStatus.HEALTHY
                 self.health.consecutive_failures = 0
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             return False

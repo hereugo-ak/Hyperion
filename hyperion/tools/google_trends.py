@@ -257,7 +257,7 @@ class GoogleTrendsClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Google Trends interest_over_time failed: %s", e)
             return TrendResult(keywords=keywords, timeframe=timeframe, geography=geography)
 
@@ -328,7 +328,7 @@ class GoogleTrendsClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Google Trends related_queries failed: %s", e)
             return []
 
@@ -399,7 +399,7 @@ class GoogleTrendsClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Google Trends related_topics failed: %s", e)
             return []
 
@@ -468,7 +468,7 @@ class GoogleTrendsClient:
             result = await asyncio.to_thread(_fetch)
             self._set_cached(cache_key, result)
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("Google Trends interest_by_region failed: %s", e)
             return {}
 

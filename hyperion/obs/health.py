@@ -125,7 +125,7 @@ def _check_tool(name: str, settings: Any) -> ToolHealth:
             else:
                 h.status = "OFFLINE"
                 h.detail = f"binary not found (looked in {obscura_bin_dir()} and PATH)"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure is recorded in the result
             h.status = "OFFLINE"
             h.detail = f"probe failed: {type(exc).__name__}: {exc}"[:80]
 
@@ -169,7 +169,7 @@ def _check_tool(name: str, settings: Any) -> ToolHealth:
         except OSError as exc:
             h.status = "DEGRADED"
             h.detail = f"GTK libs missing: {str(exc)[:40]}"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - failure is recorded in the result
             h.status = "DEGRADED"
             h.detail = f"smoke-test failed: {str(exc)[:40]}"
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json as json_module
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ from rich.table import Table
 from rich.text import Text
 
 from hyperion.config import ProviderType, get_settings
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="hyperion",
@@ -156,8 +159,8 @@ def _ensure_services_stopped() -> None:
                     f"[{WARN}]these containers are still running: {names} — "
                     f"remove with `docker rm -f {names}`[/{WARN}]"
                 )
-    except Exception:  # noqa: BLE001 - verification is advisory only
-        pass
+    except Exception as exc:  # noqa: BLE001 - verification is advisory only
+        logger.warning("%s: %s", "_ensure_services_stopped", exc)
 
 
 @app.command()
