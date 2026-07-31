@@ -1170,6 +1170,36 @@ class QualityGate(BaseAgent):
         "data sparse",
     )
 
+    # P2-26 fix 5 (P2-G25): a corpus built on fewer than 8 distinct domains
+    # is an integrity blocker, not a footnote. Report B rendered 32 pages
+    # on 3 encyclopedia entries; that report must not ship.
+    _CORPUS_FLOOR_DOMAINS = 8
+
+    def _corpus_floor_blocker(self, urls: list[str]) -> list[str]:
+        """Return an integrity blocker when the corpus is too thin.
+
+        Counts distinct registrable domains across every cited source URL.
+        Below ``_CORPUS_FLOOR_DOMAINS`` the evidence base cannot support a
+        client report regardless of how polished the prose is.
+        """
+        from urllib.parse import urlparse
+
+        domains: set[str] = set()
+        for url in urls:
+            host = urlparse(url or "").netloc.lower().split(":")[0]
+            if host.startswith("www."):
+                host = host[4:]
+            if host:
+                domains.add(host)
+        if len(domains) >= self._CORPUS_FLOOR_DOMAINS:
+            return []
+        return [
+            f"CORPUS FLOOR: only {len(domains)} distinct source domain(s) "
+            f"(minimum {self._CORPUS_FLOOR_DOMAINS}): the evidence base is "
+            "too thin to support a client report, escalate retrieval "
+            "instead of rendering."
+        ]
+
     def _detect_hard_blockers(self, report: FinalReport) -> list[str]:
         """Scan the rendered report for non-negotiable defects (Layer 4 truth gate).
 
@@ -1189,6 +1219,8 @@ class QualityGate(BaseAgent):
         ]
         for kf in report.key_findings:
             text_parts.append(f"{kf.title} {kf.content} {kf.implications or ''}")
+            for src in kf.sources:
+                url_parts.append(src.url or "")
         url_parts: list[str] = []
         for sec in report.sections:
             text_parts.append(f"{sec.title} {sec.key_insight} {sec.body} {sec.implications or ''}")
@@ -1220,6 +1252,12 @@ class QualityGate(BaseAgent):
             if "=none" in low or "=null" in low or "=unknown" in low:
                 blockers.append(f"BROKEN URL: source URL has an empty param, {u}")
                 break
+
+        # 3b. Corpus floor (P2-26 fix 5 / P2-G25): fewer than 8 distinct
+        #     source domains across the whole report is an integrity blocker,
+        #     not a footnote. A report built on a handful of encyclopedia
+        #     entries must not render.
+        blockers.extend(self._corpus_floor_blocker(url_parts))
 
         # 4. Banned filler.
         for phrase in self._BANNED_FILLER:
