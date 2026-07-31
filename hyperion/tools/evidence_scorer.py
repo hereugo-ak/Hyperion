@@ -179,6 +179,18 @@ class EvidenceScorer:
         "pinterest.com", "tiktok.com", "instagram.com", "facebook.com",
         "tripadvisor.com", "yelp.com", "groupon.com", "expedia.com",
         "booking.com", "airbnb.com", "indeed.com", "glassdoor.com",
+        # P2-27: reference works and consumer-health hosts. A Bing-only
+        # corpus for an unknown entity returns dictionary definitions, and
+        # report B cited Merriam-Webster on "EMERGING" and Cambridge on
+        # "MOBILITY" as sources for a business engagement. Wikipedia is NOT
+        # denied here: it is reached deliberately for definitional grounding
+        # via its own engine, not as a general-web hit.
+        "merriam-webster.com", "dictionary.cambridge.org", "dictionary.com",
+        "thefreedictionary.com", "collinsdictionary.com", "vocabulary.com",
+        "wiktionary.org", "iciba.com", "urbandictionary.com",
+        "oxfordreference.com",
+        "health.harvard.edu", "webmd.com", "mayoclinic.org",
+        "healthline.com", "verywellhealth.com",
     })
 
     # Substrings in a domain that flag retail / ad / affiliate content.
@@ -255,6 +267,13 @@ class EvidenceScorer:
             # cited. Fail loud: log every rejection so low-yield queries surface.
             if self._is_denied_domain(url):
                 logger.info("EvidenceScorer: dropped denied/retail domain %s", url)
+                continue
+
+            # P2-27 fix 2: a definitional result (dictionary title or
+            # /dictionary/ path) defines a word, it does not evidence a
+            # business claim — drop it before scoring.
+            if self._is_definitional_result(title, url):
+                logger.info("EvidenceScorer: dropped definitional result %s", url)
                 continue
 
             relevance = self._score_relevance(query, f"{title} {content}")
@@ -475,6 +494,30 @@ class EvidenceScorer:
                 base_score = min(base_score + 0.1, 1.0)
 
         return min(base_score, 1.0)
+
+    # P2-27 fix 2: definitional-result detector. A result whose title or
+    # URL path marks it as a dictionary/definition page is dropped for a
+    # business query — it defines a word, it does not evidence a claim.
+    _DEFINITIONAL_TITLE_RE = re.compile(
+        r"\b(definition|meaning|synonyms?|pronunciation)\b", re.IGNORECASE
+    )
+    _DEFINITIONAL_PATH_RE = re.compile(
+        r"/(dictionary|define|terms?|thesaurus)/", re.IGNORECASE
+    )
+
+    def _is_definitional_result(self, title: str, url: str) -> bool:
+        """True when a result is definitional reference content.
+
+        Title check catches "Emerging - Definition, Meaning & Synonyms" on
+        any domain; path check catches ``/dictionary/mobility`` style URLs.
+        """
+        if title and self._DEFINITIONAL_TITLE_RE.search(title):
+            return True
+        try:
+            path = urlparse(url or "").path
+        except (ValueError, AttributeError):
+            return False
+        return bool(path and self._DEFINITIONAL_PATH_RE.search(path))
 
     def _is_denied_domain(self, url: str) -> bool:
         """Return True if the URL's domain is a retail/ad/off-topic source.

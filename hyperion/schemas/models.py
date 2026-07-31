@@ -162,6 +162,24 @@ class ConfidenceLevel(str, Enum):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class SourceType(str, Enum):
+    """What kind of publication a source URL points at (P2-27).
+
+    Assigned by ``hyperion.tools.source_classifier.classify_source_type``.
+    A source whose type cannot be determined is ``UNKNOWN`` and scores
+    accordingly — never a credible default. ``GOVERNMENT`` is reserved for
+    ``.gov``-class hosts (P2-G26).
+    """
+
+    GOVERNMENT = "government"
+    NEWS = "news"
+    INDUSTRY = "industry"
+    ACADEMIC = "academic"
+    REFERENCE = "reference"
+    BLOG = "blog"
+    UNKNOWN = "unknown"
+
+
 class SourceCredibility(str, Enum):
     """Source credibility hierarchy (§4.5, Agent 15).
 
