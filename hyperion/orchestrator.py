@@ -40,6 +40,7 @@ from hyperion.agents.synthesis_lead import SynthesisLead
 from hyperion.obs import ArtifactStore, RunJournal, RunManifest, trace
 from hyperion.schemas.agents import AgentName, AgentState
 from hyperion.schemas.models import (
+    AnalysisGap,
     FactCheckReport,
     FinalReport,
     LayoutPlan,
@@ -791,7 +792,14 @@ class WorkflowEngine:
                     timeout=self.TASK_TIMEOUT_SECONDS,
                 )
 
-            task.status = TaskStatus.COMPLETED
+            # P2-18: specialists do NOT complete here — they rest in
+            # AWAITING_FOLLOWUP so a verify_claims request or a GAP_CLOSURE
+            # re-dispatch reaches a live, subscribed agent. The closure
+            # phase finalizes them to COMPLETED after it runs.
+            if task.agent in self._SPECIALIST_AGENTS:
+                task.status = TaskStatus.AWAITING_FOLLOWUP
+            else:
+                task.status = TaskStatus.COMPLETED
             task.completed_at = time.time()
             task.output = result.model_dump() if hasattr(result, "model_dump") else str(result)
             self._task_outputs[task.id] = result
@@ -977,6 +985,151 @@ class WorkflowEngine:
     # in _quality_iteration_loop with proper iteration tracking.
     # Running it in both places causes double-execution and wasted LLM calls.
     _DAG_EXCLUDED_AGENTS = _DELIVERY_AGENTS | frozenset({AgentName.QUALITY_GATE})
+
+    # P2-18: the specialists that stay ALIVE (subscribed, task resting in
+    # TaskStatus.AWAITING_FOLLOWUP rather than COMPLETED) until the
+    # GAP_CLOSURE phase closes, so a verify_claims request or a gap
+    # re-dispatch has a live recipient.
+    _SPECIALIST_AGENTS = frozenset({
+        AgentName.MARKET_ANALYST, AgentName.COMPETITIVE_INTEL,
+        AgentName.FINANCIAL_ANALYST, AgentName.RISK_ANALYST,
+        AgentName.TECHNOLOGY_ANALYST, AgentName.OPERATIONS_ANALYST,
+        AgentName.REGULATORY_ANALYST, AgentName.SUSTAINABILITY_ANALYST,
+        AgentName.CONSUMER_INSIGHTS, AgentName.MA_ANALYST,
+        AgentName.INNOVATION_ANALYST, AgentName.STRATEGY_ANALYST,
+    })
+
+    # P2-18: the GAP_CLOSURE phase node, inserted between fact check and
+    # quality gate. Owned by the Engagement Director per audit P2-16.
+    _GAP_CLOSURE_TASK_ID = "task_gap_closure"
+
+    def _ensure_gap_closure_task(self, dag: WorkflowDAG) -> None:
+        """Insert the GAP_CLOSURE phase into the DAG (idempotent).
+
+        It depends on the fact checker; every task that previously depended
+        on the fact checker directly (quality gate, synthesis) now depends on
+        the closure phase, so specialists are re-dispatchable until it runs.
+        """
+        if dag.get_task(self._GAP_CLOSURE_TASK_ID) is not None:
+            return
+        from hyperion.config import ModelTier
+
+        fact_check_ids = [
+            t.id for t in dag.tasks if t.agent == AgentName.FACT_CHECKER
+        ]
+        closure = TaskNode(
+            id=self._GAP_CLOSURE_TASK_ID,
+            agent=AgentName.ENGAGEMENT_DIRECTOR,
+            model_tier=ModelTier.STRONG,
+            description=(
+                "GAP_CLOSURE phase: re-dispatch unresolved AnalysisGap objects "
+                "to live specialists (max 3 rounds), then finalize specialist "
+                "tasks."
+            ),
+            dependencies=list(fact_check_ids),
+            estimated_llm_calls=3,
+            estimated_tokens=6000,
+        )
+        for task in dag.tasks:
+            if any(fc in task.dependencies for fc in fact_check_ids):
+                task.dependencies = [
+                    self._GAP_CLOSURE_TASK_ID if d in fact_check_ids else d
+                    for d in task.dependencies
+                ]
+        dag.tasks.append(closure)
+
+    async def _gap_closure_phase(
+        self,
+        dag: WorkflowDAG,
+        gaps: list[AnalysisGap] | None = None,
+    ) -> list[AnalysisGap]:
+        """Run the GAP_CLOSURE phase (P2-16/P2-18, owned by the Director).
+
+        For each unresolved gap, round 1 re-dispatches the originating
+        specialist (still alive in AWAITING_FOLLOWUP) with the specific
+        question at one tier above its normal tier and urgency HIGH.
+        After all rounds, specialist tasks are finalized to COMPLETED and
+        the closure task itself is marked COMPLETED so the quality gate
+        can proceed.
+        """
+        from hyperion.config import ModelTier as _Tier
+        from hyperion.router.budget import TaskUrgency
+
+        gaps = list(gaps or [])
+        closure = dag.get_task(self._GAP_CLOSURE_TASK_ID)
+        if closure is not None:
+            closure.status = TaskStatus.RUNNING
+            closure.started_at = time.time()
+            self._publish_task_update(closure)
+
+        tier_ladder = [
+            _Tier.MICRO, _Tier.FAST, _Tier.STANDARD, _Tier.STRONG, _Tier.DEEP,
+        ]
+
+        for gap in gaps:
+            if gap.resolved:
+                continue
+            gap.attempts += 1
+            agent = self._agents.get(gap.agent) if hasattr(self, "_agents") else None
+            if agent is None:
+                try:
+                    agent = self._get_agent(gap.agent)
+                except Exception as exc:  # noqa: BLE001 - logged, gap stays open
+                    logger.warning(
+                        "gap_closure: cannot reach specialist %s for gap %s: %s",
+                        gap.agent.value, gap.id, exc,
+                    )
+                    continue
+            task = next(
+                (t for t in dag.tasks if t.agent == gap.agent), None
+            )
+            base_tier = task.model_tier if task else _Tier.STANDARD
+            try:
+                idx = tier_ladder.index(base_tier)
+            except ValueError:
+                idx = tier_ladder.index(_Tier.STANDARD)
+            bumped = tier_ladder[min(idx + 1, len(tier_ladder) - 1)]
+            try:
+                await agent.run(
+                    question=(
+                        f"GAP_CLOSURE round 1 (tier {bumped.value}, urgency HIGH): "
+                        f"answer this specific unresolved question for section "
+                        f"'{gap.section_id}' field '{gap.field}': {gap.question}"
+                    ),
+                    engagement_id=self._engagement_id,
+                    urgency=TaskUrgency.HIGH,
+                )
+            except TypeError:
+                # Specialist run() signatures that take no urgency kwarg still
+                # get the re-dispatch; the tier/urgency intent is in the text.
+                await agent.run(
+                    question=(
+                        f"GAP_CLOSURE round 1 (tier {bumped.value}, urgency HIGH): "
+                        f"answer this specific unresolved question for section "
+                        f"'{gap.section_id}' field '{gap.field}': {gap.question}"
+                    ),
+                    engagement_id=self._engagement_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - logged, gap stays open
+                logger.warning(
+                    "gap_closure: round-1 dispatch for gap %s failed: %s",
+                    gap.id, exc,
+                )
+
+        # Finalize: specialists leave AWAITING_FOLLOWUP, the phase completes.
+        for task in dag.tasks:
+            if (
+                task.agent in self._SPECIALIST_AGENTS
+                and task.status == TaskStatus.AWAITING_FOLLOWUP
+            ):
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = task.completed_at or time.time()
+                self._publish_task_update(task)
+        if closure is not None:
+            closure.status = TaskStatus.COMPLETED
+            closure.completed_at = time.time()
+            self._publish_task_update(closure)
+        return gaps
 
     async def _execute_dag(self, dag: WorkflowDAG) -> dict[str, Any]:
         """Execute the DAG in topological order — specialists through Quality Gate.
@@ -1542,6 +1695,29 @@ class WorkflowEngine:
 
             result.final_report = final_report
             result.fact_check_report = fact_check_report
+
+            # ─────────────────────────────────────────────────────────────
+            # Stage 4a: GAP_CLOSURE phase (P2-18) — between fact check and
+            # quality gate. Specialists have been resting in
+            # AWAITING_FOLLOWUP (alive, subscribed) since their initial
+            # runs; unresolved gaps are re-dispatched to them here, then
+            # their tasks are finalized to COMPLETED.
+            # ─────────────────────────────────────────────────────────────
+            self._ensure_gap_closure_task(dag)
+            synthesis_gaps = getattr(
+                self._get_agent(AgentName.SYNTHESIS_LEAD), "section_gaps", []
+            ) or []
+            closure_gaps = [
+                AnalysisGap(
+                    id=f"gap_{i}",
+                    section_id="synthesis",
+                    agent=AgentName.SYNTHESIS_LEAD,
+                    field="body",
+                    question=g,
+                )
+                for i, g in enumerate(synthesis_gaps)
+            ]
+            await self._gap_closure_phase(dag, gaps=closure_gaps)
 
             # ─────────────────────────────────────────────────────────────
             # Stage 4b: Quality Gate iteration loop

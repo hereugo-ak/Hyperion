@@ -84,6 +84,10 @@ class TaskStatus(str, Enum):
     FAILED = "failed"           # Errored out
     CANCELLED = "cancelled"     # Cancelled by Engagement Director
     ESCALATED = "escalated"     # Agent escalated an issue to the Director
+    # P2-18: a specialist that finished its initial run but stays subscribed
+    # and alive for follow-up (verify_claims / gap-closure) until the
+    # GAP_CLOSURE phase between fact check and quality gate closes.
+    AWAITING_FOLLOWUP = "awaiting_followup"
 
 
 class TaskNode(BaseModel):
@@ -205,7 +209,13 @@ class WorkflowDAG(BaseModel):
         """
         terminal_ids = {
             t.id for t in self.tasks
-            if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+            if t.status in (
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                # P2-18: a specialist awaiting follow-up HAS produced its
+                # output; downstream tasks (synthesis, fact check) may run.
+                TaskStatus.AWAITING_FOLLOWUP,
+            )
         }
         return [
             t for t in self.tasks
@@ -283,7 +293,10 @@ class WorkflowDAG(BaseModel):
     @property
     def is_complete(self) -> bool:
         """Check if all tasks are in terminal states."""
-        return all(t.is_terminal for t in self.tasks)
+        return all(
+            t.is_terminal or t.status == TaskStatus.AWAITING_FOLLOWUP
+            for t in self.tasks
+        )
 
     @property
     def all_completed(self) -> bool:
