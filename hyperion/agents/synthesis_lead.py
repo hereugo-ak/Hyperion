@@ -62,6 +62,7 @@ from typing import Any
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
+from hyperion.output.display import DisplayError, display_value
 from hyperion.output.page_budget import plan_budget
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
@@ -314,12 +315,12 @@ class SynthesisLead(BaseAgent):
                 ]
                 for key in analysis_keys:
                     if key in payload:
-                        try:
-                            summary = json.dumps(payload[key], default=str)[:3000]
-                        except (TypeError, ValueError):
-                            summary = str(payload[key])[:3000]
-
-                        # Extract headline metrics from common fields
+                        # P2-09: the json.dumps summary path is deleted. A JSON
+                        # dump is not analysis; it put whole sources arrays and
+                        # accessed_at keys into seven chapters of a client
+                        # report. Only presentable headline metrics become a
+                        # synthetic finding; everything else is a gap, not a
+                        # payload paste.
                         headlines = []
                         headline_title = ""
                         analysis_data = payload.get(key, {})
@@ -335,7 +336,13 @@ class SynthesisLead(BaseAgent):
                             ]:
                                 val = analysis_data.get(title_key)
                                 if val is not None:
-                                    val_str = str(val)
+                                    try:
+                                        val_str = display_value(val)
+                                    except DisplayError:
+                                        # Unpresentable metric: a gap, never a repr.
+                                        continue
+                                    if not val_str:
+                                        continue
                                     if len(val_str) > 120:
                                         val_str = val_str[:117] + "..."
                                     headlines.append(f"{label}: {val_str}")
@@ -346,9 +353,12 @@ class SynthesisLead(BaseAgent):
                             kvd = analysis_data.get("key_value_drivers", [])
                             if isinstance(kvd, list):
                                 for vd in kvd[:3]:
-                                    headlines.append(f"Key Value Driver — {vd}")
+                                    vd_str = display_value(vd)
+                                    if not vd_str:
+                                        continue
+                                    headlines.append(f"Key Value Driver: {vd_str}")
                                     if not headline_title:
-                                        headline_title = f"Key Value Driver — {vd}"
+                                        headline_title = f"Key Value Driver: {vd_str}"
 
                         if not headline_title:
                             # Fallback: use confidence or risk count
@@ -358,12 +368,21 @@ class SynthesisLead(BaseAgent):
                                     headline_title = f"{fb_key.replace('_', ' ').title()}: {fb_val}"
                                     break
 
+                        if not headlines and not headline_title:
+                            # No presentable metrics at all: this is an analysis
+                            # gap (P2-16), not a finding. Do not synthesize one
+                            # out of a payload dump.
+                            logger.warning(
+                                "specialist payload for %s carried no presentable "
+                                "metrics; treated as a gap, not a JSON dump",
+                                key,
+                            )
+                            break
+
                         if not headline_title:
                             headline_title = f"{agent_name.replace('_', ' ').title()} Analysis"
 
-                        content = summary
-                        if headlines:
-                            content = "\n".join(headlines) + "\n\n" + summary
+                        content = "\n".join(headlines)
 
                         synthetic = KeyFinding(
                             id=f"summary_{agent_name}_{uuid.uuid4().hex[:8]}",
