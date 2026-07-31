@@ -128,10 +128,20 @@ class TemplateRenderer:
         if self._env is None:
             from jinja2 import Environment, select_autoescape
 
+            from hyperion.output.display import humanize
+
+            # P2-10: humanize is the environment FINALIZER, not an opt-in
+            # filter. The old clean_dict_repr filter was applied to exactly 1
+            # of ~40 renderable fields and its startswith('{') guard could not
+            # fire on the LABEL: {'...'} strings that actually leaked. As the
+            # finalize hook, humanize runs on every interpolated value, so no
+            # field can be forgotten. On an unparseable repr it raises rather
+            # than truncating and shipping.
             self._env = Environment(
                 autoescape=select_autoescape(["html", "xml"]),
                 trim_blocks=True,
                 lstrip_blocks=True,
+                finalize=humanize,
             )
             # Add custom filters
             self._env.filters["format_currency"] = self._format_currency
