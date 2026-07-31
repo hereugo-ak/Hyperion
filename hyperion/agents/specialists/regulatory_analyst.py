@@ -317,6 +317,11 @@ class RegulatoryAnalyst(BaseAgent):
                 return
 
             request_type = payload.get("request_type", "")
+            if request_type == "verify_claims":
+                # P2-17: the Fact Checker's Step 6 feedback path is handled
+                # by the shared base handler, never dropped.
+                await self._handle_verify_claims(payload)
+                return
             if request_type == "jurisdiction_comparison":
                 # Strategy Analyst requesting jurisdiction comparison for market entry
                 pass
