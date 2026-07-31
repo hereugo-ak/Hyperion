@@ -1158,6 +1158,18 @@ class QualityGate(BaseAgent):
         "insufficient evidence to state implications",
     )
 
+    # P2-12: internal QA vocabulary that names the machinery, not the
+    # analysis. The client is never handed the QA log. Matched case-
+    # insensitively against the serialized client-facing content.
+    _META_TEXT_BLOCKLIST = (
+        "hallucinat",
+        "unverified claim",
+        "fact checker",
+        "quality gate",
+        "parse error",
+        "data sparse",
+    )
+
     def _detect_hard_blockers(self, report: FinalReport) -> list[str]:
         """Scan the rendered report for non-negotiable defects (Layer 4 truth gate).
 
@@ -1253,6 +1265,18 @@ class QualityGate(BaseAgent):
                 f"{report.total_sources} total source(s). Confidence must track "
                 "real evidence coverage — downgrade or gather more evidence."
             )
+
+        # 7. Meta-text blocklist (P2-12): the client is never handed HYPERION's
+        #    internal QA log. These tokens name the machinery, not the analysis.
+        #    The Technical Appendix may report a verification COUNT phrased
+        #    without these tokens ("43 of 72 claims independently verified").
+        for term in self._META_TEXT_BLOCKLIST:
+            if term in blob_lower:
+                blockers.append(
+                    f"META-TEXT: internal QA vocabulary reached the client "
+                    f"deliverable ('{term}') — restate as analysis, or omit."
+                )
+                break
 
         return blockers
 

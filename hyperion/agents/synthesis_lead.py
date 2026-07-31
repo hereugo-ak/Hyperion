@@ -102,6 +102,29 @@ class SectionGapError(RuntimeError):
     """
 
 
+# P2-12: the 11 specialists are the only agents whose findings may become a
+# client-facing chapter. ``_findings_by_agent`` accepts findings from any
+# sender (Fact Checker output is useful input to reconciliation), but the
+# section builder iterates THIS set — the Fact Checker never appears as a
+# chapter, a TOC entry, or a quoted source in At a Glance / Executive
+# Summary. Its output reaches the client only through
+# ``FinalReport.fact_check_report``, which the Technical Appendix may
+# summarize quantitatively and must not quote.
+SECTION_PRODUCING_AGENTS: frozenset[AgentName] = frozenset({
+    AgentName.MARKET_ANALYST,
+    AgentName.COMPETITIVE_INTEL,
+    AgentName.FINANCIAL_ANALYST,
+    AgentName.RISK_ANALYST,
+    AgentName.TECHNOLOGY_ANALYST,
+    AgentName.OPERATIONS_ANALYST,
+    AgentName.REGULATORY_ANALYST,
+    AgentName.SUSTAINABILITY_ANALYST,
+    AgentName.CONSUMER_INSIGHTS,
+    AgentName.MA_ANALYST,
+    AgentName.INNOVATION_ANALYST,
+})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1305,9 +1328,15 @@ class SynthesisLead(BaseAgent):
 
         # Build all sections in parallel — each section's LLM call is independent
         # D5: include agents with no findings so sections are never missing
+        # P2-12: iterate the SECTION_PRODUCING_AGENTS allowlist, not every bus
+        # sender. The Fact Checker (and any other non-specialist) may publish
+        # findings into _findings_by_agent as reconciliation input, but only
+        # the 11 specialists may become a client-facing chapter.
+        _producing = {a.value for a in SECTION_PRODUCING_AGENTS}
         tasks = [
             _build_one_section(agent, findings)
             for agent, findings in self._findings_by_agent.items()
+            if agent in _producing
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
