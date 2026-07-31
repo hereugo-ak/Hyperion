@@ -66,6 +66,7 @@ from typing import Any
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
+from hyperion.output.confidence import derive_confidence
 from hyperion.output.page_budget import PAGE_COUNT_MAX, PAGE_COUNT_MIN
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
@@ -3131,6 +3132,20 @@ class PresentationDesigner(BaseAgent):
         # Step 1: Receive FinalReport
         await self._transition(AgentState.WORKING, "Step 1: Receiving FinalReport")
         report = await self._receive_final_report(final_report)
+
+        if report is not None:
+            # P2-15: confidence is derived, never asserted. Every surface
+            # (cover, At a Glance, Executive Summary, Technical Appendix)
+            # reads report.confidence; we pin it to derive_confidence() once
+            # here so all four surfaces show the same token by construction.
+            derived = derive_confidence(report)
+            if derived != report.confidence:
+                self._log(
+                    f"CONFIDENCE: derived {derived.value.upper()} overrides "
+                    f"asserted {report.confidence.value.upper()} "
+                    f"(sources={report.total_sources})"
+                )
+                report.confidence = derived
 
         if not report:
             await self._transition(AgentState.DONE, "No FinalReport received")
