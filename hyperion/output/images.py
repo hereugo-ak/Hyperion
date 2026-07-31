@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from hyperion.tools.evidence_scorer import EvidenceScorer
+
 
 class ImageTooSmallError(Exception):
     """Raised when an image is smaller than the target dimensions.
@@ -44,6 +46,88 @@ class ImageTooSmallError(Exception):
     different one." This error tells the caller to search for a
     higher-resolution image.
     """
+
+
+# P2-33 sub-fix 3: a decorative section photo must never look like a chart.
+# An exhibit is a chart; a decorative photo that reads as one makes the reader
+# interpret it as data (report B shipped a candlestick photo on a manufacturing
+# chapter). These categories are banned outright for section decoration.
+CHART_LIKE_SECTION_BAN: frozenset[str] = frozenset({
+    "stock chart", "candlestick", "trading screen", "trading chart",
+    "financial chart", "price chart", "forex chart", "market chart",
+    "stock market graph", "ticker", "candle stick",
+})
+
+
+class ImageRelevanceGate:
+    """P2-33: score a candidate image's relevance to the engagement, and
+    reject anything below the floor. A section with no relevant image gets no
+    image — which is strictly better than a wrong one.
+
+    The matching is token-boundary and reuses EvidenceScorer's corrected
+    matcher (``_stemmed_tokens`` / ``_score_relevance``); it is NOT
+    reimplemented here, because the substring-inflation defect behind P2-19
+    ("ai" matching "said") was already fixed once there and must not be
+    reintroduced for imagery.
+    """
+
+    #: Below this composite score a candidate is treated as off-topic and
+    #: dropped. Chosen above the measured "no token overlap" band (~0.0) and
+    #: below any genuinely on-topic candidate, which shares topic tokens.
+    MIN_RELEVANCE: float = 0.10
+
+    def __init__(self) -> None:
+        self._scorer = EvidenceScorer()
+
+    @staticmethod
+    def _candidate_text(candidate: Any) -> str:
+        """The candidate's human-readable description fields (title, tags,
+        alt text) — the only honest signal available for relevance scoring."""
+        desc = getattr(candidate, "description", "") or ""
+        alt = getattr(candidate, "alt_description", "") or ""
+        term = getattr(candidate, "search_term", "") or ""
+        return f"{desc} {alt} {term}".strip()
+
+    def is_chart_like(self, candidate: Any) -> bool:
+        """True when the candidate's description reads as a chart/screenshot."""
+        text = self._candidate_text(candidate).lower()
+        return any(banned in text for banned in CHART_LIKE_SECTION_BAN)
+
+    def score(self, candidate: Any, subject: str, topic: str) -> float:
+        """Composite relevance of a candidate against the engagement subject
+        and the section topic. Higher is more relevant."""
+        query = f"{subject} {topic}".strip()
+        content = self._candidate_text(candidate)
+        if not query or not content:
+            return 0.0
+        return self._scorer._score_relevance(query, content)
+
+    def is_relevant(self, candidate: Any, subject: str, topic: str) -> bool:
+        """True only when the candidate clears the floor and is not chart-like."""
+        if self.is_chart_like(candidate):
+            return False
+        return self.score(candidate, subject, topic) >= self.MIN_RELEVANCE
+
+    def pick_relevant(
+        self,
+        candidates: list[Any],
+        subject: str,
+        topic: str,
+    ) -> Any | None:
+        """Return the highest-scoring candidate that clears the floor, or None.
+
+        None is a valid, honest result: it means "no image", which the audit
+        requires is strictly preferable to shipping a wrong one.
+        """
+        scored = [
+            (self.score(c, subject, topic), c)
+            for c in candidates
+            if self.is_relevant(c, subject, topic)
+        ]
+        if not scored:
+            return None
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return scored[0][1]
 
 
 @dataclass

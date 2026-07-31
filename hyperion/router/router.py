@@ -84,6 +84,12 @@ _TIER_DOWNGRADE: dict[ModelTier, ModelTier] = {
 #   DEEP: Google flash-lite, Mistral devstral, NVIDIA ultra-550b (round-robin, ≥2 non-Google)
 #   STRONG: NVIDIA nemotron, Mistral large
 _TIER_PROVIDER_PRIORITY: dict[ModelTier, list[ProviderType]] = {
+    # P2-31: MICRO is the highest-volume tier (every specialist sub-agent
+    # runs on it), so it must have a deterministic priority order. Mistral
+    # ministral-3b leads (rpm60, no daily cap), then Google gemma (14.4K
+    # RPD), then Groq llama-instant (low tpm). Without an entry the sort
+    # fell back to `[] + list(set)`, i.e. non-deterministic set order.
+    ModelTier.MICRO: [ProviderType.MISTRAL, ProviderType.GOOGLE, ProviderType.GROQ],
     ModelTier.FAST: [ProviderType.MISTRAL, ProviderType.GROQ, ProviderType.CEREBRAS],
     ModelTier.STANDARD: [ProviderType.NVIDIA, ProviderType.MISTRAL, ProviderType.GROQ],
     ModelTier.DEEP: [ProviderType.MISTRAL, ProviderType.NVIDIA, ProviderType.GOOGLE],
@@ -203,31 +209,54 @@ class LLMRouter:
             "by_provider": by_provider,
         }
 
-    def _predicted_rate_limited(self, provider_type: ProviderType) -> bool:
-        """D9: Check if a provider is predicted to be rate-limited right now.
+    def _tracker_hot(self, tracker: SlidingWindowTracker) -> bool:
+        """P2-30: is a single model's sliding window near its RPM/TPM limit?
 
-        Uses the wait gate's sliding window tracker to see if the provider
-        is near its RPM/TPM limit. If so, skip it and try the next provider.
+        This is the per-model predicate. A model is "hot" when either its RPM
+        or TPM rolling window is >85% utilised.
+        """
+        if tracker.model.rpm > 0:
+            if tracker.current_rpm() / tracker.model.rpm > 0.85:
+                return True
+        if tracker.model.tpm > 0:
+            if tracker.current_tpm() / tracker.model.tpm > 0.85:
+                return True
+        return False
+
+    def _candidate_rate_limited(self, candidate: ProviderCandidate) -> bool:
+        """P2-30/P2-G30: evaluate the rate-limit prediction for the SPECIFIC
+        candidate the wait gate selected, not for the provider.
+
+        One hot model must not disable an entire provider. Google runs Gemma
+        at 14,400 RPD and Gemini at 500 RPD; saturating the small model used
+        to mark the large one unavailable. The router skips the hot candidate
+        and the wait gate can offer the next candidate on the same provider.
+        """
+        return self._tracker_hot(candidate.tracker)
+
+    def _predicted_rate_limited(self, provider_type: ProviderType) -> bool:
+        """D9: True only when the provider genuinely cannot serve right now.
+
+        P2-30: this is the provider-LEVEL aggregate retained for diagnostics
+        (``_diagnose_skip_reasons``) and the speculative racer. It is True
+        when the provider is unhealthy or EVERY non-deprecated model on it is
+        hot (no cold model exists). A provider with one hot model and one
+        cold model is NOT rate-limited; per-request gating uses
+        ``_candidate_rate_limited`` instead.
         """
         if provider_type not in self._providers:
             return True
         provider = self._providers[provider_type]
         if not provider.health.is_available():
             return True
-        # Check if any tracker for this provider shows near-limit usage
-        for (pt, _model_name), tracker in self._trackers.items():
-            if pt != provider_type:
-                continue
-            # If RPM or TPM is >85% utilized, predict rate-limited
-            if tracker.model.rpm > 0:
-                rpm_pct = tracker.current_rpm() / tracker.model.rpm
-                if rpm_pct > 0.85:
-                    return True
-            if tracker.model.tpm > 0:
-                tpm_pct = tracker.current_tpm() / tracker.model.tpm
-                if tpm_pct > 0.85:
-                    return True
-        return False
+        trackers = [
+            tracker
+            for (pt, _model_name), tracker in self._trackers.items()
+            if pt == provider_type and not tracker.model.deprecated
+        ]
+        if not trackers:
+            return True
+        return all(self._tracker_hot(tracker) for tracker in trackers)
 
     def _sort_providers_by_priority(
         self,
@@ -401,11 +430,13 @@ class LLMRouter:
                 self._response_cache.set(tier, messages, response, temperature, max_tokens)
                 return response
 
-        # D9: If all adjacent tiers exhausted, try explicit downgrade
+        # D9: If all adjacent tiers exhausted, try explicit downgrade.
+        # P2-31: skip when the adjacency walk already attempted this tier —
+        # _TIER_ADJACENCY[STRONG] already reaches STANDARD, so the downgrade
+        # step was attempting STANDARD a second time on every STRONG failure.
         downgrade_tier = _TIER_DOWNGRADE.get(tier)
-        if downgrade_tier is not None:
-            if downgrade_tier not in tiers_attempted:
-                tiers_attempted.append(downgrade_tier)
+        if downgrade_tier is not None and downgrade_tier not in tiers_attempted:
+            tiers_attempted.append(downgrade_tier)
             downgrade_estimated = self.estimator.estimate_tokens(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -509,11 +540,9 @@ class LLMRouter:
         ordered_providers = self._sort_providers_by_priority(tier, available_providers)
 
         for provider_type in ordered_providers:
-            # Skip predicted-rate-limited providers
-            if self._predicted_rate_limited(provider_type):
-                continue
-
-            # Select the best model on this provider via the wait gate
+            # P2-30: select the candidate FIRST, then skip the hot candidate
+            # rather than the whole provider. A saturated Gemma window must
+            # not disable the Gemini model on the same provider.
             candidate, wait_seconds = self.wait_gate.select_with_wait(
                 tier=tier,
                 estimated_tokens=estimated_tokens,
@@ -521,6 +550,11 @@ class LLMRouter:
             )
 
             if candidate is None:
+                continue
+
+            # Skip a predicted-hot candidate; this provider's other models
+            # and the remaining providers stay eligible.
+            if self._candidate_rate_limited(candidate):
                 continue
 
             # If we need to wait, do so
@@ -590,10 +624,8 @@ class LLMRouter:
         ordered_providers = self._sort_providers_by_priority(tier, available_providers)
 
         for provider_type in ordered_providers:
-            # Skip predicted-rate-limited providers
-            if self._predicted_rate_limited(provider_type):
-                continue
-
+            # P2-30: select the candidate FIRST, then skip the hot candidate
+            # rather than the whole provider.
             candidate, wait_seconds = self.wait_gate.select_with_wait(
                 tier=tier,
                 estimated_tokens=estimated_tokens,
@@ -601,6 +633,10 @@ class LLMRouter:
             )
 
             if candidate is None:
+                continue
+
+            # Skip a predicted-hot candidate, not the provider.
+            if self._candidate_rate_limited(candidate):
                 continue
 
             if wait_seconds > 0 and wait_seconds <= self.settings.wait_gate.medium_wait_threshold:

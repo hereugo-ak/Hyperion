@@ -67,6 +67,7 @@ from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.output.confidence import derive_confidence
+from hyperion.output.images import ImageRelevanceGate
 from hyperion.output.page_budget import PAGE_COUNT_MAX, PAGE_COUNT_MIN
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
@@ -2226,17 +2227,71 @@ class PresentationDesigner(BaseAgent):
 
         return SECTION_IMAGE_SEARCH_TERMS.get("general", "modern business abstract")
 
+    # ─────────────────────────────────────────────────────────────────
+    # P2-33: topic-relevant section imagery (query construction, caption,
+    # credit). Query/caption/credit construction are pure functions so the
+    # relevance contract is unit-testable without an Unsplash round trip.
+    # ─────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def build_section_image_query(
+        subject: str,
+        geography: str,
+        section_topic: str,
+    ) -> str:
+        """Build the search query from the engagement, per P2-33 fix item 1:
+        ``{subject} {geography} {topic}`` → ``{subject} {topic}`` → topic.
+
+        The audit's measured defect was that the static
+        ``SECTION_IMAGE_SEARCH_TERMS`` map never interpolated the engagement
+        subject, so a manufacturing chapter fetched a crypto candlestick
+        photo. The subject leads the query so the engine ranks on-topic
+        results first.
+        """
+        parts = [p.strip() for p in (subject, geography, section_topic) if p and p.strip()]
+        return " ".join(parts) if parts else section_topic.strip()
+
+    @staticmethod
+    def build_section_image_caption(
+        section_title: str,
+        photographer: str,
+    ) -> str:
+        """The figcaption is a caption, not a photo credit (P2-33 fix item 4).
+
+        Report B page 8 printed ``Source: Unsplash via Maxim Hopman`` where a
+        caption belongs; the credit moves to the colophon via
+        :meth:`build_image_credit`.
+        """
+        title = (section_title or "").strip()
+        return f"{title}: illustrated." if title else "Section illustration."
+
+    @staticmethod
+    def build_image_credit(photographer: str) -> str:
+        """The colophon credit line: the ONLY place a photo credit renders."""
+        name = (photographer or "").strip() or "Unknown"
+        return f"Source: Unsplash via {name}"
+
     async def _select_section_images(self, report: FinalReport) -> dict[str, ImageSelection]:
         """Select Unsplash images for each section header.
 
         Section images = 40% page width, right-aligned, with caption.
         Uses LLM to generate context-aware search terms per section based
         on actual content, not hardcoded generic terms.
+
+        P2-33: candidates pass the ImageRelevanceGate before download. A
+        section with no candidate that clears the relevance floor gets NO
+        image, which the audit requires is strictly better than a wrong one.
         """
         section_images: dict[str, ImageSelection] = {}
 
         if not report.sections:
             return section_images
+
+        # The engagement subject for query interpolation and relevance
+        # scoring. FinalReport has no dedicated subject/geography field, so
+        # the question is the honest proxy available at delivery time.
+        subject = getattr(report, "question", "") or ""
+        gate = ImageRelevanceGate()
 
         try:
             unsplash_tool = self.get_tool(ToolName.UNSPLASH)
@@ -2244,10 +2299,17 @@ class PresentationDesigner(BaseAgent):
 
             for section in report.sections:
                 search_term = await self._generate_section_search_term(section)
+                # P2-33: interpolate the engagement subject into the query so
+                # the engine ranks on-topic photos first.
+                search_term = self.build_section_image_query(
+                    subject=subject,
+                    geography="",
+                    section_topic=search_term,
+                )
 
-                # Request more candidates than needed so dedup has room to pick
-                # a fresh image even when the top results collide with prior
-                # sections (L5.17).
+                # Request more candidates than needed so the relevance gate
+                # and dedup have room to pick a fresh, on-topic image even
+                # when the top results are off-topic or already used (L5.17).
                 search_result = await unsplash_tool.search(
                     query=search_term,
                     per_page=8,
@@ -2257,10 +2319,16 @@ class PresentationDesigner(BaseAgent):
                 if not search_result.images:
                     continue
 
-                # Pick the first candidate not already used by the cover or an
-                # earlier section — never reuse an image.
-                img = self._pick_unused_image(search_result.images)
+                # P2-33: keep only candidates that clear the relevance floor
+                # and are not chart-like decoration, THEN prefer one not
+                # already used by the cover or an earlier section.
+                relevant = [
+                    c for c in search_result.images
+                    if gate.is_relevant(c, subject=subject, topic=section.title or "")
+                ]
+                img = self._pick_unused_image(relevant)
                 if img is None:
+                    # No on-topic candidate: no image is better than a wrong one.
                     continue
                 photographer = img.photographer or "Unknown"
                 photo_id = img.id
@@ -2283,7 +2351,11 @@ class PresentationDesigner(BaseAgent):
                     image_path=local_path,
                     photographer=photographer,
                     unsplash_id=photo_id,
-                    caption=f"Source: Unsplash via {photographer}",
+                    # P2-33: the figcaption is a caption, not a photo credit.
+                    caption=self.build_section_image_caption(
+                        section_title=section.title or "",
+                        photographer=photographer,
+                    ),
                     placement="right",
                     width_percent=40,
                 )
