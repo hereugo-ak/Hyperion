@@ -64,6 +64,7 @@ from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.output.dedup import dedup_paragraphs
 from hyperion.output.display import DisplayError, display_value
+from hyperion.output.meta_text import reject_meta_text
 from hyperion.output.page_budget import plan_budget
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
@@ -1485,11 +1486,35 @@ class SynthesisLead(BaseAgent):
             # Apply targeted fixes to a deep copy of the report
             updated = report.model_copy(deep=True)
 
+            # P2-14: every iteration output is post-validated against the
+            # meta-text blocklist before it is stored. The LLM is handed the
+            # Quality Gate's fix instructions and sometimes narrates them
+            # ("the section previously lacked...", "$XB", "[verified
+            # citation]") instead of executing them. On a match the output is
+            # discarded; an output that is also shorter than the original
+            # keeps the original (an iteration must never reduce information).
             if "executive_summary" in data and data["executive_summary"]:
-                updated.executive_summary = data["executive_summary"]
+                cleaned = reject_meta_text(
+                    data["executive_summary"], old_text=updated.executive_summary
+                )
+                if cleaned:
+                    updated.executive_summary = cleaned
+                else:
+                    self._recorded_failures.append(
+                        "iteration executive_summary discarded: meta-text blocklist match"
+                    )
 
             if "recommendation_rationale" in data and data["recommendation_rationale"]:
-                updated.recommendation_rationale = data["recommendation_rationale"]
+                cleaned = reject_meta_text(
+                    data["recommendation_rationale"],
+                    old_text=updated.recommendation_rationale,
+                )
+                if cleaned:
+                    updated.recommendation_rationale = cleaned
+                else:
+                    self._recorded_failures.append(
+                        "iteration recommendation_rationale discarded: meta-text blocklist match"
+                    )
 
             if "new_limitations" in data and isinstance(data["new_limitations"], list):
                 existing = set(updated.limitations)
@@ -1506,9 +1531,27 @@ class SynthesisLead(BaseAgent):
                         update = section_updates[key]
                         if isinstance(update, dict):
                             if "body" in update and update["body"]:
-                                section.body = update["body"]
+                                cleaned = reject_meta_text(
+                                    update["body"], old_text=section.body
+                                )
+                                if cleaned:
+                                    section.body = cleaned
+                                else:
+                                    self._recorded_failures.append(
+                                        f"iteration body for {section.id} discarded: "
+                                        "meta-text blocklist match"
+                                    )
                             if "implications" in update and update["implications"]:
-                                section.implications = update["implications"]
+                                cleaned = reject_meta_text(
+                                    update["implications"], old_text=section.implications
+                                )
+                                if cleaned:
+                                    section.implications = cleaned
+                                else:
+                                    self._recorded_failures.append(
+                                        f"iteration implications for {section.id} discarded: "
+                                        "meta-text blocklist match"
+                                    )
 
             # D-02: a degraded report may gain STRUCTURE, never CONFIDENCE.
             # The quality loop has write access to conclusions and no access
