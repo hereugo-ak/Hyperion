@@ -28,7 +28,9 @@ Architecture reference: §4.9 Dynamic Workflow Engine, §10.2 Adaptive Replannin
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -62,6 +64,40 @@ from hyperion.tools.query_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class MissingDependencyOutput(RuntimeError):
+    """W-20: A DAG task declared a dependency that produced no output.
+
+    Raised from ``_execute_task`` when a required dependency is FAILED (or
+    otherwise absent from ``_task_outputs``). The pre-W-20 behaviour silently
+    skipped the missing entry, so the dependent agent ran with a partial
+    context and produced analysis that never knew an input was missing.
+
+    Raised BEFORE the agent-dispatch try block, so it propagates to
+    ``_execute_wave``, which marks the dependent task FAILED with this
+    exception's message — loud and attributable, never a silent partial run.
+    """
+
+
+def derive_run_id(question: str, engagement_key: str = "") -> str:
+    """W-20: deterministic engagement id from the engagement's inputs.
+
+    The durable-execution journal (P10) keys on ``run_id``. Seeding it from a
+    random UUID made every engagement a brand-new run id, so the cache-hit
+    machinery was structurally inert — a resumed run could never match a
+    prior run's journal. Deriving the id deterministically means re-invoking
+    the same question re-opens the same journal and replays completed steps.
+
+    The question is NORMALISED (lowercase, whitespace-collapsed) before
+    hashing so trivial rephrasing ("Market X?" vs "market   x ?") does not
+    defeat resumption; a genuinely different question still gets its own id.
+    ``engagement_key`` lets a caller namespace two runs of the same question.
+    """
+    normalized = " ".join((question or "").split()).lower()
+    key_part = " ".join((engagement_key or "").split()).lower()
+    digest = hashlib.sha256(f"{normalized}\x00{key_part}".encode()).hexdigest()
+    return f"eng_{digest[:12]}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -261,6 +297,14 @@ class WorkflowEngine:
         self._journal: RunJournal | None = None
         self._artifacts: ArtifactStore | None = None
         self._manifest: RunManifest | None = None
+        # W-20: guard every mutation of ``_all_findings`` from gathered tasks.
+        # ``_execute_wave`` runs tasks via ``asyncio.gather`` and two sites
+        # (the cache-hit replay and the live-run collector) extend this list
+        # from inside those coroutines. The lock converts the previously
+        # unstated single-event-loop invariant into an enforced one, so a
+        # future move to threads or subprocesses cannot silently corrupt the
+        # findings corpus.
+        self._findings_lock = asyncio.Lock()
 
     def _log(self, message: str) -> None:
         """Publish a log message to the TUI via Channel.TUI."""
@@ -549,7 +593,9 @@ class WorkflowEngine:
                         self._publish_task_update(task)
                         # Re-collect findings from cached specialist outputs
                         if hasattr(cached_obj, "_findings"):
-                            self._all_findings.extend(cached_obj._findings)
+                            # W-20: gathered-wave mutation — under the lock.
+                            async with self._findings_lock:
+                                self._all_findings.extend(cached_obj._findings)
                         return cached_obj
 
         agent = self._get_agent(task.agent)
@@ -557,7 +603,14 @@ class WorkflowEngine:
         task.started_at = time.time()
         self._publish_task_update(task)
 
-        # Build context from dependency outputs
+        # Build context from dependency outputs.
+        #
+        # W-20: a declared dependency that produced no output is a LOUD
+        # failure, not a skipped dict entry. The pre-W-20 code simply omitted
+        # the missing dep from ``context``, so the dependent agent ran on a
+        # partial context and its output never indicated an input was missing.
+        # Now the dependent raises ``MissingDependencyOutput`` before any agent
+        # dispatch; ``_execute_wave`` marks it FAILED with that reason.
         context: dict[str, Any] = {}
         for dep_id in task.dependencies:
             if dep_id in self._task_outputs:
@@ -565,6 +618,14 @@ class WorkflowEngine:
                 dep_task = dag.get_task(dep_id)
                 if dep_task:
                     context[dep_task.agent.value] = dep_output
+            else:
+                dep_task = dag.get_task(dep_id)
+                dep_status = dep_task.status.value if dep_task else "missing"
+                raise MissingDependencyOutput(
+                    f"task '{task.id}' ({task.agent.value}) depends on "
+                    f"'{dep_id}' which has no output (status={dep_status}) — "
+                    f"refusing to run with a partial context"
+                )
 
         try:
             # Call the agent's run() method with the right arguments
@@ -817,7 +878,9 @@ class WorkflowEngine:
             # Collect findings for Fact Checker and Synthesis Lead
             if hasattr(agent, "_findings"):
                 findings_count = len(agent._findings)
-                self._all_findings.extend(agent._findings)
+                # W-20: gathered-wave mutation — under the lock.
+                async with self._findings_lock:
+                    self._all_findings.extend(agent._findings)
                 self._log(
                     f"{task.agent.value}: completed with {findings_count} findings "
                     f"(total collected: {len(self._all_findings)})"
@@ -1676,6 +1739,7 @@ class WorkflowEngine:
         self,
         question: str,
         conversation_context: str = "",
+        fresh: bool = False,
     ) -> EngagementResult:
         """Run a complete HYPERION engagement from question to PDF.
 
@@ -1690,7 +1754,14 @@ class WorkflowEngine:
         Returns an EngagementResult with the PDF path and all metadata.
         """
         self._start_time = time.time()
-        self._engagement_id = f"eng_{uuid.uuid4().hex[:12]}"
+        # W-20: deterministic run id — the durable-execution journal below
+        # only resumes a crashed engagement if a re-run of the same question
+        # lands on the SAME run_id. ``fresh=True`` forces a random id for a
+        # genuine from-zero re-run (the CLI's ``--fresh`` flag).
+        if fresh:
+            self._engagement_id = f"eng_{uuid.uuid4().hex[:12]}"
+        else:
+            self._engagement_id = derive_run_id(question)
         # Reset per-engagement question classification so a new question can
         # never inherit the previous engagement's industry/geography.
         self._engagement_context = None
@@ -1773,6 +1844,36 @@ class WorkflowEngine:
             from hyperion.infra.preflight import assert_research_stack_usable
 
             assert_research_stack_usable(_settings)
+
+        # W-20: resume detection. If this deterministic run_id already has a
+        # journal on disk, this invocation is a RESUME of a crashed run, not a
+        # fresh engagement. The existing P10 cache-hit path in ``_execute_task``
+        # (journal ``get_cached`` -> artifact load -> skip dispatch) does the
+        # actual replay; here we surface that fact loudly so an operator can
+        # tell a resume from a fresh run and see the frontier being skipped.
+        _prior_journal = os.path.join(
+            "artifacts", self._engagement_id, "journal.sqlite"
+        )
+        if os.path.exists(_prior_journal):
+            _prior = RunJournal(self._engagement_id)
+            _prior.open()
+            try:
+                _done = _prior.get_completed_steps()
+                _failed = _prior.get_failed_steps()
+            finally:
+                _prior.close()
+            self._log(
+                f"RESUME: journal found for {self._engagement_id} — "
+                f"{len(_done)} completed step(s) will replay from cache, "
+                f"{len(_failed)} previously-failed step(s) will re-run"
+            )
+            trace(
+                "durable",
+                run_id=self._engagement_id,
+                status="resume_detected",
+                completed=len(_done),
+                failed=len(_failed),
+            )
 
         # P10: Durable execution — open journal, artifact store, manifest
         self._journal = RunJournal(self._engagement_id)
