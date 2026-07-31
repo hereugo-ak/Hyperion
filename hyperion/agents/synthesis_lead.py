@@ -92,6 +92,16 @@ from hyperion.schemas.workflow import WorkflowDAG
 logger = logging.getLogger(__name__)
 
 
+class SectionGapError(RuntimeError):
+    """Raised when a section's narrative cannot be synthesized (P2-11).
+
+    A section with no synthesized narrative is an analysis gap (P2-16), not
+    a page of concatenated finding content and never a placeholder string.
+    The caller omits the section and records the specific unanswered question
+    in ``section_gaps`` so it is declared in ``FinalReport.limitations``.
+    """
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
 # ─────────────────────────────────────────────────────────────────────────────
@@ -276,6 +286,12 @@ class SynthesisLead(BaseAgent):
         # Engagement metadata
         self._engagement_id: str = ""
         self._question: str = ""
+
+        # P2-11/P2-16: specific questions that could not be answered because a
+        # section's narrative synthesis failed. Surfaced into
+        # FinalReport.limitations so an omission is declared, never filled
+        # with concatenated finding content or a placeholder string.
+        self.section_gaps: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling — collect findings, fact check, quality score
@@ -1199,7 +1215,12 @@ class SynthesisLead(BaseAgent):
                 f"{int(budget.words_per_section * 0.9)} words.\n"
             )
 
-            section_body = "\n\n".join(f.content for f in findings)  # fallback
+            # P2-11: the concatenation fallback is DELETED. A section with no
+            # synthesized narrative is an analysis gap (P2-16), not a page of
+            # concatenated finding content (which, after P2-09, was a JSON
+            # dump). The narrative LLM call must produce the body, or the
+            # section is omitted and its unanswered question declared.
+            section_body: str | None = None
 
             try:
                 response = await self._llm_complete(
@@ -1244,15 +1265,25 @@ class SynthesisLead(BaseAgent):
                     ):
                         section_body = retry_response.content
             except (ValueError, AttributeError, RuntimeError) as exc:
-                # P2-11: never a silent pass. The concatenation fallback
-                # still runs for this engagement, but the synthesis failure
-                # is recorded with the agent and section identity instead
-                # of vanishing. (Phase 4/P2-11 deletes the fallback itself
-                # and raises a structured gap.)
+                # P2-11: never a silent pass, never concatenated content. The
+                # failure becomes a structured gap with the agent and section
+                # identity, and the section is omitted below.
                 logger.error(
-                    "narrative synthesis failed for agent=%s section=%s, "
-                    "using fallback concatenation: %s: %s",
+                    "narrative synthesis failed for agent=%s section=%s: %s: %s",
                     agent, _section_title(agent), type(exc).__name__, exc,
+                )
+                raise SectionGapError(
+                    f"Narrative synthesis failed for "
+                    f"'{_section_title(agent)}' ({agent}): {type(exc).__name__}: {exc}"
+                ) from exc
+
+            if section_body is None:
+                # Both attempts produced an unusable body (too short or empty).
+                # Do not fall back to concatenation: raise a gap instead.
+                raise SectionGapError(
+                    f"Narrative synthesis produced no usable body for "
+                    f"'{_section_title(agent)}' ({agent}); section omitted and "
+                    f"its question declared in limitations."
                 )
 
             return AnalysisSection(
@@ -1284,6 +1315,13 @@ class SynthesisLead(BaseAgent):
         for result in results:
             if isinstance(result, AnalysisSection):
                 sections.append(result)
+            elif isinstance(result, SectionGapError):
+                # P2-11: an unsynthesizable section is omitted, and its
+                # specific unanswered question is declared (surfaced into
+                # FinalReport.limitations). Never a concatenation, never a
+                # placeholder.
+                logger.warning("Section omitted due to analysis gap: %s", result)
+                self.section_gaps.append(str(result))
             elif isinstance(result, Exception):
                 logger.warning("Section build failed: %s", result)
 
@@ -1860,6 +1898,10 @@ class SynthesisLead(BaseAgent):
         limitations: list[str] = []
         for finding in all_findings:
             limitations.extend(finding.gaps)
+        # P2-11/P2-16: sections omitted because their narrative could not be
+        # synthesized declare their specific unanswered question here, so the
+        # omission is honest and visible, never silently filled.
+        limitations.extend(self.section_gaps)
 
         report = FinalReport(
             engagement_id=self._engagement_id,
