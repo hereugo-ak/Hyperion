@@ -1535,7 +1535,8 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         ToolName.UNSPLASH,
         ToolName.PLOTLY,
         ToolName.JINJA2,
-        ToolName.WEASYPRINT,
+        # W-03: ToolName.WEASYPRINT removed — the designer stages HTML and a
+        # layout plan; the Render Engine is the only agent that writes PDFs.
     ],
     skills=[
         SkillSpec(
@@ -3062,90 +3063,6 @@ class PresentationDesigner(BaseAgent):
         """
         return os.path.join(self.BUILD_DIR, os.path.basename(self.CSS_OUTPUT))
 
-    async def _generate_pdf(self, html_path: str) -> str:
-        """Generate the final PDF with WeasyPrint.
-
-        WeasyPrint converts HTML/CSS to PDF at 300 DPI with:
-        - A4 page size
-        - Embedded fonts (Instrument Serif, JetBrains Mono)
-        - Brand colors (warm palette, no blue)
-        - Proper margins (25mm all sides, 15mm binding)
-        - Page breaks (no blank pages, no orphaned images)
-
-        Returns the path to the produced artifact: the PDF on success, or the
-        styled HTML fallback if both PDF engines are unavailable. Returns ""
-        only when nothing at all could be produced.
-
-        Every exit path is logged. This method used to `return ""` silently
-        from five different places and swallow errors with a narrow
-        `except (ValueError, AttributeError, RuntimeError)`, so a Windows GTK
-        OSError escaped while the caller was left with an empty string and no
-        idea why, the report simply vanished with no diagnostic.
-        """
-        os.makedirs(self.OUTPUT_DIR, exist_ok=True)
-
-        try:
-            weasyprint_tool = self.get_tool(ToolName.WEASYPRINT)
-
-            # PDFRenderer.render_pdf expects HTML string content, not a file path.
-            html_content = ""
-            try:
-                with open(html_path, encoding="utf-8") as f:
-                    html_content = f.read()
-            except (OSError, ValueError) as e:
-                self._log(f"RENDER: cannot read staged HTML {html_path}: {e}")
-                return ""
-
-            if not html_content:
-                self._log(f"RENDER: staged HTML {html_path} is empty; nothing to render")
-                return ""
-
-            result = weasyprint_tool.render_pdf(
-                html=html_content,
-                output_path=self.PDF_OUTPUT,
-            )
-
-            if result and result.success:
-                self._log(f"RENDER: PDF produced at {self.PDF_OUTPUT}")
-                return self.PDF_OUTPUT
-
-            # PDF failed. W-02: when the page audit rejected the render, the
-            # log must name the rejected path and the violation count — the
-            # old message truncated the error at 120 characters, discarding
-            # the entire violation list.
-            rejected = getattr(result, "rejected_path", "") if result else ""
-            violations = getattr(result, "audit_violations", []) if result else []
-            if rejected:
-                self._log(
-                    f"RENDER: PDF REJECTED by page audit "
-                    f"({len(violations)} violation(s)); quarantined at {rejected}. "
-                    "The deliverable name was not written."
-                )
-
-            # The renderer now emits a styled, self-contained HTML
-            # fallback — surface it rather than discarding it. Returning ""
-            # here is what left the user with an empty output directory.
-            fallback = getattr(result, "html_path", "") if result else ""
-            if fallback and os.path.exists(fallback):
-                self._log(
-                    f"RENDER: PDF unavailable ({getattr(result, 'error', 'unknown')!s:.120}); "
-                    f"delivering HTML fallback {fallback}"
-                )
-                return fallback
-
-            self._log(
-                "RENDER: PDF generation failed with no fallback: "
-                f"{getattr(result, 'error', 'unknown error')!s:.200}"
-            )
-            return ""
-
-        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
-            # Broad by design: WeasyPrint on Windows raises OSError/ImportError
-            # from missing GTK natives, which the old narrow tuple let escape
-            # and abort the whole delivery stage.
-            self._log(f"RENDER: PDF generation raised {type(e).__name__}: {e!s:.200}")
-            return ""
-
     # ─────────────────────────────────────────────────────────────────────
     # Page flow validation
     # ─────────────────────────────────────────────────────────────────────
@@ -3327,9 +3244,17 @@ class PresentationDesigner(BaseAgent):
             chart_placements=self._chart_placements,
         )
 
-        # Step 7: Generate PDF with WeasyPrint
-        await self._transition(AgentState.WORKING, "Step 7: Generating PDF with WeasyPrint")
-        pdf_path = await self._generate_pdf(html_path)
+        # Step 7: W-03 — the designer NO LONGER writes a PDF. Its contract is
+        # the staged HTML + layout plan and nothing else; the Render Engine
+        # is the single writer. The deleted `_generate_pdf` duplicated the
+        # Render Engine's job, and the orchestrator's `layout_plan.pdf_path`
+        # fallback then let an unaudited designer-rendered PDF become the
+        # deliverable (RC-3/RC-4). Both are gone now.
+        await self._transition(
+            AgentState.WORKING,
+            "Step 7: Staged HTML + layout plan handed to Render Engine "
+            "(the single PDF writer)",
+        )
 
         # Step 8: Post-process images with Pillow (via Render Engine)
         await self._transition(AgentState.WORKING, "Step 8: Post-processing images (handed to "
@@ -3343,8 +3268,10 @@ class PresentationDesigner(BaseAgent):
         # Collect all section images
         all_section_images = list(self._section_images.values())
 
-        # Determine confidence
-        if pdf_path and no_blank and no_orphaned:
+        # Determine confidence — W-03: the designer's confidence describes
+        # its own artifact (the staged HTML + layout plan), not a PDF it no
+        # longer authors.
+        if html_path and no_blank and no_orphaned:
             confidence = ConfidenceLevel.HIGH
         elif html_path:
             confidence = ConfidenceLevel.MEDIUM
@@ -3361,7 +3288,6 @@ class PresentationDesigner(BaseAgent):
             chart_placements=all_chart_placements,
             html_template_path=html_path,
             css_path=self._css_build_path(),
-            pdf_path=pdf_path,
             typography=TYPOGRAPHY,
             color_palette=PDF_PALETTE,
             no_blank_pages=no_blank,
@@ -3380,7 +3306,6 @@ class PresentationDesigner(BaseAgent):
                 "finding_type": "layout_plan",
                 "layout_plan": layout_plan.model_dump(),
                 "total_pages": len(self._pages),
-                "has_pdf": bool(pdf_path),
                 "no_blank_pages": no_blank,
                 "no_orphaned_images": no_orphaned,
                 "cover_image": self._cover_image.image_path if self._cover_image else "",
@@ -3397,7 +3322,7 @@ class PresentationDesigner(BaseAgent):
             payload={
                 "to_agent": "render_engine",
                 "from_agent": self.name.value,
-                "task": "render_pdf",
+                "task": "render_deliverable",
                 "context_bundle": {
                     "layout_plan": layout_plan.model_dump(),
                     "html_path": html_path,
@@ -3411,8 +3336,8 @@ class PresentationDesigner(BaseAgent):
                     f"Layout plan complete: {len(self._pages)} pages, "
                     f"{len(all_section_images)} section images, "
                     f"{len(all_chart_placements)} charts. "
-                    f"PDF {'generated' if pdf_path else 'pending'}. "
-                    f"Hand off to Render Engine for final assembly."
+                    f"Hand off to Render Engine for final assembly and "
+                    f"single-writer PDF rendering."
                 ),
             },
         )
@@ -3430,7 +3355,7 @@ class PresentationDesigner(BaseAgent):
                 f"Chart placements: {len(all_chart_placements)}. "
                 f"Blank pages: {'none' if no_blank else 'detected'}. "
                 f"Orphaned images: {'none' if no_orphaned else 'detected'}. "
-                f"PDF: {'generated' if pdf_path else 'pending Render Engine'}."
+                f"PDF: authored by Render Engine (single writer)."
             ),
             confidence=confidence,
         )
@@ -3443,7 +3368,7 @@ class PresentationDesigner(BaseAgent):
             f"{len(all_chart_placements)} charts, "
             f"blank_pages: {'no' if no_blank else 'yes'}, "
             f"orphaned: {'no' if no_orphaned else 'yes'}, "
-            f"pdf: {'yes' if pdf_path else 'pending'}, "
+            f"pdf: render_engine (single writer), "
             f"confidence: {confidence.value}",
         )
 

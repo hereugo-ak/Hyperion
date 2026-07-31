@@ -1084,39 +1084,51 @@ class EngagementDirector(BaseAgent):
         )
         tasks.append(quality_task)
 
-        # Presentation Designer — depends on Quality Gate
-        design_task = TaskNode(
-            id="task_presentation_designer",
-            agent=AgentName.PRESENTATION_DESIGNER,
-            model_tier=ModelTier.STRONG,
-            description="Design the PDF layout, select Unsplash images, specify chart types",
-            dependencies=["task_quality_gate"],
-            status=TaskStatus.PENDING,
-            estimated_llm_calls=3,
-            estimated_tokens=15000,
-        )
-        tasks.append(design_task)
+        # W-03: delivery chain re-pointed so the writer runs LAST and every
+        # input exists before the stage that consumes it:
+        #   Data Visualizer  (charts exist as FILES before any HTML references
+        #                     them — previously the designer staged HTML that
+        #                     pointed at chart files the visualizer had not
+        #                     rendered yet)
+        #   Presentation Designer  (consumes charts, stages HTML + layout plan
+        #                     ONLY — W-03 removes its PDF authorship)
+        #   Render Engine    (the single PDF writer; reads the staged HTML,
+        #                     renders, audits, finalises)
 
-        # Data Visualizer — depends on Presentation Designer
+        # Data Visualizer — depends on Quality Gate (chart data comes from the
+        # FinalReport, gated by quality)
         viz_task = TaskNode(
             id="task_data_visualizer",
             agent=AgentName.DATA_VISUALIZER,
             model_tier=ModelTier.STANDARD,
             description="Generate Plotly charts at 300 DPI with brand colors",
-            dependencies=["task_presentation_designer"],
+            dependencies=["task_quality_gate"],
             status=TaskStatus.PENDING,
             estimated_llm_calls=2,
             estimated_tokens=5000,
         )
         tasks.append(viz_task)
 
-        # Render Engine — depends on Data Visualizer + Presentation Designer
+        # Presentation Designer — depends on Quality Gate + Data Visualizer
+        design_task = TaskNode(
+            id="task_presentation_designer",
+            agent=AgentName.PRESENTATION_DESIGNER,
+            model_tier=ModelTier.STRONG,
+            description="Design the PDF layout, select Unsplash images, stage HTML with charts",
+            dependencies=["task_quality_gate", "task_data_visualizer"],
+            status=TaskStatus.PENDING,
+            estimated_llm_calls=3,
+            estimated_tokens=15000,
+        )
+        tasks.append(design_task)
+
+        # Render Engine — depends on Presentation Designer (the ONLY writer)
         render_task = TaskNode(
             id="task_render_engine",
             agent=AgentName.RENDER_ENGINE,
             model_tier=ModelTier.STANDARD,
             description="Assemble final PDF with WeasyPrint at 300 DPI, embed fonts, verify page flow",
-            dependencies=["task_data_visualizer", "task_presentation_designer"],
+            dependencies=["task_presentation_designer"],
             status=TaskStatus.PENDING,
             estimated_llm_calls=1,
             estimated_tokens=3000,

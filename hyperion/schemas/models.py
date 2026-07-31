@@ -2651,8 +2651,11 @@ class LayoutPlan(BaseModel):
         "placements")
     html_template_path: str = Field(default="", description="Path to the Jinja2-rendered HTML")
     css_path: str = Field(default="", description="Path to the CSS file (brand colors, typography)")
-    pdf_path: str = Field(default="", description="Path to the generated PDF (empty until Render "
-        "Engine runs)")
+    # W-03: the pdf_path field was deleted. The Presentation Designer's
+    # contract is the staged HTML + this layout plan and nothing else; the
+    # Render Engine is the single PDF writer, so a pdf_path attribute here
+    # could only ever be stale (or worse, the RC-4 fallback's vehicle for an
+    # unaudited designer-rendered PDF becoming the deliverable).
     typography: dict[str, str] = Field(
         default_factory=lambda: {
             "header_font": "Instrument Serif",

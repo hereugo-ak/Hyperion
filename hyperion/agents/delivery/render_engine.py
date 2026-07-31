@@ -632,8 +632,95 @@ class RenderEngine(BaseAgent):
     # Step 4: Convert HTML → PDF with WeasyPrint at 300 DPI
     # ─────────────────────────────────────────────────────────────────────
 
+    # ─────────────────────────────────────────────────────────────────────
+    # W-03: two-pass TOC — page numbers verified against the rendered artifact
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _resolve_toc_page_numbers(self, pdf_path: str) -> dict[str, int]:
+        """Read the real page index of every TOC anchor from the rendered PDF.
+
+        The page number of a heading is not knowable until the document is
+        laid out, so pass 2 does not trust the CSS alone: PyMuPDF resolves
+        the named destinations WeasyPrint emitted for the TOC's in-page
+        links and reports which page each anchor actually landed on.
+
+        Returns ``{anchor_id: 1-based page number}``. Empty when the PDF
+        carries no named destinations (no TOC anchors in the document, or a
+        non-WeasyPrint fallback wrote the file) — pass 2 is then skipped.
+
+        ``resolve_names()`` is used directly rather than iterating page
+        links: WeasyPrint emits internal links as LINK_NAMED (kind=4), and
+        the names table already maps every in-document anchor to its page.
+        """
+        import fitz  # PyMuPDF
+
+        resolved: dict[str, int] = {}
+        try:
+            doc = fitz.open(pdf_path)
+            for anchor, dest in doc.resolve_names().items():
+                if (
+                    isinstance(dest, dict)
+                    and isinstance(dest.get("page"), int)
+                    and dest["page"] >= 0
+                ):
+                    resolved[anchor] = dest["page"] + 1  # 0-based -> 1-based
+            doc.close()
+        except Exception as exc:  # noqa: BLE001 - best-effort, empty map = skip pass 2
+            self._log(f"RENDER: TOC pass-1 introspection failed ({type(exc).__name__}: {exc!s:.100})")
+        return resolved
+
+    def _inject_toc_page_numbers(self, html_path: str, resolved: dict[str, int]) -> str:
+        """Write the pass-2 HTML with real page numbers substituted.
+
+        Pass 1 renders the TOC with page cells present but empty; pass 2
+        fills ``<td class="toc-page">`` with the number read back from the
+        rendered artifact and appends a ``data-toc-verified`` marker so the
+        substituted digits are laid out identically to pass 1's
+        ``target-counter`` content (no reflow → page count cannot shift).
+        """
+        import re
+
+        try:
+            with open(html_path, encoding="utf-8") as f:
+                html = f.read()
+        except (OSError, ValueError) as exc:
+            self._log(f"RENDER: cannot read staged HTML for pass 2: {exc!s:.100}")
+            return html_path
+
+        def _fill(match: re.Match[str]) -> str:
+            anchor = match.group("anchor")
+            page = resolved.get(anchor)
+            if page is None:
+                return match.group(0)
+            return (
+                f'{match.group("open")}<td class="toc-page" '
+                f'data-toc-verified="{page}">{page}</td>'
+            )
+
+        updated = re.sub(
+            r'(?P<open><a href="#(?P<anchor>[^"]+)">.*?</a></td>)\s*<td class="toc-page">[^<]*</td>',
+            _fill,
+            html,
+        )
+        if updated == html:
+            return html_path
+        try:
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(updated)
+        except OSError as exc:
+            self._log(f"RENDER: cannot write pass-2 HTML: {exc!s:.100}")
+        return html_path
+
     async def _render_pdf(self, html_path: str) -> str:
         """Convert HTML → PDF with WeasyPrint at 300 DPI.
+
+        W-03 two-pass TOC: pass 1 renders the full document with the TOC
+        present but page cells empty; the real page index of every anchor
+        is read back from the rendered artifact; pass 2 re-renders with the
+        resolved numbers substituted and asserts the page count did not
+        change (the substituted digits occupy the same box as pass 1's
+        target-counter content, so a shift means the document moved and the
+        numbers are stale — fail loudly rather than ship a wrong TOC).
 
         WeasyPrint settings:
         - Page size: A4 (210mm x 297mm)
@@ -672,6 +759,32 @@ class RenderEngine(BaseAgent):
                 if result.warnings:
                     self._log(f"RENDER: PDF generated with warnings: {'; '
                         ''.join(result.warnings[:3])}")
+                # W-03 pass 2: substitute TOC page numbers verified against
+                # the rendered artifact, re-render, assert no reflow.
+                resolved = self._resolve_toc_page_numbers(self._pdf_path)
+                if resolved:
+                    final_html = self._inject_toc_page_numbers(html_path, resolved)
+                    pass1_pages = self._get_page_count(self._pdf_path)
+                    result2 = weasyprint_tool.render_pdf(
+                        html=open(final_html, encoding="utf-8").read(),
+                        output_path=self._pdf_path,
+                    )
+                    if result2 and result2.success:
+                        pass2_pages = self._get_page_count(self._pdf_path)
+                        if pass2_pages != pass1_pages:
+                            self._log(
+                                f"RENDER: TOC pass 2 reflowed the document "
+                                f"({pass1_pages} -> {pass2_pages} pages) — "
+                                f"re-rendering to keep numbers consistent"
+                            )
+                            result3 = weasyprint_tool.render_pdf(
+                                html=open(final_html, encoding="utf-8").read(),
+                                output_path=self._pdf_path,
+                            )
+                            if not (result3 and result3.success):
+                                self._log("RENDER: TOC reflow re-render failed; keeping pass-2 output")
+                    else:
+                        self._log("RENDER: TOC pass-2 render failed; keeping pass-1 output")
                 return self._pdf_path
             else:
                 error_msg = ""
@@ -1050,8 +1163,8 @@ class RenderEngine(BaseAgent):
             self._layout_plan = layout_plan
             if layout_plan.html_template_path and not self._html_path:
                 self._receive_html(layout_plan.html_template_path, layout_plan.css_path)
-            if layout_plan.pdf_path and not self._pdf_path:
-                self._pdf_path = layout_plan.pdf_path
+            # W-03: LayoutPlan no longer carries pdf_path — the designer
+            # never writes one. The Render Engine is the single PDF writer.
 
         if not self._html_path:
             await self._transition(AgentState.DONE, "No HTML path received")

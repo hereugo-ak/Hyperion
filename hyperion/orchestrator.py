@@ -2025,10 +2025,20 @@ class WorkflowEngine:
                 and t.status == TaskStatus.PENDING
             ]
 
-            # Execute delivery tasks in order (they have dependencies)
+            # Execute delivery tasks in topological order. W-03 re-pointed
+            # the delivery chain (visualizer -> designer -> render engine),
+            # so a single pass in DAG-declaration order would skip the
+            # designer permanently (its dependency completes only after the
+            # pass has already visited it). Iterate to a fix-point instead:
+            # each pass executes every task whose dependencies are now met,
+            # and the loop stops when no task changed state.
             self._log(f"DELIVERY: starting {len(delivery_tasks)} delivery tasks")
-            for task in delivery_tasks:
-                if task.status == TaskStatus.PENDING:
+            progressed = True
+            while progressed:
+                progressed = False
+                for task in delivery_tasks:
+                    if task.status != TaskStatus.PENDING:
+                        continue
                     # Check if dependencies are met
                     ready = all(
                         dag.get_task(dep) and dag.get_task(dep).status == TaskStatus.COMPLETED
@@ -2053,19 +2063,26 @@ class WorkflowEngine:
                             )
                             task.status = TaskStatus.FAILED
                             task.error = str(e)[:200]
-                    else:
-                        self._log(f"DELIVERY: {task.agent.value} dependencies not met — skipping")
+                        progressed = True
+            stuck = [t.agent.value for t in delivery_tasks if t.status == TaskStatus.PENDING]
+            if stuck:
+                self._log(
+                    f"DELIVERY: {len(stuck)} task(s) could not run — "
+                    f"dependencies never completed: {stuck}"
+                )
 
             # Collect delivery outputs
             result.layout_plan = self._get_output_by_agent(dag, AgentName.PRESENTATION_DESIGNER)
             result.visualization_output = self._get_output_by_agent(dag, AgentName.DATA_VISUALIZER)
             result.render_output = self._get_output_by_agent(dag, AgentName.RENDER_ENGINE)
 
-            # Get PDF path
+            # Get PDF path — W-03: exactly ONE source, the Render Engine.
+            # The deleted `elif layout_plan.pdf_path` branch was the RC-4
+            # mechanism: an unaudited designer-rendered PDF could become the
+            # deliverable when the designer wrote one and the render engine
+            # did not. The designer no longer writes PDFs at all.
             if result.render_output and hasattr(result.render_output, "pdf_path"):
                 result.pdf_path = result.render_output.pdf_path
-            elif result.layout_plan and hasattr(result.layout_plan, "pdf_path"):
-                result.pdf_path = result.layout_plan.pdf_path
 
             self._log(
                 f"DELIVERY: complete — PDF={'YES' if result.pdf_path else 'NO'} "
