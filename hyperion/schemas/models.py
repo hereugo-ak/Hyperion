@@ -30,6 +30,25 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
+import re as _re
+
+# P2-09: a serialized-object repr (``{'name': ...}`` / ``{"name": ...}``) must
+# be unrepresentable in any client-facing string field. Matches the same
+# pattern as ``hyperion.output.display.OBJECT_REPR_RE``. Construction-time
+# enforcement: fail at the Pydantic layer, not at render.
+_OBJECT_REPR_RE = _re.compile(r"\{['\"]\w+['\"]\s*:")
+
+
+def _reject_object_repr(value: Any) -> Any:
+    """field_validator body: raise if a string field holds a Python object repr."""
+    if isinstance(value, str) and _OBJECT_REPR_RE.search(value):
+        raise ValueError(
+            "client-facing text may not contain a serialized object repr "
+            f"({'{'}'name': ...); present it with display_value() instead: "
+            f"{value[:60]!r}"
+        )
+    return value
+
 
 def clean_url(url: str) -> str:
     """Drop query params whose value is missing/None/empty (Layer 3 URL guard).
@@ -155,6 +174,11 @@ class KeyFinding(BaseModel):
     implications: str | None = Field(default=None, description="'So what?' — what does this mean "
         "for the recommendation?")
     timestamp: datetime = Field(default_factory=datetime.now)
+
+    # P2-09: serialized object reprs are unrepresentable at construction.
+    _reject_reprs = field_validator("content", "title", "implications")(
+        _reject_object_repr
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -312,6 +336,11 @@ class AnalysisSection(BaseModel):
     sources: list[Source] = Field(default_factory=list, description="All sources cited in this "
         "section")
     confidence: ConfidenceLevel = Field(description="Confidence level for this section's analysis")
+
+    # P2-09: serialized object reprs are unrepresentable at construction.
+    _reject_reprs = field_validator(
+        "body", "key_insight", "implications", "title"
+    )(_reject_object_repr)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
