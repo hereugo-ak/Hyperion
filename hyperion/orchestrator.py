@@ -66,6 +66,31 @@ from hyperion.tools.query_utils import (
 logger = logging.getLogger(__name__)
 
 
+class DeliveryFailure(RuntimeError):
+    """W-04: a required delivery stage failed — the engagement fails closed.
+
+    Raised from the delivery loop when any of DATA_VISUALIZER,
+    PRESENTATION_DESIGNER, or RENDER_ENGINE raises or cannot run. There are
+    no optional delivery tasks: a report without its charts, or without the
+    render engine's audited PDF, is wrong — not merely plainer. The
+    pre-W-04 `except Exception: log; continue` converted exactly such a
+    crash into a silent success (a 34-page report with zero charts).
+
+    Carries the agent name, the original exception type, and the full
+    traceback so the failure is attributable without re-running.
+
+    Subclasses RuntimeError so the outer run_engagement handler converts it
+    into a failed EngagementResult (success=False, error=<traceback>)
+    through the existing loud path rather than an unhandled crash.
+    """
+
+    def __init__(self, agent: str, exc_type: str, message: str, tb: str = "") -> None:
+        self.agent = agent
+        self.exc_type = exc_type
+        self.traceback = tb
+        super().__init__(f"DeliveryFailure[{agent}]: {exc_type}: {message}")
+
+
 class MissingDependencyOutput(RuntimeError):
     """W-20: A DAG task declared a dependency that produced no output.
 
@@ -208,6 +233,11 @@ class EngagementResult:
     dag: WorkflowDAG | None = None
     success: bool = False
     error: str = ""
+    # W-04: machine-readable failure attribution. "delivery" when a required
+    # delivery task failed, "" otherwise. The zero-evidence hard-fail path
+    # sets error text directly; this field lets a caller distinguish a
+    # delivery failure from a research-stack failure without parsing strings.
+    failure_reason: str = ""
     duration_seconds: float = 0.0
     adaptation_count: int = 0
     escalation_count: int = 0
@@ -2028,10 +2058,17 @@ class WorkflowEngine:
             # Execute delivery tasks in topological order. W-03 re-pointed
             # the delivery chain (visualizer -> designer -> render engine),
             # so a single pass in DAG-declaration order would skip the
-            # designer permanently (its dependency completes only after the
-            # pass has already visited it). Iterate to a fix-point instead:
-            # each pass executes every task whose dependencies are now met,
-            # and the loop stops when no task changed state.
+            # designer permanently. Iterate to a fix-point: each pass
+            # executes every task whose dependencies are now met, and the
+            # loop stops when no task changed state.
+            #
+            # W-04: every delivery task is REQUIRED and the stage fails
+            # CLOSED. The first failure raises DeliveryFailure — there is no
+            # `continue` path that would let a later stage render a PDF on
+            # top of a missing chart set or a missing layout (the exact bug
+            # that produced a 34-page report with zero charts reported as
+            # SUCCESS). Unmet dependencies after the fix-point are likewise
+            # an invariant violation, not a skip-and-continue condition.
             self._log(f"DELIVERY: starting {len(delivery_tasks)} delivery tasks")
             progressed = True
             while progressed:
@@ -2048,9 +2085,11 @@ class WorkflowEngine:
                         self._log(f"DELIVERY: executing {task.agent.value}")
                         try:
                             await self._execute_task(task, dag)
-                        except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                            # D4-rest: Escalate delivery failure instead of crashing
-                            self._log(f"DELIVERY: {task.agent.value} failed: {e!s:.200}")
+                        except Exception as e:  # noqa: BLE001 - W-04: fail closed, with the traceback
+                            import traceback as _tb
+
+                            task.status = TaskStatus.FAILED
+                            task.error = str(e)[:200]
                             await self.bus.publish(
                                 channel=Channel.ESCALATION,
                                 msg_type=MessageType.ESCALATION,
@@ -2058,17 +2097,33 @@ class WorkflowEngine:
                                 payload={
                                     "agent": task.agent.value,
                                     "issue": f"Delivery agent failed: {e!s:.200}",
-                                    "suggested_action": "Proceed with partial output or generate stub PDF",
+                                    "suggested_action": "Engagement fails closed — no deliverable",
                                 },
                             )
-                            task.status = TaskStatus.FAILED
-                            task.error = str(e)[:200]
+                            raise DeliveryFailure(
+                                agent=task.agent.value,
+                                exc_type=type(e).__name__,
+                                message=str(e)[:300],
+                                tb=_tb.format_exc(),
+                            ) from e
                         progressed = True
-            stuck = [t.agent.value for t in delivery_tasks if t.status == TaskStatus.PENDING]
+            stuck = [t for t in delivery_tasks if t.status == TaskStatus.PENDING]
             if stuck:
+                stuck_agent = stuck[0].agent.value
+                unmet = {
+                    dep: (
+                        dag.get_task(dep).status.value if dag.get_task(dep) else "missing"
+                    )
+                    for dep in stuck[0].dependencies
+                }
                 self._log(
-                    f"DELIVERY: {len(stuck)} task(s) could not run — "
-                    f"dependencies never completed: {stuck}"
+                    f"DELIVERY: INVARIANT VIOLATION — {stuck_agent} cannot run, "
+                    f"dependencies never completed: {unmet}"
+                )
+                raise DeliveryFailure(
+                    agent=stuck_agent,
+                    exc_type="UnmetDependencies",
+                    message=f"delivery task could not run; dependency states: {unmet}",
                 )
 
             # Collect delivery outputs
@@ -2083,6 +2138,24 @@ class WorkflowEngine:
             # did not. The designer no longer writes PDFs at all.
             if result.render_output and hasattr(result.render_output, "pdf_path"):
                 result.pdf_path = result.render_output.pdf_path
+
+            # W-04: PDF=NO must imply failure — the two can never diverge.
+            # An empty pdf_path here means the render engine produced no
+            # audited PDF, which is a failed engagement, not a "no-PDF
+            # success". (W-02 guarantees a rejected render never occupies the
+            # deliverable name, so an empty path is never a quarantine artifact.)
+            if not result.pdf_path:
+                result.success = False
+                result.failure_reason = "delivery"
+                if not result.error:
+                    result.error = (
+                        "Delivery failed closed: the render engine produced no "
+                        "audited PDF (verification_failed or render failure)."
+                    )
+                self._log("DELIVERY: no audited PDF — engagement marked FAILED")
+            assert not (not result.pdf_path and result.success), (
+                "W-04 invariant: result.pdf_path empty must imply result.success is False"
+            )
 
             self._log(
                 f"DELIVERY: complete — PDF={'YES' if result.pdf_path else 'NO'} "
