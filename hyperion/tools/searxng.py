@@ -340,6 +340,68 @@ class SearxNGClient:
 
         return None
 
+    async def _search_with_rotation(
+        self,
+        query: str,
+        num_results: int,
+        categories: str,
+        language: str,
+        time_range: str,
+        engines: str,
+        safesearch: int,
+    ) -> SearchResponse | None:
+        """Search, and on a zero-result response rotate engines once.
+
+        P2-26 fix 3 (P2-G24): the old code broke out of the loop on zero
+        results ("engines are likely blocked"). Correct reasoning, wrong
+        action: if engines are blocked, use DIFFERENT engines. The first
+        attempt uses the given pool; a zero-result response drops the
+        cooled/unresponsive engines, promotes the standby pool, and retries
+        exactly once. Only then does it fall through (None) so the caller
+        can try the Jina fallback.
+        """
+        health = get_engine_health()
+        response = await self._search_searxng_json(
+            query=query,
+            num_results=num_results,
+            categories=categories,
+            language=language,
+            time_range=time_range,
+            engines=engines,
+            safesearch=safesearch,
+        )
+        if response is not None and response.results:
+            return response
+
+        # Rotation: keep only healthy engines from the original pool, then
+        # add standby engines not already in it.
+        primary = [e.strip() for e in engines.split(",") if e.strip()]
+        healthy = [e for e in primary if health.is_available(e)]
+        standby = [
+            e.strip()
+            for e in self.STANDBY_ENGINES.split(",")
+            if e.strip() and e.strip() not in primary and health.is_available(e.strip())
+        ]
+        rotated = healthy + standby
+        if not rotated or not standby:
+            return None
+        logger.info(
+            "ENGINE ROTATION: zero results on %s; retrying once with %s",
+            engines, ",".join(rotated),
+        )
+        retry = await self._search_searxng_json(
+            query=query,
+            num_results=num_results,
+            categories=categories,
+            language=language,
+            time_range=time_range,
+            engines=",".join(rotated),
+            safesearch=safesearch,
+        )
+        if retry is not None and retry.results:
+            return retry
+        return None
+
     async def _search_jina_fallback(
         self,
         query: str,
@@ -400,11 +462,22 @@ class SearxNGClient:
     #  2. RATE LIMITING. wikipedia/arxiv aggressively 429 a datacenter IP
     #     issuing dozens of queries per engagement.
     #
-    # duckduckgo is added as a second general-web source so a Bing hiccup no
-    # longer means zero results. Specialist corpora remain reachable on demand
-    # via the `engines=` argument and the dedicated science/code tools
-    # (Semantic Scholar, OpenAlex), which are the right instruments for that job.
-    RELIABLE_ENGINES = "bing,duckduckgo"
+    # P2-26 (P2-G23): the pool is widened to six general-web engines. The
+    # 07-30 engagement collapsed to 3 sources because DuckDuckGo ate a 24h
+    # CAPTCHA ban and Bing alone could not carry the corpus from a
+    # datacenter IP. Six engines plus a disjoint standby pool means a single
+    # engine ban no longer starves an engagement. Specialist corpora remain
+    # reachable on demand via the `engines=` argument and the dedicated
+    # science/code tools (Semantic Scholar, OpenAlex), which are the right
+    # instruments for that job.
+    RELIABLE_ENGINES = "bing,duckduckgo,brave,mojeek,startpage,qwant"
+
+    # Standby pool, disjoint from RELIABLE_ENGINES, promoted by
+    # _search_with_rotation when the primary pool returns zero results
+    # (P2-26 fix 3 / P2-G24). Wikipedia is definitional grounding only; it
+    # is NOT in the general pool because it 429s a datacenter IP and its
+    # corpus cannot answer a business question.
+    STANDBY_ENGINES = "google,ecosia,swisscows"
 
     # Engines appropriate to non-general categories, so a caller asking for
     # `categories="science"` still reaches the right corpus.
@@ -531,8 +604,10 @@ class SearxNGClient:
 
         assert SearxNGClient._semaphore is not None
         async with SearxNGClient._semaphore:
-            # ── PRIMARY: SearXNG JSON API ──
-            searxng_response = await self._search_searxng_json(
+            # ── PRIMARY: SearXNG JSON API, with engine rotation on zero ──
+            # (P2-26 fix 3 / P2-G24: a zero-result response rotates to the
+            # standby pool and retries once before falling through).
+            searxng_response = await self._search_with_rotation(
                 query=query,
                 num_results=num_results,
                 categories=categories,

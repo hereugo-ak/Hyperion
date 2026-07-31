@@ -103,6 +103,9 @@ outgoing:
 # "engine timeout" lines in the logs.
 engines:
   # ── General web (default set for business research) ──
+  # P2-26: widened from a two-engine duopoly to six engines. A single
+  # engine ban (e.g. a DuckDuckGo CAPTCHA storm) must never again leave
+  # one engine carrying a whole engagement.
   - name: bing
     engine: bing
     shortcut: bi
@@ -112,6 +115,45 @@ engines:
   - name: duckduckgo
     engine: duckduckgo
     shortcut: ddg
+    disabled: false
+    timeout: 30
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: false
+    timeout: 30
+
+  - name: mojeek
+    engine: mojeek
+    shortcut: mk
+    disabled: false
+    timeout: 30
+
+  - name: startpage
+    engine: startpage
+    shortcut: sp
+    disabled: false
+    timeout: 30
+
+  - name: qwant
+    engine: qwant
+    shortcut: qw
+    disabled: false
+    timeout: 30
+
+  # ── Standby pool: registered but outside the default RELIABLE_ENGINES ──
+  # set in code; promoted by engine rotation when the primary pool returns
+  # zero results (P2-26 fix 3).
+  - name: ecosia
+    engine: ecosia
+    shortcut: eco
+    disabled: false
+    timeout: 30
+
+  - name: swisscows
+    engine: swisscows
+    shortcut: sc
     disabled: false
     timeout: 30
 
