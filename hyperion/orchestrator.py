@@ -1045,12 +1045,15 @@ class WorkflowEngine:
     ) -> list[AnalysisGap]:
         """Run the GAP_CLOSURE phase (P2-16/P2-18, owned by the Director).
 
-        For each unresolved gap, round 1 re-dispatches the originating
-        specialist (still alive in AWAITING_FOLLOWUP) with the specific
-        question at one tier above its normal tier and urgency HIGH.
-        After all rounds, specialist tasks are finalized to COMPLETED and
-        the closure task itself is marked COMPLETED so the quality gate
-        can proceed.
+        Each unresolved gap walks a 3-round ladder: round 1 re-dispatches
+        the originating specialist (still alive in AWAITING_FOLLOWUP) one
+        tier up with urgency HIGH; round 2 sends a reformulated cross-check
+        to a different specialist; round 3 escalates to the synthesis lead
+        at STRONG tier or above. The first truthy run() result resolves
+        the gap; a gap that survives all three rounds stays unresolved and
+        is declared via _record_unresolved_gaps. After all rounds,
+        specialist tasks are finalized to COMPLETED and the closure task
+        itself is marked COMPLETED so the quality gate can proceed.
         """
         from hyperion.config import ModelTier as _Tier
         from hyperion.router.budget import TaskUrgency
@@ -1069,52 +1072,39 @@ class WorkflowEngine:
         for gap in gaps:
             if gap.resolved:
                 continue
-            gap.attempts += 1
-            agent = self._agents.get(gap.agent) if hasattr(self, "_agents") else None
-            if agent is None:
+            for round_no in (1, 2, 3):
+                if gap.resolved:
+                    break
+                gap.attempts += 1
+                target, question = self._gap_closure_round(
+                    dag, gap, round_no, tier_ladder
+                )
+                agent = self._resolve_gap_agent(target)
+                if agent is None:
+                    continue
                 try:
-                    agent = self._get_agent(gap.agent)
+                    result = await agent.run(
+                        question=question,
+                        engagement_id=self._engagement_id,
+                        urgency=TaskUrgency.HIGH,
+                    )
+                except TypeError:
+                    # Specialist run() signatures that take no urgency kwarg
+                    # still get the re-dispatch; the tier/urgency intent is
+                    # in the question text.
+                    result = await agent.run(
+                        question=question,
+                        engagement_id=self._engagement_id,
+                    )
                 except Exception as exc:  # noqa: BLE001 - logged, gap stays open
                     logger.warning(
-                        "gap_closure: cannot reach specialist %s for gap %s: %s",
-                        gap.agent.value, gap.id, exc,
+                        "gap_closure: round-%d dispatch for gap %s failed: %s",
+                        round_no, gap.id, exc,
                     )
                     continue
-            task = next(
-                (t for t in dag.tasks if t.agent == gap.agent), None
-            )
-            base_tier = task.model_tier if task else _Tier.STANDARD
-            try:
-                idx = tier_ladder.index(base_tier)
-            except ValueError:
-                idx = tier_ladder.index(_Tier.STANDARD)
-            bumped = tier_ladder[min(idx + 1, len(tier_ladder) - 1)]
-            try:
-                await agent.run(
-                    question=(
-                        f"GAP_CLOSURE round 1 (tier {bumped.value}, urgency HIGH): "
-                        f"answer this specific unresolved question for section "
-                        f"'{gap.section_id}' field '{gap.field}': {gap.question}"
-                    ),
-                    engagement_id=self._engagement_id,
-                    urgency=TaskUrgency.HIGH,
-                )
-            except TypeError:
-                # Specialist run() signatures that take no urgency kwarg still
-                # get the re-dispatch; the tier/urgency intent is in the text.
-                await agent.run(
-                    question=(
-                        f"GAP_CLOSURE round 1 (tier {bumped.value}, urgency HIGH): "
-                        f"answer this specific unresolved question for section "
-                        f"'{gap.section_id}' field '{gap.field}': {gap.question}"
-                    ),
-                    engagement_id=self._engagement_id,
-                )
-            except Exception as exc:  # noqa: BLE001 - logged, gap stays open
-                logger.warning(
-                    "gap_closure: round-1 dispatch for gap %s failed: %s",
-                    gap.id, exc,
-                )
+                if result:
+                    gap.resolved = True
+                    gap.resolution = str(result)
 
         # Finalize: specialists leave AWAITING_FOLLOWUP, the phase completes.
         for task in dag.tasks:
@@ -1130,6 +1120,98 @@ class WorkflowEngine:
             closure.completed_at = time.time()
             self._publish_task_update(closure)
         return gaps
+
+    def _gap_closure_round(
+        self,
+        dag: WorkflowDAG,
+        gap: AnalysisGap,
+        round_no: int,
+        tier_ladder: list[Any],
+    ) -> tuple[AgentName, str]:
+        """Select the target agent and question text for one closure round.
+
+        Round 1: the originating specialist, one tier up. Round 2: a
+        different specialist with a reformulated cross-check query.
+        Round 3: the synthesis lead at STRONG tier or above, with the
+        full gap context.
+        """
+        if round_no == 1:
+            task = next((t for t in dag.tasks if t.agent == gap.agent), None)
+            base_tier = task.model_tier if task else tier_ladder[2]
+            try:
+                idx = tier_ladder.index(base_tier)
+            except ValueError:
+                idx = 2  # STANDARD
+            bumped = tier_ladder[min(idx + 1, len(tier_ladder) - 1)]
+            question = (
+                f"GAP_CLOSURE round 1 (tier {bumped.value}, urgency HIGH): "
+                f"answer this specific unresolved question for section "
+                f"'{gap.section_id}' field '{gap.field}': {gap.question}"
+            )
+            return gap.agent, question
+        if round_no == 2:
+            candidates = sorted(
+                self._SPECIALIST_AGENTS - {gap.agent}, key=lambda a: a.value
+            )
+            live = getattr(self, "_agents", None)
+            cross = candidates[0]
+            if live:
+                for cand in candidates:
+                    if cand in live:
+                        cross = cand
+                        break
+            question = (
+                "GAP_CLOSURE round 2 (cross-check, urgency HIGH): the "
+                f"originating specialist for section '{gap.section_id}' "
+                f"could not resolve field '{gap.field}'. Reformulated "
+                f"question for your domain: {gap.question}"
+            )
+            return cross, question
+        question = (
+            "GAP_CLOSURE round 3 (synthesis escalation, tier STRONG+): two "
+            f"specialists could not resolve this gap for section "
+            f"'{gap.section_id}' field '{gap.field}'; decide the answer "
+            f"from the assembled evidence or confirm it is unknowable: "
+            f"{gap.question}"
+        )
+        return AgentName.SYNTHESIS_LEAD, question
+
+    def _resolve_gap_agent(self, agent_name: AgentName) -> Any | None:
+        """Locate a live agent for a closure dispatch (None if unreachable)."""
+        agents = getattr(self, "_agents", None) or {}
+        agent = agents.get(agent_name)
+        if agent is not None:
+            return agent
+        try:
+            return self._get_agent(agent_name)
+        except Exception as exc:  # noqa: BLE001 - logged, gap stays open
+            logger.warning(
+                "gap_closure: cannot reach agent %s: %s", agent_name.value, exc,
+            )
+            return None
+
+    def _record_unresolved_gaps(
+        self, report: Any, gaps: list[AnalysisGap] | None
+    ) -> None:
+        """Declare gaps that survived the closure ladder in the report.
+
+        P2-16 sub-fix 5.6: an unresolvable gap omits its field from the
+        client content, and its specific question is recorded in
+        FinalReport.limitations so the omission is honest and visible.
+        """
+        limitations = getattr(report, "limitations", None)
+        if limitations is None:
+            return
+        for gap in gaps or []:
+            if gap.resolved:
+                continue
+            entry = (
+                f"Unresolved research gap in section '{gap.section_id}' "
+                f"({gap.field}), unanswered after {gap.attempts} closure "
+                f"rounds: {gap.question}"
+            )
+            if not any(gap.question in existing for existing in limitations):
+                limitations.append(entry)
 
     async def _execute_dag(self, dag: WorkflowDAG) -> dict[str, Any]:
         """Execute the DAG in topological order — specialists through Quality Gate.
@@ -1718,6 +1800,9 @@ class WorkflowEngine:
                 for i, g in enumerate(synthesis_gaps)
             ]
             await self._gap_closure_phase(dag, gaps=closure_gaps)
+            # P2-16 sub-fix 5.6: gaps that survived all three closure rounds
+            # are declared in the report's limitations with their questions.
+            self._record_unresolved_gaps(final_report, closure_gaps)
 
             # ─────────────────────────────────────────────────────────────
             # Stage 4b: Quality Gate iteration loop

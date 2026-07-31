@@ -169,3 +169,167 @@ class TestGapClosurePhase:
         assert specialist_agent.run.await_count >= 1
         kwargs = specialist_agent.run.await_args.kwargs
         assert gap.question in str(kwargs)
+
+
+class TestGapClosureRounds:
+    """P2-16 sub-fix 5.5: the 3-round closure ladder, and 5.6: an
+    unresolvable gap omits the field and its question lands in limitations."""
+
+    def _orch(self, agents: dict):
+        from hyperion.orchestrator import WorkflowEngine
+
+        orch = WorkflowEngine.__new__(WorkflowEngine)
+        orch._agents = agents
+        orch._engagement_id = "e1"
+        orch._get_agent = lambda name: orch._agents[name]  # type: ignore[method-assign]
+        return orch
+
+    def _gap(self, agent: AgentName = AgentName.MARKET_ANALYST):
+        from hyperion.schemas.models import AnalysisGap
+
+        return AnalysisGap(
+            id="gap_1",
+            section_id="section_market_analyst",
+            agent=agent,
+            field="implications",
+            question="What are the 'so what' implications?",
+        )
+
+    def test_round1_success_resolves_gap_no_further_rounds(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        origin = AsyncMock()
+        origin.run = AsyncMock(return_value={"finding": "resolved answer"})
+        other = AsyncMock()
+        other.run = AsyncMock(return_value=None)
+        orch = self._orch({
+            AgentName.MARKET_ANALYST: origin,
+            AgentName.RISK_ANALYST: other,
+        })
+
+        specialist = _specialist_task()
+        specialist.status = TaskStatus.AWAITING_FOLLOWUP
+        risk_task = _specialist_task(AgentName.RISK_ANALYST)
+        risk_task.status = TaskStatus.AWAITING_FOLLOWUP
+        dag = _dag([specialist, risk_task])
+        gap = self._gap()
+
+        asyncio.run(orch._gap_closure_phase(dag, gaps=[gap]))
+
+        assert gap.resolved is True
+        assert gap.attempts == 1
+        assert other.run.await_count == 0, "round 2 must not fire after round 1 resolves"
+
+    def test_round2_uses_different_specialist_with_reformulated_query(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        origin = AsyncMock()
+        origin.run = AsyncMock(return_value=None)  # round 1 fails
+        other = AsyncMock()
+        other.run = AsyncMock(return_value={"finding": "cross-check answer"})
+        orch = self._orch({
+            AgentName.MARKET_ANALYST: origin,
+            AgentName.RISK_ANALYST: other,
+        })
+
+        specialist = _specialist_task()
+        specialist.status = TaskStatus.AWAITING_FOLLOWUP
+        risk_task = _specialist_task(AgentName.RISK_ANALYST)
+        risk_task.status = TaskStatus.AWAITING_FOLLOWUP
+        dag = _dag([specialist, risk_task])
+        gap = self._gap()
+
+        asyncio.run(orch._gap_closure_phase(dag, gaps=[gap]))
+
+        assert gap.attempts == 2
+        assert gap.resolved is True
+        assert other.run.await_count == 1
+        kwargs = other.run.await_args.kwargs
+        assert "round 2" in str(kwargs).lower()
+        assert gap.question in str(kwargs)
+
+    def test_round3_strong_synthesis_then_gap_stays_unresolved(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        origin = AsyncMock()
+        origin.run = AsyncMock(return_value=None)
+        other = AsyncMock()
+        other.run = AsyncMock(return_value=None)
+        synthesis = AsyncMock()
+        synthesis.run = AsyncMock(return_value=None)  # round 3 also fails
+        orch = self._orch({
+            AgentName.MARKET_ANALYST: origin,
+            AgentName.RISK_ANALYST: other,
+            AgentName.SYNTHESIS_LEAD: synthesis,
+        })
+
+        specialist = _specialist_task()
+        specialist.status = TaskStatus.AWAITING_FOLLOWUP
+        risk_task = _specialist_task(AgentName.RISK_ANALYST)
+        risk_task.status = TaskStatus.AWAITING_FOLLOWUP
+        dag = _dag([specialist, risk_task])
+        gap = self._gap()
+
+        asyncio.run(orch._gap_closure_phase(dag, gaps=[gap]))
+
+        assert gap.attempts == 3, "exactly 3 rounds maximum"
+        assert gap.resolved is False
+        assert synthesis.run.await_count == 1, "round 3 escalates to synthesis tier"
+        kwargs = synthesis.run.await_args.kwargs
+        assert "round 3" in str(kwargs).lower()
+        assert gap.question in str(kwargs)
+
+    def test_max_3_rounds_even_with_everything_failing(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        origin = AsyncMock()
+        origin.run = AsyncMock(return_value=None)
+        other = AsyncMock()
+        other.run = AsyncMock(return_value=None)
+        synthesis = AsyncMock()
+        synthesis.run = AsyncMock(return_value=None)
+        orch = self._orch({
+            AgentName.MARKET_ANALYST: origin,
+            AgentName.RISK_ANALYST: other,
+            AgentName.SYNTHESIS_LEAD: synthesis,
+        })
+
+        specialist = _specialist_task()
+        specialist.status = TaskStatus.AWAITING_FOLLOWUP
+        risk_task = _specialist_task(AgentName.RISK_ANALYST)
+        risk_task.status = TaskStatus.AWAITING_FOLLOWUP
+        dag = _dag([specialist, risk_task])
+        gap = self._gap()
+
+        asyncio.run(orch._gap_closure_phase(dag, gaps=[gap]))
+
+        total = origin.run.await_count + other.run.await_count + synthesis.run.await_count
+        assert total == 3, "the ladder is exactly 3 dispatches, no more"
+
+    def test_unresolved_gap_question_recorded_in_limitations(self):
+        """P2-16 rule 3 / sub-fix 5.6: a gap that survives all 3 rounds is
+        declared in FinalReport.limitations with its specific question."""
+        orch = self._orch({})
+        gap = self._gap()
+        gap.attempts = 3
+        gap.resolved = False
+
+        report = type("R", (), {"limitations": []})()
+        orch._record_unresolved_gaps(report, [gap])
+
+        assert any(gap.question in lim for lim in report.limitations)
+
+    def test_resolved_gap_not_recorded_in_limitations(self):
+        orch = self._orch({})
+        gap = self._gap()
+        gap.resolved = True
+        gap.resolution = "answered"
+
+        report = type("R", (), {"limitations": []})()
+        orch._record_unresolved_gaps(report, [gap])
+
+        assert report.limitations == []
