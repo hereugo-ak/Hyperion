@@ -50,8 +50,10 @@ compliance barrier, reroute to add a Legal Risk sub-task."
 from __future__ import annotations
 
 import json
+import sys
 import time
 import uuid
+from enum import Enum
 from typing import Any
 
 from hyperion.agents.base import BaseAgent
@@ -69,6 +71,8 @@ from hyperion.schemas.agents import (
 from hyperion.schemas.workflow import (
     QuestionType,
     ResearchDomain,
+    RosterDecision,
+    SubjectClass,
     TaskNode,
     TaskStatus,
     WorkflowDAG,
@@ -225,56 +229,193 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Question type → agent roster mapping
+# W-06: Subject ontology + method eligibility — the roster's second axis
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# The roster used to be a function of question_type ALONE: QUESTION_TYPE_AGENTS
+# put FINANCIAL_ANALYST in all six question types, so "Should India increase
+# manufacturing?" got a DCF analyst — a firm-level method aimed at a nation
+# state, which then spent three retrieval rounds discovering it had nothing to
+# retrieve (RC-6: six empty chapters).
+#
+# Question type is the grammatical form of the question. It says nothing about
+# what the analysis must operate ON. That is the subject class, and it is the
+# subject class that decides which METHODS are meaningful. The roster is now
+# gated by method eligibility: each specialist declares its analytical methods
+# and the subject classes each method applies to. An agent with no eligible
+# method for the classified subject class is not dispatched — and the
+# exclusion is RECORDED with its reason, because the methodology section
+# (W-10) and the report's scope note must state that the omission was
+# deliberate, and the audit trail is what makes a future DCF-on-a-country
+# immediately traceable.
+#
+# This is deliberately method eligibility, not an agent-exclusion table:
+# FINANCIAL_ANALYST retains DCF for COMPANY and gains fiscal-cost and
+# public-investment analysis for POLICY and NATION_OR_REGION — it is never
+# "dropped"; some of its methods simply do not apply to some subjects.
 
-# This is NOT a hardcoded pipeline. It is the Director's default selection
-# heuristic — the starting point. The LLM can override this based on the
-# specific question. The Director's skill is knowing which agents matter
-# for which question types, not blindly following a mapping table.
+# The pool from which every roster is drawn — question type no longer picks
+# agents; it only shapes priority and tiers downstream.
+_SPECIALIST_POOL: tuple[AgentName, ...] = (
+    AgentName.MARKET_ANALYST,
+    AgentName.COMPETITIVE_INTEL,
+    AgentName.FINANCIAL_ANALYST,
+    AgentName.RISK_ANALYST,
+    AgentName.TECHNOLOGY_ANALYST,
+    AgentName.OPERATIONS_ANALYST,
+    AgentName.REGULATORY_ANALYST,
+    AgentName.SUSTAINABILITY_ANALYST,
+    AgentName.CONSUMER_INSIGHTS,
+    AgentName.MA_ANALYST,
+    AgentName.INNOVATION_ANALYST,
+    AgentName.STRATEGY_ANALYST,
+)
 
-QUESTION_TYPE_AGENTS: dict[QuestionType, list[AgentName]] = {
-    QuestionType.GO_NO_GO: [
-        AgentName.MARKET_ANALYST,
-        AgentName.COMPETITIVE_INTEL,
-        AgentName.FINANCIAL_ANALYST,
-        AgentName.RISK_ANALYST,
-        AgentName.CONSUMER_INSIGHTS,
-    ],
-    QuestionType.COMPARISON: [
-        AgentName.MARKET_ANALYST,
-        AgentName.COMPETITIVE_INTEL,
-        AgentName.FINANCIAL_ANALYST,
-        AgentName.STRATEGY_ANALYST,
-        AgentName.RISK_ANALYST,
-    ],
-    QuestionType.FORECAST: [
-        AgentName.MARKET_ANALYST,
-        AgentName.INNOVATION_ANALYST,
-        AgentName.TECHNOLOGY_ANALYST,
-        AgentName.FINANCIAL_ANALYST,
-        AgentName.RISK_ANALYST,
-    ],
-    QuestionType.DIAGNOSTIC: [
-        AgentName.OPERATIONS_ANALYST,
-        AgentName.FINANCIAL_ANALYST,
-        AgentName.RISK_ANALYST,
-        AgentName.STRATEGY_ANALYST,
-    ],
-    QuestionType.OPTIMIZATION: [
-        AgentName.OPERATIONS_ANALYST,
-        AgentName.FINANCIAL_ANALYST,
-        AgentName.TECHNOLOGY_ANALYST,
-        AgentName.STRATEGY_ANALYST,
-    ],
-    QuestionType.GENERAL: [
-        AgentName.MARKET_ANALYST,
-        AgentName.COMPETITIVE_INTEL,
-        AgentName.FINANCIAL_ANALYST,
-        AgentName.RISK_ANALYST,
-        AgentName.STRATEGY_ANALYST,
-    ],
+# Per-agent declared methods → subject classes each method applies to.
+# An agent is eligible for an engagement iff AT LEAST ONE of its methods
+# lists the classified subject class.
+AGENT_METHODS: dict[AgentName, dict[str, frozenset[SubjectClass]]] = {
+    AgentName.MARKET_ANALYST: {
+        # sizing/segmentation work on a market whatever entity the client is
+        "market sizing": frozenset(SubjectClass),
+        "segmentation": frozenset(SubjectClass),
+        "growth decomposition": frozenset(SubjectClass),
+        "share concentration": frozenset(SubjectClass),
+        "demand analysis": frozenset(SubjectClass),
+    },
+    AgentName.COMPETITIVE_INTEL: {
+        # a competitor matrix requires identifiable competing FIRMS. Nations
+        # compete too, but that comparison is jurisdiction/policy work — it
+        # belongs to regulatory_analyst and strategy_analyst, not to an
+        # agent whose craft is profiling firms.
+        "competitor matrix": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+        "moat assessment": frozenset({SubjectClass.COMPANY}),
+        "positioning analysis": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+    },
+    AgentName.FINANCIAL_ANALYST: {
+        # firm-level methods: meaningless on a nation state
+        "dcf valuation": frozenset({SubjectClass.COMPANY}),
+        "ev/ebitda comparables": frozenset({SubjectClass.COMPANY}),
+        "unit economics": frozenset({SubjectClass.COMPANY}),
+        # the same agent, different craft: what a treasury team does
+        "fiscal-cost analysis": frozenset({SubjectClass.NATION_OR_REGION, SubjectClass.POLICY}),
+        "public-investment analysis": frozenset({SubjectClass.NATION_OR_REGION, SubjectClass.POLICY}),
+        # maturity-curve cost work on a technology
+        "cost curve": frozenset({SubjectClass.TECHNOLOGY, SubjectClass.MARKET, SubjectClass.COMPANY}),
+    },
+    AgentName.RISK_ANALYST: {
+        # every subject class carries risk; the methods differ in name only
+        "risk matrix": frozenset(SubjectClass),
+        "scenario analysis": frozenset(SubjectClass),
+        "black swan assessment": frozenset(SubjectClass),
+        "mitigation planning": frozenset(SubjectClass),
+        "geopolitical risk": frozenset({SubjectClass.NATION_OR_REGION, SubjectClass.POLICY, SubjectClass.COMPANY}),
+    },
+    AgentName.TECHNOLOGY_ANALYST: {
+        "maturity curve": frozenset({SubjectClass.TECHNOLOGY}),
+        "patent landscape": frozenset({SubjectClass.TECHNOLOGY, SubjectClass.COMPANY, SubjectClass.MARKET}),
+        "tech stack assessment": frozenset({SubjectClass.COMPANY, SubjectClass.TECHNOLOGY}),
+        "build vs buy": frozenset({SubjectClass.COMPANY}),
+        "tco analysis": frozenset({SubjectClass.COMPANY, SubjectClass.TECHNOLOGY}),
+        # industrial-capability lens for national manufacturing questions
+        "industrial capability assessment": frozenset({SubjectClass.NATION_OR_REGION}),
+    },
+    AgentName.OPERATIONS_ANALYST: {
+        "process mapping": frozenset({SubjectClass.COMPANY}),
+        "bottleneck analysis": frozenset({SubjectClass.COMPANY}),
+        "supply chain analysis": frozenset({SubjectClass.COMPANY, SubjectClass.NATION_OR_REGION, SubjectClass.MARKET}),
+        "kpi design": frozenset({SubjectClass.COMPANY, SubjectClass.PERSON_OR_ORG}),
+        # logistics/industrial-base capacity at national scale
+        "capacity assessment": frozenset({SubjectClass.NATION_OR_REGION, SubjectClass.COMPANY, SubjectClass.MARKET}),
+    },
+    AgentName.REGULATORY_ANALYST: {
+        "compliance mapping": frozenset(SubjectClass),
+        "jurisdiction comparison": frozenset({SubjectClass.NATION_OR_REGION, SubjectClass.POLICY, SubjectClass.COMPANY}),
+        "horizon scanning": frozenset(SubjectClass),
+        "policy comparison": frozenset({SubjectClass.POLICY, SubjectClass.NATION_OR_REGION}),
+    },
+    AgentName.SUSTAINABILITY_ANALYST: {
+        "esg assessment": frozenset({SubjectClass.COMPANY, SubjectClass.NATION_OR_REGION, SubjectClass.MARKET, SubjectClass.POLICY}),
+        "carbon footprint": frozenset({SubjectClass.COMPANY, SubjectClass.NATION_OR_REGION, SubjectClass.TECHNOLOGY, SubjectClass.MARKET}),
+        "green financing": frozenset({SubjectClass.COMPANY, SubjectClass.NATION_OR_REGION, SubjectClass.POLICY}),
+    },
+    AgentName.CONSUMER_INSIGHTS: {
+        # consumers exist only downstream of a firm or a market
+        "persona development": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+        "journey mapping": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+        "willingness to pay": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+        "nps analysis": frozenset({SubjectClass.COMPANY}),
+        "demand research": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+    },
+    AgentName.MA_ANALYST: {
+        # acquisition is an act of firms (or firms inside markets)
+        "target identification": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+        "synergy analysis": frozenset({SubjectClass.COMPANY}),
+        "accretion dilution": frozenset({SubjectClass.COMPANY}),
+        "comparable transactions": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+    },
+    AgentName.INNOVATION_ANALYST: {
+        "trl assessment": frozenset({SubjectClass.TECHNOLOGY}),
+        "hype cycle positioning": frozenset({SubjectClass.TECHNOLOGY, SubjectClass.MARKET}),
+        "disruption patterns": frozenset({SubjectClass.TECHNOLOGY, SubjectClass.MARKET, SubjectClass.COMPANY}),
+        "adoption s-curve": frozenset({SubjectClass.TECHNOLOGY, SubjectClass.MARKET}),
+        # national industrial-policy innovation lens
+        "innovation ecosystem assessment": frozenset({SubjectClass.NATION_OR_REGION, SubjectClass.POLICY}),
+    },
+    AgentName.STRATEGY_ANALYST: {
+        "porters five forces": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+        "vrio analysis": frozenset({SubjectClass.COMPANY}),
+        "blue ocean analysis": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
+        "strategic options analysis": frozenset(SubjectClass),
+        # industrial strategy / trade-strategy lens for nations and policies
+        "industrial strategy analysis": frozenset({SubjectClass.NATION_OR_REGION, SubjectClass.POLICY}),
+    },
 }
+
+
+class SubjectClassAbstain(RuntimeError):
+    """Subject class could not be established with sufficient confidence (W-06).
+
+    Raised by the planning path when the classifier abstains and no
+    interactive user is available to answer a clarifying question. The
+    engagement must fail at PLANNING time — before a single token is spent
+    on dispatch — rather than guess a subject class and staff the roster
+    on the guess. A guessed subject class is exactly the bug this work item
+    removes.
+    """
+
+    def __init__(self, question: str, confidence: float, raw: str = "", detail: str = ""):
+        self.question = question
+        self.confidence = confidence
+        self.raw = raw
+        if detail:
+            message = f"{detail}. Engagement fails at planning time: {question[:120]!r}."
+        else:
+            message = (
+                f"Subject class confidence too low ({confidence:.2f} < "
+                f"{SUBJECT_CLASS_CONFIDENCE_THRESHOLD:.2f}) for: {question[:120]!r}. "
+                "Interactive runs must ask the user a clarifying question; "
+                "scripted runs abstain and fail rather than guess."
+            )
+        super().__init__(message)
+
+
+# Below this confidence the Director must not proceed on the classifier's
+# guess — it asks one clarifying question (interactive) or abstains-and-fails
+# (scripted). Never guess: a wrong subject class staffs the wrong roster.
+SUBJECT_CLASS_CONFIDENCE_THRESHOLD: float = 0.6
+
+
+def eligible_methods(agent: AgentName, subject_class: SubjectClass) -> list[str]:
+    """The agent's declared methods that apply to this subject class.
+
+    Order-stable (declaration order) so records and tests are deterministic.
+    """
+    return [
+        method
+        for method, classes in AGENT_METHODS.get(agent, {}).items()
+        if subject_class in classes
+    ]
 
 # ── Keyword fallbacks — the LAST resort, never the decision ──────────────────
 #
@@ -663,7 +804,7 @@ class EngagementDirector(BaseAgent):
                 out.append(agent)
         return out
 
-    async def _classify_question_llm(self, question: str) -> tuple[list[QuestionType], list[AgentName], str]:
+    async def _classify_question_llm(self, question: str) -> tuple[list[QuestionType], SubjectClass, list[AgentName], str]:
         """Decompose the question: classify it, scope it, and staff it.
 
         THE DECOMPOSING AGENT OWNS THE SCOPE. This method is where the
@@ -682,22 +823,38 @@ class EngagementDirector(BaseAgent):
         read the sentence can.
 
         The LLM now returns, in one call:
-        1. question_types      — the classification
-        2. selected_agents     — the roster, INCLUDING any specialist implied
-                                 by the question's substance (M&A, ESG,
-                                 regulatory), which used to be forced on by
-                                 keyword scans that ran before it was asked
-        3. key_question        — the question behind the question
-        4. geographies         — jurisdictions the question is about, primary
+        1. question_types      — the grammatical classification
+        2. subject_class       — W-06 second axis: what the question is ABOUT
+                                 (company/nation_or_region/technology/policy/
+                                 market/person_or_org), with a confidence —
+                                 the roster is gated on this, never on
+                                 question type alone
+        3. selected_agents     — the LLM's proposed roster, INCLUDING any
+                                 specialist implied by the question's
+                                 substance (M&A, ESG, regulatory) — a PROPOSAL
+                                 that the subject-class gate then filters by
+                                 method eligibility
+        4. key_question        — the question behind the question
+        5. geographies         — jurisdictions the question is about, primary
                                  first, or [] if it names none
-        5. subject             — the industry/sector/topic
-        6. research_domains    — the decomposition proper
-        7. critical_path       — sequencing
+        6. subject             — the industry/sector/topic
+        7. research_domains    — the decomposition proper
+        8. critical_path       — sequencing
 
         Geography and subject are recorded on ``self._llm_geographies`` and
-        ``self._llm_subject`` for ``_build_dag`` to publish on the DAG.
+        ``self._llm_subject``; subject class on ``self._llm_subject_class``
+        for ``_build_dag`` to publish on the DAG. Every roster decision —
+        dispatched or excluded, with its reason — is recorded on
+        ``self._roster_decisions`` (W-06; consumed by W-10's methodology
+        section and the report scope note).
 
-        Returns: (question_types, selected_agents, key_question)
+        When subject-class confidence is below the threshold the Director
+        does NOT guess: it asks one clarifying question (interactive shell)
+        or raises SubjectClassAbstain (scripted run) — a thirty second
+        clarification is cheaper than a thirty minute engagement that
+        produces six empty chapters.
+
+        Returns: (question_types, subject_class, selected_agents, key_question)
         """
         heuristic_types = self._classify_question_heuristic(question)
         heuristic_str = ", ".join(qt.value for qt in heuristic_types)
@@ -707,6 +864,8 @@ class EngagementDirector(BaseAgent):
         # that produces a confident report about the wrong country.
         self._llm_geographies: list[str] = []
         self._llm_subject: str = ""
+        self._llm_subject_class: SubjectClass | None = None
+        self._roster_decisions: list[RosterDecision] = []
 
         prompt = (
             f"You are the Engagement Director at HYPERION Consulting. "
@@ -746,6 +905,21 @@ class EngagementDirector(BaseAgent):
             f"as a short noun phrase of 1-5 words (e.g. \"electronics imports\", "
             f"\"electric vehicles\", \"pharmaceutical manufacturing\"). Return \"\" "
             f"if the question names no industry. Do NOT return a sentence.\n"
+            f"  - subject_class: what entity the analysis must operate ON, "
+            f"exactly one of: company (a firm or business unit), "
+            f"nation_or_region (a country, trade bloc, state or province), "
+            f"technology (a technology or technology family), policy (a "
+            f"tariff, subsidy, regulation or scheme), market (a market or "
+            f"industry as a whole), person_or_org (an individual, regulator "
+            f"or institution). This is the decision that gates which "
+            f"analytical methods are meaningful — a DCF values a firm, it "
+            f"cannot value a nation state. If the question is ambiguous, "
+            f"choose the best fit and lower your confidence; NEVER omit the "
+            f"field.\n"
+            f"  - subject_class_confidence: your confidence in subject_class, "
+            f"a number 0.0-1.0. Below 0.6 the Director will ask the user a "
+            f"clarifying question rather than proceed on your guess — an "
+            f"honest low number is a correct and useful answer.\n"
             f"  - research_domains: array of {{name, question, agent, priority}} objects "
             f"(8-12 domains, each with a specific question and assigned agent)\n"
             f"  - critical_path: which domain is on the critical path (must complete first)"
@@ -786,30 +960,13 @@ class EngagementDirector(BaseAgent):
                 except ValueError:
                     continue
 
-            # No unconditional keyword injection here. The roster is the
-            # Director's judgement; the prompt already tells it to include
-            # every relevant specialist. Forcing ma_analyst on because the
-            # word "consolidat" appeared somewhere overrode a decision the
-            # model was better placed to make.
-            #
-            # Keyword triggers only rescue an EMPTY roster, below.
+            # No unconditional keyword injection here. The LLM's roster is a
+            # PROPOSAL: W-06 gates it below by method eligibility against the
+            # subject class — a firm-level method is never aimed at a nation
+            # state, however strongly the decomposition asks for it. Keyword
+            # triggers only rescue an EMPTY proposal.
             if not selected_agents:
-                selected_agents = list(
-                    QUESTION_TYPE_AGENTS.get(question_types[0], [])
-                )
-                for ea in self._trigger_fallback_agents(question):
-                    if ea not in selected_agents:
-                        selected_agents.append(ea)
-
-            # Ensure minimum of 6 agents for comprehensive analysis
-            min_agents = 6
-            if len(selected_agents) < min_agents:
-                defaults = QUESTION_TYPE_AGENTS.get(question_types[0], QUESTION_TYPE_AGENTS[QuestionType.GENERAL])
-                for da in defaults:
-                    if da not in selected_agents:
-                        selected_agents.append(da)
-                    if len(selected_agents) >= min_agents:
-                        break
+                selected_agents = self._trigger_fallback_agents(question)
 
             key_question = data.get("key_question", question)
 
@@ -837,42 +994,242 @@ class EngagementDirector(BaseAgent):
             subject = data.get("subject") or data.get("industry") or ""
             self._llm_subject = self._clean_subject(subject)
 
+            # ── W-06: the second axis — subject class, with an abstain path ──
+            #
+            # The roster below is gated on this classification, so accepting
+            # it on low confidence would staff the engagement on a guess.
+            # Below the threshold the Director asks one clarifying question
+            # when a user is present, and abstains-and-fails when it is not —
+            # never guesses.
+            subject_class, sc_confidence = self._parse_subject_class(data)
+            self._llm_subject_class = subject_class
+            if sc_confidence < SUBJECT_CLASS_CONFIDENCE_THRESHOLD:
+                subject_class = self._resolve_low_confidence_subject(
+                    question, sc_confidence, str(data.get("subject_class", "") or "")
+                )
+                self._llm_subject_class = subject_class
+
+            # ── W-06: the roster is gated by method eligibility ──────────
+            #
+            # Every agent considered is recorded — dispatched WITH its
+            # eligible methods, or excluded WITH its reason. The exclusion
+            # record is not optional: it is the audit trail that makes the
+            # omission deliberate and quotable in the methodology section.
+            selected_agents = self._gate_roster_by_subject(
+                selected_agents, subject_class, question
+            )
+
             # Store research domains for DAG building
             self._llm_research_domains = data.get("research_domains", [])
             self._llm_critical_path = data.get("critical_path", "")
 
-            return question_types, selected_agents, key_question
+            return question_types, subject_class, selected_agents, key_question
 
         except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
             return self._classification_fallback(question, heuristic_types)
 
     def _classification_fallback(
         self, question: str, heuristic_types: list[QuestionType]
-    ) -> tuple[list[QuestionType], list[AgentName], str]:
-        """Staff and scope the engagement when the decomposition call fails.
+    ) -> tuple[list[QuestionType], SubjectClass, list[AgentName], str]:
+        """Degradation path when the decomposition call fails outright (W-06).
 
         Reached when the LLM is unreachable, rate-limited, or returns
-        unparseable content. Everything here is a knowingly weaker signal
-        than the model's judgement, which is precisely why it is confined to
-        this method instead of running alongside the happy path.
+        unparseable content. Before W-06 this method staffed the engagement
+        from the single-axis QUESTION_TYPE_AGENTS table — knowingly weak,
+        but survivable, because question type only shaped the roster.
 
-        Geography still comes from the user's own words via the deterministic
-        gazetteer, never from a default. An engagement with no country anchor
-        searches without a jurisdiction filter — honest, and recoverable.
+        W-06 changed the stakes: the roster is now gated by SUBJECT CLASS,
+        and this path has no subject class. Guessing one here (or worse,
+        defaulting to COMPANY) would dispatch firm-level methods at nation
+        states — precisely the DCF-on-a-country failure this work item
+        removes, dressed up as a resilience feature. The documented
+        behaviour for scripted runs is therefore abstain-and-fail: the
+        engagement stops at planning time, before a single dispatch token
+        is spent. Interactive runs ask one clarifying question instead.
         """
-        types = heuristic_types or [QuestionType.GENERAL]
-        agents = list(
-            QUESTION_TYPE_AGENTS.get(types[0], QUESTION_TYPE_AGENTS[QuestionType.GENERAL])
-        )
-        for ea in self._trigger_fallback_agents(question):
-            if ea not in agents:
-                agents.append(ea)
-
         self._llm_geographies = detect_geographies(question or "")
         self._llm_subject = ""
+        self._llm_subject_class = None
         self._llm_research_domains = []
         self._llm_critical_path = ""
-        return types, agents, question
+        self._roster_decisions = []
+
+        subject_class = self._resolve_low_confidence_subject(
+            question, 0.0, "decomposition call failed"
+        )
+        types = heuristic_types or [QuestionType.GENERAL]
+        agents = self._trigger_fallback_agents(question)
+        agents = self._gate_roster_by_subject(agents, subject_class, question)
+        return types, subject_class, agents, question
+
+    @staticmethod
+    def _parse_subject_class(data: dict[str, Any]) -> tuple[SubjectClass, float]:
+        """Read the LLM's subject classification, tolerating its sloppiness.
+
+        Unknown or misspelled class values do not raise — they collapse to
+        the default class with zero confidence, which routes to the abstain
+        path. That is deliberate: an unparseable classification IS low
+        confidence, and the low-confidence path is already the safe one.
+        """
+        raw = str(data.get("subject_class") or "").strip().lower()
+        if not raw:
+            return SubjectClass.COMPANY, 0.0
+        normalized = raw.replace("-", "_").replace(" ", "_")
+        try:
+            subject_class = SubjectClass(normalized)
+        except ValueError:
+            return SubjectClass.COMPANY, 0.0
+
+        conf_raw = data.get("subject_class_confidence", data.get("confidence", 1.0))
+        try:
+            confidence = float(conf_raw)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        return subject_class, confidence
+
+    def _resolve_low_confidence_subject(
+        self, question: str, confidence: float, raw: str
+    ) -> SubjectClass:
+        """The abstain path: clarify with the user, or fail — never guess (W-06).
+
+        Interactive shell: one clarifying question, the user's own words
+        decide the subject class. Scripted run: SubjectClassAbstain — the
+        engagement dies at planning time, before any dispatch token is
+        spent, rather than proceed on a guessed subject class. A guessed
+        subject class is how a DCF ends up aimed at a nation state.
+        """
+        if sys.stdin.isatty():
+            # Exactly one clarifying question — thirty seconds of the user's
+            # time against thirty minutes of an engagement with empty
+            # chapters.
+            print(
+                "\nHYPERION could not establish what this question is about "
+                f"with enough confidence (confidence {confidence:.2f}).",
+                flush=True,
+            )
+            print(f"  Question: {question}", flush=True)
+            print(
+                "  Is it primarily about: [1] a company/firm  "
+                "[2] a country or region  [3] a technology  [4] a policy "
+                "[5] a market/industry  [6] a person or organisation?",
+                flush=True,
+            )
+            choice = input("  Your answer (1-6): ").strip()
+            mapping = {
+                "1": SubjectClass.COMPANY,
+                "2": SubjectClass.NATION_OR_REGION,
+                "3": SubjectClass.TECHNOLOGY,
+                "4": SubjectClass.POLICY,
+                "5": SubjectClass.MARKET,
+                "6": SubjectClass.PERSON_OR_ORG,
+            }
+            if choice in mapping:
+                return mapping[choice]
+            # Even interactively, an unusable answer is not a licence to
+            # guess: fail and let the user rerun.
+            raise SubjectClassAbstain(question, confidence, raw)
+        raise SubjectClassAbstain(question, confidence, raw)
+
+    def _gate_roster_by_subject(
+        self,
+        proposed: list[AgentName],
+        subject_class: SubjectClass,
+        question: str,
+    ) -> list[AgentName]:
+        """Filter the proposed roster by method eligibility, recording every call.
+
+        The roster is a function of (question_type, subject_class) — this
+        method is the subject-class half. Each specialist is dispatched only
+        if at least one of its declared methods applies to the classified
+        subject class, and the decision is recorded either way:
+
+          - dispatched:    (agent, eligible_methods, dispatched=True, reason)
+          - excluded:      (agent, [], dispatched=False, reason)
+          - added (empty proposal): recorded with the reason that the LLM
+            proposed no eligible specialist — visibility, not silence.
+
+        Every dispatched agent is guaranteed to carry at least one eligible
+        method; _build_dag asserts that invariant again before the DAG
+        ships.
+        """
+        min_agents = 6
+        roster: list[AgentName] = []
+        decisions: list[RosterDecision] = []
+        excluded: list[AgentName] = []
+
+        for agent in proposed:
+            methods = eligible_methods(agent, subject_class)
+            if methods and agent not in roster:
+                roster.append(agent)
+                decisions.append(RosterDecision(
+                    agent=agent,
+                    subject_class=subject_class,
+                    eligible_methods=methods,
+                    dispatched=True,
+                    reason=f"{len(methods)} declared method(s) apply to {subject_class.value}",
+                ))
+            elif not methods:
+                excluded.append(agent)
+                decisions.append(RosterDecision(
+                    agent=agent,
+                    subject_class=subject_class,
+                    eligible_methods=[],
+                    dispatched=False,
+                    reason=(
+                        f"no declared method applies to {subject_class.value}: "
+                        f"all of this agent's methods are "
+                        f"{sorted({sc.value for ms in AGENT_METHODS.get(agent, {}).values() for sc in ms})}"
+                    ),
+                ))
+
+        # Pad from the pool when the (filtered) proposal is thin. Padding is
+        # itself subject-gated — the pool never smuggles a firm-level-only
+        # agent past the gate the way QUESTION_TYPE_AGENTS used to.
+        if len(roster) < min_agents:
+            for agent in _SPECIALIST_POOL:
+                if len(roster) >= min_agents:
+                    break
+                if agent in roster or agent in excluded:
+                    continue
+                methods = eligible_methods(agent, subject_class)
+                if methods:
+                    roster.append(agent)
+                    decisions.append(RosterDecision(
+                        agent=agent,
+                        subject_class=subject_class,
+                        eligible_methods=methods,
+                        dispatched=True,
+                        reason=(
+                            f"added from the specialist pool to reach the minimum "
+                            f"roster of {min_agents}; {len(methods)} method(s) "
+                            f"apply to {subject_class.value}"
+                        ),
+                    ))
+                else:
+                    excluded.append(agent)
+                    decisions.append(RosterDecision(
+                        agent=agent,
+                        subject_class=subject_class,
+                        eligible_methods=[],
+                        dispatched=False,
+                        reason=f"no declared method applies to {subject_class.value}",
+                    ))
+
+        if not roster:
+            # The subject gate found nothing defensible to dispatch. An empty
+            # roster is a planning failure, not a plan: proceed silently and
+            # the engagement burns budget to produce an empty report.
+            raise SubjectClassAbstain(
+                question, 1.0,
+                detail=(
+                    f"No specialist has an eligible method for subject class "
+                    f"{subject_class.value} (proposed: {[a.value for a in proposed]})"
+                ),
+            )
+
+        self._roster_decisions = decisions
+        return roster
 
     @staticmethod
     def _clean_subject(value: Any) -> str:
@@ -923,6 +1280,22 @@ class EngagementDirector(BaseAgent):
         The DAG is NOT a fixed pipeline — it is custom-built for this
         specific question. No two DAGs are identical.
         """
+        # ── W-06 sanity assertion ─────────────────────────────────────────
+        # Every dispatched specialist must have at least one declared method
+        # eligible for the classified subject class. If this fails, the
+        # subject gate was bypassed — fail at PLANNING time, before any
+        # tokens are spent, rather than discover empty chapters at delivery.
+        subject_class = getattr(self, "_llm_subject_class", None)
+        if isinstance(subject_class, SubjectClass):
+            for agent in selected_agents:
+                methods = eligible_methods(agent, subject_class)
+                assert methods, (
+                    f"W-06 roster invariant violated: {agent.value} was "
+                    f"dispatched with no method eligible for subject class "
+                    f"{subject_class.value}. The subject gate in "
+                    f"_classify_question_llm must have been bypassed."
+                )
+
         tasks: list[TaskNode] = []
         domains: list[ResearchDomain] = []
 
@@ -1164,6 +1537,16 @@ class EngagementDirector(BaseAgent):
             # the raw text with its own heuristics and disagreeing.
             geographies=list(getattr(self, "_llm_geographies", []) or []),
             subject=str(getattr(self, "_llm_subject", "") or ""),
+            # W-06: the subject class the roster was gated on, and the full
+            # recorded roster decisions (dispatched AND excluded, with
+            # reasons) — the methodology section (W-10) and the report's
+            # scope note quote these verbatim.
+            subject_class=(
+                self._llm_subject_class.value
+                if isinstance(getattr(self, "_llm_subject_class", None), SubjectClass)
+                else ""
+            ),
+            roster_decisions=list(getattr(self, "_roster_decisions", []) or []),
             agents_selected=all_agents,
             estimated_total_llm_calls=total_llm_calls,
             estimated_total_tokens=total_tokens,
@@ -1284,7 +1667,7 @@ class EngagementDirector(BaseAgent):
 
         # Step 2: Classify question type(s)
         await self._transition(AgentState.WORKING, "Classifying question type")
-        question_types, selected_agents, key_question = await self._classify_question_llm(question)
+        question_types, subject_class, selected_agents, key_question = await self._classify_question_llm(question)
 
         # Step 3: Query Second Brain for prior research
         await self._transition(AgentState.WORKING, "Querying Second Brain for prior research")
