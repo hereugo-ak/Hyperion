@@ -1,43 +1,41 @@
 """
-HYPERION Fact Checker — Agent 16, the verification engine and hallucination catcher.
+HYPERION Fact Checker, Agent 16, the verification engine and hallucination catcher.
 
 This is NOT a generic "check if sources exist" agent. This is a specialist with
 5 proprietary skills:
 
 - Claim verification: Extract specific factual claims from specialist findings
   and verify each against independent sources. A claim is VERIFIED if 2+
-  independent sources agree. Not just "does a source exist" — "do 2+
+  independent sources agree. Not just "does a source exist""do 2+
   independent sources confirm this specific claim?"
 - Source credibility scoring: Score each source on credibility and weight
   verification accordingly. A claim verified by a peer-reviewed paper is more
   credible than one verified by a blog post. Uses the same credibility
   hierarchy as the Research Librarian.
 - Contradiction detection: Identify when two specialists make contradictory
-  claims and flag them for the Synthesis Lead. Not just "they disagree" —
-  classify the contradiction (DATA_CONFLICT, INTERPRETATION_CONFLICT,
+  claims and flag them for the Synthesis Lead. Not just "they disagree", classify the contradiction (DATA_CONFLICT, INTERPRETATION_CONFLICT,
   SCOPE_CONFLICT) and flag it with both agents' claims.
 - Evidence chain validation: For each claim, trace the evidence chain:
   claim → source → original data. If the chain breaks (source doesn't contain
   the data, or data doesn't support the claim), flag it. This catches
-  hallucinated citations — the #1 quality risk in LLM-generated reports.
+  hallucinated citations, the #1 quality risk in LLM-generated reports.
 - Statistical sanity checks: Check for statistical red flags: numbers that
   are too round (suspicious), growth rates that are implausibly high, market
-  sizes that don't reconcile across agents. Not just "is this number right" —
-  "is this number suspicious given the context?"
+  sizes that don't reconcile across agents. Not just "is this number right""is this number suspicious given the context?"
 
 It runs on FAST tier (GPT OSS 120B on Cerebras, ~3000 tok/s) because fact-
-checking is time-critical — it runs in parallel with late-stage specialists
+checking is time-critical, it runs in parallel with late-stage specialists
 and must finish before the Synthesis Lead starts. It doesn't just check if a
-source exists — it checks if the source actually contains the data the
+source exists, it checks if the source actually contains the data the
 specialist claims it does. It catches hallucinated citations, which is the
 #1 quality risk in LLM-generated reports. (§4.5, Agent 16)
 
-Model Tier: FAST (GPT OSS 120B on Cerebras — speed is critical, fact-checking
+Model Tier: FAST (GPT OSS 120B on Cerebras, speed is critical, fact-checking
 runs in parallel with late-stage specialists)
 Tools: SearxNG (search for verification), Jina (extract source content to
        verify against original), Obscura (scrape JS-rendered pages for
        verification)
-Sub-agents: 0 (support agent — doesn't spawn sub-agents)
+Sub-agents: 0 (support agent, doesn't spawn sub-agents)
 Output: FactCheckReport (claim-by-claim verification status, contradictions,
         evidence chain validation, statistical red flags)
 
@@ -112,7 +110,7 @@ FACT_CHECKER_SPEC = AgentSpec(
                 "Extract specific factual claims from specialist findings and "
                 "verify each against independent sources. A claim is VERIFIED "
                 "if 2+ independent sources agree. Not just 'does a source "
-                "exist' — 'do 2+ independent sources confirm this specific "
+                "exist''do 2+ independent sources confirm this specific "
                 "claim?' Claims are typed (NUMBER, DATE, NAME, EVENT, "
                 "RELATIONSHIP, QUOTE) for targeted verification."
             ),
@@ -138,7 +136,7 @@ FACT_CHECKER_SPEC = AgentSpec(
             description=(
                 "Identify when two specialists make contradictory claims and "
                 "flag them for the Synthesis Lead. Not just 'they disagree' "
-                "— classify the contradiction as DATA_CONFLICT (different "
+                "classify the contradiction as DATA_CONFLICT (different "
                 "numbers for same metric), INTERPRETATION_CONFLICT (same "
                 "data, different conclusions), or SCOPE_CONFLICT (agents "
                 "analyzed different scopes). Flag with both agents' claims."
@@ -152,7 +150,7 @@ FACT_CHECKER_SPEC = AgentSpec(
                 "For each claim, trace the evidence chain: claim → source → "
                 "original data. If the chain breaks (source doesn't contain "
                 "the data, or data doesn't support the claim), flag it. This "
-                "catches hallucinated citations — the #1 quality risk in "
+                "catches hallucinated citations, the #1 quality risk in "
                 "LLM-generated reports. A hallucinated citation is when an "
                 "agent cites a source that either doesn't exist or doesn't "
                 "contain the data the agent claims it does."
@@ -166,7 +164,7 @@ FACT_CHECKER_SPEC = AgentSpec(
                 "Check for statistical red flags: numbers that are too round "
                 "(suspicious), growth rates that are implausibly high, market "
                 "sizes that don't reconcile across agents. Not just 'is this "
-                "number right' — 'is this number suspicious given the "
+                "number right''is this number suspicious given the "
                 "context?' A market size of exactly $10B is suspicious. A "
                 "growth rate of 500% YoY is suspicious. Two agents reporting "
                 "different market sizes for the same market is a red flag."
@@ -176,7 +174,7 @@ FACT_CHECKER_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Fact Checker — the verification engine and "
+        "You are the HYPERION Fact Checker, the verification engine and "
         "hallucination catcher.\n\n"
         "Your role:\n"
         "1. EXTRACT factual claims from specialist findings. Claims are "
@@ -196,7 +194,7 @@ FACT_CHECKER_SPEC = AgentSpec(
         "6. RUN statistical sanity checks: too round numbers, implausible "
         "growth rates, market sizes that don't reconcile.\n\n"
         "You run on FAST tier (Cerebras, ~3000 tok/s) because fact-checking "
-        "is time-critical — you run in parallel with late-stage specialists "
+        "is time-critical, you run in parallel with late-stage specialists "
         "and must finish before the Synthesis Lead starts.\n\n"
         "Rules:\n"
         "- 2+ INDEPENDENT SOURCES REQUIRED FOR VERIFICATION. 'Independent' "
@@ -216,7 +214,7 @@ FACT_CHECKER_SPEC = AgentSpec(
         "critical claims first (numbers, dates, names). Don't spend time on "
         "subjective claims that can't be verified.\n\n"
         "You do NOT spawn sub-agents. You are a support agent.\n\n"
-        "Your output is a FactCheckReport Pydantic model — structured, not "
+        "Your output is a FactCheckReport Pydantic model, structured, not "
         "free text."
     ),
     spawn_condition="Spawned after all specialists have published findings. "
@@ -237,7 +235,7 @@ class FactChecker(BaseAgent):
 
     Verifies claims made by specialists, cross-references sources, and flags
     contradictions. Runs on FAST tier (Cerebras, ~3000 tok/s) because fact-
-    checking is time-critical. Catches hallucinated citations — the #1 quality
+    checking is time-critical. Catches hallucinated citations, the #1 quality
     risk in LLM-generated reports. (§4.5, Agent 16)
 
     Lifecycle:
@@ -625,13 +623,13 @@ class FactChecker(BaseAgent):
         no web search is needed. Otherwise, falls back to SearXNG JSON API
         + Jina for content extraction.
 
-        Obscura is NOT used — it's a Windows-only binary and fact-checking
+        Obscura is NOT used, it's a Windows-only binary and fact-checking
         should not spawn browsers per claim.
         """
         # Step 1: Check local corpus first (no web search needed)
         local_sources = self._check_local_corpus(claim)
         if len(local_sources) >= 2 and self._check_independence(local_sources):
-            logger.debug("Claim '%s' verified via local corpus — skipping web search",
+            logger.debug("Claim '%s' verified via local corpus, skipping web search",
                          claim.claim[:50])
             return local_sources
 
@@ -1044,7 +1042,7 @@ class FactChecker(BaseAgent):
                 # Source exists but doesn't contain the claimed data
                 claim.evidence_chain_valid = False
                 claim.evidence_chain_break = (
-                    "Cited source does not contain the claimed data — "
+                    "Cited source does not contain the claimed data"
                     "possible hallucinated citation"
                 )
                 claim.is_hallucinated_citation = True
@@ -1083,7 +1081,7 @@ class FactChecker(BaseAgent):
                     if value in self.ROUND_NUMBER_SUSPECTS:
                         red_flags.append(
                             f"Suspiciously round number: {claim.claim} "
-                            f"(from {claim.agent}) — exactly ${value:,} "
+                            f"(from {claim.agent}), exactly ${value:,} "
                             f"is suspicious. Verify with primary source."
                         )
                 except (ValueError, TypeError):
@@ -1101,7 +1099,7 @@ class FactChecker(BaseAgent):
                     if growth_rate > self.IMPLAUSIBLE_GROWTH_THRESHOLD:
                         red_flags.append(
                             f"Implausible growth rate: {claim.claim} "
-                            f"(from {claim.agent}) — {growth_rate}% growth "
+                            f"(from {claim.agent}), {growth_rate}% growth "
                             f"is suspiciously high. Verify with primary source."
                         )
                 except (ValueError, TypeError):
@@ -1131,7 +1129,7 @@ class FactChecker(BaseAgent):
                 if len(unique_nums) > 1:
                     agents_involved = ", ".join(a for a, _ in agent_claims)
                     red_flags.append(
-                        f"Market size reconciliation issue: '{metric}' — "
+                        f"Market size reconciliation issue: '{metric}'"
                         f"agents report different values ({agents_involved}): "
                         f"{', '.join(agent_claims[i][1] for i in range(len(agent_claims)))}. "
                         f"Synthesis Lead should reconcile."

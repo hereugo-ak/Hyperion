@@ -1,21 +1,21 @@
 """
-HYPERION Quality Gate — Agent 18, the final review against a 10-dimension
+HYPERION Quality Gate, Agent 18, the final review against a 10-dimension
 rubric. If the score is below threshold, the report goes back for iteration.
 
 This is NOT a generic "check if it's good" agent. This is a specialist with
 5 proprietary skills:
 
 - Rubric scoring (10 dimensions): Score each dimension 1-5 with specific,
-  actionable feedback. Not "good" or "bad" — "Dimension 3 (analytical depth)
+  actionable feedback. Not "good" or "bad""Dimension 3 (analytical depth)
   scored 2/5: the Market Analysis section presents data but doesn't interpret
   it. Fix: add 'so what?' implications to each finding." The 10 dimensions
   are: Completeness, Evidence Sufficiency, Analytical Depth, Logical
   Consistency, Contradiction Resolution, Tone and Voice, Structural Quality,
   Risk Coverage, Data Accuracy, Visual Quality.
 
-- Gap analysis: Identify specific gaps — questions that should have been
+- Gap analysis: Identify specific gaps, questions that should have been
   answered but weren't, data that should have been collected but wasn't.
-  Not "needs more research" — "The regulatory analysis doesn't address
+  Not "needs more research""The regulatory analysis doesn't address
   GDPR compliance for the EU market entry, which is a critical gap."
 
 - Tone enforcement: Flag hedgy language ("might possibly perhaps"), generic
@@ -31,14 +31,14 @@ This is NOT a generic "check if it's good" agent. This is a specialist with
   Checker's report for hallucinated citations.
 
 It runs on STRONG tier (Nemotron 3 Super 120B) because quality evaluation
-requires strong reasoning — it must understand what makes analysis deep vs
+requires strong reasoning, it must understand what makes analysis deep vs
 shallow, what makes tone consulting-grade vs generic, and what makes
 evidence sufficient vs insufficient.
 
-Model Tier: STRONG (Nemotron 3 Super 120B — quality evaluation requires
+Model Tier: STRONG (Nemotron 3 Super 120B, quality evaluation requires
 strong reasoning)
-Tools: All outputs (read-only) — can read everything the engagement produced
-Sub-agents: 0 (support agent — doesn't spawn sub-agents)
+Tools: All outputs (read-only), can read everything the engagement produced
+Sub-agents: 0 (support agent, doesn't spawn sub-agents)
 Output: QualityScore (per-dimension scores, weighted total, gaps,
         approve/reject, fix priority)
 
@@ -226,18 +226,18 @@ QUALITY_GATE_SPEC = AgentSpec(
             name="Rubric scoring (10 dimensions)",
             description=(
                 "Score each of 10 dimensions on a 1-5 scale with specific, "
-                "actionable feedback. Dimensions: (1) Completeness — all "
+                "actionable feedback. Dimensions: (1) Completeness, all "
                 "sections present, all key questions answered. (2) Evidence "
-                "Sufficiency — every claim backed by ≥1 source, key claims "
-                "by ≥2. (3) Analytical Depth — beyond surface-level, "
-                "frameworks applied correctly. (4) Logical Consistency — "
+                "Sufficiency, every claim backed by ≥1 source, key claims "
+                "by ≥2. (3) Analytical Depth, beyond surface-level, "
+                "frameworks applied correctly. (4) Logical Consistency"
                 "recommendations follow from findings. (5) Contradiction "
-                "Resolution — all inter-agent contradictions resolved. "
-                "(6) Tone and Voice — consulting-grade, no hedging. "
-                "(7) Structural Quality — premium structure followed. "
-                "(8) Risk Coverage — top risks identified with actionable "
-                "mitigations. (9) Data Accuracy — Fact Checker verified "
-                "all claims. (10) Visual Quality — charts brand-compliant, "
+                "Resolution, all inter-agent contradictions resolved. "
+                "(6) Tone and Voice, consulting-grade, no hedging. "
+                "(7) Structural Quality, premium structure followed. "
+                "(8) Risk Coverage, top risks identified with actionable "
+                "mitigations. (9) Data Accuracy, Fact Checker verified "
+                "all claims. (10) Visual Quality, charts brand-compliant, "
                 "300 DPI."
             ),
             inputs=["final_report", "fact_check_report", "visualization_output"],
@@ -246,10 +246,10 @@ QUALITY_GATE_SPEC = AgentSpec(
         SkillSpec(
             name="Gap analysis",
             description=(
-                "Identify specific gaps in the analysis — questions that "
+                "Identify specific gaps in the analysis, questions that "
                 "should have been answered but weren't, data that should "
                 "have been collected but wasn't. Not 'needs more research' "
-                "— 'The regulatory analysis doesn't address GDPR compliance "
+                "'The regulatory analysis doesn't address GDPR compliance "
                 "for the EU market entry, which is a critical gap.'"
             ),
             inputs=["final_report", "original_question", "engagement_plan"],
@@ -292,7 +292,7 @@ QUALITY_GATE_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Quality Gate — the final review before "
+        "You are the HYPERION Quality Gate, the final review before "
         "delivery. You are the last line of defense against mediocre "
         "reports.\n\n"
         "Your role:\n"
@@ -317,11 +317,11 @@ QUALITY_GATE_SPEC = AgentSpec(
         "9. Data Accuracy: Fact Checker verified all claims?\n"
         "10. Visual Quality: Charts brand-compliant? 300 DPI?\n\n"
         "Scoring Rules:\n"
-        "- 5: Excellent — exceeds McKinsey/BCG standard\n"
-        "- 4: Good — meets standard, minor improvements possible\n"
-        "- 3: Acceptable — meets minimum standard, needs improvement\n"
-        "- 2: Below standard — significant issues\n"
-        "- 1: Unacceptable — fundamental problems\n"
+        "- 5: Excellent, exceeds McKinsey/BCG standard\n"
+        "- 4: Good, meets standard, minor improvements possible\n"
+        "- 3: Acceptable, meets minimum standard, needs improvement\n"
+        "- 2: Below standard, significant issues\n"
+        "- 1: Unacceptable, fundamental problems\n"
         "- Any dimension scoring < 3 is CRITICAL and forces iteration\n"
         "- Weighted total must be ≥ 4.0 for approval\n\n"
         "Feedback Rules (NON-NEGOTIABLE):\n"
@@ -338,7 +338,7 @@ QUALITY_GATE_SPEC = AgentSpec(
         "- Consulting-grade = confident, specific, evidence-based\n\n"
         "You run on STRONG tier (Nemotron 3 Super 120B). You do NOT spawn "
         "sub-agents. You read ALL outputs (read-only).\n\n"
-        "Your output is a QualityScore Pydantic model — structured, not "
+        "Your output is a QualityScore Pydantic model, structured, not "
         "free text. Every dimension has a score, feedback, and fix "
         "instructions if score < 4."
     ),
@@ -497,17 +497,17 @@ class QualityGate(BaseAgent):
             section_count = len(report.sections)
             if section_count < 3:
                 score = min(score, 2)
-                feedback_parts.append(f"Only {section_count} sections — a standard engagement should have 4-8.")
+                feedback_parts.append(f"Only {section_count} sections, a standard engagement should have 4-8.")
                 fix_parts.append("Add missing specialist sections based on the engagement plan.")
             elif section_count < 4:
                 score = min(score, 3)
-                feedback_parts.append(f"Only {section_count} sections — could benefit from more depth.")
+                feedback_parts.append(f"Only {section_count} sections, could benefit from more depth.")
 
         # Check executive summary
         if not report.executive_summary:
             score = min(score, 1)
             feedback_parts.append("No executive summary present.")
-            fix_parts.append("Add an executive summary — this is the page the CEO reads.")
+            fix_parts.append("Add an executive summary, this is the page the CEO reads.")
 
         # Check key findings
         if not report.key_findings:
@@ -565,7 +565,7 @@ class QualityGate(BaseAgent):
 
         if single_source_sections > 0:
             score = min(score, 3 if single_source_sections > 2 else 4)
-            feedback_parts.append(f"{single_source_sections} section(s) have only 1 source — key claims need ≥2.")
+            feedback_parts.append(f"{single_source_sections} section(s) have only 1 source, key claims need ≥2.")
             fix_parts.append(f"Add additional independent sources to {single_source_sections} section(s).")
 
         # Cross-reference with Fact Checker
@@ -574,7 +574,7 @@ class QualityGate(BaseAgent):
                 score = min(score, 1)
                 feedback_parts.append(
                     f"Fact Checker found {self._fact_check_report.hallucinated_citation_count} "
-                    f"hallucinated citation(s) — sources that don't exist or don't contain the claimed data."
+                    f"hallucinated citation(s), sources that don't exist or don't contain the claimed data."
                 )
                 fix_parts.append("Replace all hallucinated citations with real, verified sources.")
 
@@ -614,7 +614,7 @@ class QualityGate(BaseAgent):
             if not section.implications or len(section.implications) < 20:
                 score = min(score, 3)
                 feedback_parts.append(f"Section '{section.title}' lacks 'so what?' implications.")
-                fix_parts.append(f"Add 'so what?' implications to section '{section.title}' — what does this finding mean for the recommendation?")
+                fix_parts.append(f"Add 'so what?' implications to section '{section.title}'what does this finding mean for the recommendation?")
 
             # Check for key insight
             if not section.key_insight or len(section.key_insight) < 10:
@@ -624,11 +624,11 @@ class QualityGate(BaseAgent):
             # Check body length (surface-level = short)
             if len(section.body) < 500:
                 score = min(score, 2)
-                feedback_parts.append(f"Section '{section.title}' is too short ({len(section.body)} chars) — surface-level, not deep analysis.")
+                feedback_parts.append(f"Section '{section.title}' is too short ({len(section.body)} chars), surface-level, not deep analysis.")
                 fix_parts.append(f"Expand section '{section.title}' with deeper analysis, framework application, and interpretation.")
             elif len(section.body) < 1500:
                 score = min(score, 3)
-                feedback_parts.append(f"Section '{section.title}' is shallow ({len(section.body)} chars) — needs more depth, interpretation, and 'so what' analysis.")
+                feedback_parts.append(f"Section '{section.title}' is shallow ({len(section.body)} chars), needs more depth, interpretation, and 'so what' analysis.")
                 fix_parts.append(f"Expand section '{section.title}' to 1500+ chars with deeper analysis, specific data points, and consulting-grade prose.")
 
         # Use LLM to evaluate analytical depth if available
@@ -697,7 +697,7 @@ class QualityGate(BaseAgent):
         if not report.recommendation_rationale or len(report.recommendation_rationale) < 100:
             score = min(score, 2)
             feedback_parts.append("Recommendation rationale is missing or too brief.")
-            fix_parts.append("Expand the recommendation rationale — trace the evidence chain from "
+            fix_parts.append("Expand the recommendation rationale, trace the evidence chain from "
                 "findings to recommendation.")
 
         # Check if key findings support the recommendation
@@ -719,7 +719,7 @@ class QualityGate(BaseAgent):
         # Check critical assumptions
         if not report.critical_assumptions:
             score = min(score, 3)
-            feedback_parts.append("No critical assumptions listed — what would flip the "
+            feedback_parts.append("No critical assumptions listed, what would flip the "
                 "recommendation if wrong?")
             fix_parts.append("Add 2-3 critical assumptions that would change the recommendation "
                 "if proven wrong.")
@@ -752,7 +752,7 @@ class QualityGate(BaseAgent):
             if unresolved:
                 score = min(score, 2 if len(unresolved) > 2 else 3)
                 feedback_parts.append(f"{len(unresolved)} contradiction(s) unresolved.")
-                fix_parts.append(f"Resolve {len(unresolved)} contradiction(s) evidence-weighted — don't average, pick the better-evidenced position.")
+                fix_parts.append(f"Resolve {len(unresolved)} contradiction(s) evidence-weighted, don't average, pick the better-evidenced position.")
             else:
                 feedback_parts.append(f"All {len(report.contradictions)} contradiction(s) resolved.")
         else:
@@ -827,7 +827,7 @@ class QualityGate(BaseAgent):
         if absolute_count > 0:
             score = min(score, 4)
             feedback_parts.append(f"{absolute_count} instance(s) of absolute language ('will definitely', 'guaranteed').")
-            fix_parts.append(f"Soften {absolute_count} absolute statement(s) — consulting-grade is confident, not absolute.")
+            fix_parts.append(f"Soften {absolute_count} absolute statement(s), consulting-grade is confident, not absolute.")
 
         if not feedback_parts:
             feedback_parts.append("Confident, specific, evidence-based throughout. No hedging or "
@@ -856,7 +856,7 @@ class QualityGate(BaseAgent):
         # Check executive summary exists
         if not report.executive_summary:
             score = min(score, 1)
-            feedback_parts.append("No executive summary — this is required and must be upfront.")
+            feedback_parts.append("No executive summary, this is required and must be upfront.")
             fix_parts.append("Add an executive summary as the first content section after the TOC.")
 
         # Check sections are present
@@ -869,7 +869,7 @@ class QualityGate(BaseAgent):
             for i, sid in enumerate(section_ids):
                 if not sid:
                     score = min(score, 3)
-                    feedback_parts.append(f"Section {i+1} has no ID — cannot verify ordering.")
+                    feedback_parts.append(f"Section {i+1} has no ID, cannot verify ordering.")
                     break
 
         # Check risk analysis
@@ -886,7 +886,7 @@ class QualityGate(BaseAgent):
 
         if not report.limitations:
             score = min(score, 4)
-            feedback_parts.append("No limitations listed — what couldn't be researched?")
+            feedback_parts.append("No limitations listed, what couldn't be researched?")
             fix_parts.append("Add limitations to the methodology section.")
 
         if not feedback_parts:
@@ -935,14 +935,14 @@ class QualityGate(BaseAgent):
                 if vague_mitigations > 0:
                     score = min(score, 3)
                     feedback_parts.append(f"{vague_mitigations} risk(s) have vague mitigations ('monitor', 'watch').")
-                    fix_parts.append(f"Make {vague_mitigations} mitigation(s) specific and actionable — what exactly will be done?")
+                    fix_parts.append(f"Make {vague_mitigations} mitigation(s) specific and actionable, what exactly will be done?")
 
                 # Check for black swan scenarios
                 black_swans = [r for r in risks if getattr(r, "is_black_swan", False)]
                 if not black_swans:
                     score = min(score, 4)
                     feedback_parts.append("No black swan scenarios identified.")
-                    fix_parts.append("Add 1-2 black swan scenarios — low-probability, high-impact "
+                    fix_parts.append("Add 1-2 black swan scenarios, low-probability, high-impact "
                         "events.")
 
         if not feedback_parts:
@@ -975,12 +975,12 @@ class QualityGate(BaseAgent):
             if fc.total_claims_checked > 0:
                 if fc.verification_rate < 0.4:
                     score = min(score, 2)
-                    feedback_parts.append(f"Only {fc.verification_rate:.0%} of claims verified — below 40% threshold.")
+                    feedback_parts.append(f"Only {fc.verification_rate:.0%} of claims verified, below 40% threshold.")
                     fix_parts.append("Verify more claims with independent sources, especially key "
                         "numbers and dates.")
                 elif fc.verification_rate < 0.7:
                     score = min(score, 3)
-                    feedback_parts.append(f"{fc.verification_rate:.0%} of claims verified — could be higher.")
+                    feedback_parts.append(f"{fc.verification_rate:.0%} of claims verified, could be higher.")
 
             # Check hallucinated citations
             if fc.hallucinated_citation_count > 0:
@@ -992,22 +992,22 @@ class QualityGate(BaseAgent):
             if fc.statistical_red_flags:
                 score = min(score, 3 if len(fc.statistical_red_flags) > 3 else 4)
                 feedback_parts.append(f"{len(fc.statistical_red_flags)} statistical red flag(s): {fc.statistical_red_flags[:2]}")
-                fix_parts.append("Address statistical red flags — verify suspicious numbers with "
+                fix_parts.append("Address statistical red flags, verify suspicious numbers with "
                     "primary sources.")
 
             # Check evidence chain breaks
             if fc.evidence_chain_break_count > 0:
                 score = min(score, 2)
-                feedback_parts.append(f"{fc.evidence_chain_break_count} evidence chain break(s) — claim → source → data chain is broken.")
-                fix_parts.append(f"Fix {fc.evidence_chain_break_count} evidence chain break(s) — ensure sources actually contain the claimed data.")
+                feedback_parts.append(f"{fc.evidence_chain_break_count} evidence chain break(s), claim → source → data chain is broken.")
+                fix_parts.append(f"Fix {fc.evidence_chain_break_count} evidence chain break(s), ensure sources actually contain the claimed data.")
 
             # Check contradictions
             if fc.contradicted_count > 0:
                 score = min(score, 3)
-                feedback_parts.append(f"{fc.contradicted_count} contradicted claim(s) — sources disagree.")
+                feedback_parts.append(f"{fc.contradicted_count} contradicted claim(s), sources disagree.")
         else:
             score = min(score, 3)
-            feedback_parts.append("No Fact Check Report received — cannot verify data accuracy.")
+            feedback_parts.append("No Fact Check Report received, cannot verify data accuracy.")
             fix_parts.append("Run the Fact Checker before quality gating.")
 
         if not feedback_parts:
@@ -1057,7 +1057,7 @@ class QualityGate(BaseAgent):
             if viz.total_charts == 0:
                 score = min(score, 2)
                 feedback_parts.append("No charts generated for the report.")
-                fix_parts.append("Generate charts for key data visualizations — a report without "
+                fix_parts.append("Generate charts for key data visualizations, a report without "
                     "charts is not McKinsey/BCG-grade.")
 
             # Check sections have charts
@@ -1065,11 +1065,11 @@ class QualityGate(BaseAgent):
             if report.sections and sections_with_charts < len(report.sections) // 2:
                 score = min(score, 3)
                 feedback_parts.append(f"Only {sections_with_charts}/{len(report.sections)} sections have charts.")
-                fix_parts.append("Add charts to more sections — visual data is critical for "
+                fix_parts.append("Add charts to more sections, visual data is critical for "
                     "consulting-grade reports.")
         else:
             score = min(score, 3)
-            feedback_parts.append("No Visualization Output received — cannot verify visual "
+            feedback_parts.append("No Visualization Output received, cannot verify visual "
                 "quality.")
             fix_parts.append("Run the Data Visualizer before quality gating.")
 
@@ -1174,7 +1174,7 @@ class QualityGate(BaseAgent):
         """Scan the rendered report for non-negotiable defects (Layer 4 truth gate).
 
         Blocks delivery if ANY of the following are present:
-        - Leaked Python objects (``{'`` substrings — raw dicts in the body).
+        - Leaked Python objects (``{'`` substrings, raw dicts in the body).
         - Unresolved ``Unknown`` values rendered as data.
         - Broken URLs containing ``=None`` / ``=null``.
         - Banned filler/placeholder strings.
@@ -1200,7 +1200,7 @@ class QualityGate(BaseAgent):
         # 1. Leaked Python dict/object repr (e.g. {'name': 'DCF', ...}).
         if "{'" in blob or ('{"' in blob and '":' in blob):
             blockers.append(
-                "LEAK: a raw Python object/dict ({'...) reached the report body — "
+                "LEAK: a raw Python object/dict ({'...) reached the report body"
                 "render via display_value(), never str(datapoint)."
             )
 
@@ -1210,7 +1210,7 @@ class QualityGate(BaseAgent):
             r"\bvalue['\"]?\s*[:=]\s*['\"]?unknown", blob_lower
         ):
             blockers.append(
-                "DATA VOID: 'Unknown' value(s) rendered as data — omit the row "
+                "DATA VOID: 'Unknown' value(s) rendered as data, omit the row "
                 "or re-query; never ship 'Unknown' as a data point."
             )
 
@@ -1218,14 +1218,14 @@ class QualityGate(BaseAgent):
         for u in url_parts:
             low = u.lower()
             if "=none" in low or "=null" in low or "=unknown" in low:
-                blockers.append(f"BROKEN URL: source URL has an empty param — {u}")
+                blockers.append(f"BROKEN URL: source URL has an empty param, {u}")
                 break
 
         # 4. Banned filler.
         for phrase in self._BANNED_FILLER:
             if phrase in blob_lower:
                 blockers.append(
-                    f"FILLER: banned placeholder text found ('{phrase}') — "
+                    f"FILLER: banned placeholder text found ('{phrase}'), "
                     "re-analyze this section instead of shipping filler."
                 )
                 break
@@ -1263,7 +1263,7 @@ class QualityGate(BaseAgent):
                 f"DISHONEST CONFIDENCE: report claims HIGH confidence but has "
                 f"{unsourced}/{total_sections} unsourced section(s) and "
                 f"{report.total_sources} total source(s). Confidence must track "
-                "real evidence coverage — downgrade or gather more evidence."
+                "real evidence coverage, downgrade or gather more evidence."
             )
 
         # 7. Meta-text blocklist (P2-12): the client is never handed HYPERION's
@@ -1274,7 +1274,7 @@ class QualityGate(BaseAgent):
             if term in blob_lower:
                 blockers.append(
                     f"META-TEXT: internal QA vocabulary reached the client "
-                    f"deliverable ('{term}') — restate as analysis, or omit."
+                    f"deliverable ('{term}'), restate as analysis, or omit."
                 )
                 break
 
@@ -1294,15 +1294,15 @@ class QualityGate(BaseAgent):
 
         # Check for missing critical sections
         if not report.risk_analysis:
-            gaps.append("Risk analysis section is missing — top risks must be identified with "
+            gaps.append("Risk analysis section is missing, top risks must be identified with "
                 "mitigations.")
 
         if not report.critical_assumptions:
-            gaps.append("No critical assumptions listed — what would flip the recommendation if "
+            gaps.append("No critical assumptions listed, what would flip the recommendation if "
                 "wrong?")
 
         if not report.limitations:
-            gaps.append("No limitations listed — what couldn't be researched?")
+            gaps.append("No limitations listed, what couldn't be researched?")
 
         # Cross-reference with Fact Checker
         if self._fact_check_report and self._fact_check_report.hallucinated_citation_count > 0:
@@ -1317,8 +1317,8 @@ class QualityGate(BaseAgent):
         """Build an ordered list of fixes, highest impact first.
 
         Priority order:
-        1. Critical dimensions (score < 3) — highest weight first
-        2. Non-critical dimensions with fix_instructions — highest weight first
+        1. Critical dimensions (score < 3), highest weight first
+        2. Non-critical dimensions with fix_instructions, highest weight first
         """
         fixes: list[str] = []
 
@@ -1356,7 +1356,7 @@ class QualityGate(BaseAgent):
             "",
             f"Iterations attempted: {iteration} (max {self.MAX_ITERATIONS})",
             f"Final score: {total_score}/{self.APPROVAL_THRESHOLD}",
-            "Status: FAILED — escalation required",
+            "Status: FAILED, escalation required",
             "",
             f"CRITICAL DIMENSIONS (score < {self.CRITICAL_THRESHOLD}):",
         ]
@@ -1477,7 +1477,7 @@ class QualityGate(BaseAgent):
         if not approved and max_reached:
             await self._transition(
                 AgentState.WORKING,
-                f"Step 7: Max iterations ({self.MAX_ITERATIONS}) reached — escalating",
+                f"Step 7: Max iterations ({self.MAX_ITERATIONS}) reached, escalating",
             )
             escalation_report = self._build_escalation_report(dimensions, total_score, iteration)
 
@@ -1507,7 +1507,7 @@ class QualityGate(BaseAgent):
             # Send back for iteration
             await self._transition(
                 AgentState.WORKING,
-                f"Step 7: Score {total_score} < {self.APPROVAL_THRESHOLD} — sending back for iteration {iteration + 1}",
+                f"Step 7: Score {total_score} < {self.APPROVAL_THRESHOLD}, sending back for iteration {iteration + 1}",
             )
 
             await self.bus.publish(
@@ -1581,7 +1581,7 @@ class QualityGate(BaseAgent):
                 f"Critical dimensions: {', '
                     ''.join(d.value for d in critical_dims) if critical_dims else 'none'}. "
                 f"Gaps identified: {len(gaps)}. "
-                f"{'Max iterations reached — escalated.' if max_reached and not approved else ''}"
+                f"{'Max iterations reached, escalated.' if max_reached and not approved else ''}"
             ),
             confidence=ConfidenceLevel.HIGH,
         )

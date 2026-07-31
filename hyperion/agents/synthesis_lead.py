@@ -1,5 +1,5 @@
 """
-HYPERION Synthesis Lead — Agent 2, the senior consultant.
+HYPERION Synthesis Lead, Agent 2, the senior consultant.
 
 This is NOT a summarizer. This is the most intellectually demanding role
 in the system. The Synthesis Lead:
@@ -14,7 +14,7 @@ in the system. The Synthesis Lead:
 
 A summarizer lists what each agent found. A synthesizer says "Market says
 ⟨TAM_FIGURE⟩, Financial says too small, but Financial's model assumes
-⟨LOW_PENETRATION⟩ while Market's data supports ⟨HIGH_PENETRATION⟩ — at
+⟨LOW_PENETRATION⟩ while Market's data supports ⟨HIGH_PENETRATION⟩, at
 ⟨HIGH_PENETRATION⟩ the market is viable. The recommendation is ⟨VERDICT⟩,
 with the critical assumption being ⟨PIVOT_ASSUMPTION⟩. If
 ⟨PIVOT_ASSUMPTION⟩ falls below ⟨FLIP_THRESHOLD⟩, the recommendation flips
@@ -22,14 +22,13 @@ to ⟨OPPOSITE_VERDICT⟩." That is synthesis. (§4.3, Agent 2)
 
 D-02: the concrete numbers that used to illustrate this paragraph leaked
 into delivered reports verbatim (the quality loop regurgitated them over
-the degradation notice). The ⟨…⟩ placeholders show SHAPE, never values —
-they are not transcriber-bait because they are obviously not data.
+the degradation notice). The ⟨…⟩ placeholders show SHAPE, never values, they are not transcriber-bait because they are obviously not data.
 
-Model Tier: DEEP (Gemini 3.1 Flash Lite — 250K context window for
+Model Tier: DEEP (Gemini 3.1 Flash Lite, 250K context window for
 holding all findings simultaneously)
 Tools: Second Brain (retrieve prior engagements for pattern matching),
        all specialist findings (read-only via AgentBus)
-Sub-agents: Max 1 — for contradiction resolution deep dives
+Sub-agents: Max 1, for contradiction resolution deep dives
 Output: FinalReport (the single most important data structure in HYPERION)
 
 Methodology (§4.3, Agent 2):
@@ -45,8 +44,8 @@ Methodology (§4.3, Agent 2):
 Quality Gate Loop:
 After producing FinalReport, the Quality Gate scores it on a 10-dimension
 rubric. If score < 4.0, the Synthesis Lead receives specific gap feedback
-and iterates — up to 3 times max. Each iteration targets the specific
-dimensions that scored below 4. This is NOT a generic "try again" — it
+and iterates, up to 3 times max. Each iteration targets the specific
+dimensions that scored below 4. This is NOT a generic "try again", it
 is targeted refinement based on actionable feedback. (§4.5, Agent 18)
 (§4.3, §0.1)
 """
@@ -148,7 +147,7 @@ SYNTHESIS_LEAD_SPEC = AgentSpec(
                 "'the market is too small to justify entry,' the Synthesis Lead "
                 "identifies the contradiction, determines which finding is better "
                 "supported by evidence, and resolves it in the final recommendation. "
-                "This is NOT averaging — it is evidence-weighted resolution. "
+                "This is NOT averaging, it is evidence-weighted resolution. "
             ),
             inputs=["all_specialist_findings", "fact_check_report"],
             outputs=["contradiction_matrix", "resolved_contradictions"],
@@ -171,7 +170,7 @@ SYNTHESIS_LEAD_SPEC = AgentSpec(
                 "Aggregates individual agent confidence scores into a system-level "
                 "confidence with domain-weighted breakdown. If Market is HIGH "
                 "confidence but Regulatory is LOW confidence, the system confidence "
-                "reflects the weakest critical link — not an average."
+                "reflects the weakest critical link, not an average."
             ),
             inputs=["per_agent_confidence_scores", "contradiction_count"],
             outputs=["system_confidence", "per_domain_confidence_breakdown"],
@@ -181,7 +180,7 @@ SYNTHESIS_LEAD_SPEC = AgentSpec(
             description=(
                 "Produces a coherent narrative that weaves all findings into a single "
                 "story with a clear recommendation, supporting evidence, and acknowledged "
-                "limitations. Not a summary — a synthesis. A summarizer lists what each "
+                "limitations. Not a summary, a synthesis. A summarizer lists what each "
                 "agent found. A synthesizer identifies the through-line that connects "
                 "all findings into one recommendation."
             ),
@@ -190,7 +189,7 @@ SYNTHESIS_LEAD_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Synthesis Lead — the senior consultant who reconciles "
+        "You are the HYPERION Synthesis Lead, the senior consultant who reconciles "
         "all specialist findings into a single, coherent recommendation.\n\n"
         "This is the most intellectually demanding role in the system. You hold "
         "4-6 specialists' findings simultaneously, identify contradictions, resolve "
@@ -198,41 +197,41 @@ SYNTHESIS_LEAD_SPEC = AgentSpec(
         "You are NOT a summarizer. A summarizer lists what each agent found. "
         "You synthesize. You say: 'Market says ⟨TAM_FIGURE⟩, Financial says too small, "
         "but Financial's model assumes ⟨LOW_PENETRATION⟩ while Market's data supports "
-        "⟨HIGH_PENETRATION⟩ — at ⟨HIGH_PENETRATION⟩ the market is viable. The "
+        "⟨HIGH_PENETRATION⟩, at ⟨HIGH_PENETRATION⟩ the market is viable. The "
         "recommendation is ⟨VERDICT⟩, with the critical assumption being "
         "⟨PIVOT_ASSUMPTION⟩. If ⟨PIVOT_ASSUMPTION⟩ falls below ⟨FLIP_THRESHOLD⟩, the "
         "recommendation flips to ⟨OPPOSITE_VERDICT⟩.'\n\n"
         "HARD RULE: ⟨…⟩ are placeholders showing SHAPE, never values. Every number "
         "you emit must appear verbatim in the findings above. If the findings "
         "contain no numbers, write the analysis without numbers and say the "
-        "evidence is qualitative — do NOT invent figures to fit the shape.\n\n"
+        "evidence is qualitative, do NOT invent figures to fit the shape.\n\n"
         "Your methodology:\n"
         "1. Build a finding matrix (agent × finding × evidence × confidence)\n"
         "2. Identify contradictions and classify them (data/interpretation/scope)\n"
-        "3. Resolve contradictions evidence-weighted — the finding with more credible "
+        "3. Resolve contradictions evidence-weighted, the finding with more credible "
         "   sources and higher confidence wins. Document WHY.\n"
-        "4. Identify the critical path — the 2-3 findings that determine the recommendation\n"
+        "4. Identify the critical path, the 2-3 findings that determine the recommendation\n"
         "5. Draft the recommendation with a clear evidence chain\n"
-        "6. Calibrate system confidence — the weakest critical link dominates\n"
+        "6. Calibrate system confidence, the weakest critical link dominates\n"
         "7. Produce the FinalReport with executive summary, sections, and limitations\n\n"
         "Rules:\n"
         "- Every claim in the report must trace to a specialist finding with a source\n"
         "- Every contradiction must be explicitly resolved, not glossed over\n"
         "- Critical assumptions are assumptions that would FLIP the recommendation if wrong\n"
-        "- The executive summary must stand alone — a CEO reads only that page\n"
+        "- The executive summary must stand alone, a CEO reads only that page\n"
         "- Limitations are what you couldn't research, not what you chose to skip\n"
         "- The recommendation must be actionable: ENTER, NO-GO, CONDITIONAL, etc.\n"
         "- CONDITIONAL means: proceed IF these specific conditions are met\n"
         "- Never hedge. 'Might possibly perhaps' is banned. Be confident or be specific "
         "about what's uncertain.\n\n"
-        "You can spawn 1 sub-agent for contradiction resolution — if two agents' "
+        "You can spawn 1 sub-agent for contradiction resolution, if two agents' "
         "findings are deeply contradictory, a sub-agent does a focused deep dive "
         "on the specific point of conflict.\n\n"
         "You receive a QualityScore from the Quality Gate. If score < 4.0, you "
-        "iterate — up to 3 times. Each iteration targets the specific dimensions "
+        "iterate, up to 3 times. Each iteration targets the specific dimensions "
         "that scored below 4. This is targeted refinement, not 'try again.'"
     ),
-    spawn_condition="Always active (core agent) — activated after all specialists complete",
+    spawn_condition="Always active (core agent), activated after all specialists complete",
     max_sub_agents=1,
     output_model="FinalReport",
 )
@@ -252,7 +251,7 @@ class SynthesisLead(BaseAgent):
     specialist findings simultaneously. (§4.3, Agent 2)
 
     Lifecycle:
-    1. Subscribes to FINDINGS channel — collects all specialist findings
+    1. Subscribes to FINDINGS channel, collects all specialist findings
     2. When all specialists complete (signaled by Engagement Director),
        begins synthesis
     3. Builds finding matrix, identifies contradictions, resolves them
@@ -528,7 +527,7 @@ class SynthesisLead(BaseAgent):
 
         This is the structured representation of all findings that the
         Synthesis Lead uses to identify contradictions and the critical
-        path. It is NOT a flat list — it is a cross-referenced matrix.
+        path. It is NOT a flat list, it is a cross-referenced matrix.
 
         The matrix is a dict keyed by finding_type, containing all findings
         of that type from different agents. This makes contradictions
@@ -798,11 +797,10 @@ class SynthesisLead(BaseAgent):
     ) -> str:
         """Spawn a sub-agent for a focused contradiction deep dive.
 
-        Per §4.3: "Can spawn 1 sub-agent for contradiction resolution —
-        if two agents' findings are deeply contradictory, a sub-agent
+        Per §4.3: "Can spawn 1 sub-agent for contradiction resolution, if two agents' findings are deeply contradictory, a sub-agent
         does a focused deep dive on the specific point of conflict."
 
-        The sub-agent uses FAST tier (not MICRO — contradiction resolution
+        The sub-agent uses FAST tier (not MICRO, contradiction resolution
         requires reasoning) and SearxNG + Jina to independently verify
         the conflicting claims.
         """
@@ -870,7 +868,7 @@ class SynthesisLead(BaseAgent):
         matrix: dict[str, Any],
         contradictions: list[Contradiction],
     ) -> list[str]:
-        """Identify the critical path — the 2-3 findings that determine the recommendation.
+        """Identify the critical path, the 2-3 findings that determine the recommendation.
 
         This is NOT all findings. It is the specific findings that, if they changed,
         would flip the recommendation. The Synthesis Lead uses LLM reasoning to
@@ -889,7 +887,7 @@ class SynthesisLead(BaseAgent):
             f"Question: {self._question}\n\n"
             f"All findings:\n{findings_summary}\n\n"
             f"Contradictions found: {len(contradictions)}\n\n"
-            "Identify the 2-3 CRITICAL findings — the ones that, if they changed, "
+            "Identify the 2-3 CRITICAL findings, the ones that, if they changed, "
             "would flip the recommendation. These are the findings on the critical "
             "path. Most findings are supporting evidence; only a few are decision-"
             "determinative.\n\n"
@@ -974,15 +972,15 @@ class SynthesisLead(BaseAgent):
             "Produce the recommendation as JSON with these fields:\n"
             "{\n"
             '  "recommendation": "enter|no_go|conditional|investigate|acquire|do_not_acquire|hold",\n'
-            '  "recommendation_rationale": "The evidence chain supporting this recommendation — specific, not generic",\n'
+            '  "recommendation_rationale": "The evidence chain supporting this recommendation, specific, not generic",\n'
             '  "critical_assumptions": ["assumption1", "assumption2"],\n'
-            '  "executive_summary": "Standalone summary for the CEO — recommendation + key findings + critical risks",\n'
+            '  "executive_summary": "Standalone summary for the CEO, recommendation + key findings + critical risks",\n'
             '  "key_findings_titles": ["3-5 finding titles that support the recommendation"]\n'
             "}\n\n"
             "Rules:\n"
             "- The recommendation must follow from the findings, not from generic reasoning\n"
             "- Critical assumptions are assumptions that would FLIP the recommendation if wrong\n"
-            "- The executive summary must stand alone — a CEO reads only that page\n"
+            "- The executive summary must stand alone, a CEO reads only that page\n"
             "- Be confident. No hedging. If uncertain, use CONDITIONAL with specific conditions\n"
         )
 
@@ -1090,7 +1088,7 @@ class SynthesisLead(BaseAgent):
         (§6.1)
 
         D-01: sections depend ONLY on the collected findings, never on the
-        recommendation — the ``recommendation_data`` parameter is vestigial
+        recommendation, the ``recommendation_data`` parameter is vestigial
         (kept optional for call-site compatibility) and is not read anywhere
         in this method. That independence is what allows the body to be
         built before the recommendation call and to survive its failure.
@@ -1187,7 +1185,7 @@ class SynthesisLead(BaseAgent):
                     findings=[],
                     charts=[],
                     images=[],
-                    implications="No specific implications could be derived — data gap.",
+                    implications="No specific implications could be derived, data gap.",
                     sources=[],
                     confidence=ConfidenceLevel.LOW,
                 )
@@ -1223,16 +1221,16 @@ class SynthesisLead(BaseAgent):
                 f"Sources:\n{sources_digest}\n\n"
                 f"{word_clause}\n\n"
                 "Write a comprehensive section body that:\n"
-                "1. Opens with context — why this dimension matters for the question\n"
+                "1. Opens with context, why this dimension matters for the question\n"
                 "2. Presents key data points with specific numbers and sources cited inline\n"
-                "3. Interprets the data — what does it mean? What's the 'so what'?\n"
+                "3. Interprets the data, what does it mean? What's the 'so what'?\n"
                 "4. Identifies patterns, tensions, or counterarguments within the findings\n"
                 "5. Draws out implications for the overall recommendation\n"
                 "6. Uses clear structure with sub-headings (marked with **bold**)\n"
-                "7. Writes in professional consulting prose — authoritative, precise, no fluff\n"
+                "7. Writes in professional consulting prose, authoritative, precise, no fluff\n"
                 "8. Cites sources naturally (e.g., 'According to [Source]...')\n"
                 "9. Includes at least 4-6 substantial paragraphs of 150+ words each\n"
-                "10. Synthesizes across findings — don't just summarize each finding\n"
+                "10. Synthesizes across findings, don't just summarize each finding\n"
                 "11. Ends with a clear 'so what' paragraph that connects to the engagement\n\n"
                 "Do NOT write bullet points. Write flowing analytical paragraphs.\n"
                 "Do NOT repeat the section title. Start directly with the narrative.\n"
@@ -1264,10 +1262,10 @@ class SynthesisLead(BaseAgent):
                 elif response.success and response.content:
                     # Response too short — retry with stronger instruction
                     retry_prompt = (
-                        f"The previous attempt was only {len(response.content)} characters — "
+                        f"The previous attempt was only {len(response.content)} characters, "
                         f"far too short for a consulting report section.\n\n"
                         f"{narrative_prompt}\n\n"
-                        f"Previous attempt (DO NOT REPEAT — write something better):\n"
+                        f"Previous attempt (DO NOT REPEAT, write something better):\n"
                         f"{response.content[:500]}\n\n"
                         f"Write the FULL section now. It must be at least "
                         f"{int(budget.words_per_section * 0.9)} words. "
@@ -1327,7 +1325,7 @@ class SynthesisLead(BaseAgent):
                 images=[],  # Images are added by Presentation Designer later
                 implications=(
                     key_finding.implications
-                    or "Insufficient evidence to state implications — this section requires additional research."
+                    or "Insufficient evidence to state implications, this section requires additional research."
                 ),
                 sources=list({s.url: s for s in all_sources}.values()),  # Dedupe by URL
                 confidence=findings[0].confidence,
@@ -1574,7 +1572,7 @@ class SynthesisLead(BaseAgent):
             if not updated.sections and section_updates:
                 self._record_failure(
                     "quality loop returned section_updates for a report with "
-                    "0 sections — body was never built; see D-01"
+                    "0 sections, body was never built; see D-01"
                 )
 
             await self._transition(
@@ -1587,7 +1585,7 @@ class SynthesisLead(BaseAgent):
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             await self._transition(
                 AgentState.WORKING,
-                f"Quality iteration {self._quality_iteration + 1} JSON parse failed: {e!s:.80} — "
+                f"Quality iteration {self._quality_iteration + 1} JSON parse failed: {e!s:.80}, "
                 f"keeping current report",
             )
             return report
@@ -1613,13 +1611,13 @@ class SynthesisLead(BaseAgent):
         """Query Second Brain for prior engagement patterns.
 
         The Synthesis Lead checks the vault for prior engagements on similar
-        topics — not for raw data, but for patterns. 'Last time we analyzed
+        topics, not for raw data, but for patterns. 'Last time we analyzed
         a Tier-2 SaaS market entry, the critical assumption was penetration
         rate and it flipped the recommendation.' This pattern matching makes
         the system smarter over time. (§12.8)
 
         BUG HISTORY (report-killer). This method is annotated ``-> str`` but
-        returned ``results`` — the raw ``VaultSearchResult`` dataclass from
+        returned ``results``, the raw ``VaultSearchResult`` dataclass from
         ``SecondBrainClient.search()``. The single consumer,
         ``_identify_and_draft()``, does ``prior_patterns.strip()`` to decide
         whether to include the precedent block. A dataclass has no ``.strip``,
@@ -1630,7 +1628,7 @@ class SynthesisLead(BaseAgent):
         The blast radius was the whole deliverable, not one prompt block:
         ``run()`` aborted BEFORE step 8 (``_build_analysis_sections()``), so
         ``sections`` was never built. The PDF shipped with a cover, an
-        At-a-Glance, an Executive Summary and an appendix — and **zero analysis
+        At-a-Glance, an Executive Summary and an appendix, and **zero analysis
         chapters** ("0 chapters · 0 Analysis Sections" on the deliverable).
         The `except` clause here could not save it: the raise happens at the
         *call site*, not inside this method.
@@ -1672,9 +1670,9 @@ class SynthesisLead(BaseAgent):
         D5 fix: collapses former steps 5+6 into one LLM call to keep
         total DEEP calls ≤ 3 (combined + sections + quality-iteration).
 
-        D5.1: `prior_patterns` was previously fetched by `run()` — an awaited
+        D5.1: `prior_patterns` was previously fetched by `run()`, an awaited
         Second Brain query, announced to the user as a pipeline step ("Querying
-        Second Brain for prior patterns") — and then assigned to a local nothing
+        Second Brain for prior patterns"), and then assigned to a local nothing
         read (ruff F841). The vault lookup ran, cost time, and its result was
         garbage-collected before it could influence anything. That silently
         voided the §12.8 design intent: "this pattern matching makes the system
@@ -1704,7 +1702,7 @@ class SynthesisLead(BaseAgent):
         patterns_text = prior_patterns if isinstance(prior_patterns, str) else str(prior_patterns or "")
         patterns_block = (
             f"Prior-engagement patterns from the vault (precedent, NOT evidence "
-            f"for this question — use to sharpen which assumptions to stress-test):\n"
+            f"for this question, use to sharpen which assumptions to stress-test):\n"
             f"{patterns_text}\n\n"
             if patterns_text.strip()
             else ""
@@ -1716,22 +1714,22 @@ class SynthesisLead(BaseAgent):
             f"All findings:\n{findings_summary}\n\n"
             f"Contradictions:\n{contradictions_summary}\n\n"
             f"{patterns_block}"
-            "FIRST: Identify the 2-3 CRITICAL findings — the ones that, if they "
+            "FIRST: Identify the 2-3 CRITICAL findings, the ones that, if they "
             "changed, would flip the recommendation.\n\n"
             "SECOND: Draft the recommendation as JSON with these fields:\n"
             "{\n"
             '  "critical_findings": ["finding_title_1", ...],\n'
             '  "reasoning": "why these are critical",\n'
             '  "recommendation": "enter|no_go|conditional|investigate|acquire|do_not_acquire|hold",\n'
-            '  "recommendation_rationale": "The evidence chain — specific, not generic",\n'
+            '  "recommendation_rationale": "The evidence chain, specific, not generic",\n'
             '  "critical_assumptions": ["assumption1", "assumption2"],\n'
-            '  "executive_summary": "Standalone summary for the CEO — recommendation + key findings + critical risks",\n'
+            '  "executive_summary": "Standalone summary for the CEO, recommendation + key findings + critical risks",\n'
             '  "key_findings_titles": ["3-5 finding titles that support the recommendation"]\n'
             "}\n\n"
             "Rules:\n"
             "- The recommendation must follow from the findings, not from generic reasoning\n"
             "- Critical assumptions are assumptions that would FLIP the recommendation if wrong\n"
-            "- The executive summary must stand alone — a CEO reads only that page\n"
+            "- The executive summary must stand alone, a CEO reads only that page\n"
             "- Be confident. No hedging. If uncertain, use CONDITIONAL with specific conditions\n"
         )
 
@@ -1797,7 +1795,7 @@ class SynthesisLead(BaseAgent):
             recommendation=Recommendation.INVESTIGATE,
             recommendation_rationale=(
                 f"Synthesis was unable to complete normally: {reason}. "
-                f"This is a degraded report — further research is required."
+                f"This is a degraded report, further research is required."
             ),
             critical_assumptions=["Further research is needed to validate any assumptions"],
             confidence=ConfidenceLevel.LOW,
@@ -1852,7 +1850,7 @@ class SynthesisLead(BaseAgent):
         try:
             return await self._run_synthesis(engagement_id, question, dag)
         except Exception as e:
-            logger.error("Synthesis run() failed: %s — returning degraded report", e, exc_info=True)
+            logger.error("Synthesis run() failed: %s, returning degraded report", e, exc_info=True)
             await self._escalate(
                 issue=f"Synthesis failed: {e!s:.200}",
                 suggested_action="Use degraded report; check logs for root cause",
@@ -1867,7 +1865,7 @@ class SynthesisLead(BaseAgent):
         question: str,
         dag: WorkflowDAG | None,
     ) -> FinalReport:
-        """Internal synthesis logic — called by run() with try/except guard."""
+        """Internal synthesis logic, called by run() with try/except guard."""
 
         # Subscribe to bus channels — CORE role, but specifically needs
         # FINDINGS (to collect specialist output) and HANDOFF (for fact
@@ -1884,7 +1882,7 @@ class SynthesisLead(BaseAgent):
         all_findings = self._get_all_findings()
         if not all_findings:
             await self._escalate(
-                issue="No specialist findings collected — cannot synthesize",
+                issue="No specialist findings collected, cannot synthesize",
                 suggested_action="Check that specialists completed and published findings",
             )
             # Return a minimal report — INVESTIGATE here is a placeholder,
@@ -2059,7 +2057,7 @@ class SynthesisLead(BaseAgent):
             # Max iterations reached — deliver with current report
             await self._transition(
                 AgentState.DONE,
-                f"Max quality iterations ({self._max_quality_iterations}) reached — delivering best version",
+                f"Max quality iterations ({self._max_quality_iterations}) reached, delivering best version",
             )
             return self._current_report
 

@@ -54,6 +54,7 @@ from hyperion.schemas.agents import (
     SubAgentSpec,
     ToolName,
 )
+from hyperion.output.typography import PROMPT_TYPOGRAPHY_RULE
 from hyperion.schemas.models import KeyFinding
 
 logger = logging.getLogger(__name__)
@@ -554,7 +555,11 @@ class BaseAgent(ABC):
         The agent's system prompt is always prepended. If
         system_prompt_override is provided, it replaces the default.
         """
-        system = system_prompt_override or self.system_prompt
+        # P2-32 generation layer: the shared typography rule is prepended to
+        # EVERY dispatched prompt (base prompt and overrides alike), so the
+        # em/en dash ban is stated once here, not 20 times across specs.
+        base_prompt = system_prompt_override or self.system_prompt
+        system = f"{PROMPT_TYPOGRAPHY_RULE}\n\n{base_prompt}"
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         if conversation_history:

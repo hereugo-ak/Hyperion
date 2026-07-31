@@ -129,6 +129,7 @@ class TemplateRenderer:
             from jinja2 import Environment, select_autoescape
 
             from hyperion.output.display import humanize
+            from hyperion.output.typography import sanitize_typography
 
             # P2-10: humanize is the environment FINALIZER, not an opt-in
             # filter. The old clean_dict_repr filter was applied to exactly 1
@@ -137,11 +138,19 @@ class TemplateRenderer:
             # finalize hook, humanize runs on every interpolated value, so no
             # field can be forgotten. On an unparseable repr it raises rather
             # than truncating and shipping.
+            #
+            # P2-32: the finalizer ALSO sanitizes typography. humanize runs
+            # first (repr -> prose), then sanitize_typography removes every
+            # em/en dash model output or a leaked string literal carries. This
+            # catches dashes regardless of prompt compliance.
+            def _finalize(value: Any) -> str:
+                return sanitize_typography(humanize(value))
+
             self._env = Environment(
                 autoescape=select_autoescape(["html", "xml"]),
                 trim_blocks=True,
                 lstrip_blocks=True,
-                finalize=humanize,
+                finalize=_finalize,
             )
             # Add custom filters
             self._env.filters["format_currency"] = self._format_currency
