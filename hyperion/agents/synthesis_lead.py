@@ -62,6 +62,7 @@ from typing import Any
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
+from hyperion.output.dedup import dedup_paragraphs
 from hyperion.output.display import DisplayError, display_value
 from hyperion.output.page_budget import plan_budget
 from hyperion.router.budget import TaskUrgency
@@ -1308,6 +1309,11 @@ class SynthesisLead(BaseAgent):
                     f"'{_section_title(agent)}' ({agent}); section omitted and "
                     f"its question declared in limitations."
                 )
+
+            # P2-13: assembly-time dedup. Multiple findings can carry the same
+            # generated content; a repeated paragraph of >= 12 words is
+            # dropped, keeping the first occurrence.
+            section_body = dedup_paragraphs(section_body)
 
             return AnalysisSection(
                 id=f"section_{agent}",
