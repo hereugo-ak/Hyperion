@@ -52,9 +52,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 from typing import Any
 
 from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
+from hyperion.infra.provenance import banner as _provenance_banner
+from hyperion.infra.provenance import collect_async as _collect_provenance_async
+from hyperion.infra.provenance import refusal_reason as _provenance_refusal
 from hyperion.infra.services import (
     FLARESOLVERR_IMAGE,
     FLARESOLVERR_PORT,
@@ -84,6 +88,7 @@ __all__ = [
     "SEARXNG_IMAGE",
     "SEARXNG_PORT",
     "BootStep",
+    "ProvenanceRefusal",
     "reset_process_state",
     "run_boot_sequence",
     "start_services",
@@ -121,6 +126,17 @@ WARN = "warn"
 FAIL = "fail"
 
 
+class ProvenanceRefusal(RuntimeError):
+    """W-01: the shell refuses to boot in an RC-1 configuration.
+
+    Raised by run_boot_sequence when the loaded build is a site-packages
+    copy shadowing a git checkout on sys.path, or when stale .pyc bytecode
+    sits under the package directory — the two mechanisms that served
+    pre-fix output for fifteen correct commits. This is a hard stop, never
+    a warning.
+    """
+
+
 class BootStep:
     """One step in the boot sequence."""
 
@@ -149,6 +165,34 @@ async def run_boot_sequence(
     """
     results: dict[str, Any] = {}
     step_num = 0
+
+    # ── W-01: build provenance, before ANY service bring-up ─────────────
+    # RC-1: a merged fix is not a running fix. Fifteen correct commits
+    # produced pre-fix output because the shell booted a site-packages
+    # shadow with stale bytecode and nobody could see it. The banner is
+    # printed unconditionally (never a log line at INFO level), and the two
+    # RC-1 configurations are a hard refusal, not a warning.
+    from hyperion.config import get_settings
+
+    # collect_async: this function runs inside the Textual event loop, so
+    # the sync wrapper would have fallen back to a SHA-less snapshot. The
+    # async path runs the bounded git subprocesses and caches the snapshot
+    # for the render path's XMP stamp.
+    provenance = await _collect_provenance_async()
+    banner_text = _provenance_banner(provenance)
+    # Banner goes to the transcript AND stderr — it must be on screen even
+    # if the TUI crashes before the first frame paints.
+    print(banner_text, file=sys.stderr, flush=True)
+    log.add_entry("BUILD", banner_text, spinner=False)
+    refusal = _provenance_refusal(provenance)
+    if refusal is not None and get_settings().provenance_strict:
+        print(f"BOOT REFUSED — {refusal}", file=sys.stderr, flush=True)
+        raise ProvenanceRefusal(refusal)
+    results["build"] = (
+        OK,
+        f"build {provenance.git_sha or 'unknown'} "
+        f"{'+dirty ' if provenance.git_dirty else ''}{provenance.install_mode}",
+    )
 
     def _start_step(badge: str, label: str, spinner: bool = True) -> BootStep:
         nonlocal step_num

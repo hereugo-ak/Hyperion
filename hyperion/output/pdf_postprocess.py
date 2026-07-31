@@ -177,7 +177,16 @@ def postprocess_pdf(
             xmp["dc:description"] = metadata.subject
             if metadata.keywords:
                 xmp["pdf:Keywords"] = metadata.keywords
-            xmp["pdf:Producer"] = "HYPERION (WeasyPrint + pikepdf post-pass)"
+            # W-01 step 6 (RC-1): stamp the build SHA into the producer so an
+            # uploaded artifact carries the commit it was built from. Had this
+            # existed, the pre-merge artifact would have visibly predated the
+            # merge and the diagnosis would have taken thirty seconds, not an
+            # afternoon. Reads the provenance snapshot cached at boot — never
+            # re-runs git per render.
+            from hyperion.infra.provenance import current as _provenance_current
+
+            _sha = _provenance_current().git_sha or "unknown"
+            xmp["pdf:Producer"] = f"HYPERION {_sha} (WeasyPrint + pikepdf post-pass)"
             xmp["xmp:CreateDate"] = now
             xmp["xmp:ModifyDate"] = now
         result.metadata_fields = ["pdfaid", "dc:title", "dc:creator", "dc:description"]

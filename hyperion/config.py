@@ -757,6 +757,14 @@ class Settings(BaseSettings):
     # ── Engagement ──
     max_engagement_duration: int = 900
 
+    # W-01: build provenance strictness at shell boot (RC-1). When True
+    # (default), the shell refuses to boot from a site-packages copy that
+    # shadows a git checkout on sys.path, or with stale .pyc bytecode under
+    # the package directory — the two configurations that served pre-fix
+    # output for fifteen correct commits. Set HYPERION_PROVENANCE_STRICT=false
+    # only for packaged installs where neither case can occur.
+    provenance_strict: bool = True
+
     # ── Stealth Layer 3 (P8 GAP-3): proxy/UA rotation, off by default ──
     stealth_proxy_enabled: bool = False
     stealth_proxy_url: str = ""  # e.g. "http://user:pass@proxy:8080"
