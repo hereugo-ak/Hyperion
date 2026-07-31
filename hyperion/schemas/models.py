@@ -2048,12 +2048,20 @@ class SourceCollection(BaseModel):
 
 
 class ClaimStatus(str, Enum):
-    """Verification status for a factual claim (§4.5, Agent 16)."""
+    """Verification status for a factual claim (§4.5, Agent 16).
+
+    P2-19 separated two states the old detector conflated: ``UNVERIFIABLE``
+    ("we could not check this: no fetched source content") is distinct from
+    ``HALLUCINATED`` ("the cited source demonstrably does not support this
+    claim"). Only the latter enters the hallucination count (P2-G20).
+    """
 
     VERIFIED = "verified"          # 2+ independent sources agree
     PLAUSIBLE = "plausible"        # 1 source supports, no contradiction
     UNVERIFIED = "unverified"      # No independent source found
     CONTRADICTED = "contradicted"  # Sources disagree
+    UNVERIFIABLE = "unverifiable"  # No fetched content to check against
+    HALLUCINATED = "hallucinated"  # Source exists but does not support claim
 
 
 class ClaimType(str, Enum):
