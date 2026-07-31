@@ -31,6 +31,8 @@ tier (up or down based on task urgency).
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, field
 from typing import Any
 
 from hyperion.config import (
@@ -75,6 +77,42 @@ _TIER_DOWNGRADE: dict[ModelTier, ModelTier] = {
     ModelTier.DEEP: ModelTier.STRONG,
     ModelTier.STRONG: ModelTier.STANDARD,
 }
+
+# W-17: failure classification driving the failover policy.
+# - auth (401/403): dead credential. The provider opens its circuit, the
+#   budget charge is refunded (no real quota was consumed), and the provider
+#   is never retried within the same complete() call.
+# - rate_limit (429): the wait gate mispredicted capacity. A cooldown is
+#   recorded in the wait gate and the tier walk STOPS — failing over
+#   instantly is how one provider's 429 becomes every provider's 429.
+# - transient (5xx/timeout): retry the SAME provider once with a short
+#   backoff, then fail over.
+# - other: fail over to the next unvisited candidate.
+_TRANSIENT_STATUS_CODES = frozenset({408, 425, 500, 502, 503, 504})
+_TRANSIENT_BACKOFF_SECONDS = 1.0
+
+
+@dataclass
+class RouterAttempt:
+    """W-17: shared failover context for one complete() invocation.
+
+    Before this existed, failover state was a single ``exclude_provider``
+    argument threaded through a mutual recursion between ``_dispatch`` and
+    ``_try_next_candidate``: no visited set, no depth counter, no total
+    attempt budget. Five failing providers could recurse without bound,
+    re-dispatching already-failed providers and consuming daily budget per
+    frame. One RouterAttempt is threaded through _try_tier,
+    _try_tier and _dispatch for the whole call chain, so every
+    provider is dispatched at most once (twice counting the explicit
+    transient retry) and the chain terminates at a hard ceiling.
+    """
+
+    max_attempts: int
+    visited: set[ProviderType] = field(default_factory=set)
+    attempts: int = 0
+
+    def exhausted(self) -> bool:
+        return self.attempts >= self.max_attempts
 
 # D19/D20/D21: Provider priority per tier — controls which provider is tried
 # first within a tier. Providers not listed are appended in arbitrary order.
@@ -387,6 +425,13 @@ class LLMRouter:
         # P2-29: track every tier walked so a total failure can report it
         tiers_attempted: list[ModelTier] = [tier]
 
+        # W-17: ONE attempt context for the entire failover chain — the
+        # requested tier, the adjacency walk, and the explicit downgrade
+        # share one visited set and one attempt ceiling. Sized to the real
+        # provider count: every provider may be tried once plus one retry
+        # each, never more.
+        attempt = RouterAttempt(max_attempts=max(1, len(self._providers)) * 2)
+
         # Try the requested tier first
         response = await self._try_tier(
             tier=tier,
@@ -397,10 +442,18 @@ class LLMRouter:
             temperature=temperature,
             max_tokens=max_tokens,
             response_format=response_format,
+            attempt=attempt,
         )
 
         if response is not None and response.success:
             self._response_cache.set(tier, messages, response, temperature, max_tokens)
+            return response
+
+        if response is not None and response.status_code == 429:
+            # W-17: a 429 halts the ENTIRE complete() call, not just one
+            # tier's loop. Walking adjacent tiers after a rate limit is how
+            # one provider's 429 becomes every provider's 429 — the caller
+            # backs off and retries after the recorded cooldown.
             return response
 
         # If the requested tier failed, try adjacent tiers (§3.3)
@@ -424,10 +477,17 @@ class LLMRouter:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format=response_format,
+                attempt=attempt,
             )
 
             if response is not None and response.success:
+                # W-17: mark the tier downgrade so downstream reporting can
+                # state that a weaker model than requested produced this.
+                response.downgraded = True
                 self._response_cache.set(tier, messages, response, temperature, max_tokens)
+                return response
+            if response is not None and response.status_code == 429:
+                # W-17: halt the whole call on rate limit (see above).
                 return response
 
         # D9: If all adjacent tiers exhausted, try explicit downgrade.
@@ -452,9 +512,14 @@ class LLMRouter:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format=response_format,
+                attempt=attempt,
             )
             if response is not None and response.success:
+                response.downgraded = True
                 self._response_cache.set(tier, messages, response, temperature, max_tokens)
+                return response
+            if response is not None and response.status_code == 429:
+                # W-17: halt the whole call on rate limit (see above).
                 return response
 
         # All tiers exhausted — return the last error response
@@ -523,140 +588,149 @@ class LLMRouter:
         temperature: float,
         max_tokens: int | None,
         response_format: dict[str, str] | None,
+        attempt: RouterAttempt | None = None,
     ) -> RouterResponse | None:
         """Try to execute a request at a specific tier.
 
-        Handles the wait gate selection, wait-for-capacity, dispatch,
-        and failover within the tier. Returns None if no candidates exist.
+        W-17: this is now ONE explicit loop over the priority-sorted,
+        ``attempt.visited``-filtered providers of the tier — one call frame
+        per attempt, with ``max_attempts`` checked at the single dispatch
+        point. The old second pass (``exclude_provider=None``) re-dispatched
+        every provider the first pass had just failed, and the mutual
+        recursion with ``_try_next_candidate`` had no depth bound; both are
+        deleted. Failover decisions are classification-driven (see
+        ``_dispatch``); a 429 halts the walk immediately.
+
+        Standalone callers (the speculative racer) may omit ``attempt`` —
+        a fresh bounded context is created so their failover is capped too.
 
         D19/D20/D21: Providers are tried in priority order per tier.
+        Returns the last failure response when every candidate fails, or
+        None when no candidate could even be selected.
         """
-        available_providers = self.get_available_providers(tier, urgency)
-
-        if not available_providers:
-            return None
-
-        # D19/D20/D21: Try providers in priority order
-        ordered_providers = self._sort_providers_by_priority(tier, available_providers)
-
-        for provider_type in ordered_providers:
-            # P2-30: select the candidate FIRST, then skip the hot candidate
-            # rather than the whole provider. A saturated Gemma window must
-            # not disable the Gemini model on the same provider.
-            candidate, wait_seconds = self.wait_gate.select_with_wait(
-                tier=tier,
-                estimated_tokens=estimated_tokens,
-                available_providers={provider_type},
+        if attempt is None:
+            attempt = RouterAttempt(
+                max_attempts=max(1, len(self._providers)) * 2
             )
 
-            if candidate is None:
-                continue
+        last_failure: RouterResponse | None = None
 
-            # Skip a predicted-hot candidate; this provider's other models
-            # and the remaining providers stay eligible.
-            if self._candidate_rate_limited(candidate):
-                continue
+        while not attempt.exhausted():
+            available_providers = self.get_available_providers(tier, urgency)
 
-            # If we need to wait, do so
-            if wait_seconds > 0:
-                if wait_seconds > self.settings.wait_gate.medium_wait_threshold:
-                    # > 30s — skip this provider, try next
+            if not available_providers:
+                break
+
+            # D19/D20/D21: priority order, minus every provider already
+            # dispatched during this complete() call (W-17 step 2/3).
+            ordered_providers = [
+                p
+                for p in self._sort_providers_by_priority(tier, available_providers)
+                if p not in attempt.visited
+            ]
+            if not ordered_providers:
+                break
+
+            dispatched = False
+            for provider_type in ordered_providers:
+                if attempt.exhausted():
+                    break
+
+                # P2-30: select the candidate FIRST, then skip the hot candidate
+                # rather than the whole provider. A saturated Gemma window must
+                # not disable the Gemini model on the same provider.
+                candidate, wait_seconds = self.wait_gate.select_with_wait(
+                    tier=tier,
+                    estimated_tokens=estimated_tokens,
+                    available_providers={provider_type},
+                )
+
+                if candidate is None:
                     continue
-                waited = await self.wait_gate.wait_for_capacity(candidate, estimated_tokens)
-                if not waited:
-                    # Capacity didn't open up — try next provider
+
+                # Skip a predicted-hot candidate; this provider's other models
+                # and the remaining providers stay eligible.
+                if self._candidate_rate_limited(candidate):
                     continue
 
-            # Dispatch the request
-            response = await self._dispatch(
-                candidate=candidate,
-                messages=messages,
-                estimated_tokens=estimated_tokens,
-                agent_name=agent_name,
-                urgency=urgency,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=response_format,
-            )
+                # If we need to wait, do so
+                if wait_seconds > 0:
+                    if wait_seconds > self.settings.wait_gate.medium_wait_threshold:
+                        # > 30s — skip this provider, try next
+                        continue
+                    waited = await self.wait_gate.wait_for_capacity(candidate, estimated_tokens)
+                    if not waited:
+                        # Capacity didn't open up — try next provider
+                        continue
 
-            if response is not None and response.success:
-                return response
+                dispatched = True
+                response = await self._dispatch(
+                    candidate=candidate,
+                    messages=messages,
+                    estimated_tokens=estimated_tokens,
+                    agent_name=agent_name,
+                    urgency=urgency,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format=response_format,
+                    attempt=attempt,
+                )
 
-        # All providers in this tier exhausted — try remaining without priority filter
-        return await self._try_next_candidate(
-            tier=tier,
-            messages=messages,
-            estimated_tokens=estimated_tokens,
-            agent_name=agent_name,
-            urgency=urgency,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format=response_format,
-            exclude_provider=None,  # Don't exclude any — we already tried all above
-        )
+                if response is None:
+                    # Attempt budget exhausted at the dispatch gate.
+                    break
+                if response.success:
+                    return response
 
-    async def _try_next_candidate(
+                last_failure = response
+                if response.status_code == 429:
+                    # W-17: a 429 means the wait gate mispredicted capacity.
+                    # The provider already recorded its cooldown; failing
+                    # over instantly is how one provider's 429 becomes every
+                    # provider's 429. Halt the walk — the caller backs off.
+                    return response
+                # auth/transient/other failures: the provider is now in
+                # attempt.visited (and possibly circuit-open); the loop
+                # moves to the next unvisited provider.
+
+            if not dispatched:
+                # Every remaining provider was unselectable (no candidate,
+                # hot, or too long a wait) — re-querying availability will
+                # not change that within this call.
+                break
+
+        return last_failure
+
+    def _record_served(
         self,
-        tier: ModelTier,
-        messages: list[dict[str, str]],
+        candidate: ProviderCandidate,
+        response: RouterResponse,
         estimated_tokens: int,
         agent_name: str,
-        urgency: TaskUrgency,
-        temperature: float,
-        max_tokens: int | None,
-        response_format: dict[str, str] | None,
-        exclude_provider: ProviderType | None = None,
-    ) -> RouterResponse | None:
-        """Try ALL remaining candidates in the tier, excluding the failed provider.
-
-        D9 fix: loops through every available provider in the tier, skipping
-        predicted-rate-limited ones, until one succeeds or all are exhausted.
-        D19/D20/D21: providers are sorted by tier priority.
-        """
-        available_providers = self.get_available_providers(tier, urgency)
-        if exclude_provider is not None:
-            available_providers.discard(exclude_provider)
-
-        if not available_providers:
-            return None
-
-        # D19/D20/D21: Try providers in priority order
-        ordered_providers = self._sort_providers_by_priority(tier, available_providers)
-
-        for provider_type in ordered_providers:
-            # P2-30: select the candidate FIRST, then skip the hot candidate
-            # rather than the whole provider.
-            candidate, wait_seconds = self.wait_gate.select_with_wait(
-                tier=tier,
-                estimated_tokens=estimated_tokens,
-                available_providers={provider_type},
-            )
-
-            if candidate is None:
-                continue
-
-            # Skip a predicted-hot candidate, not the provider.
-            if self._candidate_rate_limited(candidate):
-                continue
-
-            if wait_seconds > 0 and wait_seconds <= self.settings.wait_gate.medium_wait_threshold:
-                await self.wait_gate.wait_for_capacity(candidate, estimated_tokens)
-
-            response = await self._dispatch(
-                candidate=candidate,
-                messages=messages,
-                estimated_tokens=estimated_tokens,
-                agent_name=agent_name,
-                urgency=urgency,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=response_format,
-            )
-
-            if response is not None and response.success:
-                return response
-
-        return None
+    ) -> None:
+        """Record a served response: wait-gate actuals, estimator
+        calibration, and per-provider token totals. Shared by the primary
+        dispatch and the W-17 transient retry."""
+        self.wait_gate.record_actual_usage(
+            provider=candidate.provider_type,
+            model_name=candidate.model.name,
+            estimated_tokens=estimated_tokens,
+            actual_tokens=response.total_tokens,
+            latency_ms=response.latency_ms,
+        )
+        self.estimator.record_actual(
+            agent_name=agent_name,
+            model_name=candidate.model.name,
+            tier=candidate.model.tier,
+            estimated_tokens=estimated_tokens,
+            actual_tokens=response.total_tokens,
+        )
+        stats = self._token_usage_by_provider.get(candidate.provider_type)
+        if stats is not None:
+            stats["input_tokens"] += response.input_tokens
+            stats["output_tokens"] += response.output_tokens
+            stats["total_tokens"] += response.total_tokens
+            stats["calls"] += 1
 
     async def _dispatch(
         self,
@@ -668,16 +742,33 @@ class LLMRouter:
         temperature: float,
         max_tokens: int | None,
         response_format: dict[str, str] | None,
-    ) -> RouterResponse:
-        """Dispatch a request to a provider and record usage.
+        attempt: RouterAttempt,
+    ) -> RouterResponse | None:
+        """Dispatch ONE attempt to a provider and record usage.
 
-        This is where the actual API call happens. After the response:
-        1. Record dispatch in the wait gate (RPM/TPM/RPD tracking)
-        2. Record consumption in the budget planner
-        3. Record actual token usage for calibration
-        4. If the request failed, attempt failover to the next candidate
+        W-17: one call frame per attempt — the recursive failover into
+        ``_try_next_candidate`` is gone; ``_try_tier``'s loop owns failover.
+        Failure handling is classification-driven from the HTTP status:
+
+        - 401/403: refund the budget charge (an auth rejection never
+          consumed real provider quota) and return. The provider already
+          opened its circuit and is in ``attempt.visited``, so it is never
+          retried within this complete() call.
+        - 429: the provider's health tracker already recorded the cooldown;
+          return the response so ``_try_tier`` halts the walk instead of
+          spreading the rate limit across providers.
+        - transient (408/425/5xx/timeout): ONE retry on the same provider
+          after a short backoff, then fail over.
+        - anything else: fail over to the next unvisited candidate.
+
+        Returns None when the attempt budget is already exhausted.
         """
+        if attempt.exhausted():
+            return None
+
         provider = self._providers[candidate.provider_type]
+        attempt.attempts += 1
+        attempt.visited.add(candidate.provider_type)
 
         # Record dispatch BEFORE the call (so concurrent requests see the capacity)
         self.wait_gate.record_dispatch(
@@ -702,44 +793,63 @@ class LLMRouter:
         )
 
         if response.success:
-            # Record actual usage for calibration
-            self.wait_gate.record_actual_usage(
+            self._record_served(candidate, response, estimated_tokens, agent_name)
+            return response
+
+        status = response.status_code
+
+        if status in (401, 403):
+            # W-17 step 6: a dead credential never consumed real quota —
+            # charging it is how a revoked key silently burns a provider's
+            # entire RPD under retry. Refund ONLY this class (see
+            # ProviderBudget.refund's warning against blanket refunds).
+            self.budget_planner.refund(
+                provider=candidate.provider_type,
+                model_name=candidate.model.name,
+            )
+            return response
+
+        if status == 429:
+            return response
+
+        is_transient = status in _TRANSIENT_STATUS_CODES or (
+            status is None
+            and response.error is not None
+            and ("timeout" in response.error.lower() or "timed out" in response.error.lower())
+        )
+        if is_transient and not attempt.exhausted():
+            # W-17 step 5: exactly ONE same-provider retry with backoff.
+            await asyncio.sleep(_TRANSIENT_BACKOFF_SECONDS)
+            attempt.attempts += 1
+            self.wait_gate.record_dispatch(
                 provider=candidate.provider_type,
                 model_name=candidate.model.name,
                 estimated_tokens=estimated_tokens,
-                actual_tokens=response.total_tokens,
-                latency_ms=response.latency_ms,
             )
-            self.estimator.record_actual(
-                agent_name=agent_name,
+            self.budget_planner.consume(
+                provider=candidate.provider_type,
                 model_name=candidate.model.name,
-                tier=candidate.model.tier,
-                estimated_tokens=estimated_tokens,
-                actual_tokens=response.total_tokens,
+                urgency=urgency,
             )
-            # Track per-provider token usage for end-of-run summary
-            stats = self._token_usage_by_provider.get(candidate.provider_type)
-            if stats is not None:
-                stats["input_tokens"] += response.input_tokens
-                stats["output_tokens"] += response.output_tokens
-                stats["total_tokens"] += response.total_tokens
-                stats["calls"] += 1
-            return response
+            retry = await provider.complete(
+                model=candidate.model.name,
+                messages=messages,
+                tier=candidate.model.tier,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
+            if retry.success:
+                self._record_served(candidate, retry, estimated_tokens, agent_name)
+                return retry
+            if retry.status_code in (401, 403):
+                self.budget_planner.refund(
+                    provider=candidate.provider_type,
+                    model_name=candidate.model.name,
+                )
+            return retry
 
-        # Request failed — attempt failover within the tier
-        # Don't failover on 429 (wait gate should prevent these, but if one
-        # slips through, the provider is in cooldown and we try the next)
-        return await self._try_next_candidate(
-            tier=candidate.model.tier,
-            messages=messages,
-            estimated_tokens=estimated_tokens,
-            agent_name=agent_name,
-            urgency=urgency,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format=response_format,
-            exclude_provider=candidate.provider_type,
-        ) or response
+        return response
 
     def get_tpm_status(self) -> dict[ProviderType, dict[str, float]]:
         """Get TPM usage percentages for all providers — for TUI display (§8.6)."""

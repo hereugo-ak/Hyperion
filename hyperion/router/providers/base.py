@@ -14,6 +14,7 @@ health checking, error classification, and response normalization.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -237,6 +238,16 @@ class RouterResponse:
     error: str | None = None
     raw_response: Any | None = None
     failure: RouterFailure | None = None
+    # W-17: the HTTP status of a failed call, when known. The router's
+    # failover policy branches on this (401/403 circuit+refund, 429
+    # cooldown, 5xx/timeout transient retry); before this field existed
+    # the router had nothing to classify on and retried everything alike.
+    status_code: int | None = None
+    # W-17: True when this response was served by an adjacent/downgrade
+    # tier after the requested tier failed transiently. Downstream
+    # reporting must be able to state that a weaker model produced the
+    # analysis than the one requested.
+    downgraded: bool = False
 
     def __post_init__(self) -> None:
         """Enforce the `content: str` contract at the type boundary.
@@ -364,15 +375,24 @@ class BaseProvider:
             error_str = str(e)
             latency = (time.time() - start) * 1000
 
+            # W-17: surface the HTTP status as a first-class field so the
+            # router can classify the failure instead of re-parsing strings.
+            # The openai SDK exceptions carry .status_code; fall back to a
+            # bounded regex over the message for non-SDK exceptions.
+            status_code = getattr(e, "status_code", None)
+            if not isinstance(status_code, int):
+                match = re.search(r"\b([45]\d\d)\b", error_str)
+                status_code = int(match.group(1)) if match else None
+
             lower = error_str.lower()
-            if "401" in error_str or "403" in error_str or "api key" in lower or "authentication" in lower or "unauthorized" in lower:
+            if status_code in (401, 403) or "401" in error_str or "403" in error_str or "api key" in lower or "authentication" in lower or "unauthorized" in lower:
                 # P2-29: a dead key is NOT a rate limit. Stamping 429 on a
                 # credential failure told the operator to wait out a quota
                 # window that did not exist for two entire engagements.
                 self.health.record_auth_error()
-            elif "429" in error_str or "rate_limit" in lower:
+            elif status_code == 429 or "429" in error_str or "rate_limit" in lower:
                 self.health.record_429()
-            elif "500" in error_str or "503" in error_str or "server_error" in lower:
+            elif status_code in (500, 502, 503, 504) or "500" in error_str or "503" in error_str or "server_error" in lower:
                 self.health.record_500()
             elif "timeout" in lower or "timed out" in lower:
                 self.health.record_timeout()
@@ -387,6 +407,7 @@ class BaseProvider:
                 latency_ms=latency,
                 success=False,
                 error=error_str,
+                status_code=status_code,
             )
 
     async def health_check(self) -> bool:

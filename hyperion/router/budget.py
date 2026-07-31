@@ -142,6 +142,24 @@ class ProviderBudget:
             self.model_consumption.get(model_name, 0) + count
         )
 
+    def refund(self, model_name: str, count: int = 1) -> None:
+        """W-17: return count requests to the budget after a failure that
+        never consumed real provider quota.
+
+        A 401/403 auth failure never reached a working model — charging it
+        against the daily budget is how a revoked key silently burns a
+        provider's entire RPD under retry. Only the router calls this, and
+        only for unserved failures; refunding a served request would let a
+        flaky-but-working model retry for free.
+        """
+        self._check_reset()
+        self.consumed = max(0, self.consumed - count)
+        remaining = self.model_consumption.get(model_name, 0) - count
+        if remaining > 0:
+            self.model_consumption[model_name] = remaining
+        else:
+            self.model_consumption.pop(model_name, None)
+
     def remaining_for_model(self, model: ModelSpec) -> int | None:
         """Estimate remaining RPD for a specific model.
 
@@ -211,6 +229,16 @@ class DailyBudgetPlanner:
     ) -> None:
         """Record that a request has been dispatched to a provider+model."""
         self._budgets[provider].consume(model_name)
+
+    def refund(
+        self,
+        provider: ProviderType,
+        model_name: str,
+    ) -> None:
+        """W-17: return one request to the budget after an unserved failure
+        (see ProviderBudget.refund). Called only for failures that provably
+        never consumed provider quota (auth rejections)."""
+        self._budgets[provider].refund(model_name)
 
     def filter_available_providers(
         self,
