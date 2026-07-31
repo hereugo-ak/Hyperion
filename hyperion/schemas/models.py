@@ -25,10 +25,93 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+
+import re as _re
+
+# P2-09: a serialized-object repr (``{'name': ...}`` / ``{"name": ...}``) must
+# be unrepresentable in any client-facing string field. Matches the same
+# pattern as ``hyperion.output.display.OBJECT_REPR_RE``. Construction-time
+# enforcement: fail at the Pydantic layer, not at render.
+_OBJECT_REPR_RE = _re.compile(r"\{['\"]\w+['\"]\s*:")
+
+
+def _reject_object_repr(value: Any) -> Any:
+    """field_validator body: raise if a string field holds a Python object repr."""
+    if isinstance(value, str) and _OBJECT_REPR_RE.search(value):
+        raise ValueError(
+            "client-facing text may not contain a serialized object repr "
+            f"({'{'}'name': ...); present it with display_value() instead: "
+            f"{value[:60]!r}"
+        )
+    return value
+
+
+# P2-16: banned filler / placeholder phrases. Kept in lockstep with
+# QualityGate._BANNED_FILLER (quality_gate.py) -- the schema layer makes the
+# strings unrepresentable at construction, so the render-time scan can never
+# fire on something the system itself wrote.
+_BANNED_FILLER_PHRASES: tuple[str, ...] = (
+    "no specific implications stated",
+    "no competitors identified",
+    "no specific implications could be derived",
+    "so what? no specific",
+    "insufficient evidence to state implications",
+)
+
+
+def _reject_banned_filler(value: Any) -> Any:
+    """field_validator body: raise if a string field holds a placeholder.
+
+    A gap in the analysis is declared via AnalysisGap and the closure loop
+    (P2-16), never by writing a default string into client content.
+    """
+    if isinstance(value, str):
+        lowered = value.lower()
+        for phrase in _BANNED_FILLER_PHRASES:
+            if phrase in lowered:
+                raise ValueError(
+                    "placeholder text is unrepresentable in client content "
+                    f"({phrase!r}); raise an AnalysisGap and run the "
+                    f"gap-closure loop instead: {value[:60]!r}"
+                )
+    return value
+
+
+class AnalysisGap(BaseModel):
+    """A specific, unanswered analytical question (P2-16).
+
+    The gap object is the policy replacement for placeholder strings: every
+    site that used to emit a default string (``Insufficient evidence to state
+    implications ...``) raises one of these instead. The gap-closure loop
+    (owned by the Engagement Director, between fact check and quality gate)
+    attempts to answer it in up to 3 rounds. If a gap survives all rounds,
+    the field is OMITTED from the report and the question is recorded in
+    ``FinalReport.limitations`` -- the omission is honest and invisible,
+    never a filler string.
+    """
+
+    id: str = Field(description="Unique gap identifier")
+    section_id: str = Field(description="Section this gap belongs to")
+    agent: "AgentName" = Field(description="Specialist that owns the gap")
+    field: Literal["key_insight", "body", "implications", "sources", "datapoint"] = Field(
+        description="Which section field the gap blocks"
+    )
+    question: str = Field(description="The specific question that must be answered")
+    attempts: int = Field(default=0, description="Closure rounds attempted so far")
+    resolved: bool = Field(default=False, description="Whether the gap has been closed")
+    resolution: str | None = Field(default=None, description="The answer, once resolved")
+
+
+# AgentName lives in agents.py, which does not import this module, so the
+# import is cycle-free; done here (after the class) to keep the schema header
+# stable for the tooling that greps the top of the file.
+from hyperion.schemas.agents import AgentName  # noqa: E402
+
+AnalysisGap.model_rebuild()
 
 
 def clean_url(url: str) -> str:
@@ -77,6 +160,24 @@ class ConfidenceLevel(str, Enum):
 # ─────────────────────────────────────────────────────────────────────────────
 # Source — a cited source with credibility scoring (§5.5, Agent 15)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class SourceType(str, Enum):
+    """What kind of publication a source URL points at (P2-27).
+
+    Assigned by ``hyperion.tools.source_classifier.classify_source_type``.
+    A source whose type cannot be determined is ``UNKNOWN`` and scores
+    accordingly — never a credible default. ``GOVERNMENT`` is reserved for
+    ``.gov``-class hosts (P2-G26).
+    """
+
+    GOVERNMENT = "government"
+    NEWS = "news"
+    INDUSTRY = "industry"
+    ACADEMIC = "academic"
+    REFERENCE = "reference"
+    BLOG = "blog"
+    UNKNOWN = "unknown"
 
 
 class SourceCredibility(str, Enum):
@@ -155,6 +256,16 @@ class KeyFinding(BaseModel):
     implications: str | None = Field(default=None, description="'So what?' — what does this mean "
         "for the recommendation?")
     timestamp: datetime = Field(default_factory=datetime.now)
+
+    # P2-09: serialized object reprs are unrepresentable at construction.
+    _reject_reprs = field_validator("content", "title", "implications")(
+        _reject_object_repr
+    )
+
+    # P2-16: a placeholder is unrepresentable; a gap is an AnalysisGap.
+    _reject_filler = field_validator("content", "title", "implications")(
+        _reject_banned_filler
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -307,11 +418,25 @@ class AnalysisSection(BaseModel):
     charts: list[str] = Field(default_factory=list, description="Chart image paths (300 DPI PNG)")
     images: list[str] = Field(default_factory=list, description="Unsplash image paths for this "
         "section")
-    implications: str = Field(description="'So what?' — what does this mean for the "
-        "recommendation?")
+    # P2-16: omittable. A section whose 'so what' could not be derived omits
+    # the box entirely (honest, invisible) rather than shipping a placeholder.
+    implications: str | None = Field(
+        default=None,
+        description="'So what?' — what does this mean for the recommendation?",
+    )
     sources: list[Source] = Field(default_factory=list, description="All sources cited in this "
         "section")
     confidence: ConfidenceLevel = Field(description="Confidence level for this section's analysis")
+
+    # P2-09: serialized object reprs are unrepresentable at construction.
+    _reject_reprs = field_validator(
+        "body", "key_insight", "implications", "title"
+    )(_reject_object_repr)
+
+    # P2-16: a placeholder is unrepresentable; a gap is an AnalysisGap.
+    _reject_filler = field_validator(
+        "body", "key_insight", "implications", "title"
+    )(_reject_banned_filler)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1941,12 +2066,20 @@ class SourceCollection(BaseModel):
 
 
 class ClaimStatus(str, Enum):
-    """Verification status for a factual claim (§4.5, Agent 16)."""
+    """Verification status for a factual claim (§4.5, Agent 16).
+
+    P2-19 separated two states the old detector conflated: ``UNVERIFIABLE``
+    ("we could not check this: no fetched source content") is distinct from
+    ``HALLUCINATED`` ("the cited source demonstrably does not support this
+    claim"). Only the latter enters the hallucination count (P2-G20).
+    """
 
     VERIFIED = "verified"          # 2+ independent sources agree
     PLAUSIBLE = "plausible"        # 1 source supports, no contradiction
     UNVERIFIED = "unverified"      # No independent source found
     CONTRADICTED = "contradicted"  # Sources disagree
+    UNVERIFIABLE = "unverifiable"  # No fetched content to check against
+    HALLUCINATED = "hallucinated"  # Source exists but does not support claim
 
 
 class ClaimType(str, Enum):
@@ -2266,6 +2399,22 @@ class QualityScore(BaseModel):
     iteration: int = Field(ge=1, description="Which iteration this is (max 3)")
     gaps: list[str] = Field(default_factory=list, description="Specific gaps identified — "
         "questions unanswered, data missing")
+    # P2-23: integrity blockers are a distinct class from `gaps`. Gaps are
+    # cosmetic or thin-evidence deficits (low score, few sources) that the
+    # `max_iterations_reached` escalation MAY proceed past, with the
+    # limitation declared on the page. Integrity blockers (leaked object,
+    # banned filler, verdict contradiction, dishonest confidence, broken
+    # URL, meta-text) must NEVER be bypassed, regardless of iteration count.
+    # `_detect_hard_blockers()` populates this list; `gaps` still receives a
+    # human-readable copy for the Synthesis Lead's fix-instruction pipeline,
+    # but only `integrity_blockers` is authoritative for the ship/no-ship
+    # decision in `presentation_designer.run()`.
+    integrity_blockers: list[str] = Field(
+        default_factory=list,
+        description="Non-negotiable Layer 4 blockers (leaked object, banned filler, verdict "
+        "contradiction, dishonest confidence, broken URL, meta-text). Never bypassable by "
+        "max_iterations_reached.",
+    )
     critical_dimensions: list[QualityDimensionName] = Field(default_factory=list, description="Dimensions scoring < 3 — forces iteration")
     max_iterations_reached: bool = Field(default=False, description="True if 3 iterations done "
         "without pass")

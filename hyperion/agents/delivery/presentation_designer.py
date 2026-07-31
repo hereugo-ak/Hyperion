@@ -1,5 +1,5 @@
 """
-HYPERION Presentation Designer — Agent 19, the report layout designer.
+HYPERION Presentation Designer, Agent 19, the report layout designer.
 
 This is NOT a generic "put content in a template" agent. This is a specialist
 with 7 proprietary skills:
@@ -17,21 +17,21 @@ with 7 proprietary skills:
   images, and no awkward section breaks. Use `page-break-inside: avoid`.
 - Visual hierarchy: Use size, weight, and color to guide the reader's eye
   through the report. The most important content gets the most visual weight.
-- White space management: Use white space deliberately — not as empty space,
+- White space management: Use white space deliberately, not as empty space,
   but as a design element that improves readability and focus.
 
 It runs on STRONG tier (Nemotron 3 Super 120B) because layout design requires
-strong reasoning — it must understand narrative flow, visual hierarchy, and
+strong reasoning, it must understand narrative flow, visual hierarchy, and
 how to balance text and visuals on each page.
 
-Model Tier: STRONG (Nemotron 3 Super 120B — layout design requires strong
+Model Tier: STRONG (Nemotron 3 Super 120B, layout design requires strong
 reasoning about visual hierarchy and narrative flow)
 Tools: Unsplash (search and select images for cover, section headers, and
        contextual illustrations),
        Plotly (receive chart specifications from Data Visualizer),
        Jinja2 (render the HTML template with report content and layout plan),
        WeasyPrint (generate the final PDF from HTML/CSS)
-Sub-agents: 0 (delivery agent — doesn't spawn sub-agents)
+Sub-agents: 0 (delivery agent, doesn't spawn sub-agents)
 Output: LayoutPlan (page-by-page layout, image selections, chart placements)
 
 Methodology (§4.6, Agent 19):
@@ -46,7 +46,7 @@ Methodology (§4.6, Agent 19):
 
 What makes it the best version of itself:
 It treats layout as design, not as formatting. It doesn't just dump content
-into a template — it makes deliberate decisions about what goes on each page,
+into a template, it makes deliberate decisions about what goes on each page,
 how to balance text and visuals, and how to guide the reader through the
 narrative. It always ensures images are adjacent to their context text. It
 never produces a blank page or an orphaned image.
@@ -66,6 +66,8 @@ from typing import Any
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
+from hyperion.output.confidence import derive_confidence
+from hyperion.output.images import ImageRelevanceGate
 from hyperion.output.page_budget import PAGE_COUNT_MAX, PAGE_COUNT_MIN
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
@@ -206,23 +208,23 @@ CSS_TEMPLATE = """\
    and the header  content: "{{{{section_title}}}}";
    Because CSS_TEMPLATE is passed through str.format(**PDF_PALETTE), the
    quadrupled braces collapse to the LITERAL two-brace text `{{page}}` in the
-   emitted stylesheet. Nothing downstream substitutes it — it is not a Jinja
+   emitted stylesheet. Nothing downstream substitutes it, it is not a Jinja
    variable (the CSS is not rendered through Jinja) and it is not CSS. So every
    single page of every report printed the characters "{{page}}" where the page
    number belonged. Verified by rendering to a real PDF and extracting text:
    18 literal occurrences across 9 pages.
 
    The fix uses genuine CSS paged-media features, which WeasyPrint implements:
-     • counter(page) / counter(pages) — the page number, computed by the
+     • counter(page) / counter(pages), the page number, computed by the
        renderer, so it cannot drift from reality.
-     • string-set + string() — the running section title. `h2` sets a named
+     • string-set + string(), the running section title. `h2` sets a named
        string as it flows; the margin box echoes the most recent value, which
        is exactly the "current section" semantics a consulting report wants.
 
-   D-03 CORRECTION — the previous sentence here claimed "Both degrade
+   D-03 CORRECTION, the previous sentence here claimed "Both degrade
    gracefully in Chromium/Playwright". That was FALSE for the margin boxes:
    Chromium's page.pdf() does NOT implement CSS paged-media margin boxes, so
-   @top-center / @bottom-center are SILENTLY DROPPED — installing Playwright
+   @top-center / @bottom-center are SILENTLY DROPPED, installing Playwright
    alone would yield a PDF with no running heads and no page numbers. The
    comment's own "unsupported string() yields empty" caveat was the tell: it
    described the content expression, not the box. When rendering through
@@ -235,9 +237,12 @@ CSS_TEMPLATE = """\
 @page {{
     size: A4;
     dpi: 300;
+    /* P2-03: paint the margin boxes too. Without this, the 25mm/15mm/19mm
+       margin ring stays white while the canvas is cream. */
+    background: {cream};
     /* Fix 3.4: was 25mm 25mm 25mm 40mm (15mm binding allowance). With the
-       two-column body that made each column 69mm ≈ 42 chars/line — far
-       short of the 52–60 benchmark band. The BCG benchmark itself measures
+       two-column body that made each column 69mm ≈ 42 chars/line, far
+       short of the 52-60 benchmark band. The BCG benchmark itself measures
        L 36pt · R 35pt margins (≈12.5mm): the wide-binding-margin page frame
        was simply incompatible with the two-column measure. Now 19mm left
        (4mm binding allowance over 15mm) · 15mm right → 176mm text width →
@@ -259,10 +264,26 @@ CSS_TEMPLATE = """\
     }}
 }}
 
-/* The cover carries no running header/footer — a title page with a page
+/* The cover carries no running header/footer, a title page with a page
    number and a repeated section name is the clearest tell of an automated
-   document. Both benchmarks leave the cover clean. */
+   document. Both benchmarks leave the cover clean.
+
+   P2-07: full bleed is done the paged-media way, not with an overflowing
+   transform. The first page (and the named `cover` page below) gets
+   margin: 0 so the page content frame IS the 210mm x 297mm trim box, and
+   .cover is sized to exactly that. Before this, the 210mm-wide cover box
+   sat inside a (210 - 19 - 15)mm content frame and bled 328pt off the
+   left edge - a PDF/A and print hazard the pikepdf post-pass cannot clip. */
 @page :first {{
+    margin: 0;
+    @top-center {{ content: none; }}
+    @bottom-center {{ content: none; }}
+}}
+
+/* .cover declares `page: cover`; the named page rule must zero the margins
+   too, or the cover page keeps the body frame and the bleed returns. */
+@page cover {{
+    margin: 0;
     @top-center {{ content: none; }}
     @bottom-center {{ content: none; }}
 }}
@@ -272,7 +293,11 @@ CSS_TEMPLATE = """\
    (MGI: E1, E2 in the exec summary, then 1..n by chapter; BCG: a flat
    EXHIBIT 1..n). Generated by the document, never authored by an agent, so
    exhibits cannot be mis-numbered and insertions renumber automatically. */
-html {{ counter-reset: exhibit; }}
+/* P2-03: the background belongs on the ROOT element - CSS Backgrounds
+   propagates a background to the page canvas only from the root. It used
+   to sit on body, which is inset by the page margin, producing a cream
+   panel floating on a white A4 sheet (white corners on every page). */
+html {{ counter-reset: exhibit; background-color: {cream}; }}
 
 /* ── Body typography ───────────────────────────────────────────────────────
    The body font WAS "JetBrains Mono", monospace. That single declaration was
@@ -286,7 +311,7 @@ html {{ counter-reset: exhibit; }}
    TYPOGRAPHY["body_font"] = "Source Sans 3" carries the comment
    "professional sans, not monospace". The CSS simply ignored it and
    hardcoded the mono stack. Monospace is now confined to where it is
-   genuinely correct — tabular figures and data labels, where fixed advance
+   genuinely correct, tabular figures and data labels, where fixed advance
    width makes digits align in a column.
 
    `font-variant-numeric: oldstyle-nums` is deliberately NOT set on body:
@@ -295,7 +320,8 @@ body {{
     font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
     font-size: 10pt;
     color: {warm_charcoal};
-    background-color: {cream};
+    /* P2-03: transparent - the background lives on html (canvas
+       propagation) and @page (margin boxes), never on body. */
     /* 1.6 was loose for a 10pt sans at this measure; 1.5 tightens the block
        into a more solid grey without crowding descenders. */
     line-height: 1.5;
@@ -311,11 +337,11 @@ body {{
 
 h1, h2, h3, h4 {{
     font-family: "Instrument Serif", Georgia, serif;
-    /* Instrument Serif ships Regular/Italic only — there is no bold weight
+    /* Instrument Serif ships Regular/Italic only, there is no bold weight
        (and only those two faces are vendored, fix 3.1). The UA stylesheet
        defaults headings to bold, which makes WeasyPrint SYNTHESIZE a
        smeared fake-bold from the Regular face. Hierarchy here comes from
-       size (22–36pt display type), not weight — exactly how MGI/BCG set
+       size (22-36pt display type), not weight, exactly how MGI/BCG set
        their serif heads. */
     font-weight: normal;
     color: {warm_charcoal};
@@ -381,7 +407,7 @@ h2 {{
     margin-top: 12pt;
 }}
 
-/* Subsection headers were 14pt BOLD MONOSPACE — visually a code comment.
+/* Subsection headers were 14pt BOLD MONOSPACE, visually a code comment.
    Now small-caps sans: it reads as a label, sits quietly under the serif h2,
    and establishes a third level without competing with it. */
 h3 {{
@@ -407,7 +433,10 @@ table, .kpi-value, .data-table, .chart-data-table {{
     margin: 0;
     padding: 0;
     position: relative;
-    width: 100%;
+    /* P2-07: exactly the A4 trim box, never a transform or relative width
+       that can paint outside it. overflow: hidden stays as the belt and
+       braces clip for absolutely-positioned children. */
+    width: 210mm;
     height: 297mm;
     overflow: hidden;
 }}
@@ -481,6 +510,14 @@ table, .kpi-value, .data-table, .chart-data-table {{
     padding: 12px 16px;
     margin: 16px 0;
     font-size: 11pt;
+    /* P2-04: the callout is the last child after the column block. With a
+       full-height column block it fragmented onto its own page, alone -
+       6 pages of report B measured 25 words at 2.0% ink. Never start a
+       page with it, never split it. */
+    break-before: avoid;
+    page-break-before: avoid;
+    break-inside: avoid;
+    page-break-inside: avoid;
 }}
 
 /* ── KPI strip (BCG convention) ────────────────────────────────────────────
@@ -494,7 +531,7 @@ table, .kpi-value, .data-table, .chart-data-table {{
 
    2. NO hyphenation. `hyphens: auto` is inherited from body, and a centred
       ~3cm card is narrow enough that it fired: the real PDF printed
-      "KEY FIND-INGS" and "CONFID-ENCE" — a word broken across two lines
+      "KEY FIND-INGS" and "CONFID-ENCE", a word broken across two lines
       inside a five-character label. Descriptors must never hyphenate, so
       hyphens/overflow-wrap are explicitly disabled and the label is allowed
       to wrap on whole words only.
@@ -637,17 +674,30 @@ table, .kpi-value, .data-table, .chart-data-table {{
     color: {cream};
 }}
 
-.section-image {{
-    width: 40%;
-    float: right;
-    margin: 0 0 8px 16px;
+/* P2-02: the figure is a column-spanning band INSIDE the multicol
+   .section-body, never a float. A float:right sibling of a column-count
+   container is laid out in the containing block, not the column flow, so
+   WeasyPrint composites the raster over column 2's full-width line boxes
+   (2,773 pt2 of text occluded on every imaged section page of both
+   audited reports). float adjacent to column-count is forbidden here. */
+.section-plate {{
+    column-span: all;
+    width: 100%;
+    margin: 0 0 10px 0;
+    break-inside: avoid;
     page-break-inside: avoid;
 }}
 
-.section-image-caption {{
+.section-plate img {{
+    width: 100%;
+    max-height: 62mm;
+    object-fit: cover;
+    display: block;
+}}
+
+.section-plate figcaption {{
     font-size: 8pt;
     color: {warm_gray};
-    text-align: right;
     margin-top: 4px;
 }}
 
@@ -660,7 +710,7 @@ table, .kpi-value, .data-table, .chart-data-table {{
 
    The four parts, in the order both benchmarks print them:
 
-     1. NUMBER   "Exhibit 1" / "Exhibit E1" — small, caps, tracked, accent
+     1. NUMBER   "Exhibit 1" / "Exhibit E1", small, caps, tracked, accent
                  colour, on its OWN line above the title. MGI numbers exec
                  exhibits E1/E2 and chapter exhibits 1,2,3; BCG uses a flat
                  "EXHIBIT 1". Numbering must be automatic, never authored.
@@ -668,8 +718,8 @@ table, .kpi-value, .data-table, .chart-data-table {{
                  exhibited outsize shuffle rates and significant growth in
                  share by market cap."). BCG uses a short label ("Our
                  Values"). MGI's convention is stronger for a consulting
-                 deliverable — the reader gets the finding without decoding
-                 the chart — so the title is set as a serif statement, left
+                 deliverable, the reader gets the finding without decoding
+                 the chart, so the title is set as a serif statement, left
                  aligned, at body-plus size rather than as a small grey
                  caption.
      3. FIGURE   the chart image itself.
@@ -707,7 +757,7 @@ table, .kpi-value, .data-table, .chart-data-table {{
     content: "Exhibit " counter(exhibit);
 }}
 
-/* The takeaway title. Serif, statement-length, tight leading — this is the
+/* The takeaway title. Serif, statement-length, tight leading, this is the
    line the reader is meant to remember. */
 .exhibit-title {{
     font-family: "Instrument Serif", Georgia, serif;
@@ -822,6 +872,22 @@ table, .kpi-value, .data-table, .chart-data-table {{
     border-bottom: 1px dotted {warm_gray};
 }}
 
+/* P2-05: real cross references. WeasyPrint resolves the page number of the
+   anchor target at layout time via target-counter - no arithmetic, no
+   one-page-per-section assumption, cannot drift from the body. */
+.toc-table a {{
+    color: inherit;
+    text-decoration: none;
+}}
+
+.toc-table a::after {{
+    content: target-counter(attr(href), page);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10pt;
+    color: {warm_gray};
+    margin-left: 6px;
+}}
+
 .footer {{
     color: {deep_brown};
     font-size: 8pt;
@@ -863,7 +929,7 @@ table, .kpi-value, .data-table, .chart-data-table {{
 }}
 
 /* Two columns of paired label/value cells. `table` layout rather than flex so
-   WeasyPrint paginates it predictably — flex fragmentation across pages is not
+   WeasyPrint paginates it predictably, flex fragmentation across pages is not
    reliably supported in the engine we render with. */
 .glance-grid {{
     display: table;
@@ -952,7 +1018,7 @@ table, .kpi-value, .data-table, .chart-data-table {{
    smaller type.
 
    Only the prose body is columned. Visual anchors span the full width
-   (column-span: all) — an exhibit, KPI strip, insight or implication box
+   (column-span: all), an exhibit, KPI strip, insight or implication box
    squeezed into a 68mm column would read as a sidebar, and both benchmarks
    set their exhibits full-measure. Headings must never be orphaned at the
    foot of a column, so they break-after: avoid and stay with their first
@@ -960,7 +1026,16 @@ table, .kpi-value, .data-table, .chart-data-table {{
 .section-body {{
     column-count: 2;
     column-gap: 7mm;
-    column-fill: auto;  /* balance columns on the final page of the section */
+    /* P2-01: balance, not auto. auto fills column 1 to full column height
+       and never starts column 2 on any chapter shorter than one column
+       height - 6 pages of report A measured col2=0w against col1=180-297w.
+       The old comment claimed balance while the value did the opposite. */
+    column-fill: balance;
+    /* P2-04: at least 4 lines of prose must accompany any fragment
+       boundary, so the trailing implication callout can never sit alone
+       on a page with no body text around it. */
+    orphans: 4;
+    widows: 4;
 }}
 
 .section-body h3, .section-body h4 {{
@@ -973,8 +1048,11 @@ table, .kpi-value, .data-table, .chart-data-table {{
 }}
 
 /* Full-width anchors inside a two-column section. `column-span: all` is the
-   WeasyPrint-supported spell; the section image sits outside the columned
-   div in the HTML, so it is already full-measure. */
+   WeasyPrint-supported spell. (P2-02 removed a sentence here claiming the
+   section image "sits outside the columned div so it is already
+   full-measure" - outside the columned div is precisely why the float
+   collided with the column flow. The plate now lives inside .section-body
+   with column-span: all like everything else on this list.) */
 .exhibit,
 .kpi-strip,
 .key-insight-box,
@@ -1020,13 +1098,13 @@ def _build_font_face_css(fonts_dir: Path = _FONTS_DIR) -> str:
     """Build @font-face blocks with base64 data-URI sources for vendored fonts.
 
     Data-URIs (not relative url() paths) because the CSS is inlined into the
-    HTML <style> element and rendered with base_url=cwd — relative paths from
+    HTML <style> element and rendered with base_url=cwd, relative paths from
     an inline stylesheet resolve against cwd, not the package, and break the
     moment a caller sets cwd elsewhere. Data-URIs make the HTML fully
     self-contained: it renders identically regardless of working directory.
 
     Never-raises (§0.3): a missing/unreadable font file is logged loudly and
-    skipped — the PDF then falls back for that face rather than sinking the
+    skipped, the PDF then falls back for that face rather than sinking the
     whole report build.
     """
     blocks: list[str] = []
@@ -1036,7 +1114,7 @@ def _build_font_face_css(fonts_dir: Path = _FONTS_DIR) -> str:
             data = font_path.read_bytes()
         except OSError:
             logger.warning(
-                "Vendored font %s not readable at %s — "
+                "Vendored font %s not readable at %s"
                 "PDF will fall back to system fonts for this face",
                 filename,
                 font_path,
@@ -1099,13 +1177,13 @@ HTML_TEMPLATE = """\
 {# ── At-a-glance (fix 4.5) ──
    MGI opens with this, BEFORE the table of contents: the whole argument on one
    spread, so a partner who reads exactly one page still gets the answer. It is
-   deliberately NOT a second executive summary — the exec summary narrates,
+   deliberately NOT a second executive summary, the exec summary narrates,
    this enumerates. Every value here is a field that already existed on
    FinalReport and was simply never surfaced in the PDF.
 
    Counts are computed with Jinja rather than authored, so they cannot drift
    from the body the way the hardcoded TOC page numbers below already do. #}
-<div class="page-break at-a-glance">
+<div class="page-break at-a-glance" id="at-a-glance">
     <h2>At a Glance</h2>
 
     <div class="glance-question">{{ report.question }}</div>
@@ -1150,7 +1228,9 @@ HTML_TEMPLATE = """\
         <ol class="glance-findings">
             {# Capped at five. An at-a-glance page that runs to two pages is not
                an at-a-glance page. #}
-            {% for finding in report.key_findings[:5] %}
+            {# P2-34: filter falsy entries - an empty <li> glyph is a
+               template-leak defect, not a stylistic choice. #}
+            {% for finding in report.key_findings[:5] if finding %}
             <li>{{ finding.title }}</li>
             {% endfor %}
         </ol>
@@ -1161,7 +1241,7 @@ HTML_TEMPLATE = """\
     <div class="glance-block">
         <div class="glance-label">What this rests on</div>
         <ul class="glance-assumptions">
-            {% for assumption in report.critical_assumptions[:4] %}
+            {% for assumption in report.critical_assumptions[:4] if assumption %}
             <li>{{ assumption }}</li>
             {% endfor %}
         </ul>
@@ -1169,27 +1249,35 @@ HTML_TEMPLATE = """\
     {% endif %}
 </div>
 
-{# ── Table of Contents ── #}
+{# ── Table of Contents ──
+   P2-05: page numbers are resolved by WeasyPrint via
+   target-counter(attr(href), page) against real anchors - the hardcoded
+   integers and +N arithmetic here assumed one page per section and were
+   wrong by up to 9 pages in the audited fixtures.
+   P2-06: every row is emitted under the same condition as its chapter,
+   so the TOC can never advertise a chapter that does not exist. #}
 <div class="page-break">
     <h2>Table of Contents</h2>
     <div class="data-table toc-table">
         <table>
-            <tr><td>At a Glance</td><td>2</td></tr>
-            <tr><td>Executive Summary</td><td>4</td></tr>
-            {% for section in report.sections %}
-            <tr><td>{{ section.title }}</td><td>{{ loop.index + 4 }}</td></tr>
+            <tr><td><a href="#at-a-glance">At a Glance</a></td><td class="toc-page"></td></tr>
+            <tr><td><a href="#exec-summary">Executive Summary</a></td><td class="toc-page"></td></tr>
+            {% for section in report.sections if section %}
+            <tr><td><a href="#sec-{{ loop.index }}">{{ section.title }}</a></td><td class="toc-page"></td></tr>
             {% endfor %}
-            <tr><td>Risk Analysis</td><td>{{ report.sections | length + 5 }}</td></tr>
-            <tr><td>Methodology</td><td>{{ report.sections | length + 6 }}</td></tr>
-            <tr><td>Endnotes</td><td>{{ report.sections | length + 7 }}</td></tr>
-            <tr><td>Technical Appendix</td><td>{{ report.sections | length + 8 }}</td></tr>
-            <tr><td>Appendix: Sources</td><td>{{ report.sections | length + 9 }}</td></tr>
+            {% if report.risk_analysis %}
+            <tr><td><a href="#risk-analysis">Risk Analysis</a></td><td class="toc-page"></td></tr>
+            {% endif %}
+            <tr><td><a href="#methodology">Methodology</a></td><td class="toc-page"></td></tr>
+            <tr><td><a href="#endnotes">Endnotes</a></td><td class="toc-page"></td></tr>
+            <tr><td><a href="#technical-appendix">Technical Appendix</a></td><td class="toc-page"></td></tr>
+            <tr><td><a href="#appendix-sources">Appendix: Sources</a></td><td class="toc-page"></td></tr>
         </table>
     </div>
 </div>
 
-{# ── Executive Summary — D27: Rich dashboard layout ── #}
-<div class="page-break">
+{# ── Executive Summary, D27: Rich dashboard layout ── #}
+<div class="page-break" id="exec-summary">
     <h2>Executive Summary</h2>
 
     {# Recommendation banner #}
@@ -1198,7 +1286,7 @@ HTML_TEMPLATE = """\
         <div class="rec-value">{{ report.recommendation.value | upper }}</div>
     </div>
 
-    {# KPI strip — key metrics at a glance #}
+    {# KPI strip, key metrics at a glance #}
     <div class="kpi-strip">
         <div class="kpi-card">
             <div class="kpi-value">{{ report.key_findings | length }}</div>
@@ -1224,10 +1312,13 @@ HTML_TEMPLATE = """\
 
     {{ report.executive_summary | md_to_html }}
 
-    {# Key findings in dashboard grid #}
+    {# Key findings in dashboard grid. P2-34: the heading is suppressed
+       with the list - an empty <h3> is the same defect class as an empty
+       bullet. #}
+    {% if report.key_findings %}
     <h3>Key Findings</h3>
     <div class="dashboard-grid">
-        {% for finding in report.key_findings %}
+        {% for finding in report.key_findings if finding %}
         <div class="dashboard-card">
             <div class="dashboard-card-title">{{ finding.title }}</div>
             <div class="dashboard-card-body">
@@ -1239,11 +1330,12 @@ HTML_TEMPLATE = """\
         </div>
         {% endfor %}
     </div>
+    {% endif %}
 
     {# Critical assumptions as callouts #}
     {% if report.critical_assumptions %}
     <h3>Critical Assumptions</h3>
-    {% for assumption in report.critical_assumptions %}
+    {% for assumption in report.critical_assumptions if assumption %}
     <div class="callout callout--alert">
         <div class="callout-title">Assumption</div>
         {{ assumption }}
@@ -1253,8 +1345,8 @@ HTML_TEMPLATE = """\
 </div>
 
 {# ── Analysis Sections ── #}
-{% for section in report.sections %}
-<div class="page-break">
+{% for section in report.sections if section %}
+<div class="page-break" id="sec-{{ loop.index }}">
     {# Section opener. MGI sets a letterspaced "C H A P T E R  O N E" above the
        chapter title; BCG gives each section a full-width opener with generous
        whitespace. Neither drops the reader straight into body copy. The number
@@ -1270,34 +1362,39 @@ HTML_TEMPLATE = """\
         {{ section.key_insight | clean_dict_repr }}
     </div>
 
-    {% if section_images[section.id] %}
-    <img src="{{ section_images[section.id].image_path }}" class="section-image" alt="{{ section_images[section.id].caption }}">
-    <p class="section-image-caption">{{ section_images[section.id].caption }}</p>
-    {% endif %}
-
-    {# The prose body is two-column (fix 3.4 — see .section-body in the CSS).
+    {# The prose body is two-column (fix 3.4, see .section-body in the CSS).
        It was previously wrapped in .no-break, which tried to keep an entire
-       2000-word section body on one page — impossible, so WeasyPrint ignored
+       2000-word section body on one page, impossible, so WeasyPrint ignored
        it, and it contradicted the column layout. The columns handle their own
-       break etiquette via orphans/widows on the body element. #}
+       break etiquette via orphans/widows on the body element.
+
+       P2-02: the section plate is the FIRST child of the column flow with
+       column-span: all, a full-measure band. It used to be a float:right
+       sibling placed before this div, which collided with the columns. #}
     <div class="section-body">
+        {% if section_images[section.id] %}
+        <figure class="section-plate">
+            <img src="{{ section_images[section.id].image_path }}" alt="{{ section_images[section.id].caption }}">
+            <figcaption>{{ section_images[section.id].caption }}</figcaption>
+        </figure>
+        {% endif %}
         {{ section.body | md_to_html }}
     </div>
 
-    {# Exhibits — the MGI/BCG four-part anatomy: number, takeaway title,
+    {# Exhibits, the MGI/BCG four-part anatomy: number, takeaway title,
        figure, then note/source under a hairline. The number is generated by
        a CSS counter, so it is always correct and never authored.
 
        `source_citation` already existed on ChartPlacement and was simply
        never rendered: every chart shipped with no provenance line at all,
        while both benchmark documents carry one under every single exhibit.
-       It is emitted only when actually present — an invented source line
+       It is emitted only when actually present, an invented source line
        would be the same class of defect as an invented geography. #}
-    {% for chart in section_charts[section.id] %}
+    {% for chart in section_charts[section.id] if chart %}
     <figure class="exhibit no-break">
         <div class="exhibit-number"></div>
         {# Fix 4.4: unconditional. A numbered exhibit with no action title is a
-           chart, not an exhibit — MGI's anatomy requires the takeaway to sit
+           chart, not an exhibit, MGI's anatomy requires the takeaway to sit
            between the number and the figure. `_enforce_exhibit_anatomy`
            guarantees a non-empty caption, so there is nothing to guard. #}
         <div class="exhibit-title">{{ chart.caption }}</div>
@@ -1306,7 +1403,7 @@ HTML_TEMPLATE = """\
         </div>
         {# Fix 4.4: the footer is NOT conditional on note/source being present.
            It used to be, so an exhibit with neither rendered with no footer at
-           all — no hairline, no provenance — and looked deliberate. The hairline
+           all, no hairline, no provenance, and looked deliberate. The hairline
            is what visually closes the exhibit in both benchmark documents, so it
            is now always drawn, and `_enforce_exhibit_anatomy` guarantees a
            Source: line exists by the time we get here. #}
@@ -1317,7 +1414,7 @@ HTML_TEMPLATE = """\
                same class of defect as an invented geography. #}
             {# The "Note:" / "Source:" labels are italic in both benchmarks, and
                .exhibit-note-label / .exhibit-source-label existed in the CSS
-               but were referenced by no markup — dead rules. The label is
+               but were referenced by no markup, dead rules. The label is
                emitted as its own span and the prefix stripped from the value,
                so the label appears exactly once whether or not the producer
                already prefixed the string (the deterministic miner does; an
@@ -1342,31 +1439,41 @@ HTML_TEMPLATE = """\
 
 {# ── Risk Analysis ── #}
 {% if report.risk_analysis %}
-<div class="page-break">
+<div class="page-break" id="risk-analysis">
     <h2>Risk Analysis</h2>
     {{ risk_analysis_html | safe }}
 </div>
 {% endif %}
 
-{# ── Methodology ── #}
-<div class="page-break">
+{# ── Methodology ──
+   P2-34: report B printed 11 empty bullet glyphs here because agents_used
+   held 11 empty strings. Both lists are pre-filtered (trim + drop falsy)
+   and the enclosing <h3>/<ul> is suppressed when nothing survives, and
+   page_audit._check_empty_list_items is the render-level backstop. #}
+{% set agents_used_clean = report.agents_used | map('trim') | select | list %}
+{% set limitations_clean = report.limitations | map('trim') | select | list %}
+<div class="page-break" id="methodology">
     <h2>Methodology</h2>
+    {% if agents_used_clean %}
     <h3>Agents Used</h3>
     <ul>
-        {% for agent in report.agents_used %}
+        {% for agent in agents_used_clean if agent %}
         <li>{{ agent }}</li>
         {% endfor %}
     </ul>
+    {% endif %}
     <h3>Sources Accessed</h3>
     <p>Total unique sources: {{ report.total_sources }}</p>
     <h3>Data Points Collected</h3>
     <p>Total data points: {{ report.total_data_points }}</p>
+    {% if limitations_clean %}
     <h3>Limitations</h3>
     <ul>
-        {% for limitation in report.limitations %}
+        {% for limitation in limitations_clean if limitation %}
         <li>{{ limitation }}</li>
         {% endfor %}
     </ul>
+    {% endif %}
 </div>
 
 {# ── Endnotes (fix 4.5) ──
@@ -1374,7 +1481,7 @@ HTML_TEMPLATE = """\
    what makes a claim traceable rather than merely footnoted. Built server-side
    (`endnotes_html`) because the numbering has to be stable across sections and
    Jinja loop indices reset per section. #}
-<div class="page-break">
+<div class="page-break" id="endnotes">
     <h2>Endnotes</h2>
     {{ endnotes_html | safe }}
 </div>
@@ -1383,16 +1490,16 @@ HTML_TEMPLATE = """\
    The methodology section says WHAT was done; this says how well, and admits
    what was not achieved. quality_score / confidence_breakdown /
    contradictions / fact_check_report all already existed on FinalReport and
-   none of them reached the PDF — the report scored itself and then threw the
+   none of them reached the PDF, the report scored itself and then threw the
    scorecard away. Publishing the contradictions and the residual gaps is the
    difference between a technical appendix and a marketing annex. #}
-<div class="page-break">
+<div class="page-break" id="technical-appendix">
     <h2>Technical Appendix</h2>
     {{ technical_appendix_html | safe }}
 </div>
 
 {# ── Appendix: Sources ── #}
-<div class="page-break">
+<div class="page-break" id="appendix-sources">
     <h2>Appendix: Sources</h2>
     {{ appendix_sources_html | safe }}
 </div>
@@ -1405,7 +1512,7 @@ HTML_TEMPLATE = """\
         Generated {{ report.generated_at.strftime('%B %d, %Y') }} · Engagement {{ report.engagement_id }}
     </p>
     <p style="color: {{ palette.warm_gray }}; font-size: 8pt;">
-        Confidential — for intended recipient only.
+        Confidential, for intended recipient only.
     </p>
 </div>
 
@@ -1437,7 +1544,7 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
                 "Design page layouts that follow the premium structure. "
                 "Each page has a clear visual hierarchy: header → key "
                 "insight → body → chart/image → implication. Not just "
-                "dumping content into a template — deliberate decisions "
+                "dumping content into a template, deliberate decisions "
                 "about what goes on each page, how to balance text and "
                 "visuals, and how to guide the reader through the narrative."
             ),
@@ -1451,7 +1558,7 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
                 "Instrument Serif for headers (cover 36pt, sections 22pt), "
                 "JetBrains Mono for body (10pt), subsections (14pt bold), "
                 "captions (8pt), key insight boxes (11pt), data tables "
-                "(9pt). Two fonts only — creates visual consistency."
+                "(9pt). Two fonts only, creates visual consistency."
             ),
             inputs=["layout_plan"],
             outputs=["typography_applied", "font_sizes_set"],
@@ -1477,7 +1584,7 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
                 "Ensure the PDF is print-ready: 300 DPI, embedded fonts "
                 "(Instrument Serif, JetBrains Mono), proper margins (25mm "
                 "all sides, 15mm binding), no color bleeding. A4 page "
-                "size. Brand palette only — no random colors."
+                "size. Brand palette only, no random colors."
             ),
             inputs=["layout_plan", "css_template"],
             outputs=["print_ready_pdf", "font_embedding", "margin_spec"],
@@ -1510,7 +1617,7 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         SkillSpec(
             name="White space management",
             description=(
-                "Use white space deliberately — not as empty space, but "
+                "Use white space deliberately, not as empty space, but "
                 "as a design element that improves readability and focus. "
                 "Margins, padding, and spacing between elements are "
                 "intentional. No cramped pages, no wasted space."
@@ -1520,14 +1627,14 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Presentation Designer — the report layout "
+        "You are the HYPERION Presentation Designer, the report layout "
         "designer and visual storyteller.\n\n"
         "Your role:\n"
         "1. RECEIVE the FinalReport from the Synthesis Lead and the "
         "QualityScore from the Quality Gate.\n"
-        "2. DESIGN a layout plan — which content goes on which page, "
+        "2. DESIGN a layout plan, which content goes on which page, "
         "in what order, with what visuals.\n"
-        "3. SELECT Unsplash images for cover and section headers — "
+        "3. SELECT Unsplash images for cover and section headers"
         "specific search terms, not generic.\n"
         "4. RECEIVE chart images from the Data Visualizer.\n"
         "5. RENDER the HTML template with Jinja2.\n"
@@ -1539,7 +1646,7 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         "- The most important content (recommendation, key findings) "
         "gets the most visual weight.\n"
         "- White space is a design element, not empty space.\n\n"
-        "Image Placement Rules (§6.3 — NON-NEGOTIABLE):\n"
+        "Image Placement Rules (§6.3, NON-NEGOTIABLE):\n"
         "1. Every image has adjacent text context on the SAME page.\n"
         "2. Cover = full-bleed. Sections = 40% width, right-aligned.\n"
         "3. Topic-relevant, not generic stock. 'Modern boardroom meeting' "
@@ -1548,13 +1655,13 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         "5. No image larger than 50% page height (except cover).\n"
         "6. Every image has a caption with source attribution.\n"
         "7. Charts are NEVER screenshots. Always Plotly → PNG at scale=3.\n\n"
-        "Typography (§7.4 — TWO FONTS ONLY):\n"
+        "Typography (§7.4, TWO FONTS ONLY):\n"
         "- Headers: Instrument Serif (cover 36pt, sections 22pt)\n"
         "- Body: JetBrains Mono (10pt regular, 14pt bold subsections)\n"
         "- Captions: JetBrains Mono 8pt\n"
         "- Key insight: JetBrains Mono 11pt\n"
         "- Data tables: JetBrains Mono 9pt\n\n"
-        "Color Palette (§7.2 — WARM, NOT BLUE):\n"
+        "Color Palette (§7.2, WARM, NOT BLUE):\n"
         "- Warm Charcoal #1A1A1A (primary text)\n"
         "- Cream #F5F4EE (background)\n"
         "- Terracotta #C8704D (primary accent, key insight borders)\n"
@@ -1576,7 +1683,7 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         # cannot diverge again.
         f"- {PAGE_COUNT_MIN}-{PAGE_COUNT_MAX} pages for a standard engagement.\n\n"
         "You run on STRONG tier. You do NOT spawn sub-agents.\n\n"
-        "Your output is a LayoutPlan Pydantic model — page-by-page layout, "
+        "Your output is a LayoutPlan Pydantic model, page-by-page layout, "
         "image selections, chart placements, HTML template path, CSS path."
     ),
     spawn_condition="Spawned after the Quality Gate approves the report "
@@ -2065,7 +2172,7 @@ class PresentationDesigner(BaseAgent):
         """Use LLM to generate a context-aware Unsplash search term for a section.
 
         Analyzes the section title, agent type, and key insight to generate
-        a specific, visually relevant search term — not a generic stock photo.
+        a specific, visually relevant search term, not a generic stock photo.
         """
         # First try hardcoded terms based on agent name (fast path)
         agent_name = section.agent if isinstance(section.agent, str) else str(section.agent)
@@ -2120,17 +2227,71 @@ class PresentationDesigner(BaseAgent):
 
         return SECTION_IMAGE_SEARCH_TERMS.get("general", "modern business abstract")
 
+    # ─────────────────────────────────────────────────────────────────
+    # P2-33: topic-relevant section imagery (query construction, caption,
+    # credit). Query/caption/credit construction are pure functions so the
+    # relevance contract is unit-testable without an Unsplash round trip.
+    # ─────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def build_section_image_query(
+        subject: str,
+        geography: str,
+        section_topic: str,
+    ) -> str:
+        """Build the search query from the engagement, per P2-33 fix item 1:
+        ``{subject} {geography} {topic}`` → ``{subject} {topic}`` → topic.
+
+        The audit's measured defect was that the static
+        ``SECTION_IMAGE_SEARCH_TERMS`` map never interpolated the engagement
+        subject, so a manufacturing chapter fetched a crypto candlestick
+        photo. The subject leads the query so the engine ranks on-topic
+        results first.
+        """
+        parts = [p.strip() for p in (subject, geography, section_topic) if p and p.strip()]
+        return " ".join(parts) if parts else section_topic.strip()
+
+    @staticmethod
+    def build_section_image_caption(
+        section_title: str,
+        photographer: str,
+    ) -> str:
+        """The figcaption is a caption, not a photo credit (P2-33 fix item 4).
+
+        Report B page 8 printed ``Source: Unsplash via Maxim Hopman`` where a
+        caption belongs; the credit moves to the colophon via
+        :meth:`build_image_credit`.
+        """
+        title = (section_title or "").strip()
+        return f"{title}: illustrated." if title else "Section illustration."
+
+    @staticmethod
+    def build_image_credit(photographer: str) -> str:
+        """The colophon credit line: the ONLY place a photo credit renders."""
+        name = (photographer or "").strip() or "Unknown"
+        return f"Source: Unsplash via {name}"
+
     async def _select_section_images(self, report: FinalReport) -> dict[str, ImageSelection]:
         """Select Unsplash images for each section header.
 
         Section images = 40% page width, right-aligned, with caption.
         Uses LLM to generate context-aware search terms per section based
         on actual content, not hardcoded generic terms.
+
+        P2-33: candidates pass the ImageRelevanceGate before download. A
+        section with no candidate that clears the relevance floor gets NO
+        image, which the audit requires is strictly better than a wrong one.
         """
         section_images: dict[str, ImageSelection] = {}
 
         if not report.sections:
             return section_images
+
+        # The engagement subject for query interpolation and relevance
+        # scoring. FinalReport has no dedicated subject/geography field, so
+        # the question is the honest proxy available at delivery time.
+        subject = getattr(report, "question", "") or ""
+        gate = ImageRelevanceGate()
 
         try:
             unsplash_tool = self.get_tool(ToolName.UNSPLASH)
@@ -2138,10 +2299,17 @@ class PresentationDesigner(BaseAgent):
 
             for section in report.sections:
                 search_term = await self._generate_section_search_term(section)
+                # P2-33: interpolate the engagement subject into the query so
+                # the engine ranks on-topic photos first.
+                search_term = self.build_section_image_query(
+                    subject=subject,
+                    geography="",
+                    section_topic=search_term,
+                )
 
-                # Request more candidates than needed so dedup has room to pick
-                # a fresh image even when the top results collide with prior
-                # sections (L5.17).
+                # Request more candidates than needed so the relevance gate
+                # and dedup have room to pick a fresh, on-topic image even
+                # when the top results are off-topic or already used (L5.17).
                 search_result = await unsplash_tool.search(
                     query=search_term,
                     per_page=8,
@@ -2151,10 +2319,16 @@ class PresentationDesigner(BaseAgent):
                 if not search_result.images:
                     continue
 
-                # Pick the first candidate not already used by the cover or an
-                # earlier section — never reuse an image.
-                img = self._pick_unused_image(search_result.images)
+                # P2-33: keep only candidates that clear the relevance floor
+                # and are not chart-like decoration, THEN prefer one not
+                # already used by the cover or an earlier section.
+                relevant = [
+                    c for c in search_result.images
+                    if gate.is_relevant(c, subject=subject, topic=section.title or "")
+                ]
+                img = self._pick_unused_image(relevant)
                 if img is None:
+                    # No on-topic candidate: no image is better than a wrong one.
                     continue
                 photographer = img.photographer or "Unknown"
                 photo_id = img.id
@@ -2177,7 +2351,11 @@ class PresentationDesigner(BaseAgent):
                     image_path=local_path,
                     photographer=photographer,
                     unsplash_id=photo_id,
-                    caption=f"Source: Unsplash via {photographer}",
+                    # P2-33: the figcaption is a caption, not a photo credit.
+                    caption=self.build_section_image_caption(
+                        section_title=section.title or "",
+                        photographer=photographer,
+                    ),
                     placement="right",
                     width_percent=40,
                 )
@@ -2198,7 +2376,7 @@ class PresentationDesigner(BaseAgent):
     ) -> dict[str, list[ChartPlacement]]:
         """Receive chart images from the Data Visualizer and organize by section.
 
-        Fix 3.7 — three defects in the original, all of which ended with a
+        Fix 3.7, three defects in the original, all of which ended with a
         300-DPI PNG on disk that no page ever displayed:
 
         1. **Homeless charts were keyed by whatever string arrived.** A chart
@@ -2208,7 +2386,7 @@ class PresentationDesigner(BaseAgent):
            nobody. Those are the *headline* exhibits. They are now re-homed
            onto a real section (by authoring agent, then first section).
         2. **Charts with no `image_path` were still placed.** A chart whose
-           export failed produced `<img src="">` — a broken-image box under a
+           export failed produced `<img src="">`, a broken-image box under a
            real "Exhibit N" number, which also consumed a number and pushed
            every later exhibit's numbering out by one. They are now dropped.
         3. **The methodology note was never copied**, so the exhibit footer
@@ -2243,7 +2421,7 @@ class PresentationDesigner(BaseAgent):
             # Defect 2: an exhibit with no figure is not an exhibit.
             if not chart.image_path:
                 self._log(
-                    f"DESIGNER: dropping chart {chart.id!r} — no image_path "
+                    f"DESIGNER: dropping chart {chart.id!r}, no image_path "
                     f"(export failed); it would render as a broken image and "
                     f"consume an exhibit number"
                 )
@@ -2260,7 +2438,7 @@ class PresentationDesigner(BaseAgent):
                 rehomed = section_id_by_agent.get(agent) or first_id
                 self._log(
                     f"DESIGNER: re-homing chart {chart.id!r} from "
-                    f"section {section_id!r} to {rehomed!r} — the original "
+                    f"section {section_id!r} to {rehomed!r}, the original "
                     f"section id matches no section, so the exhibit would "
                     f"never have rendered"
                 )
@@ -2298,7 +2476,7 @@ class PresentationDesigner(BaseAgent):
         *enforced* them, and every part is independently optional in Jinja. So a
         chart arriving without a caption rendered as a numbered, sourced exhibit
         with **no title**, and one arriving with neither note nor source
-        rendered with **no footer at all** — no hairline, no provenance. Both
+        rendered with **no footer at all**, no hairline, no provenance. Both
         were silent: no exception, no log line, and the PDF still looked
         plausible. Measured before this fix, all five degenerate combinations
         rendered clean.
@@ -2311,15 +2489,13 @@ class PresentationDesigner(BaseAgent):
         the audit's own §3.9 note about insertions shifting numbering applies
         equally to deletions. Instead:
 
-        * a missing **action title** falls back to the chart id humanised — an
+        * a missing **action title** falls back to the chart id humanised, an
           honest placeholder that is obviously provisional in review, unlike a
           confident invented takeaway;
         * a missing **note** is left empty. A note describes *how* a figure was
           constructed. Inventing one is the same class of defect as inventing a
           geography, so the line stays absent and the omission is reported;
-        * a missing **source** is the one that matters most for MBB parity —
-          both benchmark documents carry a source under every single exhibit —
-          so it is filled with the explicit, non-deceptive
+        * a missing **source** is the one that matters most for MBB parity, both benchmark documents carry a source under every single exhibit, so it is filled with the explicit, non-deceptive
           ``"Source: HYPERION analysis"`` rather than being silently dropped.
 
         Returns the list of defects found, so callers can log or gate on it.
@@ -2348,7 +2524,7 @@ class PresentationDesigner(BaseAgent):
 
         if defects:
             self._log(
-                f"DESIGNER: exhibit anatomy repaired on {len(defects)} field(s) — "
+                f"DESIGNER: exhibit anatomy repaired on {len(defects)} field(s), "
                 + "; ".join(defects[:8])
                 + (" …" if len(defects) > 8 else "")
             )
@@ -2537,15 +2713,15 @@ class PresentationDesigner(BaseAgent):
         """Build the risk analysis HTML section.
 
         Three defects fixed here (D5.1), all of the same family as the ones 4.5
-        fixed in the appendix builders — and all invisible for the same reason:
+        fixed in the appendix builders, and all invisible for the same reason:
 
-        1. ``getattr(risk, "name", "Unknown")`` — **`Risk` has no `name` field.**
+        1. ``getattr(risk, "name", "Unknown")``, **`Risk` has no `name` field.**
            Its descriptive field is ``description``. So this expression could
            never return anything but the literal string ``"Unknown"``, and the
            Risk column of the top-risks table printed ``Unknown`` on every row of
            every report ever produced. ``"Unknown"`` is one of the four tokens
            ``tools/audit_render_probe.py`` counts as a **template leak**, which
-           §11 exit criterion 11 requires to be zero — so this single wrong field
+           §11 exit criterion 11 requires to be zero, so this single wrong field
            name was silently breaking a headline Definition-of-Done metric.
            The defensive third argument to ``getattr`` is exactly what hid it: a
            direct ``risk.name`` would have raised ``AttributeError`` on the first
@@ -2554,7 +2730,7 @@ class PresentationDesigner(BaseAgent):
            mitigations are LLM-authored prose that routinely contains ``&`` and
            ``<`` (e.g. "margin < 10% & falling"), which would corrupt the table.
         3. ``risk_score`` and the mitigation ``owner`` were not shown at all,
-           though both are populated — the table showed probability and impact
+           though both are populated, the table showed probability and impact
            but not their product, which is the number the ranking is *by*.
 
         The 5×5 matrix's zone counts are now rendered too: the agent computes
@@ -2617,7 +2793,7 @@ class PresentationDesigner(BaseAgent):
            neither is described as untitled, and it says so in words rather than
            printing a placeholder that reads like a bug.
         2. Titles and URLs were interpolated into HTML **unescaped**. A source
-           title containing ``&`` or ``<`` — ordinary in news headlines — would
+           title containing ``&`` or ``<``, ordinary in news headlines, would
            corrupt the table or silently swallow text. Now escaped.
         """
         html_parts = ["<div class='no-break'><h3>Full Source List</h3>"]
@@ -2655,7 +2831,7 @@ class PresentationDesigner(BaseAgent):
         ``loop.index`` resets per section and would restart at 1 in every
         chapter.
 
-        Sources are de-duplicated by URL within a chapter — the same URL
+        Sources are de-duplicated by URL within a chapter, the same URL
         legitimately supports several findings, and printing it four times
         makes the apparatus look padded rather than thorough.
         """
@@ -2715,14 +2891,14 @@ class PresentationDesigner(BaseAgent):
         ``quality_score``, ``confidence_breakdown``, ``contradictions`` and
         ``fact_check_report`` all existed on ``FinalReport`` and **none of them
         reached the PDF**: the system graded itself and then discarded the
-        scorecard. Surfacing them — including the unresolved contradictions and
-        the residual gaps — is what separates a technical appendix from a
+        scorecard. Surfacing them, including the unresolved contradictions and
+        the residual gaps, is what separates a technical appendix from a
         marketing annex.
 
         WHY THIS METHOD DOES NOT USE ``getattr(obj, "field", default)``
         --------------------------------------------------------------
         The first draft of this method did, and the fallbacks concealed three
-        genuinely wrong field names — each of which would have shipped as a
+        genuinely wrong field names, each of which would have shipped as a
         silently missing section rather than an error:
 
         * ``QualityScore.dimensions`` is a ``list[QualityDimension]``, not a
@@ -2904,7 +3080,7 @@ class PresentationDesigner(BaseAgent):
         from five different places and swallow errors with a narrow
         `except (ValueError, AttributeError, RuntimeError)`, so a Windows GTK
         OSError escaped while the caller was left with an empty string and no
-        idea why — the report simply vanished with no diagnostic.
+        idea why, the report simply vanished with no diagnostic.
         """
         os.makedirs(self.OUTPUT_DIR, exist_ok=True)
 
@@ -3027,6 +3203,20 @@ class PresentationDesigner(BaseAgent):
         await self._transition(AgentState.WORKING, "Step 1: Receiving FinalReport")
         report = await self._receive_final_report(final_report)
 
+        if report is not None:
+            # P2-15: confidence is derived, never asserted. Every surface
+            # (cover, At a Glance, Executive Summary, Technical Appendix)
+            # reads report.confidence; we pin it to derive_confidence() once
+            # here so all four surfaces show the same token by construction.
+            derived = derive_confidence(report)
+            if derived != report.confidence:
+                self._log(
+                    f"CONFIDENCE: derived {derived.value.upper()} overrides "
+                    f"asserted {report.confidence.value.upper()} "
+                    f"(sources={report.total_sources})"
+                )
+                report.confidence = derived
+
         if not report:
             await self._transition(AgentState.DONE, "No FinalReport received")
             return LayoutPlan(engagement_id=engagement_id, confidence=ConfidenceLevel.LOW)
@@ -3040,8 +3230,32 @@ class PresentationDesigner(BaseAgent):
                 f"Quality Gate not approved (score {self._quality_score.total_score:.1f}/5.0"
                 f", iteration {self._quality_score.iteration})"
             )
+            # P2-23: `max_iterations_reached` is NOT a universal bypass. It
+            # partitions into two cases:
+            #   - integrity_blockers present (leaked object, banned filler,
+            #     verdict contradiction, dishonest confidence, broken URL,
+            #     meta-text): NEVER proceed, regardless of iteration count.
+            #     There is no acceptable version of shipping `{'name': ...`
+            #     to a client.
+            #   - only cosmetic/thin-evidence gaps (low score, few sources):
+            #     the max_iterations escalation MAY proceed, with the
+            #     limitation declared on the page.
+            if self._quality_score.integrity_blockers:
+                await self._transition(
+                    AgentState.DONE,
+                    f"{quality_note}, integrity blocker(s) present "
+                    f"({len(self._quality_score.integrity_blockers)}), refusing to render "
+                    "regardless of max_iterations_reached: "
+                    f"{'; '.join(self._quality_score.integrity_blockers[:3])}",
+                )
+                return LayoutPlan(
+                    engagement_id=engagement_id,
+                    confidence=ConfidenceLevel.LOW,
+                    no_blank_pages=False,
+                    no_orphaned_images=False,
+                )
             if self._quality_score.max_iterations_reached:
-                quality_note += " — max iterations reached, proceeding with best report (escalation)"
+                quality_note += "max iterations reached, proceeding with best report (escalation)"
                 await self._transition(
                     AgentState.WORKING,
                     f"Step 2: {quality_note}",
@@ -3049,7 +3263,7 @@ class PresentationDesigner(BaseAgent):
             else:
                 await self._transition(
                     AgentState.DONE,
-                    f"{quality_note} — cannot design layout",
+                    f"{quality_note}, cannot design layout",
                 )
                 return LayoutPlan(
                     engagement_id=engagement_id,

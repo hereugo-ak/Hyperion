@@ -15,13 +15,51 @@ health checking, error classification, and response normalization.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from hyperion.config import ModelSpec, ModelTier, ProviderConfig, ProviderType
+
+
+@dataclass
+class RouterFailure:
+    """Structured diagnosis for a total routing failure (P2-29).
+
+    Before this existed, every "no candidate anywhere" outcome was
+    returned as ``provider=ProviderType.GOOGLE, model="none"`` with a
+    quota-exhaustion message, so a hard credential failure on one
+    provider was reported to the operator as rate limiting on a provider
+    it had never successfully contacted. The operator needs to know
+    which providers were considered, which tiers were walked, and why
+    each provider was skipped.
+
+    skip_reasons vocabulary:
+      "health_open"             circuit breaker / cooldown / unavailable
+      "unauthenticated"         401/403 credential failure (NOT quota)
+      "budget_exhausted"        daily budget planner filtered it out
+      "predicted_rate_limited"  sliding window tracker > 85% utilized
+      "no_model_for_tier"       provider has no non-deprecated model for the tier
+      "wait_exceeded_threshold" candidate wait beyond the medium threshold
+      "no_candidate"            wait gate returned no candidate
+      "auth_error"              provider call failed with an auth error
+    """
+
+    tiers_attempted: list[ModelTier] = field(default_factory=list)
+    providers_considered: dict[str, list[str]] = field(default_factory=dict)
+    skip_reasons: dict[ProviderType, str] = field(default_factory=dict)
+
+    def render(self) -> str:
+        """One-line human-readable diagnosis for logs and operators."""
+        reasons = ", ".join(
+            f"{pt.value}={reason}" for pt, reason in sorted(
+                self.skip_reasons.items(), key=lambda kv: kv[0].value
+            )
+        ) or "no providers considered"
+        tiers = " -> ".join(t.value for t in self.tiers_attempted) or "none"
+        return f"tiers attempted: {tiers}; skip reasons: {reasons}"
 
 
 def _coerce_content(raw: Any) -> str:
@@ -83,6 +121,9 @@ class ProviderStatus(str, Enum):
     COOLDOWN = "cooldown"
     CIRCUIT_OPEN = "circuit_open"
     UNAVAILABLE = "unavailable"
+    # P2-29: a 401/403 credential failure is categorically different from
+    # rate limiting and must never be aggregated into quota reporting.
+    UNAUTHENTICATED = "unauthenticated"
 
 
 @dataclass
@@ -143,6 +184,18 @@ class ProviderHealth:
         self.total_errors += 1
         self.total_requests += 1
 
+    def record_auth_error(self) -> None:
+        """401/403 from the provider: the credential is dead (P2-29).
+
+        This is categorically NOT rate limiting. It must surface as
+        UNAUTHENTICATED so the operator replaces the key instead of
+        waiting out an imaginary quota window.
+        """
+        self.status = ProviderStatus.UNAUTHENTICATED
+        self.last_error = "401/403 Authentication Error"
+        self.total_errors += 1
+        self.total_requests += 1
+
     def trip_circuit_breaker(self, cooldown_seconds: int = 300) -> None:
         self.status = ProviderStatus.CIRCUIT_OPEN
         self.cooldown_until = time.time() + cooldown_seconds
@@ -183,6 +236,7 @@ class RouterResponse:
     success: bool = True
     error: str | None = None
     raw_response: Any | None = None
+    failure: RouterFailure | None = None
 
     def __post_init__(self) -> None:
         """Enforce the `content: str` contract at the type boundary.
@@ -310,11 +364,17 @@ class BaseProvider:
             error_str = str(e)
             latency = (time.time() - start) * 1000
 
-            if "429" in error_str or "rate_limit" in error_str.lower():
+            lower = error_str.lower()
+            if "401" in error_str or "403" in error_str or "api key" in lower or "authentication" in lower or "unauthorized" in lower:
+                # P2-29: a dead key is NOT a rate limit. Stamping 429 on a
+                # credential failure told the operator to wait out a quota
+                # window that did not exist for two entire engagements.
+                self.health.record_auth_error()
+            elif "429" in error_str or "rate_limit" in lower:
                 self.health.record_429()
-            elif "500" in error_str or "503" in error_str or "server_error" in error_str.lower():
+            elif "500" in error_str or "503" in error_str or "server_error" in lower:
                 self.health.record_500()
-            elif "timeout" in error_str.lower() or "timed out" in error_str.lower():
+            elif "timeout" in lower or "timed out" in lower:
                 self.health.record_timeout()
             else:
                 self.health.record_network_error()

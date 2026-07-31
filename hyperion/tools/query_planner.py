@@ -775,19 +775,123 @@ async def plan_queries(
     return plan
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# P2-28: no-corpus subject detection (P2-G27)
+#
+# The planner validates query SHAPE (>= 2 alphabetic tokens), which correctly
+# rejects a bare "EMERGING" — but multi-word queries about an entity with no
+# web footprint still return results, matched on the common nouns (dictionary
+# definitions). The planner had no feedback signal for that condition. These
+# helpers provide it: subject recall after round 1, a strategy switch to
+# registries/news/own-domain queries, and a no_corpus escalation when recall
+# stays below threshold.
+# ─────────────────────────────────────────────────────────────────────────────
+
+NO_CORPUS_RECALL_THRESHOLD = 0.15
+
+
+class NoCorpusError(RuntimeError):
+    """The engagement subject has no findable web corpus (P2-28).
+
+    Raised by :func:`assess_subject_recall` when recall stays below
+    ``NO_CORPUS_RECALL_THRESHOLD`` even after the strategy switch. Report B
+    was a 32-page report about an entity that does not appear on the web;
+    this error is how the system says so instead.
+    """
+
+    def __init__(self, subject: str, recall: float) -> None:
+        self.subject = subject
+        self.recall = recall
+        super().__init__(
+            f"no_corpus: subject '{subject}' recall {recall:.2f} "
+            f"(< {NO_CORPUS_RECALL_THRESHOLD}) after the strategy switch; "
+            "the entity has no findable web footprint, declare the "
+            "limitation and stop rather than writing around it."
+        )
+
+
+def subject_recall(subject: str, results: list[Any]) -> float:
+    """Fraction of results whose title or snippet contains the subject.
+
+    Token-boundary: every subject token of length >= 3 must appear as a
+    token in the combined title+snippet. Accepts dicts (``title`` /
+    ``snippet`` keys) or SearchResult-like objects.
+    """
+    tokens = [
+        t for t in re.findall(r"[a-z0-9]+", (subject or "").lower()) if len(t) >= 3
+    ]
+    if not tokens or not results:
+        return 0.0
+    hits = 0
+    for r in results:
+        if isinstance(r, dict):
+            text = f"{r.get('title', '')} {r.get('snippet', '')}"
+        else:
+            text = f"{getattr(r, 'title', '')} {getattr(r, 'snippet', '')}"
+        text_tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+        if all(tok in text_tokens for tok in tokens):
+            hits += 1
+    return hits / len(results)
+
+
+def no_corpus_fallback_queries(subject: str, geography: str = "") -> list[str]:
+    """Strategy-switch queries for a low-recall subject (P2-28).
+
+    When general-web recall is below threshold, query where an entity MUST
+    appear if it exists: its own domain, corporate registries, and news
+    archives.
+    """
+    s = re.sub(r"\s+", " ", (subject or "")).strip()
+    if not s:
+        return []
+    geo = f" {geography.strip()}" if geography and geography.strip() else ""
+    slug = re.sub(r"[^a-z0-9]+", "", s.lower())
+    queries = [
+        f'"{s}"{geo} company registry registration',
+        f'"{s}" corporate affairs commission{geo}',
+        f'"{s}"{geo} news announcement',
+        f'"{s}" annual report OR filing OR press release',
+    ]
+    if slug:
+        queries.append(f"site:{slug}.com OR site:{slug}.co {s}")
+    return queries
+
+
+def assess_subject_recall(subject: str, round1: float, round2: float) -> float:
+    """Decide whether a subject has a web corpus (P2-G27).
+
+    Round 1 recall below threshold triggers the strategy switch (the caller
+    issues :func:`no_corpus_fallback_queries`); round 2 recall still below
+    threshold raises :class:`NoCorpusError`. A recovered round 2 returns the
+    recall and the engagement proceeds.
+    """
+    if round2 < NO_CORPUS_RECALL_THRESHOLD:
+        raise NoCorpusError(subject, round2)
+    logger.info(
+        "subject recall recovered after strategy switch: %.2f -> %.2f",
+        round1, round2,
+    )
+    return round2
+
+
 __all__ = [
     "ANGLES",
     "MAX_QUERIES",
     "MAX_QUERY_LEN",
     "MIN_DISTINCT_ANGLES",
     "MIN_QUERIES",
+    "NO_CORPUS_RECALL_THRESHOLD",
     "PLANNER_TIER",
     "TARGET_QUERIES",
+    "NoCorpusError",
     "PlannedQuery",
     "QueryPlan",
+    "assess_subject_recall",
     "clear_plan_cache",
     "deterministic_plan",
+    "no_corpus_fallback_queries",
     "plan_cache_stats",
     "plan_queries",
     "sub_question_hash",
+    "subject_recall",
 ]

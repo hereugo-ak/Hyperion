@@ -324,6 +324,29 @@ class AgentBus:
             with contextlib.suppress(ValueError):
                 self._agent_states[sender] = AgentState(state_str)
 
+        # P2-17: an addressed escalation (to_agent + request_type) with no
+        # live subscriber on the channel is a bug, and the bus is the only
+        # place that can see it. For five months fact_checker published
+        # request_type="verify_claims" to all 11 specialists and every one
+        # matched request_type against its own literal, so the gap-fill
+        # request vanished silently and the Synthesis Lead printed
+        # placeholders instead. Log at ERROR at publish time.
+        if msg_type == MessageType.ESCALATION and payload.get("to_agent"):
+            request_type = payload.get("request_type", "")
+            matching = [
+                sub for sub in self._subscriptions.values()
+                if channel in sub.channels
+            ]
+            if not matching:
+                logger.error(
+                    "BUS: addressed escalation with no matching subscriber: "
+                    "channel=%s request_type=%r to_agent=%s from=%s — the "
+                    "message will be silently dropped. Register a handler or "
+                    "remove the publish site.",
+                    channel.value, request_type, payload.get("to_agent"),
+                    sender.value,
+                )
+
         await self._queues[channel].put(msg)
 
     # ── Convenience publish methods for each message type ──

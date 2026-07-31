@@ -43,7 +43,12 @@ from hyperion.config import (
 from hyperion.obs import trace
 from hyperion.router.budget import DailyBudgetPlanner, TaskUrgency
 from hyperion.router.estimator import TokenEstimator
-from hyperion.router.providers.base import BaseProvider, RouterResponse
+from hyperion.router.providers.base import (
+    BaseProvider,
+    ProviderStatus,
+    RouterFailure,
+    RouterResponse,
+)
 from hyperion.router.providers.cerebras import CerebrasProvider
 from hyperion.router.providers.google import GoogleProvider
 from hyperion.router.providers.groq import GroqProvider
@@ -79,6 +84,12 @@ _TIER_DOWNGRADE: dict[ModelTier, ModelTier] = {
 #   DEEP: Google flash-lite, Mistral devstral, NVIDIA ultra-550b (round-robin, ≥2 non-Google)
 #   STRONG: NVIDIA nemotron, Mistral large
 _TIER_PROVIDER_PRIORITY: dict[ModelTier, list[ProviderType]] = {
+    # P2-31: MICRO is the highest-volume tier (every specialist sub-agent
+    # runs on it), so it must have a deterministic priority order. Mistral
+    # ministral-3b leads (rpm60, no daily cap), then Google gemma (14.4K
+    # RPD), then Groq llama-instant (low tpm). Without an entry the sort
+    # fell back to `[] + list(set)`, i.e. non-deterministic set order.
+    ModelTier.MICRO: [ProviderType.MISTRAL, ProviderType.GOOGLE, ProviderType.GROQ],
     ModelTier.FAST: [ProviderType.MISTRAL, ProviderType.GROQ, ProviderType.CEREBRAS],
     ModelTier.STANDARD: [ProviderType.NVIDIA, ProviderType.MISTRAL, ProviderType.GROQ],
     ModelTier.DEEP: [ProviderType.MISTRAL, ProviderType.NVIDIA, ProviderType.GOOGLE],
@@ -146,6 +157,7 @@ class LLMRouter:
         self._token_usage_by_provider: dict[ProviderType, dict[str, int]] = {
             pt: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "calls": 0}
             for pt in ProviderType
+            if pt is not ProviderType.NONE  # P2-29: NONE never serves traffic
         }
 
         # Model lookup: tier → list of (provider_type, model_spec)
@@ -197,31 +209,54 @@ class LLMRouter:
             "by_provider": by_provider,
         }
 
-    def _predicted_rate_limited(self, provider_type: ProviderType) -> bool:
-        """D9: Check if a provider is predicted to be rate-limited right now.
+    def _tracker_hot(self, tracker: SlidingWindowTracker) -> bool:
+        """P2-30: is a single model's sliding window near its RPM/TPM limit?
 
-        Uses the wait gate's sliding window tracker to see if the provider
-        is near its RPM/TPM limit. If so, skip it and try the next provider.
+        This is the per-model predicate. A model is "hot" when either its RPM
+        or TPM rolling window is >85% utilised.
+        """
+        if tracker.model.rpm > 0:
+            if tracker.current_rpm() / tracker.model.rpm > 0.85:
+                return True
+        if tracker.model.tpm > 0:
+            if tracker.current_tpm() / tracker.model.tpm > 0.85:
+                return True
+        return False
+
+    def _candidate_rate_limited(self, candidate: ProviderCandidate) -> bool:
+        """P2-30/P2-G30: evaluate the rate-limit prediction for the SPECIFIC
+        candidate the wait gate selected, not for the provider.
+
+        One hot model must not disable an entire provider. Google runs Gemma
+        at 14,400 RPD and Gemini at 500 RPD; saturating the small model used
+        to mark the large one unavailable. The router skips the hot candidate
+        and the wait gate can offer the next candidate on the same provider.
+        """
+        return self._tracker_hot(candidate.tracker)
+
+    def _predicted_rate_limited(self, provider_type: ProviderType) -> bool:
+        """D9: True only when the provider genuinely cannot serve right now.
+
+        P2-30: this is the provider-LEVEL aggregate retained for diagnostics
+        (``_diagnose_skip_reasons``) and the speculative racer. It is True
+        when the provider is unhealthy or EVERY non-deprecated model on it is
+        hot (no cold model exists). A provider with one hot model and one
+        cold model is NOT rate-limited; per-request gating uses
+        ``_candidate_rate_limited`` instead.
         """
         if provider_type not in self._providers:
             return True
         provider = self._providers[provider_type]
         if not provider.health.is_available():
             return True
-        # Check if any tracker for this provider shows near-limit usage
-        for (pt, _model_name), tracker in self._trackers.items():
-            if pt != provider_type:
-                continue
-            # If RPM or TPM is >85% utilized, predict rate-limited
-            if tracker.model.rpm > 0:
-                rpm_pct = tracker.current_rpm() / tracker.model.rpm
-                if rpm_pct > 0.85:
-                    return True
-            if tracker.model.tpm > 0:
-                tpm_pct = tracker.current_tpm() / tracker.model.tpm
-                if tpm_pct > 0.85:
-                    return True
-        return False
+        trackers = [
+            tracker
+            for (pt, _model_name), tracker in self._trackers.items()
+            if pt == provider_type and not tracker.model.deprecated
+        ]
+        if not trackers:
+            return True
+        return all(self._tracker_hot(tracker) for tracker in trackers)
 
     def _sort_providers_by_priority(
         self,
@@ -349,6 +384,9 @@ class LLMRouter:
                 )
             return response
 
+        # P2-29: track every tier walked so a total failure can report it
+        tiers_attempted: list[ModelTier] = [tier]
+
         # Try the requested tier first
         response = await self._try_tier(
             tier=tier,
@@ -367,6 +405,8 @@ class LLMRouter:
 
         # If the requested tier failed, try adjacent tiers (§3.3)
         for adjacent_tier in _TIER_ADJACENCY.get(tier, []):
+            if adjacent_tier not in tiers_attempted:
+                tiers_attempted.append(adjacent_tier)
             # Re-estimate for the adjacent tier (different output budget)
             adjacent_estimated = self.estimator.estimate_tokens(
                 system_prompt=system_prompt,
@@ -390,9 +430,13 @@ class LLMRouter:
                 self._response_cache.set(tier, messages, response, temperature, max_tokens)
                 return response
 
-        # D9: If all adjacent tiers exhausted, try explicit downgrade
+        # D9: If all adjacent tiers exhausted, try explicit downgrade.
+        # P2-31: skip when the adjacency walk already attempted this tier —
+        # _TIER_ADJACENCY[STRONG] already reaches STANDARD, so the downgrade
+        # step was attempting STANDARD a second time on every STRONG failure.
         downgrade_tier = _TIER_DOWNGRADE.get(tier)
-        if downgrade_tier is not None:
+        if downgrade_tier is not None and downgrade_tier not in tiers_attempted:
+            tiers_attempted.append(downgrade_tier)
             downgrade_estimated = self.estimator.estimate_tokens(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -417,14 +461,57 @@ class LLMRouter:
         if response is not None:
             return response
 
+        # P2-29: a total failure is attributed to NO provider. Naming one
+        # (the old ProviderType.GOOGLE "Placeholder") misreported a deleted
+        # API key as quota exhaustion for two entire engagements.
+        failure = RouterFailure(
+            tiers_attempted=tiers_attempted,
+            providers_considered={
+                t.value: [pt.value for pt in self._providers] for t in tiers_attempted
+            },
+            skip_reasons=self._diagnose_skip_reasons(tiers_attempted),
+        )
+        trace(
+            "router",
+            tier=tier.value,
+            agent=agent_name,
+            status="total_failure",
+            detail=failure.render(),
+        )
         return RouterResponse(
             content="",
             model="none",
-            provider=ProviderType.GOOGLE,  # Placeholder
+            provider=ProviderType.NONE,
             tier=tier,
             success=False,
-            error="All providers exhausted across all adjacent tiers",
+            error=f"All providers exhausted across all adjacent tiers ({failure.render()})",
+            failure=failure,
         )
+
+    def _diagnose_skip_reasons(
+        self, tiers_attempted: list[ModelTier]
+    ) -> dict[ProviderType, str]:
+        """Per-provider reason why no candidate could serve the request (P2-29).
+
+        Recomputed from live state at failure time so the operator sees the
+        actual cause (auth, circuit, budget, no model for tier) rather than
+        a quota-exhaustion guess.
+        """
+        reasons: dict[ProviderType, str] = {}
+        for pt, provider in self._providers.items():
+            if provider.health.status == ProviderStatus.UNAUTHENTICATED:
+                reasons[pt] = "unauthenticated"
+            elif not provider.health.is_available():
+                reasons[pt] = "health_open"
+            elif all(
+                not provider.get_models_for_tier(t) for t in tiers_attempted
+            ):
+                reasons[pt] = "no_model_for_tier"
+            elif self._predicted_rate_limited(pt):
+                reasons[pt] = "predicted_rate_limited"
+            else:
+                reasons[pt] = "budget_exhausted"
+        return reasons
 
     async def _try_tier(
         self,
@@ -453,11 +540,9 @@ class LLMRouter:
         ordered_providers = self._sort_providers_by_priority(tier, available_providers)
 
         for provider_type in ordered_providers:
-            # Skip predicted-rate-limited providers
-            if self._predicted_rate_limited(provider_type):
-                continue
-
-            # Select the best model on this provider via the wait gate
+            # P2-30: select the candidate FIRST, then skip the hot candidate
+            # rather than the whole provider. A saturated Gemma window must
+            # not disable the Gemini model on the same provider.
             candidate, wait_seconds = self.wait_gate.select_with_wait(
                 tier=tier,
                 estimated_tokens=estimated_tokens,
@@ -465,6 +550,11 @@ class LLMRouter:
             )
 
             if candidate is None:
+                continue
+
+            # Skip a predicted-hot candidate; this provider's other models
+            # and the remaining providers stay eligible.
+            if self._candidate_rate_limited(candidate):
                 continue
 
             # If we need to wait, do so
@@ -534,10 +624,8 @@ class LLMRouter:
         ordered_providers = self._sort_providers_by_priority(tier, available_providers)
 
         for provider_type in ordered_providers:
-            # Skip predicted-rate-limited providers
-            if self._predicted_rate_limited(provider_type):
-                continue
-
+            # P2-30: select the candidate FIRST, then skip the hot candidate
+            # rather than the whole provider.
             candidate, wait_seconds = self.wait_gate.select_with_wait(
                 tier=tier,
                 estimated_tokens=estimated_tokens,
@@ -545,6 +633,10 @@ class LLMRouter:
             )
 
             if candidate is None:
+                continue
+
+            # Skip a predicted-hot candidate, not the provider.
+            if self._candidate_rate_limited(candidate):
                 continue
 
             if wait_seconds > 0 and wait_seconds <= self.settings.wait_gate.medium_wait_threshold:
@@ -652,7 +744,7 @@ class LLMRouter:
     def get_tpm_status(self) -> dict[ProviderType, dict[str, float]]:
         """Get TPM usage percentages for all providers — for TUI display (§8.6)."""
         result: dict[ProviderType, dict[str, float]] = {}
-        for provider_type in ProviderType:
+        for provider_type in self._providers:
             result[provider_type] = self.wait_gate.get_tpm_usage_percentage(provider_type)
         return result
 

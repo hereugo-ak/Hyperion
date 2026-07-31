@@ -1,43 +1,41 @@
 """
-HYPERION Fact Checker — Agent 16, the verification engine and hallucination catcher.
+HYPERION Fact Checker, Agent 16, the verification engine and hallucination catcher.
 
 This is NOT a generic "check if sources exist" agent. This is a specialist with
 5 proprietary skills:
 
 - Claim verification: Extract specific factual claims from specialist findings
   and verify each against independent sources. A claim is VERIFIED if 2+
-  independent sources agree. Not just "does a source exist" — "do 2+
+  independent sources agree. Not just "does a source exist""do 2+
   independent sources confirm this specific claim?"
 - Source credibility scoring: Score each source on credibility and weight
   verification accordingly. A claim verified by a peer-reviewed paper is more
   credible than one verified by a blog post. Uses the same credibility
   hierarchy as the Research Librarian.
 - Contradiction detection: Identify when two specialists make contradictory
-  claims and flag them for the Synthesis Lead. Not just "they disagree" —
-  classify the contradiction (DATA_CONFLICT, INTERPRETATION_CONFLICT,
+  claims and flag them for the Synthesis Lead. Not just "they disagree", classify the contradiction (DATA_CONFLICT, INTERPRETATION_CONFLICT,
   SCOPE_CONFLICT) and flag it with both agents' claims.
 - Evidence chain validation: For each claim, trace the evidence chain:
   claim → source → original data. If the chain breaks (source doesn't contain
   the data, or data doesn't support the claim), flag it. This catches
-  hallucinated citations — the #1 quality risk in LLM-generated reports.
+  hallucinated citations, the #1 quality risk in LLM-generated reports.
 - Statistical sanity checks: Check for statistical red flags: numbers that
   are too round (suspicious), growth rates that are implausibly high, market
-  sizes that don't reconcile across agents. Not just "is this number right" —
-  "is this number suspicious given the context?"
+  sizes that don't reconcile across agents. Not just "is this number right""is this number suspicious given the context?"
 
 It runs on FAST tier (GPT OSS 120B on Cerebras, ~3000 tok/s) because fact-
-checking is time-critical — it runs in parallel with late-stage specialists
+checking is time-critical, it runs in parallel with late-stage specialists
 and must finish before the Synthesis Lead starts. It doesn't just check if a
-source exists — it checks if the source actually contains the data the
+source exists, it checks if the source actually contains the data the
 specialist claims it does. It catches hallucinated citations, which is the
 #1 quality risk in LLM-generated reports. (§4.5, Agent 16)
 
-Model Tier: FAST (GPT OSS 120B on Cerebras — speed is critical, fact-checking
+Model Tier: FAST (GPT OSS 120B on Cerebras, speed is critical, fact-checking
 runs in parallel with late-stage specialists)
 Tools: SearxNG (search for verification), Jina (extract source content to
        verify against original), Obscura (scrape JS-rendered pages for
        verification)
-Sub-agents: 0 (support agent — doesn't spawn sub-agents)
+Sub-agents: 0 (support agent, doesn't spawn sub-agents)
 Output: FactCheckReport (claim-by-claim verification status, contradictions,
         evidence chain validation, statistical red flags)
 
@@ -85,6 +83,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.tools.evidence_scorer import EvidenceScorer
 from hyperion.tools.query_utils import ground_query
 
 logger = logging.getLogger(__name__)
@@ -112,7 +111,7 @@ FACT_CHECKER_SPEC = AgentSpec(
                 "Extract specific factual claims from specialist findings and "
                 "verify each against independent sources. A claim is VERIFIED "
                 "if 2+ independent sources agree. Not just 'does a source "
-                "exist' — 'do 2+ independent sources confirm this specific "
+                "exist''do 2+ independent sources confirm this specific "
                 "claim?' Claims are typed (NUMBER, DATE, NAME, EVENT, "
                 "RELATIONSHIP, QUOTE) for targeted verification."
             ),
@@ -138,7 +137,7 @@ FACT_CHECKER_SPEC = AgentSpec(
             description=(
                 "Identify when two specialists make contradictory claims and "
                 "flag them for the Synthesis Lead. Not just 'they disagree' "
-                "— classify the contradiction as DATA_CONFLICT (different "
+                "classify the contradiction as DATA_CONFLICT (different "
                 "numbers for same metric), INTERPRETATION_CONFLICT (same "
                 "data, different conclusions), or SCOPE_CONFLICT (agents "
                 "analyzed different scopes). Flag with both agents' claims."
@@ -152,7 +151,7 @@ FACT_CHECKER_SPEC = AgentSpec(
                 "For each claim, trace the evidence chain: claim → source → "
                 "original data. If the chain breaks (source doesn't contain "
                 "the data, or data doesn't support the claim), flag it. This "
-                "catches hallucinated citations — the #1 quality risk in "
+                "catches hallucinated citations, the #1 quality risk in "
                 "LLM-generated reports. A hallucinated citation is when an "
                 "agent cites a source that either doesn't exist or doesn't "
                 "contain the data the agent claims it does."
@@ -166,7 +165,7 @@ FACT_CHECKER_SPEC = AgentSpec(
                 "Check for statistical red flags: numbers that are too round "
                 "(suspicious), growth rates that are implausibly high, market "
                 "sizes that don't reconcile across agents. Not just 'is this "
-                "number right' — 'is this number suspicious given the "
+                "number right''is this number suspicious given the "
                 "context?' A market size of exactly $10B is suspicious. A "
                 "growth rate of 500% YoY is suspicious. Two agents reporting "
                 "different market sizes for the same market is a red flag."
@@ -176,7 +175,7 @@ FACT_CHECKER_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Fact Checker — the verification engine and "
+        "You are the HYPERION Fact Checker, the verification engine and "
         "hallucination catcher.\n\n"
         "Your role:\n"
         "1. EXTRACT factual claims from specialist findings. Claims are "
@@ -196,7 +195,7 @@ FACT_CHECKER_SPEC = AgentSpec(
         "6. RUN statistical sanity checks: too round numbers, implausible "
         "growth rates, market sizes that don't reconcile.\n\n"
         "You run on FAST tier (Cerebras, ~3000 tok/s) because fact-checking "
-        "is time-critical — you run in parallel with late-stage specialists "
+        "is time-critical, you run in parallel with late-stage specialists "
         "and must finish before the Synthesis Lead starts.\n\n"
         "Rules:\n"
         "- 2+ INDEPENDENT SOURCES REQUIRED FOR VERIFICATION. 'Independent' "
@@ -216,7 +215,7 @@ FACT_CHECKER_SPEC = AgentSpec(
         "critical claims first (numbers, dates, names). Don't spend time on "
         "subjective claims that can't be verified.\n\n"
         "You do NOT spawn sub-agents. You are a support agent.\n\n"
-        "Your output is a FactCheckReport Pydantic model — structured, not "
+        "Your output is a FactCheckReport Pydantic model, structured, not "
         "free text."
     ),
     spawn_condition="Spawned after all specialists have published findings. "
@@ -237,7 +236,7 @@ class FactChecker(BaseAgent):
 
     Verifies claims made by specialists, cross-references sources, and flags
     contradictions. Runs on FAST tier (Cerebras, ~3000 tok/s) because fact-
-    checking is time-critical. Catches hallucinated citations — the #1 quality
+    checking is time-critical. Catches hallucinated citations, the #1 quality
     risk in LLM-generated reports. (§4.5, Agent 16)
 
     Lifecycle:
@@ -625,13 +624,13 @@ class FactChecker(BaseAgent):
         no web search is needed. Otherwise, falls back to SearXNG JSON API
         + Jina for content extraction.
 
-        Obscura is NOT used — it's a Windows-only binary and fact-checking
+        Obscura is NOT used, it's a Windows-only binary and fact-checking
         should not spawn browsers per claim.
         """
         # Step 1: Check local corpus first (no web search needed)
         local_sources = self._check_local_corpus(claim)
         if len(local_sources) >= 2 and self._check_independence(local_sources):
-            logger.debug("Claim '%s' verified via local corpus — skipping web search",
+            logger.debug("Claim '%s' verified via local corpus, skipping web search",
                          claim.claim[:50])
             return local_sources
 
@@ -942,32 +941,175 @@ class FactChecker(BaseAgent):
         return contradictions
 
     def _claims_conflict(self, claim_a: Claim, claim_b: Claim) -> bool:
-        """Check if two NUMBER claims conflict.
+        """Check whether two claims contradict (P2-21).
 
-        A conflict is when both claims mention the same metric keyword but
-        cite different numbers.
+        A contradiction requires BOTH a shared subject AND a numeric or
+        categorical conflict about that subject. Two metadata strings
+        ("Confidence: low" vs "Confidence: low") have no numeric conflict,
+        so they are never a contradiction row. Two claims about different
+        quantities (demand vs price) share no subject, so they are never a
+        contradiction row either. Comparisons use the claim text itself,
+        extracted before any metadata is folded in.
         """
         text_a = claim_a.claim.lower()
         text_b = claim_b.claim.lower()
 
-        # Extract numbers from both claims
-        nums_a = re.findall(r'\$?\d[\d,]*\.?\d*', text_a)
-        nums_b = re.findall(r'\$?\d[\d,]*\.?\d*', text_b)
-
+        # Numeric conflict: both cite numbers and the leading figures differ.
+        nums_a = re.findall(r"\$?\d[\d,]*\.?\d*", text_a)
+        nums_b = re.findall(r"\$?\d[\d,]*\.?\d*", text_b)
         if not nums_a or not nums_b:
             return False
+        if nums_a[0] == nums_b[0]:
+            # Same leading figure: agreement, not contradiction.
+            return False
 
-        # If the numbers are different and they share keywords, it's a conflict
-        if nums_a[0] != nums_b[0]:
-            # Check for shared keywords (metric names)
-            words_a = set(w for w in text_a.split() if len(w) > 4)
-            words_b = set(w for w in text_b.split() if len(w) > 4)
-            shared = words_a & words_b
-            # If they share meaningful keywords, it's likely the same metric
-            if len(shared) >= 2:
-                return True
+        # Shared subject: the token-boundary matcher (not substring) decides
+        # whether both claims are about the same quantity. Require two or
+        # more shared content tokens of length >= 4 so generic overlap
+        # ("market", "growth") alone does not manufacture a conflict.
+        stems_a = EvidenceScorer._stemmed_tokens(text_a)
+        stems_b = EvidenceScorer._stemmed_tokens(text_b)
+        shared = {
+            tok for tok in (stems_a & stems_b) if len(tok) >= 4
+        }
+        return len(shared) >= 2
 
-        return False
+    def _filter_contradiction_rows(
+        self, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Suppress 0.00-weight resolutions and cap the appendix table.
+
+        P2-21 fixes 3-4 (P2-G22): an unresolved tie (resolution weight 0.00)
+        is not a resolution and must not be presented as one, so those rows
+        are dropped. The surviving rows are sorted by weight descending and
+        capped at the 10 highest-weight contradictions; the total is stated
+        separately by the caller.
+        """
+        kept = [r for r in rows if r.get("weight", 0.0) > 0.0]
+        kept.sort(key=lambda r: r.get("weight", 0.0), reverse=True)
+        return kept[:10]
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Stage 2: STRONG-tier re-adjudication (P2-20)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _stage2_readjudicate(self, claims: list[Claim]) -> list[Claim]:
+        """Re-adjudicate only the claims stage 1 flagged, on STRONG tier.
+
+        P2-20 / P2-G21: verification is the one task where a wrong answer is
+        maximally expensive, so the FAST-tier triage is not the final word.
+        Stage 2 escalates ONLY the flagged claims (HALLUCINATED /
+        CONTRADICTED, typically 10-20% of the total) to STRONG tier with
+        urgency HIGH and the full fetched source text in context. Stage 2's
+        verdict is authoritative: a 'verified' verdict clears the stage-1
+        flag, a 'hallucinated' verdict confirms it.
+        """
+        flagged = [
+            c
+            for c in claims
+            if c.is_hallucinated_citation or c.status == ClaimStatus.CONTRADICTED
+        ]
+        if not flagged:
+            return claims
+
+        for claim in flagged:
+            source_text = "\n\n".join(
+                f"[{s.url}]\n{(s.key_data or '').strip()}"
+                for s in claim.verification_sources
+                if (s.key_data or "").strip()
+            ) or "(no fetched source content available)"
+            prompt = (
+                "You are the stage-2 verification authority. Stage 1 (fast "
+                "triage) flagged the claim below as a possible hallucinated "
+                "citation or contradiction. Re-adjudicate with the full "
+                "fetched source text. Decide whether the cited source "
+                "genuinely supports the claim.\n\n"
+                f"CLAIM: {claim.claim}\n\n"
+                f"FETCHED SOURCES:\n{source_text}\n\n"
+                'Respond with a single JSON object: {"verdict": one of '
+                '"verified", "plausible", "unverifiable", "contradicted", '
+                '"hallucinated", "reason": one sentence}. "verified" means '
+                "the source supports the claim; \"hallucinated\" means the "
+                "source demonstrably does not."
+            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a meticulous fact-check adjudicator. Answer "
+                        "only with the JSON object requested."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
+            verdict, reason = await self._stage2_verdict(messages)
+            if verdict is None:
+                continue
+            claim.verification_notes = (
+                f"stage2 ({verdict.value}): {reason}".strip()
+            )
+            if verdict == ClaimStatus.VERIFIED:
+                claim.is_hallucinated_citation = False
+                claim.evidence_chain_valid = True
+                claim.evidence_chain_break = None
+                claim.status = ClaimStatus.VERIFIED
+            elif verdict == ClaimStatus.HALLUCINATED:
+                claim.is_hallucinated_citation = True
+                claim.evidence_chain_valid = False
+                claim.status = ClaimStatus.HALLUCINATED
+            else:
+                # plausible / unverifiable / contradicted: clear the
+                # hallucination flag and adopt the stage-2 status.
+                claim.is_hallucinated_citation = False
+                claim.status = verdict
+
+        return claims
+
+    async def _stage2_verdict(
+        self, messages: list[dict[str, str]]
+    ) -> tuple[ClaimStatus | None, str]:
+        """Dispatch one stage-2 adjudication to STRONG tier and parse it.
+
+        Escalates through the router at STRONG tier with urgency HIGH,
+        bypassing the agent's own FAST tier. Returns (status, reason); the
+        status is None when the response cannot be parsed, leaving the
+        stage-1 flag unchanged.
+        """
+        router = getattr(self, "router", None)
+        if router is None:
+            return None, ""
+        try:
+            response = await router.complete(
+                tier=ModelTier.STRONG,
+                messages=messages,
+                agent_name=self.name.value,
+                urgency=TaskUrgency.HIGH,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:  # noqa: BLE001 - stage 1 flag stands
+            logger.warning("stage-2 re-adjudication dispatch failed: %s", exc)
+            return None, ""
+
+        content = getattr(response, "content", "") or ""
+        try:
+            import json
+
+            data = json.loads(content)
+        except Exception:  # noqa: BLE001 - unparsable, stage 1 flag stands
+            logger.debug("stage-2 verdict not JSON: %.120s", content)
+            return None, ""
+
+        raw = str(data.get("verdict", "")).strip().lower()
+        reason = str(data.get("reason", "")).strip()
+        mapping = {
+            "verified": ClaimStatus.VERIFIED,
+            "plausible": ClaimStatus.PLAUSIBLE,
+            "unverifiable": ClaimStatus.UNVERIFIABLE,
+            "contradicted": ClaimStatus.CONTRADICTED,
+            "hallucinated": ClaimStatus.HALLUCINATED,
+        }
+        return mapping.get(raw), reason
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 6: Flag unverified claims to originating specialist
@@ -1007,11 +1149,17 @@ class FactChecker(BaseAgent):
     # ─────────────────────────────────────────────────────────────────────
 
     async def _validate_evidence_chains(self, claims: list[Claim]) -> tuple[list[Claim], list[Claim]]:
-        """Validate evidence chains for all claims.
+        """Validate evidence chains for all claims (P2-19).
 
-        For each claim, trace: claim → source → original data.
-        If the chain breaks (source doesn't contain the data, or data doesn't
-        support the claim), flag it.
+        Three states, not two. A claim is checked against a source only when
+        that source carries non-empty fetched content (``key_data``). If no
+        source has content, the claim is ``UNVERIFIABLE`` ("we could not
+        check"), never ``HALLUCINATED``. A claim is flagged a hallucinated
+        citation only on TWO independent signals: no numeric/token overlap
+        with the source text AND the cited URL failing a liveness check.
+        Matching reuses ``evidence_scorer``'s token-boundary matcher, not
+        substring. ``UNVERIFIABLE`` is never aggregated into the
+        hallucination count (P2-G20).
 
         Returns (chain_breaks, hallucinated).
         """
@@ -1019,39 +1167,120 @@ class FactChecker(BaseAgent):
         hallucinated: list[Claim] = []
 
         for claim in claims:
-            if not claim.verification_sources and claim.status != ClaimStatus.UNVERIFIED:
-                # Claim has no sources at all — potential hallucination
+            if not claim.verification_sources:
+                # Zero sources: "we did not look", not "the model invented a
+                # citation". Chain is broken but this is UNVERIFIABLE.
                 claim.evidence_chain_valid = False
                 claim.evidence_chain_break = "No sources cited for claim"
-                claim.is_hallucinated_citation = True
-                hallucinated.append(claim)
+                if claim.status == ClaimStatus.UNVERIFIED:
+                    claim.status = ClaimStatus.UNVERIFIABLE
+                chain_breaks.append(claim)
                 continue
 
-            # Check if cited sources actually contain the claimed data
-            claim_lower = claim.claim.lower()
-            source_contains_data = False
-
-            for source in claim.verification_sources:
-                source_data = (source.key_data or "").lower()
-                # Check if the claim's key data appears in the source
-                if claim_lower in source_data or any(
-                    word in source_data for word in claim_lower.split() if len(word) > 4
+            # Only sources with non-empty fetched content can be checked.
+            content_sources = [
+                s for s in claim.verification_sources if (s.key_data or "").strip()
+            ]
+            if not content_sources:
+                # SERP-snippet corpus: nothing fetched to check against.
+                if claim.status in (
+                    ClaimStatus.UNVERIFIED,
+                    ClaimStatus.PLAUSIBLE,
                 ):
-                    source_contains_data = True
-                    break
+                    claim.status = ClaimStatus.UNVERIFIABLE
+                continue
 
-            if not source_contains_data and claim.verification_sources:
-                # Source exists but doesn't contain the claimed data
+            # Token-boundary overlap: does any source support the claim?
+            supported = any(
+                self._source_supports_claim(claim, s) for s in content_sources
+            )
+            if supported:
+                continue
+
+            # No overlap found. Require a SECOND independent signal — a dead
+            # URL — before asserting the citation was invented. A live source
+            # whose fetched text simply does not mention the claim is
+            # UNVERIFIABLE, not HALLUCINATED.
+            url_alive = await self._any_source_url_alive(content_sources)
+            if not url_alive:
                 claim.evidence_chain_valid = False
                 claim.evidence_chain_break = (
-                    "Cited source does not contain the claimed data — "
-                    "possible hallucinated citation"
+                    "Cited source does not contain the claimed data and the "
+                    "URL is unreachable"
                 )
                 claim.is_hallucinated_citation = True
+                claim.status = ClaimStatus.HALLUCINATED
                 hallucinated.append(claim)
                 chain_breaks.append(claim)
+            else:
+                if claim.status in (
+                    ClaimStatus.UNVERIFIED,
+                    ClaimStatus.PLAUSIBLE,
+                ):
+                    claim.status = ClaimStatus.UNVERIFIABLE
 
         return (chain_breaks, hallucinated)
+
+    def _source_supports_claim(self, claim: Claim, source: Source) -> bool:
+        """Token-boundary support test reusing evidence_scorer's matcher.
+
+        The claim's content keywords (stopwords removed) are matched against
+        the source text's stemmed token set. A claim is supported when at
+        least two of its content words appear as whole tokens/stems, or when
+        a shared numeric figure appears. Never a substring test.
+        """
+        text = (source.key_data or "")
+        if not text.strip():
+            return False
+
+        # Shared numeric figure is a strong support signal.
+        claim_nums = set(re.findall(r"\d[\d,]*\.?\d*", claim.claim))
+        source_nums = set(re.findall(r"\d[\d,]*\.?\d*", text))
+        if claim_nums and (claim_nums & source_nums):
+            return True
+
+        keywords = [
+            kw
+            for kw in EvidenceScorer()._extract_keywords(claim.claim)
+            if len(kw) >= 3
+        ]
+        if not keywords:
+            return False
+        source_stems = EvidenceScorer._stemmed_tokens(text)
+        overlap = sum(1 for kw in keywords if kw in source_stems or EvidenceScorer._stem(kw) in source_stems)
+        return overlap >= 2
+
+    async def _any_source_url_alive(self, sources: list[Source]) -> bool:
+        """True if at least one cited URL responds (liveness second signal)."""
+        for source in sources:
+            if await self._url_alive(source.url):
+                return True
+        return False
+
+    async def _url_alive(self, url: str) -> bool:
+        """Liveness check: HEAD (fall back to GET) the cited URL.
+
+        Any response below HTTP 400 counts as alive: 301/302 redirects and
+        200s mean the source exists. A connection error, timeout, or 4xx/5xx
+        means dead. Network failures default to alive (we cannot prove the
+        citation was invented because our own egress failed).
+        """
+        if not url:
+            return False
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=8.0
+            ) as client:
+                try:
+                    resp = await client.head(url)
+                except Exception:  # noqa: BLE001 - some servers reject HEAD
+                    resp = await client.get(url, headers={"Range": "bytes=0-0"})
+                return resp.status_code < 400
+        except Exception as exc:  # noqa: BLE001 - egress failure ≠ dead source
+            logger.debug("url liveness check failed for %s: %s", url, exc)
+            return True
 
     # ─────────────────────────────────────────────────────────────────────
     # Statistical sanity checks (part of Step 4)
@@ -1083,7 +1312,7 @@ class FactChecker(BaseAgent):
                     if value in self.ROUND_NUMBER_SUSPECTS:
                         red_flags.append(
                             f"Suspiciously round number: {claim.claim} "
-                            f"(from {claim.agent}) — exactly ${value:,} "
+                            f"(from {claim.agent}), exactly ${value:,} "
                             f"is suspicious. Verify with primary source."
                         )
                 except (ValueError, TypeError):
@@ -1101,7 +1330,7 @@ class FactChecker(BaseAgent):
                     if growth_rate > self.IMPLAUSIBLE_GROWTH_THRESHOLD:
                         red_flags.append(
                             f"Implausible growth rate: {claim.claim} "
-                            f"(from {claim.agent}) — {growth_rate}% growth "
+                            f"(from {claim.agent}), {growth_rate}% growth "
                             f"is suspiciously high. Verify with primary source."
                         )
                 except (ValueError, TypeError):
@@ -1131,7 +1360,7 @@ class FactChecker(BaseAgent):
                 if len(unique_nums) > 1:
                     agents_involved = ", ".join(a for a, _ in agent_claims)
                     red_flags.append(
-                        f"Market size reconciliation issue: '{metric}' — "
+                        f"Market size reconciliation issue: '{metric}'"
                         f"agents report different values ({agents_involved}): "
                         f"{', '.join(agent_claims[i][1] for i in range(len(agent_claims)))}. "
                         f"Synthesis Lead should reconcile."
@@ -1228,8 +1457,21 @@ class FactChecker(BaseAgent):
         # Step 4: Score each claim (done during verification)
         await self._transition(AgentState.WORKING, "Step 4: Scoring claims")
 
-        # Validate evidence chains
+        # Validate evidence chains (stage 1, FAST triage)
         self._chain_breaks, self._hallucinated = await self._validate_evidence_chains(self._claims)
+
+        # Stage 2 (P2-20): STRONG-tier re-adjudication of ONLY the flagged
+        # claims. Its verdict is the authority for HALLUCINATED/CONTRADICTED;
+        # a 'verified' verdict clears the stage-1 flag. Recompute the
+        # hallucinated list from the adjudicated claims so the report counts
+        # only stage-2-confirmed hallucinations (UNVERIFIABLE never counts).
+        await self._stage2_readjudicate(self._claims)
+        self._hallucinated = [
+            c for c in self._claims if c.is_hallucinated_citation
+        ]
+        self._chain_breaks = [
+            c for c in self._claims if not c.evidence_chain_valid
+        ]
 
         # Run statistical sanity checks
         self._statistical_red_flags = self._run_statistical_sanity_checks(self._claims)

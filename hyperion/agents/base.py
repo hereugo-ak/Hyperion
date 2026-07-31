@@ -54,6 +54,7 @@ from hyperion.schemas.agents import (
     SubAgentSpec,
     ToolName,
 )
+from hyperion.output.typography import PROMPT_TYPOGRAPHY_RULE
 from hyperion.schemas.models import KeyFinding
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,10 @@ class BaseAgent(ABC):
 
         # Findings collected by this agent
         self._findings: list[KeyFinding] = []
+
+        # P2-17: verify_claims requests from the Fact Checker, recorded for
+        # the agent's next run() (or the GAP_CLOSURE re-dispatch) to act on.
+        self._pending_verify_requests: list[dict[str, Any]] = []
 
         # Sub-agent specs spawned by this agent
         self._sub_agent_specs: list[SubAgentSpec] = []
@@ -367,6 +372,18 @@ class BaseAgent(ABC):
 
         Subclasses that DO care about push delivery override this.
         """
+        # P2-17: a verify_claims request addressed to this agent is handled
+        # by EVERY agent via the shared base handler — it is the Fact
+        # Checker's Step 6 feedback path, and it must never be dropped.
+        payload = getattr(msg, "payload", None) or {}
+        if (
+            getattr(msg, "channel", None) == Channel.REQUESTS
+            and payload.get("request_type") == "verify_claims"
+            and payload.get("to_agent", "") == self.name.value
+        ):
+            await self._handle_verify_claims(payload)
+            return
+
         # Traced rather than silently dropped: a message arriving here means
         # the subscribing agent declared interest in a channel but has no
         # handler, which is nearly always a wiring bug (§4.8).
@@ -374,6 +391,34 @@ class BaseAgent(ABC):
             "%s received bus message with no handler override (msg=%r) — dropping",
             self.name,
             getattr(msg, "message_type", msg),
+        )
+
+    async def _handle_verify_claims(self, payload: dict[str, Any]) -> None:
+        """Shared handler for the Fact Checker's verify_claims requests (P2-17).
+
+        The request is recorded for the agent's next run() — or the
+        GAP_CLOSURE re-dispatch (P2-18) — to act on, and acknowledged on the
+        bus so the Fact Checker knows a live specialist received it. Before
+        this handler existed, every specialist matched request_type against
+        its own literals (tam_number, moat_assessment, ...) and the
+        verify_claims request vanished silently.
+        """
+        claims = payload.get("unverified_claims", [])
+        self._pending_verify_requests.append(payload)
+        logger.info(
+            "%s: verify_claims request from %s recorded (%d claim(s) flagged)",
+            self.name.value, payload.get("from_agent", "fact_checker"), len(claims),
+        )
+        await self.bus.publish(
+            channel=Channel.REQUESTS,
+            msg_type=MessageType.STATUS,
+            sender=self.name,
+            payload={
+                "to_agent": payload.get("from_agent", "fact_checker"),
+                "from_agent": self.name.value,
+                "request_type": "verify_claims_ack",
+                "acknowledged_claims": len(claims),
+            },
         )
 
     async def _publish_finding(self, finding: KeyFinding) -> None:
@@ -554,7 +599,11 @@ class BaseAgent(ABC):
         The agent's system prompt is always prepended. If
         system_prompt_override is provided, it replaces the default.
         """
-        system = system_prompt_override or self.system_prompt
+        # P2-32 generation layer: the shared typography rule is prepended to
+        # EVERY dispatched prompt (base prompt and overrides alike), so the
+        # em/en dash ban is stated once here, not 20 times across specs.
+        base_prompt = system_prompt_override or self.system_prompt
+        system = f"{PROMPT_TYPOGRAPHY_RULE}\n\n{base_prompt}"
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         if conversation_history:

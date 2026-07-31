@@ -128,10 +128,29 @@ class TemplateRenderer:
         if self._env is None:
             from jinja2 import Environment, select_autoescape
 
+            from hyperion.output.display import humanize
+            from hyperion.output.typography import sanitize_typography
+
+            # P2-10: humanize is the environment FINALIZER, not an opt-in
+            # filter. The old clean_dict_repr filter was applied to exactly 1
+            # of ~40 renderable fields and its startswith('{') guard could not
+            # fire on the LABEL: {'...'} strings that actually leaked. As the
+            # finalize hook, humanize runs on every interpolated value, so no
+            # field can be forgotten. On an unparseable repr it raises rather
+            # than truncating and shipping.
+            #
+            # P2-32: the finalizer ALSO sanitizes typography. humanize runs
+            # first (repr -> prose), then sanitize_typography removes every
+            # em/en dash model output or a leaked string literal carries. This
+            # catches dashes regardless of prompt compliance.
+            def _finalize(value: Any) -> str:
+                return sanitize_typography(humanize(value))
+
             self._env = Environment(
                 autoescape=select_autoescape(["html", "xml"]),
                 trim_blocks=True,
                 lstrip_blocks=True,
+                finalize=_finalize,
             )
             # Add custom filters
             self._env.filters["format_currency"] = self._format_currency
@@ -672,6 +691,22 @@ class PDFRenderer:
                 result.warnings.append("PyMuPDF not available — page count unknown")
 
             self._apply_pdf_post_pass(result, output_path, full_html)
+
+            # P2-08/P2-G1: render-time page audit, fail closed. This runs
+            # after the PDF/A post-pass so the audited bytes are the shipped
+            # bytes. A violation must never reach the client as a success.
+            from hyperion.output.page_audit import PageAuditError, audit_pdf
+
+            try:
+                audit_pdf(output_path)
+            except PageAuditError as exc:
+                result.success = False
+                result.error = f"page audit failed: {exc}"
+                result.warnings.append(
+                    "PDF withheld: render-time page audit failed (see error)"
+                )
+                return result
+
             return result
 
         except (OSError, ImportError, ValueError, RuntimeError) as exc:
@@ -696,6 +731,22 @@ class PDFRenderer:
                 pass
 
             self._apply_pdf_post_pass(result, output_path, full_html)
+
+            # P2-08/P2-G1: render-time page audit, fail closed (same as the
+            # WeasyPrint path above — the audit applies to whichever engine
+            # produced the bytes).
+            from hyperion.output.page_audit import PageAuditError, audit_pdf
+
+            try:
+                audit_pdf(output_path)
+            except PageAuditError as exc:
+                result.success = False
+                result.error = f"page audit failed: {exc}"
+                result.warnings.append(
+                    "PDF withheld: render-time page audit failed (see error)"
+                )
+                return result
+
             return result
 
         # ── Both PDF engines failed: emit a real HTML deliverable ──

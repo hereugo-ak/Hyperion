@@ -981,6 +981,24 @@ class RenderEngine(BaseAgent):
         if not verdict.passed:
             issues.append(verdict.issue)
 
+        # Check 6 (P2-08): render-time page audit — what is ON the pages, not
+        # how many exist. Fail closed: a violation means this agent refuses
+        # the PDF, same as any other failed check above. render.py runs the
+        # same audit inside render_pdf; this is the agent-level backstop for
+        # any render path that bypasses it.
+        from hyperion.output.page_audit import PageAuditError, audit_pdf
+
+        try:
+            audit_pdf(pdf_path)
+            details["page_audit_passed"] = True
+        except PageAuditError as exc:
+            details["page_audit_passed"] = False
+            details["page_audit_violations"] = exc.violations
+            issues.append(
+                f"Page audit failed ({len(exc.violations)} violation(s)): "
+                + "; ".join(exc.violations[:5])
+            )
+
         all_passed = len(issues) == 0
         return (all_passed, issues, details)
 

@@ -1,5 +1,5 @@
 """
-HYPERION Markdown Export — renders FinalReport as markdown for TUI display.
+HYPERION Markdown Export, renders FinalReport as markdown for TUI display.
 
 This is NOT a generic "convert to markdown" wrapper. It renders the
 FinalReport Pydantic model into a structured markdown document that
@@ -15,12 +15,12 @@ The markdown output mirrors the PDF structure:
 - Appendix
 - Back cover (wordmark, tagline)
 
-Architecture reference: §8.2 — "Deliverable View: Rendered markdown of
+Architecture reference: §8.2"Deliverable View: Rendered markdown of
 the final report (Rich Markdown widget). Export button (save as PDF,
 save as markdown)."
 
-§8.1 — "Markdown: Rich Markdown rendering (headers, bold, lists, code
-blocks)" — this is the HYPERION advantage over Hermes Agents.
+§8.1"Markdown: Rich Markdown rendering (headers, bold, lists, code
+blocks)", this is the HYPERION advantage over Hermes Agents.
 
 Used by: TUI Deliverable View, export to .md file (§8.2)
 """
@@ -315,7 +315,7 @@ class MarkdownExporter:
                     s_url = src.get("url", "")
                     s_cred = src.get("credibility", "")
                     if s_url:
-                        lines.append(f"- [{s_title}]({s_url})" + (f" — *{s_cred}*" if s_cred else ""))
+                        lines.append(f"- [{s_title}]({s_url})" + (f", *{s_cred}*" if s_cred else ""))
                     else:
                         lines.append(f"- {s_title}")
                 else:
@@ -396,7 +396,7 @@ class MarkdownExporter:
             lines.append("")
             for agent in agents_used:
                 if isinstance(agent, dict):
-                    lines.append(f"- **{agent.get('name', '')}** — {agent.get('role', '')}")
+                    lines.append(f"- **{agent.get('name', '')}**, {agent.get('role', '')}")
                 else:
                     lines.append(f"- {agent}")
             lines.append("")
@@ -456,7 +456,7 @@ class MarkdownExporter:
                 url = source.get("url", "")
                 credibility = source.get("credibility", "")
                 if url:
-                    lines.append(f"{i}. [{title}]({url})" + (f" — *{credibility}*" if credibility else ""))
+                    lines.append(f"{i}. [{title}]({url})" + (f", *{credibility}*" if credibility else ""))
                 else:
                     lines.append(f"{i}. {title}")
             lines.append("")

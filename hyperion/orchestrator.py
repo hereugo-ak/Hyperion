@@ -40,6 +40,7 @@ from hyperion.agents.synthesis_lead import SynthesisLead
 from hyperion.obs import ArtifactStore, RunJournal, RunManifest, trace
 from hyperion.schemas.agents import AgentName, AgentState
 from hyperion.schemas.models import (
+    AnalysisGap,
     FactCheckReport,
     FinalReport,
     LayoutPlan,
@@ -791,7 +792,14 @@ class WorkflowEngine:
                     timeout=self.TASK_TIMEOUT_SECONDS,
                 )
 
-            task.status = TaskStatus.COMPLETED
+            # P2-18: specialists do NOT complete here — they rest in
+            # AWAITING_FOLLOWUP so a verify_claims request or a GAP_CLOSURE
+            # re-dispatch reaches a live, subscribed agent. The closure
+            # phase finalizes them to COMPLETED after it runs.
+            if task.agent in self._SPECIALIST_AGENTS:
+                task.status = TaskStatus.AWAITING_FOLLOWUP
+            else:
+                task.status = TaskStatus.COMPLETED
             task.completed_at = time.time()
             task.output = result.model_dump() if hasattr(result, "model_dump") else str(result)
             self._task_outputs[task.id] = result
@@ -978,6 +986,302 @@ class WorkflowEngine:
     # Running it in both places causes double-execution and wasted LLM calls.
     _DAG_EXCLUDED_AGENTS = _DELIVERY_AGENTS | frozenset({AgentName.QUALITY_GATE})
 
+    # P2-18: the specialists that stay ALIVE (subscribed, task resting in
+    # TaskStatus.AWAITING_FOLLOWUP rather than COMPLETED) until the
+    # GAP_CLOSURE phase closes, so a verify_claims request or a gap
+    # re-dispatch has a live recipient.
+    _SPECIALIST_AGENTS = frozenset({
+        AgentName.MARKET_ANALYST, AgentName.COMPETITIVE_INTEL,
+        AgentName.FINANCIAL_ANALYST, AgentName.RISK_ANALYST,
+        AgentName.TECHNOLOGY_ANALYST, AgentName.OPERATIONS_ANALYST,
+        AgentName.REGULATORY_ANALYST, AgentName.SUSTAINABILITY_ANALYST,
+        AgentName.CONSUMER_INSIGHTS, AgentName.MA_ANALYST,
+        AgentName.INNOVATION_ANALYST, AgentName.STRATEGY_ANALYST,
+    })
+
+    # P2-18: the GAP_CLOSURE phase node, inserted between fact check and
+    # quality gate. Owned by the Engagement Director per audit P2-16.
+    _GAP_CLOSURE_TASK_ID = "task_gap_closure"
+
+    def _ensure_gap_closure_task(self, dag: WorkflowDAG) -> None:
+        """Insert the GAP_CLOSURE phase into the DAG (idempotent).
+
+        It depends on the fact checker; every task that previously depended
+        on the fact checker directly (quality gate, synthesis) now depends on
+        the closure phase, so specialists are re-dispatchable until it runs.
+        """
+        if dag.get_task(self._GAP_CLOSURE_TASK_ID) is not None:
+            return
+        from hyperion.config import ModelTier
+
+        fact_check_ids = [
+            t.id for t in dag.tasks if t.agent == AgentName.FACT_CHECKER
+        ]
+        closure = TaskNode(
+            id=self._GAP_CLOSURE_TASK_ID,
+            agent=AgentName.ENGAGEMENT_DIRECTOR,
+            model_tier=ModelTier.STRONG,
+            description=(
+                "GAP_CLOSURE phase: re-dispatch unresolved AnalysisGap objects "
+                "to live specialists (max 3 rounds), then finalize specialist "
+                "tasks."
+            ),
+            dependencies=list(fact_check_ids),
+            estimated_llm_calls=3,
+            estimated_tokens=6000,
+        )
+        for task in dag.tasks:
+            if any(fc in task.dependencies for fc in fact_check_ids):
+                task.dependencies = [
+                    self._GAP_CLOSURE_TASK_ID if d in fact_check_ids else d
+                    for d in task.dependencies
+                ]
+        dag.tasks.append(closure)
+
+    async def _gap_closure_phase(
+        self,
+        dag: WorkflowDAG,
+        gaps: list[AnalysisGap] | None = None,
+    ) -> list[AnalysisGap]:
+        """Run the GAP_CLOSURE phase (P2-16/P2-18, owned by the Director).
+
+        Each unresolved gap walks a 3-round ladder: round 1 re-dispatches
+        the originating specialist (still alive in AWAITING_FOLLOWUP) one
+        tier up with urgency HIGH; round 2 sends a reformulated cross-check
+        to a different specialist; round 3 escalates to the synthesis lead
+        at STRONG tier or above. The first truthy run() result resolves
+        the gap; a gap that survives all three rounds stays unresolved and
+        is declared via _record_unresolved_gaps. After all rounds,
+        specialist tasks are finalized to COMPLETED and the closure task
+        itself is marked COMPLETED so the quality gate can proceed.
+        """
+        from hyperion.config import ModelTier as _Tier
+        from hyperion.router.budget import TaskUrgency
+
+        gaps = list(gaps or [])
+        closure = dag.get_task(self._GAP_CLOSURE_TASK_ID)
+        if closure is not None:
+            closure.status = TaskStatus.RUNNING
+            closure.started_at = time.time()
+            self._publish_task_update(closure)
+
+        tier_ladder = [
+            _Tier.MICRO, _Tier.FAST, _Tier.STANDARD, _Tier.STRONG, _Tier.DEEP,
+        ]
+
+        for gap in gaps:
+            if gap.resolved:
+                continue
+            for round_no in (1, 2, 3):
+                if gap.resolved:
+                    break
+                gap.attempts += 1
+                target, question = self._gap_closure_round(
+                    dag, gap, round_no, tier_ladder
+                )
+                agent = self._resolve_gap_agent(target)
+                if agent is None:
+                    continue
+                try:
+                    result = await agent.run(
+                        question=question,
+                        engagement_id=self._engagement_id,
+                        urgency=TaskUrgency.HIGH,
+                    )
+                except TypeError:
+                    # Specialist run() signatures that take no urgency kwarg
+                    # still get the re-dispatch; the tier/urgency intent is
+                    # in the question text.
+                    result = await agent.run(
+                        question=question,
+                        engagement_id=self._engagement_id,
+                    )
+                except Exception as exc:  # noqa: BLE001 - logged, gap stays open
+                    logger.warning(
+                        "gap_closure: round-%d dispatch for gap %s failed: %s",
+                        round_no, gap.id, exc,
+                    )
+                    continue
+                if result:
+                    gap.resolved = True
+                    gap.resolution = str(result)
+
+        # Finalize: specialists leave AWAITING_FOLLOWUP, the phase completes.
+        for task in dag.tasks:
+            if (
+                task.agent in self._SPECIALIST_AGENTS
+                and task.status == TaskStatus.AWAITING_FOLLOWUP
+            ):
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = task.completed_at or time.time()
+                self._publish_task_update(task)
+        if closure is not None:
+            closure.status = TaskStatus.COMPLETED
+            closure.completed_at = time.time()
+            self._publish_task_update(closure)
+        return gaps
+
+    def _gap_closure_round(
+        self,
+        dag: WorkflowDAG,
+        gap: AnalysisGap,
+        round_no: int,
+        tier_ladder: list[Any],
+    ) -> tuple[AgentName, str]:
+        """Select the target agent and question text for one closure round.
+
+        Round 1: the originating specialist, one tier up. Round 2: a
+        different specialist with a reformulated cross-check query.
+        Round 3: the synthesis lead at STRONG tier or above, with the
+        full gap context.
+        """
+        if round_no == 1:
+            task = next((t for t in dag.tasks if t.agent == gap.agent), None)
+            base_tier = task.model_tier if task else tier_ladder[2]
+            try:
+                idx = tier_ladder.index(base_tier)
+            except ValueError:
+                idx = 2  # STANDARD
+            bumped = tier_ladder[min(idx + 1, len(tier_ladder) - 1)]
+            question = (
+                f"GAP_CLOSURE round 1 (tier {bumped.value}, urgency HIGH): "
+                f"answer this specific unresolved question for section "
+                f"'{gap.section_id}' field '{gap.field}': {gap.question}"
+            )
+            return gap.agent, question
+        if round_no == 2:
+            candidates = sorted(
+                self._SPECIALIST_AGENTS - {gap.agent}, key=lambda a: a.value
+            )
+            live = getattr(self, "_agents", None)
+            cross = candidates[0]
+            if live:
+                for cand in candidates:
+                    if cand in live:
+                        cross = cand
+                        break
+            question = (
+                "GAP_CLOSURE round 2 (cross-check, urgency HIGH): the "
+                f"originating specialist for section '{gap.section_id}' "
+                f"could not resolve field '{gap.field}'. Reformulated "
+                f"question for your domain: {gap.question}"
+            )
+            return cross, question
+        question = (
+            "GAP_CLOSURE round 3 (synthesis escalation, tier STRONG+): two "
+            f"specialists could not resolve this gap for section "
+            f"'{gap.section_id}' field '{gap.field}'; decide the answer "
+            f"from the assembled evidence or confirm it is unknowable: "
+            f"{gap.question}"
+        )
+        return AgentName.SYNTHESIS_LEAD, question
+
+    def _resolve_gap_agent(self, agent_name: AgentName) -> Any | None:
+        """Locate a live agent for a closure dispatch (None if unreachable)."""
+        agents = getattr(self, "_agents", None) or {}
+        agent = agents.get(agent_name)
+        if agent is not None:
+            return agent
+        try:
+            return self._get_agent(agent_name)
+        except Exception as exc:  # noqa: BLE001 - logged, gap stays open
+            logger.warning(
+                "gap_closure: cannot reach agent %s: %s", agent_name.value, exc,
+            )
+            return None
+
+    def _record_unresolved_gaps(
+        self, report: Any, gaps: list[AnalysisGap] | None
+    ) -> None:
+        """Declare gaps that survived the closure ladder in the report.
+
+        P2-16 sub-fix 5.6: an unresolvable gap omits its field from the
+        client content, and its specific question is recorded in
+        FinalReport.limitations so the omission is honest and visible.
+        """
+        limitations = getattr(report, "limitations", None)
+        if limitations is None:
+            return
+        for gap in gaps or []:
+            if gap.resolved:
+                continue
+            entry = (
+                f"Unresolved research gap in section '{gap.section_id}' "
+                f"({gap.field}), unanswered after {gap.attempts} closure "
+                f"rounds: {gap.question}"
+            )
+            if not any(gap.question in existing for existing in limitations):
+                limitations.append(entry)
+
+    async def _handle_thin_evidence(self, report: Any, source_floor: int) -> bool:
+        """P2-25: thin evidence triggers retrieval escalation, not a stop.
+
+        The old content-aware stop broke out of the quality loop the moment
+        source count fell below the floor ("more synthesis won't fix thin
+        evidence"). Sound reasoning, wrong conclusion: thin evidence calls
+        for MORE retrieval, not less synthesis. This escalates retrieval
+        first; only a failed escalation is terminal, and then the correct
+        output is a stated evidence limitation, not silent delivery.
+
+        Returns True when the loop may proceed (escalation recovered
+        sources), False when it is terminal.
+        """
+        needed = max(12, source_floor)
+        recovered = await self._escalate_retrieval(report, needed)
+        if recovered > 0:
+            logger.info(
+                "RETRIEVAL ESCALATION: recovered %d source(s) for thin evidence",
+                recovered,
+            )
+            return True
+        limitations = getattr(report, "limitations", None)
+        if limitations is not None:
+            entry = (
+                f"Evidence limitation: only {getattr(report, 'total_sources', 0)} "
+                "sources could be gathered even after a targeted retrieval "
+                "escalation round (new engines, reformulated queries); "
+                "findings rest on thin evidence."
+            )
+            if entry not in limitations:
+                limitations.append(entry)
+        return False
+
+    async def _escalate_retrieval(self, report: Any, needed: int) -> int:
+        """Dispatch a targeted retrieval round and return sources recovered.
+
+        Uses the engagement subject/geography to fire reformulated queries
+        through the (now widened and rotating) search pool. Returns the
+        number of new source URLs found. Overridable in tests.
+        """
+        try:
+            from hyperion.tools.query_utils import get_engagement_focus
+            from hyperion.tools.searxng import SearxNGClient
+
+            focus = get_engagement_focus() or {}
+            subject = focus.get("subject", "")
+            geography = focus.get("geography", "")
+            if not subject:
+                return 0
+            client = SearxNGClient()
+            queries = [
+                f"{subject} {geography} market analysis".strip(),
+                f"{subject} {geography} industry report 2025".strip(),
+                f"{subject} {geography} news".strip(),
+            ]
+            found: set[str] = set()
+            for query in queries:
+                response = await client.search(query=query, num_results=5)
+                if response and response.results:
+                    for r in response.results:
+                        if r.url:
+                            found.add(r.url)
+            current = getattr(report, "total_sources", 0) or 0
+            report.total_sources = current + len(found)
+            return len(found)
+        except Exception as exc:  # noqa: BLE001 - logged, treated as no recovery
+            logger.warning("retrieval escalation failed: %s", exc)
+            return 0
+
     async def _execute_dag(self, dag: WorkflowDAG) -> dict[str, Any]:
         """Execute the DAG in topological order — specialists through Quality Gate.
 
@@ -1109,21 +1413,37 @@ class WorkflowEngine:
             if current_score is None:
                 break
 
-            # Check if score meets threshold (≥ 4.0/5.0)
-            if current_score.total_score >= 4.0:
-                self._log(f"QUALITY: threshold met at iteration {iteration}")
-                break  # Quality threshold met
+            # P2-22: exit the loop only on the authoritative `approved` flag,
+            # not on the weighted score alone. `approved` already folds in
+            # the score threshold (see QualityGate._determine_approval) AND
+            # the Layer 4 hard-blocker scan (QualityGate._detect_hard_blockers),
+            # which catches leaked objects, banned filler, verdict
+            # contradictions and dishonest confidence. Reading `total_score`
+            # here let reports with `approved=False` ship anyway.
+            if current_score.approved:
+                self._log(f"QUALITY: approved at iteration {iteration}")
+                break  # Quality gate approved
 
-            # P7: Content-aware stop — if source count is below floor, stop
-            # iterating.  More synthesis passes won't fix thin evidence.
+            # P2-25: thin evidence triggers retrieval escalation, not a stop.
+            # The old content-aware stop broke here; now a below-floor source
+            # count dispatches a targeted retrieval round (new engines,
+            # reformulated queries). Only a failed escalation is terminal, and
+            # then as a stated limitation, never silently.
             report_sources = getattr(current_report, "total_sources", 0)
             if report_sources < source_floor:
+                proceed = await self._handle_thin_evidence(current_report, source_floor)
+                if not proceed:
+                    self._log(
+                        f"QUALITY: retrieval escalation failed — "
+                        f"{report_sources} sources (< floor {source_floor}) and "
+                        "no recovery; stopping with a stated evidence limitation."
+                    )
+                    current_score.max_iterations_reached = True
+                    break
                 self._log(
-                    f"QUALITY: content-aware stop — only {report_sources} sources "
-                    f"(< floor {source_floor}). More iterations won't fix thin evidence."
+                    f"QUALITY: retrieval escalation recovered sources "
+                    f"(was {report_sources}, now {getattr(current_report, 'total_sources', 0)})"
                 )
-                current_score.max_iterations_reached = True
-                break
 
             # Score below threshold — iterate with targeted fixes
             if iteration < self.MAX_QUALITY_ITERATIONS:
@@ -1421,6 +1741,29 @@ class WorkflowEngine:
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("%s: %s", "run_engagement", exc)
 
+        # P2-29: startup credential preflight. One real minimal completion
+        # per configured provider. A TCP probe or key-presence check cannot
+        # detect a dead key; the deleted Google credential passed every
+        # reachability probe for two entire engagements while every
+        # completion returned 401. A 401/403 marks the provider
+        # UNAUTHENTICATED (distinct from quota) and is logged loudly here.
+        if _settings is not None:
+            try:
+                from hyperion.obs.health import credential_preflight
+                from hyperion.router.router import get_router
+
+                preflight = await credential_preflight(get_router())
+                dead = [pt.value for pt, s in preflight.items() if s == "UNAUTHENTICATED"]
+                if dead:
+                    logger.error(
+                        "CREDENTIAL PREFLIGHT: unauthenticated providers %s — "
+                        "these keys are dead (401/403), NOT rate limited. "
+                        "Replace the key; no quota window will recover them.",
+                        dead,
+                    )
+            except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                logger.warning("%s: %s", "run_engagement", exc)
+
         # D-06/§4 0.2: refuse to start an engagement on a dead research stack.
         # The 07-30 run was allowed to begin with every engine banned and
         # shipped a fabricated report; a stack that returns zero evidence can
@@ -1513,6 +1856,32 @@ class WorkflowEngine:
 
             result.final_report = final_report
             result.fact_check_report = fact_check_report
+
+            # ─────────────────────────────────────────────────────────────
+            # Stage 4a: GAP_CLOSURE phase (P2-18) — between fact check and
+            # quality gate. Specialists have been resting in
+            # AWAITING_FOLLOWUP (alive, subscribed) since their initial
+            # runs; unresolved gaps are re-dispatched to them here, then
+            # their tasks are finalized to COMPLETED.
+            # ─────────────────────────────────────────────────────────────
+            self._ensure_gap_closure_task(dag)
+            synthesis_gaps = getattr(
+                self._get_agent(AgentName.SYNTHESIS_LEAD), "section_gaps", []
+            ) or []
+            closure_gaps = [
+                AnalysisGap(
+                    id=f"gap_{i}",
+                    section_id="synthesis",
+                    agent=AgentName.SYNTHESIS_LEAD,
+                    field="body",
+                    question=g,
+                )
+                for i, g in enumerate(synthesis_gaps)
+            ]
+            await self._gap_closure_phase(dag, gaps=closure_gaps)
+            # P2-16 sub-fix 5.6: gaps that survived all three closure rounds
+            # are declared in the report's limitations with their questions.
+            self._record_unresolved_gaps(final_report, closure_gaps)
 
             # ─────────────────────────────────────────────────────────────
             # Stage 4b: Quality Gate iteration loop

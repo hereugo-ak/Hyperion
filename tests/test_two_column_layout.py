@@ -67,8 +67,12 @@ class TestTwoColumnStructure:
         assert "column-gap: 7mm" in rule
 
     def test_column_fill_balances_last_page(self) -> None:
+        """P2-01: column-fill: auto fills column 1 to full height and never
+        starts column 2 on short chapters (6 pages of report A measured
+        col2=0w). balance is the one-word fix."""
         rule = _css_rule(CSS_TEMPLATE, ".section-body")
-        assert "column-fill: auto" in rule
+        assert "column-fill: balance" in rule
+        assert "column-fill: auto" not in rule
 
     def test_visual_anchors_span_all_columns(self) -> None:
         """Exhibits/KPI strips/insight/implication boxes must be full-bleed —
