@@ -3109,7 +3109,20 @@ class PresentationDesigner(BaseAgent):
                 self._log(f"RENDER: PDF produced at {self.PDF_OUTPUT}")
                 return self.PDF_OUTPUT
 
-            # PDF failed. The renderer now emits a styled, self-contained HTML
+            # PDF failed. W-02: when the page audit rejected the render, the
+            # log must name the rejected path and the violation count — the
+            # old message truncated the error at 120 characters, discarding
+            # the entire violation list.
+            rejected = getattr(result, "rejected_path", "") if result else ""
+            violations = getattr(result, "audit_violations", []) if result else []
+            if rejected:
+                self._log(
+                    f"RENDER: PDF REJECTED by page audit "
+                    f"({len(violations)} violation(s)); quarantined at {rejected}. "
+                    "The deliverable name was not written."
+                )
+
+            # The renderer now emits a styled, self-contained HTML
             # fallback — surface it rather than discarding it. Returning ""
             # here is what left the user with an empty output directory.
             fallback = getattr(result, "html_path", "") if result else ""
