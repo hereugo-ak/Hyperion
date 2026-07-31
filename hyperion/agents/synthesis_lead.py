@@ -1172,22 +1172,14 @@ class SynthesisLead(BaseAgent):
             findings: list[KeyFinding],
         ) -> AnalysisSection:
             if not findings:
-                return AnalysisSection(
-                    id=f"section_{agent}",
-                    title=_section_title(agent),
-                    agent=agent,
-                    key_insight="No findings available for this section",
-                    body=(
-                        f"The {_section_title(agent)} analysis did not produce "
-                        f"specific findings for this engagement. This is a data-"
-                        f"availability gap, not an absence of analytical relevance."
-                    ),
-                    findings=[],
-                    charts=[],
-                    images=[],
-                    implications="No specific implications could be derived, data gap.",
-                    sources=[],
-                    confidence=ConfidenceLevel.LOW,
+                # P2-16: a specialist with no findings is a GAP, never a
+                # filler section. Raise; the gather below records the specific
+                # unanswered question in section_gaps (surfaced to
+                # FinalReport.limitations) and the section is omitted.
+                raise SectionGapError(
+                    f"'{_section_title(agent)}' ({agent}) produced no findings; "
+                    f"the question this chapter was to answer is unresolved: "
+                    f"'{self._question}'."
                 )
 
             # Select the best finding for the key insight box.
@@ -1323,10 +1315,10 @@ class SynthesisLead(BaseAgent):
                 findings=findings,
                 charts=[],  # Charts are added by Data Visualizer later
                 images=[],  # Images are added by Presentation Designer later
-                implications=(
-                    key_finding.implications
-                    or "Insufficient evidence to state implications, this section requires additional research."
-                ),
+                # P2-16: when no finding carries a 'so what', the implication
+                # box is OMITTED (None) and the gap declared below, never
+                # filled with the banned placeholder string.
+                implications=key_finding.implications,
                 sources=list({s.url: s for s in all_sources}.values()),  # Dedupe by URL
                 confidence=findings[0].confidence,
             )

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
@@ -48,6 +48,70 @@ def _reject_object_repr(value: Any) -> Any:
             f"{value[:60]!r}"
         )
     return value
+
+
+# P2-16: banned filler / placeholder phrases. Kept in lockstep with
+# QualityGate._BANNED_FILLER (quality_gate.py) -- the schema layer makes the
+# strings unrepresentable at construction, so the render-time scan can never
+# fire on something the system itself wrote.
+_BANNED_FILLER_PHRASES: tuple[str, ...] = (
+    "no specific implications stated",
+    "no competitors identified",
+    "no specific implications could be derived",
+    "so what? no specific",
+    "insufficient evidence to state implications",
+)
+
+
+def _reject_banned_filler(value: Any) -> Any:
+    """field_validator body: raise if a string field holds a placeholder.
+
+    A gap in the analysis is declared via AnalysisGap and the closure loop
+    (P2-16), never by writing a default string into client content.
+    """
+    if isinstance(value, str):
+        lowered = value.lower()
+        for phrase in _BANNED_FILLER_PHRASES:
+            if phrase in lowered:
+                raise ValueError(
+                    "placeholder text is unrepresentable in client content "
+                    f"({phrase!r}); raise an AnalysisGap and run the "
+                    f"gap-closure loop instead: {value[:60]!r}"
+                )
+    return value
+
+
+class AnalysisGap(BaseModel):
+    """A specific, unanswered analytical question (P2-16).
+
+    The gap object is the policy replacement for placeholder strings: every
+    site that used to emit a default string (``Insufficient evidence to state
+    implications ...``) raises one of these instead. The gap-closure loop
+    (owned by the Engagement Director, between fact check and quality gate)
+    attempts to answer it in up to 3 rounds. If a gap survives all rounds,
+    the field is OMITTED from the report and the question is recorded in
+    ``FinalReport.limitations`` -- the omission is honest and invisible,
+    never a filler string.
+    """
+
+    id: str = Field(description="Unique gap identifier")
+    section_id: str = Field(description="Section this gap belongs to")
+    agent: "AgentName" = Field(description="Specialist that owns the gap")
+    field: Literal["key_insight", "body", "implications", "sources", "datapoint"] = Field(
+        description="Which section field the gap blocks"
+    )
+    question: str = Field(description="The specific question that must be answered")
+    attempts: int = Field(default=0, description="Closure rounds attempted so far")
+    resolved: bool = Field(default=False, description="Whether the gap has been closed")
+    resolution: str | None = Field(default=None, description="The answer, once resolved")
+
+
+# AgentName lives in agents.py, which does not import this module, so the
+# import is cycle-free; done here (after the class) to keep the schema header
+# stable for the tooling that greps the top of the file.
+from hyperion.schemas.agents import AgentName  # noqa: E402
+
+AnalysisGap.model_rebuild()
 
 
 def clean_url(url: str) -> str:
@@ -178,6 +242,11 @@ class KeyFinding(BaseModel):
     # P2-09: serialized object reprs are unrepresentable at construction.
     _reject_reprs = field_validator("content", "title", "implications")(
         _reject_object_repr
+    )
+
+    # P2-16: a placeholder is unrepresentable; a gap is an AnalysisGap.
+    _reject_filler = field_validator("content", "title", "implications")(
+        _reject_banned_filler
     )
 
 
@@ -331,8 +400,12 @@ class AnalysisSection(BaseModel):
     charts: list[str] = Field(default_factory=list, description="Chart image paths (300 DPI PNG)")
     images: list[str] = Field(default_factory=list, description="Unsplash image paths for this "
         "section")
-    implications: str = Field(description="'So what?' — what does this mean for the "
-        "recommendation?")
+    # P2-16: omittable. A section whose 'so what' could not be derived omits
+    # the box entirely (honest, invisible) rather than shipping a placeholder.
+    implications: str | None = Field(
+        default=None,
+        description="'So what?' — what does this mean for the recommendation?",
+    )
     sources: list[Source] = Field(default_factory=list, description="All sources cited in this "
         "section")
     confidence: ConfidenceLevel = Field(description="Confidence level for this section's analysis")
@@ -341,6 +414,11 @@ class AnalysisSection(BaseModel):
     _reject_reprs = field_validator(
         "body", "key_insight", "implications", "title"
     )(_reject_object_repr)
+
+    # P2-16: a placeholder is unrepresentable; a gap is an AnalysisGap.
+    _reject_filler = field_validator(
+        "body", "key_insight", "implications", "title"
+    )(_reject_banned_filler)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
