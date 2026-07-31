@@ -299,7 +299,7 @@ class TestRetrievalEscalation:
         from hyperion.orchestrator import WorkflowEngine
 
         orch = WorkflowEngine.__new__(WorkflowEngine)
-        called: list[dict] = {}
+        called: list[dict] = []
 
         async def fake_escalate(report, needed):
             called.append({"needed": needed})

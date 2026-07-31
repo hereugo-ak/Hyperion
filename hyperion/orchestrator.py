@@ -1213,6 +1213,75 @@ class WorkflowEngine:
             if not any(gap.question in existing for existing in limitations):
                 limitations.append(entry)
 
+    async def _handle_thin_evidence(self, report: Any, source_floor: int) -> bool:
+        """P2-25: thin evidence triggers retrieval escalation, not a stop.
+
+        The old content-aware stop broke out of the quality loop the moment
+        source count fell below the floor ("more synthesis won't fix thin
+        evidence"). Sound reasoning, wrong conclusion: thin evidence calls
+        for MORE retrieval, not less synthesis. This escalates retrieval
+        first; only a failed escalation is terminal, and then the correct
+        output is a stated evidence limitation, not silent delivery.
+
+        Returns True when the loop may proceed (escalation recovered
+        sources), False when it is terminal.
+        """
+        needed = max(12, source_floor)
+        recovered = await self._escalate_retrieval(report, needed)
+        if recovered > 0:
+            logger.info(
+                "RETRIEVAL ESCALATION: recovered %d source(s) for thin evidence",
+                recovered,
+            )
+            return True
+        limitations = getattr(report, "limitations", None)
+        if limitations is not None:
+            entry = (
+                f"Evidence limitation: only {getattr(report, 'total_sources', 0)} "
+                "sources could be gathered even after a targeted retrieval "
+                "escalation round (new engines, reformulated queries); "
+                "findings rest on thin evidence."
+            )
+            if entry not in limitations:
+                limitations.append(entry)
+        return False
+
+    async def _escalate_retrieval(self, report: Any, needed: int) -> int:
+        """Dispatch a targeted retrieval round and return sources recovered.
+
+        Uses the engagement subject/geography to fire reformulated queries
+        through the (now widened and rotating) search pool. Returns the
+        number of new source URLs found. Overridable in tests.
+        """
+        try:
+            from hyperion.tools.query_utils import get_engagement_focus
+            from hyperion.tools.searxng import SearxNGClient
+
+            focus = get_engagement_focus() or {}
+            subject = focus.get("subject", "")
+            geography = focus.get("geography", "")
+            if not subject:
+                return 0
+            client = SearxNGClient()
+            queries = [
+                f"{subject} {geography} market analysis".strip(),
+                f"{subject} {geography} industry report 2025".strip(),
+                f"{subject} {geography} news".strip(),
+            ]
+            found: set[str] = set()
+            for query in queries:
+                response = await client.search(query=query, num_results=5)
+                if response and response.results:
+                    for r in response.results:
+                        if r.url:
+                            found.add(r.url)
+            current = getattr(report, "total_sources", 0) or 0
+            report.total_sources = current + len(found)
+            return len(found)
+        except Exception as exc:  # noqa: BLE001 - logged, treated as no recovery
+            logger.warning("retrieval escalation failed: %s", exc)
+            return 0
+
     async def _execute_dag(self, dag: WorkflowDAG) -> dict[str, Any]:
         """Execute the DAG in topological order — specialists through Quality Gate.
 
@@ -1355,16 +1424,26 @@ class WorkflowEngine:
                 self._log(f"QUALITY: approved at iteration {iteration}")
                 break  # Quality gate approved
 
-            # P7: Content-aware stop — if source count is below floor, stop
-            # iterating.  More synthesis passes won't fix thin evidence.
+            # P2-25: thin evidence triggers retrieval escalation, not a stop.
+            # The old content-aware stop broke here; now a below-floor source
+            # count dispatches a targeted retrieval round (new engines,
+            # reformulated queries). Only a failed escalation is terminal, and
+            # then as a stated limitation, never silently.
             report_sources = getattr(current_report, "total_sources", 0)
             if report_sources < source_floor:
+                proceed = await self._handle_thin_evidence(current_report, source_floor)
+                if not proceed:
+                    self._log(
+                        f"QUALITY: retrieval escalation failed — "
+                        f"{report_sources} sources (< floor {source_floor}) and "
+                        "no recovery; stopping with a stated evidence limitation."
+                    )
+                    current_score.max_iterations_reached = True
+                    break
                 self._log(
-                    f"QUALITY: content-aware stop — only {report_sources} sources "
-                    f"(< floor {source_floor}). More iterations won't fix thin evidence."
+                    f"QUALITY: retrieval escalation recovered sources "
+                    f"(was {report_sources}, now {getattr(current_report, 'total_sources', 0)})"
                 )
-                current_score.max_iterations_reached = True
-                break
 
             # Score below threshold — iterate with targeted fixes
             if iteration < self.MAX_QUALITY_ITERATIONS:
