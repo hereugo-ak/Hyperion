@@ -61,6 +61,7 @@ import subprocess
 import sys
 from contextlib import suppress
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 from hyperion.infra.paths import (
@@ -70,6 +71,45 @@ from hyperion.infra.paths import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class Platform(str, Enum):
+    """Host modes that require materially different Docker startup paths."""
+
+    WINDOWS = "windows"
+    MACOS = "macos"
+    WSL2 = "wsl2"
+    LINUX_SYSTEMD = "linux_systemd"
+    LINUX_OTHER = "linux_other"
+
+
+def _read_platform_file(path: str) -> str:
+    """Read a small kernel identity file without making detection fragile."""
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def detect_platform() -> Platform:
+    """Resolve WSL2 separately from native Linux.
+
+    ``sys.platform`` is ``linux`` under WSL2, but Docker Desktop is a Windows
+    process there. Treating it as a systemd daemon is the W-13 defect.
+    """
+    if sys.platform == "win32":
+        return Platform.WINDOWS
+    if sys.platform == "darwin":
+        return Platform.MACOS
+    if sys.platform == "linux":
+        version = _read_platform_file("/proc/version").lower()
+        release = _read_platform_file("/proc/sys/kernel/osrelease").lower()
+        if "microsoft" in version or "wsl" in release:
+            return Platform.WSL2
+        if Path("/run/systemd/system").exists():
+            return Platform.LINUX_SYSTEMD
+    return Platform.LINUX_OTHER
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ports and images — ONE definition, imported by every caller
@@ -103,6 +143,7 @@ FLARESOLVERR_IMAGE = "flaresolverr/flaresolverr:v3.3.21"
 FLARESOLVERR_IMAGE_FALLBACK = "flaresolverr/flaresolverr:v3.4.6"
 FLARESOLVERR_IMAGE_FLOATING = "flaresolverr/flaresolverr:latest"
 
+
 @dataclass(frozen=True)
 class SearxngReplica:
     name: str
@@ -113,15 +154,21 @@ class SearxngReplica:
 
 SEARXNG_REPLICAS = (
     SearxngReplica(
-        "hyperion-searxng-scholar", 8888, "scholar",
+        "hyperion-searxng-scholar",
+        8888,
+        "scholar",
         ("arxiv", "crossref", "openalex", "semantic scholar", "pubmed"),
     ),
     SearxngReplica(
-        "hyperion-searxng-reference", 8889, "reference",
+        "hyperion-searxng-reference",
+        8889,
+        "reference",
         ("wikipedia", "wikidata", "openstreetmap", "github", "stackexchange", "hackernews"),
     ),
     SearxngReplica(
-        "hyperion-searxng-web", 8890, "web",
+        "hyperion-searxng-web",
+        8890,
+        "web",
         ("mojeek", "marginalia", "brave", "yep", "wiby"),
     ),
 )
@@ -208,9 +255,7 @@ def searxng_spec(replica: SearxngReplica | None = None) -> ContainerSpec:
     """Build one isolated SearXNG replica spec."""
     replica = replica or SEARXNG_REPLICAS[0]
     volumes: list[tuple[Path, str]] = []
-    settings = searxng_settings_file().with_name(
-        f"searxng_settings.{replica.profile}.yml"
-    )
+    settings = searxng_settings_file().with_name(f"searxng_settings.{replica.profile}.yml")
     if settings.exists():
         volumes.append((settings, "/etc/searxng/settings.yml"))
     limiter = searxng_limiter_file()
@@ -329,9 +374,7 @@ def docker_available() -> bool:
 
 async def docker_engine_version() -> str:
     """Return the running engine version, or ``""`` if the daemon is not up."""
-    rc, out, _ = await run_command(
-        ["docker", "info", "--format", "{{.ServerVersion}}"], timeout=15
-    )
+    rc, out, _ = await run_command(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=15)
     return out if rc == 0 and out else ""
 
 
@@ -361,9 +404,7 @@ def _windows_desktop_candidates() -> list[Path]:
         candidates.append(Path(base) / "Docker" / "Docker" / "Docker Desktop.exe")
     # Common absolute installs, including non-default drives.
     for drive in ("C:", "D:", "E:"):
-        candidates.append(
-            Path(f"{drive}\\Program Files\\Docker\\Docker\\Docker Desktop.exe")
-        )
+        candidates.append(Path(f"{drive}\\Program Files\\Docker\\Docker\\Docker Desktop.exe"))
     # De-duplicate while preserving order.
     seen: set[str] = set()
     unique: list[Path] = []
@@ -382,9 +423,50 @@ def _macos_desktop_candidates() -> list[Path]:
     ]
 
 
+async def _launch_wsl2_docker_desktop() -> str:
+    """Launch the Windows Docker Desktop process through WSL interop."""
+    if not Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists():
+        return "WSL_INTEROP_DISABLED"
+
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
+    if powershell:
+        rc, _, _ = await run_command(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Process 'Docker Desktop'",
+            ],
+            timeout=20,
+        )
+        if rc == 0:
+            return "launching Docker Desktop through WSL interop"
+
+    wslpath = shutil.which("wslpath")
+    if not wslpath:
+        return ""
+    for windows_path in _windows_desktop_candidates():
+        rc, translated, _ = await run_command([wslpath, "-u", str(windows_path)], timeout=5)
+        if rc != 0 or not translated or not Path(translated).is_file():
+            continue
+        try:
+            subprocess.Popen(
+                [translated],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return f"launching {windows_path.name} through WSL interop"
+        except OSError:
+            continue
+    return ""
+
+
 async def _launch_docker_desktop() -> str:
-    """Try to launch the Docker engine. Returns a human-readable attempt note."""
-    if sys.platform == "win32":
+    """Try to launch the Docker engine using the detected host mode."""
+    platform = detect_platform()
+    if platform == Platform.WINDOWS:
         for exe in _windows_desktop_candidates():
             if exe.exists():
                 try:
@@ -394,7 +476,7 @@ async def _launch_docker_desktop() -> str:
                     continue
         return ""
 
-    if sys.platform == "darwin":
+    if platform == Platform.MACOS:
         for app in _macos_desktop_candidates():
             if app.exists():
                 rc, _, _ = await run_command(["open", "-a", str(app)], timeout=20)
@@ -402,16 +484,46 @@ async def _launch_docker_desktop() -> str:
                     return "launching Docker.app"
         return ""
 
-    # Linux: the daemon is a service. Try user-level first (rootless Docker is
-    # common on dev machines and needs no privileges), then system-level.
-    for cmd in (
-        ["systemctl", "--user", "start", "docker"],
-        ["systemctl", "--user", "start", "docker.service"],
-        ["systemctl", "start", "docker"],
+    if platform == Platform.WSL2:
+        return await _launch_wsl2_docker_desktop()
+
+    if platform == Platform.LINUX_SYSTEMD:
+        # Rootless user service never prompts and is always safe to try first.
+        for cmd in (
+            ["systemctl", "--user", "start", "docker"],
+            ["systemctl", "--user", "start", "docker.service"],
+        ):
+            rc, _, _ = await run_command(cmd, timeout=25)
+            if rc == 0:
+                return f"started via {' '.join(cmd[:3])}"
+
+        # Never invoke a command that can prompt inside the TUI. Root may call
+        # systemctl directly; other users get only passwordless sudo (-n).
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            cmd = ["systemctl", "start", "docker"]
+            rc, _, _ = await run_command(cmd, timeout=25)
+            if rc == 0:
+                return "started via systemctl start docker"
+        elif shutil.which("sudo"):
+            probe, _, _ = await run_command(["sudo", "-n", "true"], timeout=5)
+            if probe == 0:
+                cmd = ["sudo", "-n", "systemctl", "start", "docker"]
+                rc, _, _ = await run_command(cmd, timeout=25)
+                if rc == 0:
+                    return "started via passwordless sudo systemctl"
+        return ""
+
+    # Non-systemd Linux has no universally safe daemon launcher. Root may use
+    # the traditional service command; an unprivileged TUI must not prompt.
+    if (
+        platform == Platform.LINUX_OTHER
+        and hasattr(os, "geteuid")
+        and os.geteuid() == 0
+        and shutil.which("service")
     ):
-        rc, _, _ = await run_command(cmd, timeout=25)
+        rc, _, _ = await run_command(["service", "docker", "start"], timeout=25)
         if rc == 0:
-            return f"started via {' '.join(cmd[:3])}"
+            return "started via service docker start"
     return ""
 
 
@@ -440,7 +552,17 @@ async def ensure_docker_engine(
             with suppress(Exception):
                 on_progress(message)  # type: ignore[misc]
 
+    platform = detect_platform()
     if not docker_available():
+        if platform == Platform.WSL2:
+            return DockerStatus(
+                state=WARN,
+                detail=(
+                    "Docker CLI is not available inside this WSL distro. Docker Desktop "
+                    "may be running on Windows, but WSL integration is disabled here. "
+                    "Enable Settings > Resources > WSL Integration for this distro."
+                ),
+            )
         return DockerStatus(
             state=WARN,
             detail="Docker CLI not found on PATH — install Docker to enable SearxNG",
@@ -452,11 +574,23 @@ async def ensure_docker_engine(
 
     _progress("Docker daemon not running — starting the engine…")
     note = await _launch_docker_desktop()
-    if not note:
+    if note == "WSL_INTEROP_DISABLED":
         return DockerStatus(
             state=WARN,
-            detail="Docker installed but the engine could not be started automatically",
+            detail=(
+                "WSL interop is disabled (/proc/sys/fs/binfmt_misc/WSLInterop is absent), "
+                "so HYPERION cannot start Windows Docker Desktop. Enable WSL interop "
+                "in /etc/wsl.conf, then run `wsl.exe --shutdown` from Windows."
+            ),
         )
+    if not note:
+        detail = "Docker installed but the engine could not be started automatically"
+        if platform == Platform.WSL2:
+            detail += (
+                ". Confirm Docker Desktop is installed on Windows and WSL integration "
+                "is enabled for this distro."
+            )
+        return DockerStatus(state=WARN, detail=detail)
 
     _progress(f"{note} — waiting for the daemon…")
     deadline = asyncio.get_running_loop().time() + wait_seconds
@@ -619,9 +753,13 @@ async def remove_container(name: str) -> None:
 def _docker_run_argv(spec: ContainerSpec, image: str) -> list[str]:
     """Build the ``docker run`` argv for ``spec``."""
     argv = [
-        "docker", "run", "-d",
-        "--name", spec.name,
-        "--network", RETRIEVAL_NETWORK,
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        spec.name,
+        "--network",
+        RETRIEVAL_NETWORK,
     ]
     if spec.host_port:
         argv += ["-p", f"127.0.0.1:{spec.host_port}:{spec.container_port}"]
@@ -637,9 +775,7 @@ def _docker_run_argv(spec: ContainerSpec, image: str) -> list[str]:
 
 async def container_logs(name: str, lines: int = 20) -> str:
     """Tail a container's logs — used to explain a failed start."""
-    rc, out, err = await run_command(
-        ["docker", "logs", "--tail", str(lines), name], timeout=20
-    )
+    rc, out, err = await run_command(["docker", "logs", "--tail", str(lines), name], timeout=20)
     if rc != 0:
         return ""
     return (out or err or "").strip()
@@ -686,10 +822,7 @@ async def ensure_container(
 
     if status.ready:
         status.state = OK
-        base = (
-            f"ready · localhost:{spec.host_port}"
-            f" → container:{spec.container_port}"
-        )
+        base = f"ready · localhost:{spec.host_port} → container:{spec.container_port}"
         if used_fallback:
             # Surfaced deliberately: the pinned tag was not what ran.
             base += f" · using {image} (pinned tag unavailable)"
@@ -699,9 +832,8 @@ async def ensure_container(
         # useful diagnostic, so include them instead of a generic message.
         logs = await container_logs(spec.name, lines=6)
         status.state = WARN
-        status.detail = (
-            f"started but not ready within {spec.ready_timeout:.0f}s"
-            + (f" · {logs.splitlines()[-1][:100]}" if logs else "")
+        status.detail = f"started but not ready within {spec.ready_timeout:.0f}s" + (
+            f" · {logs.splitlines()[-1][:100]}" if logs else ""
         )
     return status
 
@@ -720,9 +852,7 @@ async def start_services(*, on_progress: object = None) -> dict[str, ServiceStat
             )
         return results
 
-    rc, _, err = await run_command(
-        ["docker", "network", "inspect", RETRIEVAL_NETWORK], timeout=20
-    )
+    rc, _, err = await run_command(["docker", "network", "inspect", RETRIEVAL_NETWORK], timeout=20)
     if rc != 0:
         created, _, create_err = await run_command(
             ["docker", "network", "create", RETRIEVAL_NETWORK], timeout=30
@@ -797,9 +927,7 @@ async def stop_services() -> dict[str, bool]:
 
 async def running_containers() -> set[str]:
     """Names of managed containers currently running — used by health reporting."""
-    rc, out, _ = await run_command(
-        ["docker", "ps", "--format", "{{.Names}}"], timeout=20
-    )
+    rc, out, _ = await run_command(["docker", "ps", "--format", "{{.Names}}"], timeout=20)
     if rc != 0:
         return set()
     names = {line.strip() for line in out.splitlines() if line.strip()}

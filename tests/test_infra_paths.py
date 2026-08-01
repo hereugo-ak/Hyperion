@@ -145,9 +145,7 @@ class TestObscuraConfiguration:
             pytest.skip("no obscura-bin/ in this checkout")
 
         resolved = ObscuraClient(settings=get_settings())._find_obscura()
-        assert Path(resolved).is_absolute(), (
-            f"{resolved} is not absolute, so it depends on the CWD"
-        )
+        assert Path(resolved).is_absolute(), f"{resolved} is not absolute, so it depends on the CWD"
         assert Path(resolved).is_file()
 
     def test_configured_path_wins_over_everything(self, tmp_path):
@@ -182,9 +180,7 @@ class TestObscuraConfiguration:
         monkeypatch.setenv("PATH", str(tmp_path))
 
         resolved = ObscuraClient()._find_obscura()
-        assert str(decoy) != resolved, (
-            "a decoy on PATH shadowed the project's own obscura binary"
-        )
+        assert str(decoy) != resolved, "a decoy on PATH shadowed the project's own obscura binary"
         assert str(bin_dir) in resolved
 
     def test_availability_requires_executability_not_existence(self):
@@ -219,13 +215,10 @@ class TestObscuraConfiguration:
         health = _check_tool("obscura", settings)
 
         if client_says_ok:
-            assert health.status == "OK", (
-                f"client can run Obscura but health says {health.status}"
-            )
+            assert health.status == "OK", f"client can run Obscura but health says {health.status}"
         else:
             assert health.status != "OK", (
-                f"health claims Obscura is OK but the client cannot run it "
-                f"({health.detail})"
+                f"health claims Obscura is OK but the client cannot run it ({health.detail})"
             )
 
     def test_health_obscura_check_is_not_cwd_relative(self, tmp_path, monkeypatch):
@@ -248,8 +241,7 @@ class TestObscuraConfiguration:
             f"must configure things by hand"
         )
         assert before.detail == after.detail, (
-            f"obscura health detail changed with the CWD ({before.detail!r} → "
-            f"{after.detail!r})"
+            f"obscura health detail changed with the CWD ({before.detail!r} → {after.detail!r})"
         )
 
     def test_health_uses_no_relative_path_literal(self):
@@ -268,9 +260,7 @@ class TestObscuraConfiguration:
         from hyperion.infra.paths import project_root
         from hyperion.obs import health
 
-        src = (project_root() / "hyperion" / "obs" / "health.py").read_text(
-            encoding="utf-8"
-        )
+        src = (project_root() / "hyperion" / "obs" / "health.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
 
         offenders: list[str] = []
@@ -315,7 +305,7 @@ class TestObscuraConfiguration:
         )
 
     def test_health_distinguishes_absent_from_unrunnable(self):
-        """"Missing" and "present but wrong platform" need different answers.
+        """ "Missing" and "present but wrong platform" need different answers.
 
         The old code collapsed both into OFFLINE/"no Linux binary found", which
         told the user to install something that was already installed.
@@ -402,13 +392,14 @@ class TestDockerAutostart:
         assert len(lowered) == len(set(lowered)), "duplicate candidate paths"
 
     def test_launcher_handles_every_platform(self):
-        """macOS and Linux must have a start path, not just Windows."""
+        """macOS, native Linux, WSL2, and Windows all need start paths."""
         src = inspect.getsource(
             __import__("hyperion.infra.services", fromlist=["x"])._launch_docker_desktop
         )
-        assert "darwin" in src, "no macOS start path"
-        assert "systemctl" in src, "no Linux start path"
-        assert "win32" in src, "no Windows start path"
+        for platform in ("MACOS", "LINUX_SYSTEMD", "LINUX_OTHER", "WSL2", "WINDOWS"):
+            assert f"Platform.{platform}" in src, f"no {platform} start path"
+        assert "systemctl" in src, "no systemd Linux start path"
+        assert "_launch_wsl2_docker_desktop" in src, "no WSL2 interop start path"
 
     async def test_engine_start_is_attempted_when_daemon_is_down(self, monkeypatch):
         """The whole point: a stopped engine must be started, not reported."""
@@ -488,6 +479,83 @@ class TestDockerAutostart:
             "scripted run on an idle machine silently loses all search"
         )
 
+    def test_w13_platform_detection_distinguishes_wsl2(self, monkeypatch):
+        from hyperion.infra import services
+
+        monkeypatch.setattr(services.sys, "platform", "linux")
+        monkeypatch.setattr(
+            services,
+            "_read_platform_file",
+            lambda path: "Linux microsoft-standard-WSL2" if path == "/proc/version" else "",
+        )
+        assert services.detect_platform() is services.Platform.WSL2
+
+        monkeypatch.setattr(services, "_read_platform_file", lambda _path: "Linux generic")
+        monkeypatch.setattr(
+            services.Path, "exists", lambda self: str(self) == "/run/systemd/system"
+        )
+        assert services.detect_platform() is services.Platform.LINUX_SYSTEMD
+
+    async def test_w13_wsl2_missing_cli_has_distinct_integration_fix(self, monkeypatch):
+        from hyperion.infra import services
+
+        monkeypatch.setattr(services, "detect_platform", lambda: services.Platform.WSL2)
+        monkeypatch.setattr(services, "docker_available", lambda: False)
+        status = await services.ensure_docker_engine()
+        assert "WSL integration" in status.detail
+        assert "Docker CLI" in status.detail
+
+    async def test_w13_wsl2_interop_disabled_is_actionable(self, monkeypatch):
+        from hyperion.infra import services
+
+        async def _no_version():
+            return ""
+
+        async def _interop_disabled():
+            return "WSL_INTEROP_DISABLED"
+
+        monkeypatch.setattr(services, "detect_platform", lambda: services.Platform.WSL2)
+        monkeypatch.setattr(services, "docker_available", lambda: True)
+        monkeypatch.setattr(services, "docker_engine_version", _no_version)
+        monkeypatch.setattr(services, "_launch_docker_desktop", _interop_disabled)
+        status = await services.ensure_docker_engine()
+        assert "WSL interop is disabled" in status.detail
+        assert "wsl.exe --shutdown" in status.detail
+
+    async def test_w13_native_linux_never_uses_prompting_sudo(self, monkeypatch):
+        from hyperion.infra import services
+
+        commands: list[list[str]] = []
+
+        async def _run(cmd, timeout=30.0):
+            commands.append(cmd)
+            return (1, "", "failed")
+
+        monkeypatch.setattr(services, "detect_platform", lambda: services.Platform.LINUX_SYSTEMD)
+        monkeypatch.setattr(services, "run_command", _run)
+        monkeypatch.setattr(services.os, "geteuid", lambda: 1000)
+        monkeypatch.setattr(
+            services.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None
+        )
+        assert await services._launch_docker_desktop() == ""
+        assert ["sudo", "-n", "true"] in commands
+        assert all(cmd[:1] != ["sudo"] or "-n" in cmd for cmd in commands)
+
+    def test_w13_boot_banner_reports_detected_platform(self, monkeypatch):
+        from hyperion.infra import provenance, services
+
+        snapshot = provenance.Provenance(
+            package_dir="/repo/hyperion",
+            repo_root="/repo",
+            git_sha="abc1234",
+            git_dirty=False,
+            install_mode="editable",
+            stale_pycache=[],
+        )
+        monkeypatch.setattr(services, "detect_platform", lambda: services.Platform.WSL2)
+        monkeypatch.setattr(provenance, "detect_platform", services.detect_platform)
+        assert "platform=wsl2" in provenance.banner(snapshot)
+
 
 async def _noop() -> None:
     return None
@@ -519,8 +587,7 @@ class TestContainerSpecs:
                 f"even for Windows host paths"
             )
             assert Path(host).is_absolute() or host.endswith(":"), (
-                f"mount source {host} is not absolute, so it resolves against "
-                f"the CWD inside docker"
+                f"mount source {host} is not absolute, so it resolves against the CWD inside docker"
             )
 
     def test_searxng_publishes_all_replica_ports_on_loopback(self):
@@ -546,9 +613,7 @@ class TestContainerSpecs:
             if spec.name == "hyperion-valkey":
                 assert spec.host_port == 0  # internal only; readiness uses valkey-cli PING
             else:
-                assert spec.health_path.startswith("/"), (
-                    f"{spec.name} has no HTTP readiness path"
-                )
+                assert spec.health_path.startswith("/"), f"{spec.name} has no HTTP readiness path"
                 assert spec.health_url().startswith("http://127.0.0.1:")
             assert spec.ready_timeout >= 30, (
                 f"{spec.name} readiness timeout {spec.ready_timeout}s is shorter "
@@ -725,9 +790,7 @@ class TestSettingsPaths:
         # the step silently takes its fallback branch forever.
         settings = Settings()
         missing = [
-            name
-            for name in read_attrs
-            if not name.startswith("_") and not hasattr(settings, name)
+            name for name in read_attrs if not name.startswith("_") and not hasattr(settings, name)
         ]
         assert not missing, (
             f"boot reads Settings attributes that do not exist: {missing} — "

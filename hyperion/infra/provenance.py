@@ -28,7 +28,7 @@ from pathlib import Path
 
 # Reuse the bounded command runner from services.py. It is async; the sync
 # wrapper drives it on a private loop for pre-loop callers.
-from hyperion.infra.services import run_command
+from hyperion.infra.services import detect_platform, run_command
 
 _GIT_TIMEOUT_SECONDS = 5.0
 _MAX_ANCESTOR_LEVELS = 8
@@ -225,7 +225,7 @@ def banner(provenance: Provenance) -> str:
     dirty = " +dirty" if provenance.git_dirty else ""
     return (
         f"HYPERION  build {sha}{dirty}  {provenance.install_mode}  "
-        f"{provenance.package_dir}"
+        f"platform={detect_platform().value}  {provenance.package_dir}"
     )
 
 
