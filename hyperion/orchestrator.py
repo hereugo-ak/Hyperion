@@ -1162,7 +1162,6 @@ class WorkflowEngine:
         """
         from hyperion.agents.insufficiency import (
             InsufficiencyLadder,
-            InsufficiencyOutcome,
             classify_gap,
         )
 
@@ -1774,6 +1773,36 @@ class WorkflowEngine:
             f"{score.threshold:.2f} and allow_ship_with_caveat is disabled"
         )
 
+    def _attach_methodology(self, report: Any, dag: Any) -> None:
+        """W-10: attach the six-subsection methodology record to the report.
+
+        Built from recorded structures only (the DAG's W-06 roster decisions,
+        the W-07 insufficiency resolutions, the fact checker's counters and the
+        Source corpus), never from an LLM prompt: a prompt asked to "describe
+        the methodology" will describe research that did not happen, which is
+        precisely W-10's third failure mode.
+
+        A failure here must not take the engagement down. The methodology page
+        is important but it is not the answer, and the designer carries a
+        report-only fallback plus a template branch that says so honestly. The
+        exception types are enumerated rather than blanket-caught (ruff BLE001):
+        ``ValueError`` covers a ClientProse rejection inside the record,
+        ``TypeError``/``AttributeError`` cover a malformed report or DAG.
+        """
+        from hyperion.output.methodology import build_methodology
+
+        try:
+            report.methodology = build_methodology(
+                report,
+                dag=dag,
+                resolutions=list(getattr(self, "_insufficiency_resolutions", []) or []),
+            )
+            n = len(report.methodology.subsections)
+            self._log(f"METHODOLOGY: {n} subsections built from recorded structures")
+        except (ValueError, TypeError, AttributeError) as exc:
+            logger.warning("W-10: methodology build failed: %s", exc)
+            self._log(f"METHODOLOGY: build failed ({exc})")
+
     def _write_blocked_diagnostic(self, score: QualityScore) -> str:
         """W-08: write the machine-readable operator diagnostic for a BLOCKED run.
 
@@ -2365,6 +2394,17 @@ class WorkflowEngine:
                     f"(score {quality_score.total_score:.2f} below threshold "
                     f"{quality_score.threshold:.2f})"
                 )
+
+            # W-10: build the methodology section HERE, before the handoff.
+            # The orchestrator is the only holder of both the DAG (whose
+            # roster_decisions carry the W-06 method eligibility, including the
+            # exclusions that answer "why is there no company valuation on a
+            # nation state?") and the W-07 insufficiency resolutions (which
+            # carry the retrieval strategies attempted and the declared-gap /
+            # out-of-scope outcomes). The designer can only build a thinner
+            # report-only record, so building it here is what makes subsections
+            # 1, 2 and 3 substantive. Deterministic and LLM-free by design.
+            self._attach_methodology(final_report, dag)
 
             # D4-rest: Explicit FinalReport HANDOFF on the bus so delivery
             # agents receive it via their subscription, not just via local var.

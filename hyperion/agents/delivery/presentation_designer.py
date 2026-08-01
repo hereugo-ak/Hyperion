@@ -66,9 +66,9 @@ from typing import Any
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
-from hyperion.schemas.narrative import ClientReport, write_telemetry_artifact
 from hyperion.output.confidence import derive_confidence
 from hyperion.output.images import ImageRelevanceGate
+from hyperion.output.methodology import build_methodology
 from hyperion.output.page_budget import PAGE_COUNT_MAX, PAGE_COUNT_MIN
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
@@ -92,6 +92,7 @@ from hyperion.schemas.models import (
     QualityScore,
     VisualizationOutput,
 )
+from hyperion.schemas.narrative import ClientReport, write_telemetry_artifact
 
 # Declared after the imports, not between them. It previously sat above the
 # `hyperion.*` block, which made every one of those imports an E402 ("module
@@ -170,7 +171,7 @@ SECTION_IMAGE_SEARCH_TERMS: dict[str, str] = {
     "regulatory_analysis": "government building columns",
     "sustainability": "green sustainable business",
     "sustainability_analysis": "green sustainable business",
-    # D5.1b (F601): "consumer_insights" was listed twice in this one dict, 
+    # D5.1b (F601): "consumer_insights" was listed twice in this one dict,
     # once above as an agent-name key (it is the literal
     # `AgentName.CONSUMER_INSIGHTS` value) and again here in the topic block.
     # Both mapped to the same term, so the duplicate was inert rather than a
@@ -1072,7 +1073,7 @@ table, .kpi-value, .data-table, .chart-data-table {{
 # Vendored brand fonts (fix 3.2, @font-face embedding)
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# The audit (§3.2) found that the brand typography declared in CSS_TEMPLATE, 
+# The audit (§3.2) found that the brand typography declared in CSS_TEMPLATE,
 # "Instrument Serif""Source Sans 3""JetBrains Mono", was never actually
 # embedded in the shipped PDF: there were zero @font-face blocks, so every
 # render silently fell back to DejaVu (WeasyPrint's system default). The fonts
@@ -1430,26 +1431,59 @@ HTML_TEMPLATE = """\
 </div>
 {% endif %}
 
-{# ── Methodology ──
-   W-09: the specialist roster list is deleted from client prose. It is
-   internal telemetry: the reader does not buy a roster, they buy an answer,
-   and `ClientReport` no longer carries the roster at all, so the template
-   could not resolve it even if a row were left here. The full six-subsection
-   methodology (question decomposition, method selection, retrieval coverage,
-   inclusion criteria, verification procedure, design limitations) is W-10;
-   this block keeps the evidence-base counts and the honest limitations until
-   W-10 builds the real section from recorded structures.
-   P2-34: lists are pre-filtered (trim + drop falsy) and the enclosing
-   <h3>/<ul> is suppressed when nothing survives; page_audit._check_empty_list_items
-   is the render-level backstop. #}
+{# Methodology (W-10)
+   The four bullets this replaces (Agents Used, Sources Accessed, Data Points,
+   Limitations) were three counts and a list: they told the reader who ran the
+   engagement, when the reader was asking how the answer is known. W-09 had
+   already deleted the roster (it is telemetry, and `ClientReport` cannot
+   resolve it); W-10 replaces the remaining counts with six subsections, each
+   built from a structure the pipeline actually recorded: the DAG's roster
+   decisions, the W-07 insufficiency resolutions, the fact checker's counters
+   and the Source corpus (`hyperion/output/methodology.py`).
+
+   Every string inside `report.methodology` has been through
+   `ClientProse.of()`, so an agent name in this block is unconstructible
+   rather than merely unprinted, and no template-level filter is needed.
+
+   NOTE ON TYPOGRAPHY: this comment is inside HTML_TEMPLATE, which is a string
+   constant, and tests/output/test_typography.py walks render-path string
+   CONSTANTS for U+2014/U+2013. A Jinja comment is part of that constant even
+   though Jinja never emits it, so the dash ban applies here too. Plain
+   punctuation only.
+
+   P2-34: lists are pre-filtered (trim + drop falsy), every loop carries a
+   falsy-entry filter (tests/output/test_empty_list_items.py asserts this over
+   every for-tag in the template) and the enclosing <h3>/<ul> is suppressed
+   when nothing survives; page_audit._check_empty_list_items is the
+   render-level backstop. #}
 {% set limitations_clean = report.limitations | map('trim') | select | list %}
 <div class="page-break" id="methodology">
     <h2>Methodology</h2>
+    {% if report.methodology %}
+    {% for sub in report.methodology.subsections if sub %}
+    {% set sub_facts = sub.facts | map('trim') | select | list %}
+    <h3>{{ sub.heading }}</h3>
+    <p>{{ sub.narrative }}</p>
+    {% if sub_facts %}
+    <ul class="methodology-facts">
+        {% for fact in sub_facts if fact %}
+        <li>{{ fact }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+    {% endfor %}
+    {% else %}
+    {# Defensive only: the designer builds a report-only record when the
+       orchestrator did not supply one, so this branch means the build itself
+       failed. State that, rather than printing a bare count. #}
     <h3>Evidence base</h3>
-    <p>The analysis draws on {{ report.total_sources }} unique sources and
-       {{ report.total_data_points }} collected data points.</p>
+    <p>The analysis draws on {{ report.total_sources }} unique sources across
+       {{ report.total_data_points }} recorded data points. A full account of
+       the retrieval and verification procedure could not be assembled for
+       this engagement.</p>
+    {% endif %}
     {% if limitations_clean %}
-    <h3>Limitations</h3>
+    <h3>Evidence gaps specific to this question</h3>
     <ul>
         {% for limitation in limitations_clean if limitation %}
         <li>{{ limitation }}</li>
@@ -2624,6 +2658,28 @@ class PresentationDesigner(BaseAgent):
         # path with no sections at all (Fix 3.5's exact class of bug).
         telemetry_path = write_telemetry_artifact(report)
         self._log(f"DESIGNER: operator telemetry artifact written to {telemetry_path}")
+
+        # W-10: the methodology section is normally built by the orchestrator,
+        # which holds the DAG and the insufficiency resolutions the richer
+        # subsections need. When the designer is driven directly (tests, a
+        # re-render of a stored report, the floor report path) that context is
+        # absent, and printing no methodology at all would be worse than
+        # printing one built from the report alone: the reader uses this page to
+        # calibrate the rest. build_methodology is deterministic and never
+        # raises on thin input, so this is a safe unconditional fallback.
+        if getattr(report, "methodology", None) is None:
+            try:
+                report.methodology = build_methodology(report)
+                self._log(
+                    "DESIGNER: methodology built from the report alone "
+                    "(no engagement DAG in this context)"
+                )
+            except (ValueError, TypeError, AttributeError) as exc:
+                # Never lose the whole render over the methodology page. The
+                # template's defensive branch states that the account could not
+                # be assembled, which is honest, and the failure is logged.
+                self._log(f"DESIGNER: methodology build failed ({exc})")
+
         client_report = ClientReport.from_report(report)
 
         try:

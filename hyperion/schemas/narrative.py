@@ -30,15 +30,15 @@ is missing, and that is precisely the signal we want (W-09 step 5).
 
 from __future__ import annotations
 
-import json
 import re
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from hyperion.schemas.agents import AgentName
+from hyperion.schemas.methodology import MethodologyRecord
 from hyperion.schemas.models import ClaimStatus, ConfidenceLevel
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ class ClientProse(str):
             cls.of, core_schema.str_schema()
         )
 
-    def __new__(cls, value: str, *, _validated: bool = False) -> "ClientProse":
+    def __new__(cls, value: str, *, _validated: bool = False) -> ClientProse:
         if not _validated:
             # Direct construction bypasses validation — reject it. The only
             # sanctioned path is ClientProse.of().
@@ -113,7 +113,7 @@ class ClientProse(str):
         return super().__new__(cls, value)
 
     @classmethod
-    def of(cls, value: Any) -> "ClientProse":
+    def of(cls, value: Any) -> ClientProse:
         """Validating factory. Raises ValueError on any telemetry category."""
         text = "" if value is None else str(value)
         lowered = text.lower()
@@ -166,7 +166,7 @@ class ClientProse(str):
         return cls(text, _validated=True)
 
     @classmethod
-    def of_many(cls, values: Iterable[Any]) -> list["ClientProse"]:
+    def of_many(cls, values: Iterable[Any]) -> list[ClientProse]:
         return [cls.of(v) for v in values]
 
 
@@ -234,13 +234,18 @@ class ClientReport(BaseModel):
     sections: list[ClientSection] = Field(default_factory=list)
     risk_analysis: ClientRiskAnalysis | None = None
     limitations: list[ClientProse] = Field(default_factory=list)
+    # W-10: the methodology section. Carried on the CLIENT view deliberately —
+    # every string inside a MethodologyRecord has already been through
+    # ClientProse.of(), so the template can render it without a filter, and an
+    # agent name inside it is unconstructible rather than merely unprinted.
+    methodology: MethodologyRecord | None = None
     total_sources: int = 0
     total_data_points: int = 0
     generated_at: Any = None
     engagement_id: str = ""
 
     @classmethod
-    def from_report(cls, report: Any) -> "ClientReport":
+    def from_report(cls, report: Any) -> ClientReport:
         """The one named transformation from telemetry-bearing FinalReport to
         client-safe view (W-09 step 4). Raises if any narrative field carries
         telemetry — the leak fails at construction, not on the printed page."""
@@ -298,6 +303,10 @@ class ClientReport(BaseModel):
             sections=sections,
             risk_analysis=client_risk,
             limitations=ClientProse.of_many(getattr(report, "limitations", None) or []),
+            # W-10: carried through as-is. It is already a validated structure;
+            # re-deriving it here would mean the client view and the operator
+            # telemetry could disagree about how the research was conducted.
+            methodology=getattr(report, "methodology", None),
             total_sources=int(getattr(report, "total_sources", 0) or 0),
             total_data_points=int(getattr(report, "total_data_points", 0) or 0),
             generated_at=getattr(report, "generated_at", None),
@@ -329,7 +338,7 @@ class EngagementTelemetry(BaseModel):
     is_degraded: bool = False
 
     @classmethod
-    def from_report(cls, report: Any) -> "EngagementTelemetry":
+    def from_report(cls, report: Any) -> EngagementTelemetry:
         def _dump(obj: Any) -> dict[str, Any] | None:
             if obj is None:
                 return None

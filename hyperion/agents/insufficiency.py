@@ -180,7 +180,13 @@ class InsufficiencyResolution(BaseModel):
         )
         return (
             f"Declared research gap in section '{self.section_id}': "
-            f"{self.question} — strategies attempted: {tried}. "
+            # W-10: this statement is appended to ``report.limitations``, which
+            # ``ClientReport.from_report`` routes through ``ClientProse.of()``.
+            # That factory REJECTS U+2014, so the em dash that used to sit here
+            # made every engagement with a DECLARED_GAP fail at the client-view
+            # boundary, i.e. the designer crashed on exactly the runs that most
+            # needed an honest limitations page. Plain punctuation instead.
+            f"{self.question} Strategies attempted: {tried}. "
             f"A primary source naming this entity and period directly "
             f"(regulator filing, audited disclosure, or official statistical "
             f"release) would resolve it."

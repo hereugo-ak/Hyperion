@@ -23,6 +23,7 @@ This file contains:
 
 from __future__ import annotations
 
+import re as _re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
@@ -30,7 +31,10 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-import re as _re
+# W-10. Safe to import at module level: hyperion.schemas.methodology is a leaf
+# (stdlib + pydantic only) and defers its ClientProse import into the validator
+# body precisely so this direction stays acyclic.
+from hyperion.schemas.methodology import MethodologyRecord
 
 # P2-09: a serialized-object repr (``{'name': ...}`` / ``{"name": ...}``) must
 # be unrepresentable in any client-facing string field. Matches the same
@@ -96,7 +100,7 @@ class AnalysisGap(BaseModel):
 
     id: str = Field(description="Unique gap identifier")
     section_id: str = Field(description="Section this gap belongs to")
-    agent: "AgentName" = Field(description="Specialist that owns the gap")
+    agent: AgentName = Field(description="Specialist that owns the gap")
     field: Literal["key_insight", "body", "implications", "sources", "datapoint"] = Field(
         description="Which section field the gap blocks"
     )
@@ -2559,7 +2563,31 @@ class FinalReport(BaseModel):
         description="Chart specs (title/section/data_series/insight) for the Data Visualizer",
     )
 
+    # W-10: the methodology section, built from recorded structures.
+    #
+    # The methodology page used to be assembled in the Jinja template out of
+    # three counts (total_sources, total_data_points) and the agent roster.
+    # A count is not a method and a roster is telemetry, so the page answered
+    # "who ran?" when the reader asked "how do you know?". This field carries
+    # the real thing: six ordered subsections (question decomposition, method
+    # selection, retrieval coverage, inclusion criteria, verification
+    # procedure, design limitations), each derived deterministically from the
+    # DAG's roster decisions, the W-07 insufficiency resolutions, the fact
+    # checker's counters and the Source corpus. Built by
+    # hyperion.output.methodology.build_methodology, never by an LLM: a prompt
+    # would describe research that did not happen.
+    #
+    # None means "not yet built"; the Presentation Designer builds a
+    # report-only record in that case rather than printing nothing.
+    methodology: MethodologyRecord | None = Field(
+        default=None,
+        description="W-10 six-subsection methodology record, built from recorded structures",
+    )
+
     # Metadata for methodology page (§6.1)
+    #
+    # agents_used remains for OPERATOR telemetry (EngagementTelemetry reads it).
+    # W-09 keeps it off ClientReport, so it can no longer reach a client page.
     agents_used: list[str] = Field(default_factory=list, description="Which agents were spawned")
     total_sources: int = Field(default=0, description="Total unique sources cited")
     total_data_points: int = Field(default=0, description="Total data points collected")
