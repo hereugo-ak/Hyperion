@@ -94,13 +94,13 @@ from hyperion.schemas.models import (
 
 # Declared after the imports, not between them. It previously sat above the
 # `hyperion.*` block, which made every one of those imports an E402 ("module
-# level import not at top of file") — 7 findings from one misplaced line. Adding
+# level import not at top of file"), 7 findings from one misplaced line. Adding
 # the page-budget import would have made it 8, so the line moved instead.
 logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PDF Palette (§7.2 — STRICT)
+# PDF Palette (§7.2, STRICT)
 # ─────────────────────────────────────────────────────────────────────────────
 
 PDF_PALETTE = {
@@ -169,7 +169,7 @@ SECTION_IMAGE_SEARCH_TERMS: dict[str, str] = {
     "regulatory_analysis": "government building columns",
     "sustainability": "green sustainable business",
     "sustainability_analysis": "green sustainable business",
-    # D5.1b (F601): "consumer_insights" was listed twice in this one dict —
+    # D5.1b (F601): "consumer_insights" was listed twice in this one dict, 
     # once above as an agent-name key (it is the literal
     # `AgentName.CONSUMER_INSIGHTS` value) and again here in the topic block.
     # Both mapped to the same term, so the duplicate was inert rather than a
@@ -1068,11 +1068,11 @@ table, .kpi-value, .data-table, .chart-data-table {{
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Vendored brand fonts (fix 3.2 — @font-face embedding)
+# Vendored brand fonts (fix 3.2, @font-face embedding)
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# The audit (§3.2) found that the brand typography declared in CSS_TEMPLATE —
-# "Instrument Serif", "Source Sans 3", "JetBrains Mono" — was never actually
+# The audit (§3.2) found that the brand typography declared in CSS_TEMPLATE, 
+# "Instrument Serif""Source Sans 3""JetBrains Mono", was never actually
 # embedded in the shipped PDF: there were zero @font-face blocks, so every
 # render silently fell back to DejaVu (WeasyPrint's system default). The fonts
 # are vendored in assets/fonts/ (fix 3.1, OFL-licensed); here they are inlined
@@ -1141,7 +1141,7 @@ CSS_TEMPLATE = CSS_TEMPLATE + "\n\n" + _build_font_face_css() + "\n"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HTML Template (Jinja2 — premium report structure §6.1)
+# HTML Template (Jinja2, premium report structure §6.1)
 # ─────────────────────────────────────────────────────────────────────────────
 
 HTML_TEMPLATE = """\
@@ -1535,7 +1535,7 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         ToolName.UNSPLASH,
         ToolName.PLOTLY,
         ToolName.JINJA2,
-        # W-03: ToolName.WEASYPRINT removed — the designer stages HTML and a
+        # W-03: ToolName.WEASYPRINT removed, the designer stages HTML and a
         # layout plan; the Render Engine is the only agent that writes PDFs.
     ],
     skills=[
@@ -1635,7 +1635,7 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         "QualityScore from the Quality Gate.\n"
         "2. DESIGN a layout plan, which content goes on which page, "
         "in what order, with what visuals.\n"
-        "3. SELECT Unsplash images for cover and section headers"
+        "3. SELECT Unsplash images for cover and section headers with "
         "specific search terms, not generic.\n"
         "4. RECEIVE chart images from the Data Visualizer.\n"
         "5. RENDER the HTML template with Jinja2.\n"
@@ -2110,7 +2110,7 @@ class PresentationDesigner(BaseAgent):
             img_id = getattr(img, "id", None)
             if not img_id or img_id not in self._used_image_ids:
                 return img
-        # All candidates already used — return the first as a last resort.
+        # All candidates already used, return the first as a last resort.
         return images[0]
 
     async def _select_cover_image(self, report: FinalReport) -> ImageSelection | None:
@@ -2146,7 +2146,7 @@ class PresentationDesigner(BaseAgent):
                 self._used_image_ids.add(photo_id)
 
             # Download using the UnsplashClient's download_image method.
-            # Fix 3.6: full resolution — "regular" (1080px) can never pass
+            # Fix 3.6: full resolution"regular" (1080px) can never pass
             # the cover pipeline's 1920px no-upscale gate.
             local_path = await unsplash_tool.download_image(img, quality="high")
 
@@ -2336,7 +2336,7 @@ class PresentationDesigner(BaseAgent):
                 if photo_id:
                     self._used_image_ids.add(photo_id)
 
-                # Fix 3.6: full resolution — the section pipeline targets
+                # Fix 3.6: full resolution, the section pipeline targets
                 # 2000px wide (print grade at 300 DPI), which a 1080px
                 # "regular" download can never pass under the no-upscale rule.
                 local_path = await unsplash_tool.download_image(img, quality="high")
@@ -2608,7 +2608,7 @@ class PresentationDesigner(BaseAgent):
         # HISTORY: this used to write directly to self.CSS_OUTPUT
         # (output/<slug>.css) *before* the HTML/PDF were generated. When PDF
         # rendering then failed, that stylesheet was the only file left in
-        # output/ — which is exactly how a 34-minute engagement delivered a
+        # output/, which is exactly how a 34-minute engagement delivered a
         # lone `should_india_reduce_its_dependence_on_the_imports.css` and no
         # report. A build intermediate must never be able to outlive, or be
         # mistaken for, the deliverable.
@@ -2637,7 +2637,7 @@ class PresentationDesigner(BaseAgent):
                 "risk_analysis_html": self._build_risk_analysis_html(report),
                 "appendix_sources_html": self._build_appendix_sources_html(report),
                 # Fix 4.5. Both call sites must be fed: this dict and the
-                # fallback env below. Fix 3.5 was exactly this class of bug —
+                # fallback env below. Fix 3.5 was exactly this class of bug, 
                 # a filter registered in one env and not the other.
                 "endnotes_html": self._build_endnotes_html(report),
                 "technical_appendix_html": self._build_technical_appendix_html(report),
@@ -2652,7 +2652,7 @@ class PresentationDesigner(BaseAgent):
             if hasattr(html_content, "html") and html_content.success:
                 html_str = html_content.html
             elif hasattr(html_content, "html"):
-                # Template rendered but with errors — use what we got
+                # Template rendered but with errors, use what we got
                 html_str = html_content.html or ""
             else:
                 html_str = str(html_content)
@@ -2743,7 +2743,7 @@ class PresentationDesigner(BaseAgent):
         analysis = report.risk_analysis
         html_parts = ["<div class='risk-matrix no-break'>"]
 
-        # Zone summary — the 5x5 matrix's headline, previously discarded.
+        # Zone summary, the 5x5 matrix's headline, previously discarded.
         zone_counts = (analysis.risk_matrix or {}).get("zone_counts") or {}
         if zone_counts:
             red = int(zone_counts.get("red", 0))
@@ -2818,7 +2818,7 @@ class PresentationDesigner(BaseAgent):
         return "\n".join(html_parts)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Fix 4.5: MBB front/back matter — At-a-glance, Endnotes, Technical appendix
+    # Fix 4.5: MBB front/back matter, At-a-glance, Endnotes, Technical appendix
     # ─────────────────────────────────────────────────────────────────────
 
     def _build_endnotes_html(self, report: FinalReport) -> str:
@@ -2846,7 +2846,7 @@ class PresentationDesigner(BaseAgent):
             # wrong field names elsewhere in 4.5 (see
             # ``_build_technical_appendix_html``): the fallback made a schema
             # mismatch render as "no data" instead of raising. An AttributeError
-            # here is strictly preferable — it fails loudly at the seam.
+            # here is strictly preferable, it fails loudly at the seam.
             for source in section.sources:
                 url = (source.url or "").strip()
                 title = (source.title or "").strip()
@@ -2940,7 +2940,7 @@ class PresentationDesigner(BaseAgent):
                 parts.append(
                     # `score` is an int constrained to 1..5 by the schema, so it
                     # is printed as an integer out of 5 rather than formatted as
-                    # a float — "4/5" is the scale the reader needs, "4.0"
+                    # a float"4/5" is the scale the reader needs"4.0"
                     # implies a precision the model does not carry.
                     f"<tr><td>{html_escape(label.capitalize())}{critical}</td>"
                     f"<td>{dim.score}/5</td>"
@@ -2959,7 +2959,7 @@ class PresentationDesigner(BaseAgent):
             parts.append("<tr><th>Dimension</th><th>Confidence</th></tr>")
             for name, level in report.confidence_breakdown.items():
                 label = str(name).replace("_", " ").capitalize()
-                # dict[str, ConfidenceLevel] — enum, so `.value` is the wire form.
+                # dict[str, ConfidenceLevel], enum, so `.value` is the wire form.
                 value = level.value if hasattr(level, "value") else str(level)
                 parts.append(
                     f"<tr><td>{html_escape(label)}</td>"
@@ -2970,8 +2970,8 @@ class PresentationDesigner(BaseAgent):
         if report.contradictions:
             # Deliberately published rather than resolved-away. An unreconciled
             # conflict the reader can see is evidence of rigour; one silently
-            # dropped is a defect. Rendered as the opposed pair it actually is —
-            # two findings and the agents that produced them — because a
+            # dropped is a defect. Rendered as the opposed pair it actually is, 
+            # two findings and the agents that produced them, because a
             # contradiction printed as one sentence loses the thing that makes
             # it a contradiction.
             parts.append("<h3>Contradictions</h3>")
@@ -3092,7 +3092,7 @@ class PresentationDesigner(BaseAgent):
         return (no_blank, no_orphaned)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 8-step methodology
+    # Main execution, the 8-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -3223,7 +3223,7 @@ class PresentationDesigner(BaseAgent):
         await self._transition(AgentState.WORKING, "Step 5: Receiving chart images from Data "
             "Visualizer")
         # `report` is passed so homeless charts can be re-homed onto a section
-        # that actually exists (fix 3.7) — without it the headline exhibits
+        # that actually exists (fix 3.7), without it the headline exhibits
         # mined from `key_findings` are rendered by nobody.
         self._receive_chart_images(visualization_output, report=report)
 
@@ -3244,7 +3244,7 @@ class PresentationDesigner(BaseAgent):
             chart_placements=self._chart_placements,
         )
 
-        # Step 7: W-03 — the designer NO LONGER writes a PDF. Its contract is
+        # Step 7: W-03, the designer NO LONGER writes a PDF. Its contract is
         # the staged HTML + layout plan and nothing else; the Render Engine
         # is the single writer. The deleted `_generate_pdf` duplicated the
         # Render Engine's job, and the orchestrator's `layout_plan.pdf_path`
@@ -3268,7 +3268,7 @@ class PresentationDesigner(BaseAgent):
         # Collect all section images
         all_section_images = list(self._section_images.values())
 
-        # Determine confidence — W-03: the designer's confidence describes
+        # Determine confidence, W-03: the designer's confidence describes
         # its own artifact (the staged HTML + layout plan), not a PDF it no
         # longer authors.
         if html_path and no_blank and no_orphaned:

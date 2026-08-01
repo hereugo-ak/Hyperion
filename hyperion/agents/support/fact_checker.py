@@ -512,7 +512,7 @@ class FactChecker(BaseAgent):
                     #   1. The prompt asks for "a JSON list" and models fence it
                     #      (```json ... ```) or preface it with a sentence, so
                     #      raw json.loads raised and EVERY LLM-extracted claim
-                    #      was discarded — the fact-checker degraded to
+                    # was discarded, the fact-checker degraded to
                     #      regex-only claims with no signal that it had.
                     #   2. `except: pass` meant the drop left no trace at all.
                     # validate_json_list() handles fences, prose, and the
@@ -600,7 +600,7 @@ class FactChecker(BaseAgent):
             # Check finding content for the claim
             content_lower = (finding.content or "").lower()
             if claim_lower in content_lower or claim_words & set(content_lower.split()):
-                # This finding's content references the claim — use its sources
+                # This finding's content references the claim, use its sources
                 for src in finding.sources[:3]:
                     if not src or not src.url:
                         continue
@@ -645,12 +645,12 @@ class FactChecker(BaseAgent):
             # the previous query was `claim.claim[:100]` with the internal
             # agent name appended (e.g. "... market analyst"), which had two
             # problems. First, a blind 100-char slice of a claim sentence is
-            # not a search query — it frequently cut mid-word/mid-clause,
+            # not a search query, it frequently cut mid-word/mid-clause,
             # producing debris like "...for $218 milli" instead of the
             # claim's actual entity+metric. Second, appending the internal
             # agent name injected HYPERION's own org vocabulary
             # ("market analyst", "risk analyst") into the outbound search
-            # string — exactly the debris `normalize_query`'s
+            # string, exactly the debris `normalize_query`'s
             # `_INTERNAL_TOKENS` set exists to strip, and it never went
             # through `ground_query` at all, so a claim with no clear
             # subject of its own (e.g. a bare percentage) could search
@@ -658,11 +658,11 @@ class FactChecker(BaseAgent):
             # geography.
             #
             # Fixed: ground the claim's own text (not a pre-truncated
-            # slice — `ground_query` truncates to 256 chars internally,
+            # slice, `ground_query` truncates to 256 chars internally,
             # AFTER cleaning, which preserves whole words instead of
             # cutting mid-token) and do not append the agent name at all.
             # `searxng.search()` also grounds internally (fix 1.1), so this
-            # is defence in depth — it means a subject-less claim is
+            # is defence in depth, it means a subject-less claim is
             # rescued from the engagement focus instead of being dropped
             # for lack of an entity/metric to anchor it to, and it means
             # this call site can never again leak an internal agent-role
@@ -709,7 +709,7 @@ class FactChecker(BaseAgent):
             try:
                 jina = self.get_tool(ToolName.JINA)
                 for source in verification_sources[:3]:
-                    # Skip local sources — they already have key_data
+                    # Skip local sources, they already have key_data
                     if source.id.startswith("local_"):
                         continue
                     try:
@@ -827,7 +827,7 @@ class FactChecker(BaseAgent):
                 supporting_sources += 1
             else:
                 # Check for contradiction (source mentions the topic but with different data)
-                # This is a simplified check — the LLM would do deeper analysis
+                # This is a simplified check, the LLM would do deeper analysis
                 pass
 
         # Determine status
@@ -1197,8 +1197,8 @@ class FactChecker(BaseAgent):
             if supported:
                 continue
 
-            # No overlap found. Require a SECOND independent signal — a dead
-            # URL — before asserting the citation was invented. A live source
+            # No overlap found. Require a SECOND independent signal, a dead
+            # URL, before asserting the citation was invented. A live source
             # whose fetched text simply does not mention the claim is
             # UNVERIFIABLE, not HALLUCINATED.
             url_alive = await self._any_source_url_alive(content_sources)
@@ -1399,7 +1399,7 @@ class FactChecker(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 7-step methodology
+    # Main execution, the 7-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(

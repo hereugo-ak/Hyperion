@@ -1,5 +1,5 @@
 """
-HYPERION Market Analyst — Agent 3, the market sizing specialist.
+HYPERION Market Analyst, Agent 3, the market sizing specialist.
 
 This is NOT a generic "research the market" agent. This is a specialist
 with proprietary analytical frameworks that no other agent has:
@@ -14,12 +14,12 @@ with proprietary analytical frameworks that no other agent has:
 It NEVER reports a single market size number. It always reports a range
 with top-down, bottom-up, and triangulated estimates. It always cites
 the source for each number. It always flags when market data is sparse.
-It always segments before sizing — a market size without segmentation
+It always segments before sizing, a market size without segmentation
 is useless for strategy. (§4.4, Agent 3)
 
 Model Tier: STANDARD (GPT OSS 120B on Groq primary, Nemotron 3 Nano 30B backup)
 Tools: SearxNG, Jina, Obscura, Alpha Vantage, FRED
-Sub-agents: Max 3 — TAM data, geography spending, adoption/penetration rates
+Sub-agents: Max 3, TAM data, geography spending, adoption/penetration rates
 Output: MarketAnalysis (TAM range, SAM, SOM, CAGR, segments, growth drivers,
         market maturity, confidence, sources)
 
@@ -155,7 +155,7 @@ MARKET_ANALYST_SPEC = AgentSpec(
                 "Identify which segment is the most attractive entry point based on "
                 "size, growth rate, competition intensity, and fit with the client's "
                 "capabilities. A market size without segmentation is useless for "
-                "strategy — 'the SaaS market is $500M' is less useful than 'the "
+                "strategy'the SaaS market is $500M' is less useful than 'the "
                 "mid-market segment is $150M growing at 25% with only 3 competitors.'"
             ),
             inputs=["market_size", "demographic_data", "behavioral_data", "competitive_intensity"],
@@ -163,7 +163,7 @@ MARKET_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Market Analyst — the specialist who sizes markets, "
+        "You are the HYPERION Market Analyst, the specialist who sizes markets, "
         "maps market structure, identifies growth drivers, and segments markets.\n\n"
         "You are the go-to agent for any 'how big is this opportunity' question.\n\n"
         "Your proprietary frameworks:\n"
@@ -190,13 +190,13 @@ MARKET_ANALYST_SPEC = AgentSpec(
         "a CAGR calculation, say so.\n"
         "- Growth drivers must sum to total growth. If they don't, there's a missing "
         "driver or a calculation error.\n"
-        "- The most attractive segment is not always the largest — it's the one with "
+        "- The most attractive segment is not always the largest, it's the one with "
         "the best size × growth × low-competition × fit combination.\n\n"
         "You can spawn up to 3 sub-agents for parallel data collection:\n"
         "- Sub-agent A: Find TAM data for [specific market] (MICRO, SearxNG + Jina)\n"
         "- Sub-agent B: Find [geography] spending data (MICRO, SearxNG + Obscura)\n"
         "- Sub-agent C: Find adoption/penetration rates (FAST, Obscura + Jina)\n\n"
-        "Your output is a MarketAnalysis Pydantic model — structured, not free text."
+        "Your output is a MarketAnalysis Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves market sizing, market entry, "
                      "or opportunity assessment (GO_NO_GO, MARKET_ENTRY, FORECAST types)",
@@ -215,7 +215,7 @@ class MarketAnalyst(BaseAgent):
 
     Sizes markets using top-down and bottom-up approaches, triangulates
     estimates, segments the market, identifies growth drivers, and
-    classifies market maturity. NEVER reports a single number — always
+    classifies market maturity. NEVER reports a single number, always
     a range with sources. (§4.4, Agent 3)
 
     Lifecycle:
@@ -296,7 +296,7 @@ class MarketAnalyst(BaseAgent):
             if request_type == "tam_number":
                 # Financial Analyst is requesting our TAM for their DCF model
                 # We respond with our triangulated TAM if available
-                # This is handled during run() — just note the request
+                # This is handled during run(), just note the request
                 pass
 
     # ─────────────────────────────────────────────────────────────────────
@@ -306,7 +306,7 @@ class MarketAnalyst(BaseAgent):
     async def _search_market_reports(self, market_query: str) -> list[dict[str, Any]]:
         """Search for existing market reports using SearxNG.
 
-        This is the starting point — before doing original sizing, check
+        This is the starting point, before doing original sizing, check
         what market reports already exist. SearxNG aggregates 70+ search
         engines, so this catches reports from Statista, Grand View Research,
         McKinsey, government data portals, etc.
@@ -432,13 +432,12 @@ class MarketAnalyst(BaseAgent):
         market size. A market in a country with 7% GDP growth behaves
         differently than one in a country with 1% GDP growth. (§5.1)
 
-        IMPORTANT — THIS IS UNITED STATES DATA. The series pulled below (GDP,
+        IMPORTANT, THIS IS UNITED STATES DATA. The series pulled below (GDP,
         CPIAUCSL, PCES) are US series. `geography` never selected the series;
         it only labelled the source. The docstring above therefore described
         an adaptivity this method does not have, and the caller's `"US"`
         default hid the problem: an India market sizing was framed with US GDP
-        growth and US consumer spending, cited as "FRED Macroeconomic Data —
-        India". Market sizing is exactly where that distortion compounds,
+        growth and US consumer spending, cited as "FRED Macroeconomic Data, India". Market sizing is exactly where that distortion compounds,
         because the macro figure scales the whole TAM estimate.
 
         The provenance is now recorded truthfully and a `geography_mismatch`
@@ -459,7 +458,7 @@ class MarketAnalyst(BaseAgent):
             }
             self._log(
                 f"FRED macro context is US-only; requested {requested!r} "
-                "cannot be served — flagging mismatch"
+                "cannot be served, flagging mismatch"
             )
 
         try:
@@ -483,13 +482,13 @@ class MarketAnalyst(BaseAgent):
             # Cite what was actually retrieved (US), not what was requested.
             self._sources.append(Source(
                 id=f"src_{len(self._sources):03d}",
-                title="FRED Macroeconomic Data — United States",
+                title="FRED Macroeconomic Data, United States",
                 url="https://fred.stlouisfed.org",
                 credibility=SourceCredibility.GOVERNMENT,
                 key_data=(
                     "US GDP growth, inflation, sector spending"
                     + (
-                        f" (US proxy — {requested} series unavailable from FRED)"
+                        f" (US proxy, {requested} series unavailable from FRED)"
                         if macro.get("geography_mismatch")
                         else ""
                     )
@@ -531,7 +530,7 @@ class MarketAnalyst(BaseAgent):
                     })
                     self._sources.append(Source(
                         id=f"src_{len(self._sources):03d}",
-                        title=f"Alpha Vantage — {ticker} ({overview.get('Name', '')})",
+                        title=f"Alpha Vantage, {ticker} ({overview.get('Name', '')})",
                         url=f"https://www.alphavantage.co/query?symbol={ticker}",
                         credibility=SourceCredibility.GOVERNMENT,
                         key_data=f"Revenue TTM: {overview.get('RevenueTTM', 'N/A')}",
@@ -561,7 +560,7 @@ class MarketAnalyst(BaseAgent):
         NASSCOM, 6% of global) → India Tier-2 SaaS ($3B, 20% of India SaaS,
         internal estimate based on Tier-2 business count).
 
-        The LLM does the reasoning — it takes the raw data from search results
+        The LLM does the reasoning, it takes the raw data from search results
         and macro context, applies the filter chain, and produces a TAM
         estimate with sources for each step.
         """
@@ -606,7 +605,7 @@ class MarketAnalyst(BaseAgent):
         if not response.success or not response.content:
             return FinancialMetric(
                 name="TAM (Top-Down)",
-                value="Unable to estimate — insufficient data",
+                value="Unable to estimate, insufficient data",
                 unit="$",
                 assumptions=["Top-down sizing failed due to LLM error or no data"],
             )
@@ -628,7 +627,7 @@ class MarketAnalyst(BaseAgent):
                 name="TAM (Top-Down)",
                 value="Parse error",
                 unit="$",
-                assumptions=["Top-down sizing failed — LLM output parsing error"],
+                assumptions=["Top-down sizing failed, LLM output parsing error"],
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -697,7 +696,7 @@ class MarketAnalyst(BaseAgent):
         if not response.success or not response.content:
             return FinancialMetric(
                 name="TAM (Bottom-Up)",
-                value="Unable to estimate — insufficient data",
+                value="Unable to estimate, insufficient data",
                 unit="$",
                 assumptions=["Bottom-up sizing failed due to LLM error or no data"],
             )
@@ -724,7 +723,7 @@ class MarketAnalyst(BaseAgent):
                 name="TAM (Bottom-Up)",
                 value="Parse error",
                 unit="$",
-                assumptions=["Bottom-up sizing failed — LLM output parsing error"],
+                assumptions=["Bottom-up sizing failed, LLM output parsing error"],
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -795,7 +794,7 @@ class MarketAnalyst(BaseAgent):
                     name="TAM (Triangulated)",
                     value="Unable to triangulate",
                     unit="$",
-                    assumptions=["CAGR triangulation failed — no data or LLM error"],
+                    assumptions=["CAGR triangulation failed, no data or LLM error"],
                 ),
                 contradictions,
             )
@@ -844,13 +843,13 @@ class MarketAnalyst(BaseAgent):
                     name="TAM (Triangulated)",
                     value="Parse error",
                     unit="$",
-                    assumptions=["CAGR triangulation failed — parsing error"],
+                    assumptions=["CAGR triangulation failed, parsing error"],
                 ),
                 FinancialMetric(
                     name="CAGR",
                     value="Parse error",
                     unit="%",
-                    assumptions=["CAGR calculation failed — parsing error"],
+                    assumptions=["CAGR calculation failed, parsing error"],
                 ),
                 contradictions,
             )
@@ -1036,7 +1035,7 @@ class MarketAnalyst(BaseAgent):
         """Classify market as emerging/growing/mature/declining.
 
         Based on: penetration rate, growth rate, number of competitors,
-        price compression. This classification drives strategy — you enter
+        price compression. This classification drives strategy, you enter
         an emerging market differently than a mature one.
         """
         seg_summary = "\n".join(f"- {s.title}: {s.content[:100]}" for s in segments[:5])
@@ -1098,7 +1097,7 @@ class MarketAnalyst(BaseAgent):
         structured KeyFinding objects that feed into the sizing frameworks.
         """
         # Extract geography and segment from the market query
-        # This is a simple heuristic — the LLM in the sizing steps will refine
+        # This is a simple heuristic, the LLM in the sizing steps will refine
         geography = self._context.get("geography") or ""
         segment = self._context.get("segment") or ""
 
@@ -1279,7 +1278,7 @@ class MarketAnalyst(BaseAgent):
             )
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 10-step methodology
+    # Main execution, the 10-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1306,7 +1305,7 @@ class MarketAnalyst(BaseAgent):
         self._engagement_id = engagement_id or self._engagement_id
         self._context = context or self._context
 
-        # Subscribe to bus — specialists need findings + requests
+        # Subscribe to bus, specialists need findings + requests
         self.subscribe_to_bus()
 
         await self._transition(

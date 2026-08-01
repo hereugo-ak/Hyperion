@@ -1,5 +1,5 @@
 """
-HYPERION Regulatory Analyst — Agent 9, the regulatory intelligence specialist.
+HYPERION Regulatory Analyst, Agent 9, the regulatory intelligence specialist.
 
 This is NOT a generic "list the regulations" agent. This is a specialist with
 5 proprietary analytical frameworks:
@@ -19,14 +19,14 @@ This is NOT a generic "list the regulations" agent. This is a specialist with
 
 It knows it is not a lawyer. It maps the landscape, identifies risks, and
 recommends legal counsel for definitive opinions. It doesn't give legal
-advice — it gives regulatory intelligence. It tracks regulatory evolution
+advice, it gives regulatory intelligence. It tracks regulatory evolution
 using Wayback Machine, not just current state. It always identifies the
 jurisdiction with the lightest regulatory touch as a potential strategic
 advantage. (§4.4, Agent 9)
 
 Model Tier: STANDARD
 Tools: SearxNG, Jina, Obscura, Wayback
-Sub-agents: Max 3 — jurisdiction1 regulations, jurisdiction2 regulations,
+Sub-agents: Max 3, jurisdiction1 regulations, jurisdiction2 regulations,
             pending/proposed regulations
 Output: RegulatoryAnalysis (regulatory map, jurisdiction comparison,
         compliance checklist, horizon scan, enforcement precedents,
@@ -124,7 +124,7 @@ REGULATORY_ANALYST_SPEC = AgentSpec(
                 "Compare regulatory requirements across jurisdictions (US, EU, "
                 "India, UK, etc.) to identify the most favorable regulatory "
                 "environment and the most restrictive. The jurisdiction with the "
-                "lightest regulatory touch can be a strategic advantage — not "
+                "lightest regulatory touch can be a strategic advantage, not "
                 "for evasion, but for operational efficiency. Score each "
                 "jurisdiction on regulation count, compliance burden, and "
                 "estimated annual cost."
@@ -137,7 +137,7 @@ REGULATORY_ANALYST_SPEC = AgentSpec(
             description=(
                 "Build a structured compliance checklist with specific "
                 "requirements, documentation needed, and estimated compliance "
-                "cost. Each item is actionable — not 'comply with GDPR' but "
+                "cost. Each item is actionable, not 'comply with GDPR' but "
                 "'appoint a Data Protection Officer within 30 days, estimated "
                 "cost $80K/yr, documentation: DPO appointment letter, reporting "
                 "structure.' Items are prioritized by risk level."
@@ -152,7 +152,7 @@ REGULATORY_ANALYST_SPEC = AgentSpec(
                 "trends that could impact the business in 1-3 years. Each item "
                 "has a probability assessment (low/medium/high), potential impact, "
                 "and recommended preparatory action. Uses Wayback Machine to "
-                "track how regulations have evolved — a regulation that's been "
+                "track how regulations have evolved, a regulation that's been "
                 "tightening for 3 years is likely to continue tightening."
             ),
             inputs=["industry", "jurisdictions", "regulatory_trends", "historical_data"],
@@ -163,7 +163,7 @@ REGULATORY_ANALYST_SPEC = AgentSpec(
             description=(
                 "Find regulatory enforcement actions against similar companies "
                 "to understand regulatory priorities and penalties. Not just "
-                "'company X was fined $Y' — what did they do wrong, what was the "
+                "'company X was fined $Y', what did they do wrong, what was the "
                 "penalty, and what does it tell us about where the regulator "
                 "focuses enforcement? This reveals regulatory priorities beyond "
                 "the written rules."
@@ -173,7 +173,7 @@ REGULATORY_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Regulatory Analyst — the specialist who maps "
+        "You are the HYPERION Regulatory Analyst, the specialist who maps "
         "regulatory landscapes, identifies compliance requirements, assesses "
         "regulatory risks, and scans the regulatory horizon.\n\n"
         "Your proprietary frameworks:\n"
@@ -183,12 +183,12 @@ REGULATORY_ANALYST_SPEC = AgentSpec(
         "risk level and compliance cost.\n"
         "2. Jurisdiction comparison: Compare regulatory burden across "
         "jurisdictions. Identify the lightest regulatory touch as a strategic "
-        "advantage — not for evasion, but for operational efficiency.\n"
+        "advantage, not for evasion, but for operational efficiency.\n"
         "3. Compliance checklist: Actionable items, not 'comply with X.' Each "
         "item has documentation needed, cost estimate, timeline, and priority.\n"
         "4. Horizon scanning: Pending regulations (1-3 years). Probability, "
         "impact, and preparatory actions. Use Wayback Machine to track "
-        "regulatory evolution — tightening trends continue tightening.\n"
+        "regulatory evolution, tightening trends continue tightening.\n"
         "5. Precedent analysis: Enforcement actions against similar companies. "
         "What was the violation, penalty, and lesson? Reveals regulatory "
         "priorities beyond written rules.\n\n"
@@ -200,9 +200,9 @@ REGULATORY_ANALYST_SPEC = AgentSpec(
         "as a potential strategic advantage.\n"
         "- Track regulatory EVOLUTION using Wayback Machine, not just current "
         "state. A regulation that's been tightening for 3 years will continue.\n"
-        "- Compliance checklist items must be SPECIFIC and ACTIONABLE — not "
+        "- Compliance checklist items must be SPECIFIC and ACTIONABLE, not "
         "'comply with GDPR' but 'appoint a DPO within 30 days, cost $80K/yr.'\n"
-        "- Enforcement precedents must include the LESSON — what does this tell "
+        "- Enforcement precedents must include the LESSON, what does this tell "
         "us about regulatory priorities?\n"
         "- Each regulation must have: risk level, compliance cost, and penalty "
         "range for non-compliance.\n\n"
@@ -210,7 +210,7 @@ REGULATORY_ANALYST_SPEC = AgentSpec(
         "- Sub-agent A: Find regulations for [jurisdiction1] (MICRO, SearxNG + Jina)\n"
         "- Sub-agent B: Find regulations for [jurisdiction2] (MICRO, SearxNG + Jina)\n"
         "- Sub-agent C: Find pending/proposed regulations (FAST, SearxNG + Obscura)\n\n"
-        "Your output is a RegulatoryAnalysis Pydantic model — structured, not free text."
+        "Your output is a RegulatoryAnalysis Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves regulatory compliance, "
                      "jurisdictional analysis, regulatory risk, or regulatory "
@@ -233,7 +233,7 @@ class RegulatoryAnalyst(BaseAgent):
     checklists, scans the regulatory horizon for pending regulations, and
     analyzes enforcement precedents. Tracks regulatory evolution using
     Wayback Machine. Always identifies the lightest-touch jurisdiction as
-    a strategic advantage. Knows it's not a lawyer — gives regulatory
+    a strategic advantage. Knows it's not a lawyer, gives regulatory
     intelligence, not legal advice. (§4.4, Agent 9)
 
     Lifecycle:
@@ -346,7 +346,7 @@ class RegulatoryAnalyst(BaseAgent):
             # gave us. `industry` is resolved via `resolve_subject` in `run()`
             # now, but this method is also reachable with a bare `industry`
             # string from other callers, so re-resolve defensively rather
-            # than assume the caller already did it — an f-string like
+            # than assume the caller already did it, an f-string like
             # f"{industry} regulations" degrading to " regulations" is a
             # subject-less search that cannot answer the user's question.
             subject = resolve_subject(
@@ -469,7 +469,7 @@ class RegulatoryAnalyst(BaseAgent):
             if unmapped:
                 try:
                     searxng = self.get_tool(ToolName.SEARXNG)
-                    # `industry` is not a parameter of this method — resolve
+                    # `industry` is not a parameter of this method, resolve
                     # the subject the same way `run()` does, so the discovery
                     # query is never subject-less.
                     sector = resolve_subject(
@@ -510,7 +510,7 @@ class RegulatoryAnalyst(BaseAgent):
                         })
                         self._sources.append(Source(
                             id=f"src_{len(self._sources):03d}",
-                            title=f"Government portal — {url.split('/')[2]}",
+                            title=f"Government portal, {url.split('/')[2]}",
                             url=url,
                             credibility=SourceCredibility.GOVERNMENT,
                             key_data=f"Regulatory portal data from {url}",
@@ -533,7 +533,7 @@ class RegulatoryAnalyst(BaseAgent):
 
         Uses Wayback Machine to pull historical snapshots of regulatory pages.
         A regulation that's been tightening for 3 years is likely to continue
-        tightening. This is unique to the HYPERION Regulatory Analyst — no
+        tightening. This is unique to the HYPERION Regulatory Analyst, no
         generic regulatory analyst tracks evolution over time.
         """
         results: list[dict[str, Any]] = []
@@ -558,7 +558,7 @@ class RegulatoryAnalyst(BaseAgent):
                         })
                         self._sources.append(Source(
                             id=f"src_{len(self._sources):03d}",
-                            title=f"Historical regulatory snapshots — {url}",
+                            title=f"Historical regulatory snapshots, {url}",
                             url=url,
                             credibility=SourceCredibility.GOVERNMENT,
                             key_data=f"3-year regulatory evolution for {url}",
@@ -601,7 +601,7 @@ class RegulatoryAnalyst(BaseAgent):
             "You are the HYPERION Regulatory Analyst mapping regulations by jurisdiction.\n\n"
             f"Question: {question}\n\n"
             f"Jurisdictions: {', '
-                ''.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
+                ''.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user, infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
             f"Search results:\n{search_summary}\n\n"
             f"Government portal data:\n{gov_summary}\n\n"
             "Map ALL applicable regulations across jurisdictions:\n"
@@ -702,7 +702,7 @@ class RegulatoryAnalyst(BaseAgent):
     ) -> list[ComplianceItem]:
         """Build a structured compliance checklist.
 
-        Each item is actionable — not 'comply with GDPR' but 'appoint a Data
+        Each item is actionable, not 'comply with GDPR' but 'appoint a Data
         Protection Officer within 30 days, estimated cost $80K/yr, documentation:
         DPO appointment letter, reporting structure.' Items are prioritized
         by risk level.
@@ -784,7 +784,7 @@ class RegulatoryAnalyst(BaseAgent):
 
         Identifies pending regulations, proposed rules, and regulatory trends
         that could impact the business in 1-3 years. Uses historical data
-        from Wayback Machine to identify trends — a regulation that's been
+        from Wayback Machine to identify trends, a regulation that's been
         tightening for 3 years is likely to continue tightening.
         """
         search_summary = "\n".join(
@@ -800,7 +800,7 @@ class RegulatoryAnalyst(BaseAgent):
             "You are the HYPERION Regulatory Analyst scanning the regulatory horizon.\n\n"
             f"Question: {question}\n\n"
             f"Jurisdictions: {', '
-                ''.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user — infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
+                ''.join(jurisdictions) if jurisdictions else 'NOT SPECIFIED by the user, infer the relevant jurisdiction(s) from the question and the evidence below; do NOT assume US or EU'}\n\n"
             f"Current regulatory search results:\n{search_summary}\n\n"
             f"Historical regulatory evolution (Wayback Machine):\n{historical_summary or 'No '
                 'historical data available'}\n\n"
@@ -813,7 +813,7 @@ class RegulatoryAnalyst(BaseAgent):
             "- probability: low, medium, or high (based on historical trends)\n"
             "- potential_impact: potential impact on the business\n"
             "- recommended_action: what to do NOW to prepare\n\n"
-            "Use historical data to assess probability — a regulation that's been "
+            "Use historical data to assess probability, a regulation that's been "
             "tightening for 3 years is likely to continue tightening (high probability).\n\n"
             "Return JSON:\n"
             "{\n"
@@ -846,7 +846,7 @@ class RegulatoryAnalyst(BaseAgent):
         # HorizonScanItem name collision (see RegulatoryHorizonItem's docstring)
         # hide for the project's entire life. `ValidationError` subclasses
         # `ValueError`, so *every* item failed construction and every failure was
-        # swallowed — `horizon_scan` was structurally guaranteed `[]` with nothing
+        # swallowed, `horizon_scan` was structurally guaranteed `[]` with nothing
         # logged anywhere.
         #
         # Two changes make that impossible to repeat:
@@ -881,14 +881,14 @@ class RegulatoryAnalyst(BaseAgent):
             # requires to be zero, so an unnamed item would print as a regulation
             # called "Unknown" in a client-facing compliance deliverable. Second
             # and worse: a horizon item whose regulation cannot be named is not a
-            # finding at all — emitting it fabricates a phantom regulation the
+            # finding at all, emitting it fabricates a phantom regulation the
             # model never actually identified. An unnamed item is dropped, loudly.
             regulation_name = str(item.get("regulation_name") or "").strip()
             jurisdiction = str(item.get("jurisdiction") or "").strip()
             if not regulation_name:
                 logger.warning(
                     "Regulatory horizon scan: dropping item with no "
-                    "regulation_name (keys offered: %s) — an unnameable "
+                    "regulation_name (keys offered: %s), an unnameable "
                     "regulation is not a finding",
                     sorted(item),
                 )
@@ -911,7 +911,7 @@ class RegulatoryAnalyst(BaseAgent):
                 # "the LLM returned nothing useful".
                 logger.error(
                     "Regulatory horizon scan: RegulatoryHorizonItem rejected a "
-                    "well-formed item — this is a SCHEMA defect, not model output. "
+                    "well-formed item, this is a SCHEMA defect, not model output. "
                     "Keys offered: %s",
                     sorted(item),
                     exc_info=True,
@@ -923,7 +923,7 @@ class RegulatoryAnalyst(BaseAgent):
             # The exact shape of the outage this fix closes: the model produced
             # items and none survived construction.
             logger.error(
-                "Regulatory horizon scan: %d items offered, 0 constructed — "
+                "Regulatory horizon scan: %d items offered, 0 constructed"
                 "horizon_scan will be empty",
                 len(raw_items),
             )
@@ -945,7 +945,7 @@ class RegulatoryAnalyst(BaseAgent):
         """Analyze regulatory enforcement actions against similar companies.
 
         Finds enforcement actions to understand regulatory priorities and
-        penalties. Not just 'company X was fined $Y' — what did they do,
+        penalties. Not just 'company X was fined $Y', what did they do,
         what was the penalty, and what does it tell us about regulatory
         priorities?
         """
@@ -1051,7 +1051,7 @@ class RegulatoryAnalyst(BaseAgent):
 
         evolution = " ".join(evolution_parts) if evolution_parts else (
             "Historical regulatory evolution tracking via Wayback Machine. "
-            "Limited historical data available — current regulatory state is the primary basis for analysis."
+            "Limited historical data available, current regulatory state is the primary basis for analysis."
         )
 
         return (lightest.jurisdiction, evolution)
@@ -1065,10 +1065,10 @@ class RegulatoryAnalyst(BaseAgent):
 
         Resolution order, most authoritative first:
 
-          1. ``context["jurisdictions"]`` — set by the orchestrator's
+          1. ``context["jurisdictions"]``, set by the orchestrator's
              engagement classification, or handed over by the Market Analyst.
           2. ``context["jurisdiction"]`` / ``context["geography"]`` /
-             ``context["region"]`` / ``context["country"]`` — singular forms.
+             ``context["region"]`` / ``context["country"]``, singular forms.
           3. Geographies explicitly named in the user's question.
           4. Geographies named in the engagement focus (question + subject).
 
@@ -1081,7 +1081,7 @@ class RegulatoryAnalyst(BaseAgent):
         yielding 119 confidently-worded findings about the wrong country.
         A wrong jurisdiction is strictly worse than a missing one, because it
         reads as authoritative. Returning [] makes the downstream analysis
-        jurisdiction-agnostic — honest rather than confidently wrong.
+        jurisdiction-agnostic, honest rather than confidently wrong.
         """
         from hyperion.tools.query_utils import detect_geographies, get_engagement_focus
 
@@ -1099,7 +1099,7 @@ class RegulatoryAnalyst(BaseAgent):
                     continue
                 v = v.strip().strip(".").strip()
                 # Handover payloads can be whole sentences ("Target markets
-                # include India and the UAE..."). Those are not labels — mine
+                # include India and the UAE."). Those are not labels, mine
                 # them for geographies instead of using them verbatim, or a
                 # 200-char sentence ends up interpolated into a search query.
                 if not v or len(v) > 40 or v.count(" ") > 3:
@@ -1139,7 +1139,7 @@ class RegulatoryAnalyst(BaseAgent):
             self._log(f"REGULATORY: jurisdictions from engagement focus: {resolved}")
             return resolved
 
-        # No geography anywhere. Degrade honestly — do NOT invent one.
+        # No geography anywhere. Degrade honestly, do NOT invent one.
         self._log(
             "REGULATORY: no jurisdiction named in the engagement; running "
             "jurisdiction-agnostic regulatory analysis (no hardcoded default)"
@@ -1242,7 +1242,7 @@ class RegulatoryAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 8-step methodology
+    # Main execution, the 8-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1267,7 +1267,7 @@ class RegulatoryAnalyst(BaseAgent):
         self._engagement_id = engagement_id or self._engagement_id
         self._context = context or self._context
 
-        # Subscribe to bus — specialists need findings + requests
+        # Subscribe to bus, specialists need findings + requests
         self.subscribe_to_bus()
 
         await self._transition(
@@ -1280,7 +1280,7 @@ class RegulatoryAnalyst(BaseAgent):
         # CRITICAL: jurisdictions must be derived from the question, never
         # defaulted to a hardcoded region. The previous default of
         # ["US", "EU"] meant a question about INDIA was analysed under the
-        # US Buy American Act / Trade Agreements Act / Berry Amendment —
+        # US Buy American Act / Trade Agreements Act / Berry Amendment, 
         # 119 confidently-reported findings about the wrong country. A wrong
         # jurisdiction is worse than a missing one: it looks authoritative.
         # Four-tier resolution (explicit context keys -> sector -> engagement
@@ -1288,7 +1288,7 @@ class RegulatoryAnalyst(BaseAgent):
         # context keys this used to read. `industry` was frequently "" when
         # the Director's handover omitted it, and every downstream query
         # template (`_search_regulations`, `_scrape_government_portals`)
-        # interpolated that emptiness into a subject-less search — this was
+        # interpolated that emptiness into a subject-less search, this was
         # one of the three specialists Finding B-9 named as missing the
         # shared `resolve_subject` helper entirely.
         industry = resolve_subject(
@@ -1394,7 +1394,7 @@ class RegulatoryAnalyst(BaseAgent):
                 title=f"Lightest Regulatory Jurisdiction: {lightest_jurisdiction}",
                 content=(
                     f"{lightest_jurisdiction} has the lightest regulatory touch "
-                    f"for this business. This is a potential strategic advantage — "
+                    f"for this business. This is a potential strategic advantage, "
                     f"not for evasion, but for operational efficiency."
                 ),
                 confidence=ConfidenceLevel.MEDIUM,

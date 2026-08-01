@@ -90,7 +90,7 @@ from hyperion.schemas.models import (
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dimension metadata — names, descriptions, and scoring criteria
+# Dimension metadata, names, descriptions, and scoring criteria
 # ─────────────────────────────────────────────────────────────────────────────
 
 DIMENSION_META: dict[QualityDimensionName, dict[str, str]] = {
@@ -217,7 +217,7 @@ QUALITY_GATE_SPEC = AgentSpec(
     display_name="Quality Gate",
     model_tier=ModelTier.STRONG,
     tools=[
-        # Reviewer — needs search for spot-checking claims, SECOND_BRAIN for prior research
+        # Reviewer, needs search for spot-checking claims, SECOND_BRAIN for prior research
         ToolName.SECOND_BRAIN,
         ToolName.DEEP_SEARCH,
     ],
@@ -375,7 +375,7 @@ class QualityGate(BaseAgent):
     """
 
     APPROVAL_THRESHOLD = 4.0
-    MAX_ITERATIONS = 2  # P7: capped at ≤2 (was 3) — content-aware quality gate
+    MAX_ITERATIONS = 2  # P7: capped at ≤2 (was 3), content-aware quality gate
     CRITICAL_THRESHOLD = 3  # Scores below this are critical
 
     def __init__(
@@ -493,7 +493,7 @@ class QualityGate(BaseAgent):
             fix_parts.append("Add specialist analysis sections (Market, Competitive, Financial, "
                 "etc.).")
         else:
-            # Check section count — a standard engagement should have 4-8 sections
+            # Check section count, a standard engagement should have 4-8 sections
             section_count = len(report.sections)
             if section_count < 3:
                 score = min(score, 2)
@@ -864,7 +864,7 @@ class QualityGate(BaseAgent):
             score = min(score, 1)
             feedback_parts.append("No analysis sections present.")
         else:
-            # Check section ordering — sections should have sequential IDs
+            # Check section ordering, sections should have sequential IDs
             section_ids = [s.id for s in report.sections]
             for i, sid in enumerate(section_ids):
                 if not sid:
@@ -1268,7 +1268,7 @@ class QualityGate(BaseAgent):
                 )
                 break
 
-        # 5. Verdict consistency — the recommendation enum is the single source
+        # 5. Verdict consistency, the recommendation enum is the single source
         #    of truth; the exec summary and rationale must not assert a
         #    different verdict.
         rec = report.recommendation.value.replace("_", " ").lower()  # e.g. "no go"
@@ -1289,7 +1289,7 @@ class QualityGate(BaseAgent):
                 )
                 break
 
-        # 6. Honest confidence — a report with evidence voids cannot claim HIGH
+        # 6. Honest confidence, a report with evidence voids cannot claim HIGH
         #    confidence (Layer 4). Count sections with no sources.
         unsourced = sum(1 for sec in report.sections if not sec.sources)
         total_sections = len(report.sections) or 1
@@ -1423,7 +1423,7 @@ class QualityGate(BaseAgent):
         return "\n".join(report_parts)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 7-step methodology
+    # Main execution, the 7-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1490,7 +1490,7 @@ class QualityGate(BaseAgent):
         approved, critical_dims = self._determine_approval(total_score, dimensions)
 
         # Step 5b (Layer 4): hard leak / consistency gate. These are
-        # non-negotiable — a report that leaks internals, ships filler, has
+        # non-negotiable, a report that leaks internals, ships filler, has
         # broken URLs, or contradicts its own verdict is NEVER approved,
         # regardless of the weighted score.
         blockers = self._detect_hard_blockers(report)

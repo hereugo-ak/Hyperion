@@ -1,5 +1,5 @@
 """
-HYPERION Sub-Agent Runner — junior agent execution for context isolation.
+HYPERION Sub-Agent Runner, junior agent execution for context isolation.
 
 This is NOT a generic sub-agent class. It is the mechanism that makes
 HYPERION fundamentally different from a single-LLM system (§4.7).
@@ -12,7 +12,7 @@ structured findings (data, sources, confidence, gaps). The parent
 synthesizes. The parent's context window is used for synthesis, not
 for raw research.
 
-This is how real consulting teams work — a partner doesn't read 200
+This is how real consulting teams work, a partner doesn't read 200
 pages of raw research. They read a senior associate's 5-page summary.
 HYPERION's specialists are partners; sub-agents are associates.
 
@@ -21,7 +21,7 @@ Rules (§4.7):
 - Sub-agents use MICRO or FAST tier only (don't burn STRONG/DEEP quota)
 - Sub-agent findings are structured (KeyFinding), not free text
 - Parent specialist receives structured findings and synthesizes them
-- Sub-agents have 5-minute timeout — if a sub-agent doesn't return in
+- Sub-agents have 5-minute timeout, if a sub-agent doesn't return in
   5 min, the parent proceeds with available findings and flags the gap
 - Sub-agents have access to a subset of parent's tools (specified at
   spawn time)
@@ -67,7 +67,7 @@ SEC_FILING_BUDGET_CHARS = 15000
 class SubAgentRunner:
     """Executes a single sub-agent research task and returns structured findings.
 
-    This is NOT a full agent — it has no bus subscription, no state
+    This is NOT a full agent, it has no bus subscription, no state
     management, no sub-agent spawning capability. It is a focused
     research executor that:
 
@@ -108,7 +108,7 @@ class SubAgentRunner:
                 f"Sub-agents don't burn STRONG/DEEP quota (§4.7)."
             )
 
-        # Tool instances — only the subset specified in the spec
+        # Tool instances, only the subset specified in the spec
         self._tools: dict[str, Any] = {}
 
     @property
@@ -234,7 +234,7 @@ class SubAgentRunner:
             "1. Answer the specific sub-question with DATA, not opinion.\n"
             "2. Cite a source for every factual claim. No source = no claim.\n"
             "3. Report your confidence level: HIGH, MEDIUM, or LOW.\n"
-            "4. Identify GAPS — what you couldn't find, what data is missing.\n"
+            "4. Identify GAPS, what you couldn't find, what data is missing.\n"
             "5. Be DETAILED and SPECIFIC. Include exact numbers, percentages, "
             "dollar figures, dates, and company names. Vague findings are useless.\n"
             "6. Each finding's content should be 200-500 words of detailed analysis "
@@ -316,7 +316,7 @@ class SubAgentRunner:
             every specialist, on every Linux/macOS run. The shared ladder probes
             once per instance and names the skip.
           * **Arbitrary, inconsistent per-tier URL budgets** (``[:6]``, ``[:6]``,
-            ``[:8]``, ``[:4]``, ``[:3]``): URLs 7–8 were reachable only by the
+            ``[:8]``, ``[:4]``, ``[:3]``): URLs 7-8 were reachable only by the
             *third* tier, and URLs past 8 by none of them. A URL's chance of
             being extracted depended on its rank in a merged search list, which
             is not a retrieval policy anyone chose.
@@ -374,7 +374,7 @@ class SubAgentRunner:
 
         # ── DATA SOURCES (unchanged) ────────────────────────────────────
 
-        # Historical data — Wayback
+        # Historical data, Wayback
         if self._has_tool("wayback"):
             try:
                 wayback = self._get_tool("wayback")
@@ -384,7 +384,7 @@ class SubAgentRunner:
             except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"Wayback: {e!s:.80}")
 
-        # Financial data — Alpha Vantage
+        # Financial data, Alpha Vantage
         if self._has_tool("alpha_vantage"):
             try:
                 av = self._get_tool("alpha_vantage")
@@ -394,7 +394,7 @@ class SubAgentRunner:
             except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"AlphaVantage: {e!s:.80}")
 
-        # Macro data — FRED
+        # Macro data, FRED
         if self._has_tool("fred"):
             try:
                 fred = self._get_tool("fred")
@@ -406,7 +406,7 @@ class SubAgentRunner:
 
         # ── Phase 2 Data Sources ────────────────────────────────────────
 
-        # SEC EDGAR — financial filings
+        # SEC EDGAR, financial filings
         if self._has_tool("sec_edgar"):
             try:
                 sec = self._get_tool("sec_edgar")
@@ -436,7 +436,7 @@ class SubAgentRunner:
             except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"SEC EDGAR: {e!s:.80}")
 
-        # Semantic Scholar — academic papers
+        # Semantic Scholar, academic papers
         if self._has_tool("semantic_scholar"):
             try:
                 ss = self._get_tool("semantic_scholar")
@@ -450,7 +450,7 @@ class SubAgentRunner:
             except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"SemanticScholar: {e!s:.80}")
 
-        # OpenAlex — scholarly works
+        # OpenAlex, scholarly works
         if self._has_tool("open_alex"):
             try:
                 oa = self._get_tool("open_alex")
@@ -464,7 +464,7 @@ class SubAgentRunner:
             except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"OpenAlex: {e!s:.80}")
 
-        # World Bank — macro indicators
+        # World Bank, macro indicators
         if self._has_tool("world_bank"):
             try:
                 wb = self._get_tool("world_bank")
@@ -479,7 +479,7 @@ class SubAgentRunner:
             except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"WorldBank: {e!s:.80}")
 
-        # Google Trends — demand signals
+        # Google Trends, demand signals
         if self._has_tool("google_trends"):
             try:
                 gt = self._get_tool("google_trends")
@@ -504,7 +504,7 @@ class SubAgentRunner:
             except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"GoogleTrends: {e!s:.80}")
 
-        # HackerNews — tech community sentiment
+        # HackerNews, tech community sentiment
         if self._has_tool("hackernews"):
             try:
                 hn = self._get_tool("hackernews")
@@ -518,7 +518,7 @@ class SubAgentRunner:
             except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"HackerNews: {e!s:.80}")
 
-        # Reddit — community sentiment
+        # Reddit, community sentiment
         if self._has_tool("reddit"):
             try:
                 reddit = self._get_tool("reddit")
@@ -534,7 +534,7 @@ class SubAgentRunner:
             except Exception as e:  # noqa: BLE001 - failure is recorded in the result
                 errors.append(f"Reddit: {e!s:.80}")
 
-        # Second Brain — prior research
+        # Second Brain, prior research
         if self._has_tool("second_brain"):
             try:
                 brain = self._get_tool("second_brain")
@@ -563,15 +563,14 @@ class SubAgentRunner:
 
         WHY THE FILLER SET IS SMALLER THAN IT LOOKS (fix 1.4, audit §4.4
         Finding B-3): the previous filler set deleted the exact words that
-        carry a consulting question's analytical intent —
-        ``'not'`` inverted the meaning of any negative-framed question
+        carry a consulting question's analytical intent, ``'not'`` inverted the meaning of any negative-framed question
         ("should we NOT enter" -> "enter", the opposite of what was asked),
         and ``'should'``, ``'how'``, ``'why'``, ``'what'``, ``'which'``,
         ``'most'``, ``'more'`` are the interrogative/comparative words that
         distinguish "the biggest market" from "the fastest-growing market"
         or "how to enter" from "why not to enter". Those eight words are
         removed from the filler set below. Grammatical connective tissue
-        (articles, prepositions, auxiliary verbs) is still stripped — that
+        (articles, prepositions, auxiliary verbs) is still stripped, that
         part of the pipeline was never the problem.
         """
         q = question.strip()
@@ -591,7 +590,7 @@ class SubAgentRunner:
 
         # Remove parenthetical asides: (e.g., Bitcoin, Ethereum)
         #
-        # NOTE: the removed content is NOT thrown away here — parentheticals
+        # NOTE: the removed content is NOT thrown away here, parentheticals
         # frequently name the specific entities the question is actually
         # about ("(Bitcoin, Ethereum)"), so deleting them outright turned a
         # concrete comparison query into a generic one. `_condense_query`
@@ -604,7 +603,7 @@ class SubAgentRunner:
         q = re.sub(r'\([^)]*\)', '', q)
 
         # Remove em-dashes, en-dashes, and hyphens used as separators.
-        # NOTE: hyphen MUST be last (or escaped) inside a character class —
+        # NOTE: hyphen MUST be last (or escaped) inside a character class, 
         # `\u2013--` was parsed as a character RANGE (\u2013 .. -), which is
         # invalid and raised `re.PatternError` on every call under Python
         # 3.13. That crash was swallowed by the callers' bare
@@ -612,11 +611,11 @@ class SubAgentRunner:
         # search (see HYPERION_DEEP_AUDIT_2026-07-27.md §0 / finding B-1).
         q = re.sub(r'\s*[\u2013\u2014-]+\s*', ' ', q)
 
-        # Remove filler words — grammatical connective tissue only.
+        # Remove filler words, grammatical connective tissue only.
         #
         # fix 1.4 (audit §4.4 Finding B-3): 'not', 'should', 'how', 'why',
         # 'what', 'which', 'most', 'more' used to be in this set and were
-        # removed. Those are not noise — they carry the question's
+        # removed. Those are not noise, they carry the question's
         # analytical intent (negation, comparison, interrogative framing).
         # Deleting them silently rewrote "should we NOT enter this market"
         # into "enter market", the opposite question, and collapsed "the
@@ -658,12 +657,12 @@ class SubAgentRunner:
         second variant that folds any parenthetical content back in.
 
         fix 1.4 (audit §4.4 Finding B-3): `_condense_query` strips
-        parenthetical asides like "(Bitcoin, Ethereum)" entirely — those
+        parenthetical asides like "(Bitcoin, Ethereum)" entirely, those
         asides are frequently where a question's specific entities live,
         so simply deleting them produced a generic query with no way to
         recover the named entities. This method keeps the primary
-        (entity-free) query as variant 1, and — when the question actually
-        contained a non-trivial parenthetical — appends a second variant
+        (entity-free) query as variant 1, and, when the question actually
+        contained a non-trivial parenthetical, appends a second variant
         that appends the parenthetical's content to the primary query, so
         callers that can afford two search legs (SearxNG, Jina) get one
         query anchored on the general topic and one anchored on the named
@@ -681,7 +680,7 @@ class SubAgentRunner:
         # Filter out trivial/instructional parentheticals ("(see above)",
         # single short words that are unlikely to be a named entity list),
         # keeping ones that look like a comma/semicolon-separated entity
-        # list or a multi-word phrase — that is the pattern the audit's
+        # list or a multi-word phrase, that is the pattern the audit's
         # example ("(Bitcoin, Ethereum)") and real sub-agent questions
         # actually use.
         entity_text = ""
@@ -729,14 +728,14 @@ class SubAgentRunner:
     #
     # The planner produces 5-10 queries. Sending *all* of them to *both*
     # SearxNG and Jina would be up to 20 near-duplicate requests per
-    # sub-question — that blows the search budget for almost no marginal
+    # sub-question, that blows the search budget for almost no marginal
     # recall, since both engines index largely the same open web.
     #
     # Instead the plan is **partitioned** across the two legs (see
     # `_plan_queries(leg=...)`): SearxNG takes the even-indexed planner
     # queries, Jina takes the odd-indexed ones. Because `_top_up` orders
     # the plan angle-first, an alternating split gives *each* leg a
-    # diversified subset while the **union across legs is the whole plan** —
+    # diversified subset while the **union across legs is the whole plan**, 
     # so the audit's Phase 1 exit criterion (">=8 distinct grounded queries
     # per sub-question") is met at roughly half the request cost of sending
     # every query down every leg.
@@ -751,16 +750,16 @@ class SubAgentRunner:
     #
     # Three tiers are deliberately absent from this table, and the reason
     # differs in each case:
-    #   * `http` — httpx + trafilatura, keyless and browserless, with no
+    # * `http`, httpx + trafilatura, keyless and browserless, with no
     #     `ToolName` of its own. It is the cheapest *parsing* tier the codebase
     #     ships, it cannot leak an API key or launch a browser, and the audit
     #     names it "the keyless, browserless workhorse" (§4.6). Gating it behind
     #     a tool grant nobody can express would make it permanently unreachable
     #     from sub-agents, which is how it came to be missing from this path in
     #     the first place. It is therefore ALWAYS offered.
-    #   * `curl_cffi` — likewise a plain HTTP fetch with a spoofed TLS
+    # * `curl_cffi`, likewise a plain HTTP fetch with a spoofed TLS
     #     fingerprint. Always offered, same reasoning.
-    #   * `nodriver` / `camoufox` — real browser launches with no `ToolName`.
+    # * `nodriver` / `camoufox`, real browser launches with no `ToolName`.
     #     These are NOT auto-granted: the audit's §4.7 quota discipline exists
     #     precisely so a junior agent cannot spend an expensive resource it was
     #     never handed. They are reachable through `UnifiedExtract` elsewhere in
@@ -774,14 +773,14 @@ class SubAgentRunner:
         "wayback": "wayback",
     }
 
-    # Tiers offered regardless of the granted tool subset — see above.
+    # Tiers offered regardless of the granted tool subset, see above.
     ALWAYS_AVAILABLE_EXTRACT_TIERS: tuple[str, ...] = ("curl_cffi", "http")
 
     # How many discovered URLs to attempt extraction on.
     #
     # The inline ladder this replaces used a DIFFERENT budget per tier
     # (`[:6]`, `[:6]`, `[:8]`, `[:4]`, `[:3]`), which meant URLs 7-8 were
-    # reachable only by the third tier and URLs past 8 by no tier at all — a
+    # reachable only by the third tier and URLs past 8 by no tier at all, a
     # URL's chance of being extracted depended on its rank in a merged search
     # list rather than on any deliberate policy. One budget, applied once,
     # against the whole ladder.
@@ -790,7 +789,7 @@ class SubAgentRunner:
     def _extraction_tiers(self) -> list[str]:
         """Extraction tiers this sub-agent is entitled to use, in ladder order.
 
-        Ordering is left to :class:`UnifiedExtract` — this returns a *set* of
+        Ordering is left to :class:`UnifiedExtract`, this returns a *set* of
         permitted tiers, and the ladder normalises them back into its own
         cheap-first order so a sub-agent cannot accidentally promote a browser
         tier ahead of a free one.
@@ -817,12 +816,12 @@ class SubAgentRunner:
         retained-content budget. This matters most for the sub-agent path
         specifically: a sub-agent's whole output is a handful of KeyFindings
         distilled from this text, so a budget spent on a PDF's front matter
-        rather than its tables produces a finding with no number in it — which
+        rather than its tables produces a finding with no number in it, which
         is indistinguishable, downstream, from the ``research_gap`` the audit's
         P0 was manufacturing (§4.2).
 
         Never raises. A ladder that returns nothing yields an ``errors`` entry
-        naming each tier that was tried and why it produced nothing — the
+        naming each tier that was tried and why it produced nothing, the
         inline version it replaces could only append a single per-tier
         ``f"Obscura: {e}"`` and lost the reason entirely when the failure was
         "returned no usable content" rather than an exception.
@@ -884,27 +883,27 @@ class SubAgentRunner:
 
         **fix 1.3 (audit §4.4 Finding B-3 / §7 Phase 1 item 1.3.)** Before
         this, `grep -E "_llm_complete|generate.*quer|query.*llm"
-        hyperion/agents/sub_agent.py` returned *no matches* — there was no
+        hyperion/agents/sub_agent.py` returned *no matches*, there was no
         reasoning step anywhere in the sub-agent path. Query construction
         was a pure regex + stopword pipeline emitting **exactly one query
         per tool**, where a human MBB associate given "should we enter now
         or wait?" runs 8-15 differently angled searches.
 
         This method calls `hyperion.tools.query_planner.plan_queries`, which:
-          - runs at **FAST** tier (never STRONG/DEEP — §4.7 quota rule),
+          - runs at **FAST** tier (never STRONG/DEEP, §4.7 quota rule),
           - emits **5-10 schema-validated** queries across the
             entity / metric / counter-thesis / regulatory / competitor /
             time-series angles named in the audit,
           - **caches by sub-question hash** so several specialists spawning
             the same sub-question in one engagement cost one LLM call,
-          - and **never returns empty and never raises** — on any failure it
+          - and **never returns empty and never raises**, on any failure it
             degrades to a deterministic angle-suffix plan, so a planner
             outage can never reproduce the audit's P0 (a silent query-layer
             failure zeroing out all research).
 
         The result is merged with `_condense_query_variants` (fix 1.4) so the
         deterministic entity-recovering variant is always present regardless
-        of what the planner returned — the planner *adds* angles, it does not
+        of what the planner returned, the planner *adds* angles, it does not
         replace the proven regex path.
 
         Args:
@@ -920,7 +919,7 @@ class SubAgentRunner:
         from hyperion.tools.query_planner import plan_queries
         from hyperion.tools.query_utils import get_engagement_focus
 
-        # Deterministic baseline first — this is the pre-1.3 behaviour and
+        # Deterministic baseline first, this is the pre-1.3 behaviour and
         # must survive planner failure untouched.
         baseline = self._condense_query_variants(self.spec.question)
 
@@ -1017,15 +1016,15 @@ class SubAgentRunner:
         entity/metric/counter-thesis/regulatory/competitor/time-series
         angles. Before 1.3 this leg dispatched one regex-built query.
 
-        fix 1.4: runs the primary condensed query, and — when the question
+        fix 1.4: runs the primary condensed query, and, when the question
         contained a parenthetical naming specific entities (e.g. "(Bitcoin,
-        Ethereum)") — a second query that folds those entities back in, so
+        Ethereum)"), a second query that folds those entities back in, so
         a named-entity comparison question isn't reduced to a single,
         entity-free search.
 
         fix 1.5: if that combined pass yields fewer than
         `LOW_YIELD_THRESHOLD` results, retry the same variants once more
-        with `drop_geography=True` — a jurisdiction anchor that is too
+        with `drop_geography=True`, a jurisdiction anchor that is too
         narrow for the live corpus (a small/emerging market, a niche
         regulatory topic) can starve every query built from it, and simply
         accepting "0-2 results" as final throws away whatever the general
@@ -1065,7 +1064,7 @@ class SubAgentRunner:
                 urls = [r.url for r in all_results[:8] if r.url]
                 return ("searxng", urls, f"SearxNG results:\n{formatted}")
         except Exception as e:
-            # Fix 0.3: fail loud, not silent — a swallowed exception here
+            # Fix 0.3: fail loud, not silent, a swallowed exception here
             # is exactly what hid the total sub-agent research outage in
             # HYPERION_DEEP_AUDIT_2026-07-27.md §0 / Finding B-1.
             logger.warning(
@@ -1077,15 +1076,15 @@ class SubAgentRunner:
     async def _search_jina(self) -> tuple[str, list[str], str | None]:
         """Search via Jina s.jina.ai. Returns (label, urls, formatted_results).
 
-        fix 1.3: same planner-driven query set as `_search_searxng` — see
+        fix 1.3: same planner-driven query set as `_search_searxng`, see
         `_plan_queries`. The plan is cached by sub-question hash, so this
         leg and the SearxNG leg share one planner LLM call rather than
         paying for two.
 
-        fix 1.4: same two-variant strategy as `_search_searxng` — see its
+        fix 1.4: same two-variant strategy as `_search_searxng`, see its
         docstring.
 
-        fix 1.5: same low-yield broadened retry as `_search_searxng` — see
+        fix 1.5: same low-yield broadened retry as `_search_searxng`, see
         its docstring.
         """
         try:
@@ -1119,7 +1118,7 @@ class SubAgentRunner:
                 urls = [r.url for r in all_results[:6] if r.url]
                 return ("jina", urls, f"Jina search results:\n{formatted}")
         except Exception as e:
-            # Fix 0.3: fail loud, not silent — see note in _search_searxng.
+            # Fix 0.3: fail loud, not silent, see note in _search_searxng.
             logger.warning(
                 "SubAgent Jina search failed for question=%r: %s",
                 self.spec.question[:120], e, exc_info=True,
@@ -1137,7 +1136,7 @@ class SubAgentRunner:
         at the specified tier processes the raw data and produces
         structured findings.
 
-        The temperature is low (0.2) for structured output — we want
+        The temperature is low (0.2) for structured output, we want
         deterministic, factual results, not creative writing.
         """
         import json

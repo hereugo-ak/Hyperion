@@ -1,5 +1,5 @@
 """
-HYPERION Technology Analyst — Agent 7, the technology evaluation specialist.
+HYPERION Technology Analyst, Agent 7, the technology evaluation specialist.
 
 This is NOT a generic "compare tech stacks" agent. This is a specialist
 with 6 proprietary analytical frameworks:
@@ -10,7 +10,7 @@ with 6 proprietary analytical frameworks:
 - Tech debt assessment: Quantifies technical debt using the SIG/TÜViT model
   or similar. Categorizes debt as intentional vs. unintentional, estimates
   remediation cost.
-- Vendor evaluation: Scores vendors across 7 dimensions — feature fit,
+- Vendor evaluation: Scores vendors across 7 dimensions, feature fit,
   pricing, scalability, support quality, ecosystem, lock-in risk, and
   roadmap alignment. Produces a vendor comparison matrix.
 - Build-vs-buy framework: Structured analysis comparing build vs. buy on
@@ -22,15 +22,15 @@ with 6 proprietary analytical frameworks:
   API quality, integration ecosystem, and extensibility.
 
 It evaluates tech against business requirements, not engineering preferences.
-It doesn't recommend Kubernetes because it's "modern" — it recommends the
+It doesn't recommend Kubernetes because it's "modern", it recommends the
 simplest technology that meets the scalability/reliability requirements. It
 always calculates 5-year TCO, not just licensing cost. It always assesses
-lock-in risk — a vendor that's 20% cheaper but impossible to leave is more
+lock-in risk, a vendor that's 20% cheaper but impossible to leave is more
 expensive than one that's 20% pricier but easy to switch. (§4.4, Agent 7)
 
 Model Tier: STANDARD
 Tools: SearxNG, Jina, Obscura
-Sub-agents: Max 3 — vendor1 pricing/features, vendor2 pricing/features,
+Sub-agents: Max 3, vendor1 pricing/features, vendor2 pricing/features,
             developer reviews
 Output: TechnologyAssessment (vendor matrix, build-vs-buy, TCO analysis,
         architecture review, platform assessment, lock-in risk, confidence,
@@ -107,7 +107,7 @@ TECHNOLOGY_ANALYST_SPEC = AgentSpec(
                 "(scalability, reliability, maintainability, cost). Identify "
                 "architectural anti-patterns (e.g., distributed monolith, shared "
                 "database, chatty services) and single points of failure. The review "
-                "is against BUSINESS requirements, not engineering preferences — "
+                "is against BUSINESS requirements, not engineering preferences"
                 "if the business needs 99.9% uptime, the architecture must deliver "
                 "that, not 'we can add redundancy later.'"
             ),
@@ -120,7 +120,7 @@ TECHNOLOGY_ANALYST_SPEC = AgentSpec(
                 "Quantify technical debt using the SIG/TÜViT model or similar. "
                 "Categorize debt as intentional (deliberate trade-off) vs. "
                 "unintentional (negligence). Estimate remediation cost in engineer-"
-                "months and dollars. Prioritize debt by business impact — debt in "
+                "months and dollars. Prioritize debt by business impact, debt in "
                 "the payment system is higher priority than debt in the admin panel."
             ),
             inputs=["codebase_description", "architecture", "team_size", "business_priorities"],
@@ -133,7 +133,7 @@ TECHNOLOGY_ANALYST_SPEC = AgentSpec(
                 "scalability, support quality, ecosystem, lock-in risk, and "
                 "roadmap alignment. Each dimension scored 1-5. Produce a vendor "
                 "comparison matrix with weighted overall scores. The weights are "
-                "business-specific — a startup might weight pricing 3x while an "
+                "business-specific, a startup might weight pricing 3x while an "
                 "enterprise might weight support quality 3x."
             ),
             inputs=["vendor_list", "business_requirements", "weight_priorities"],
@@ -145,7 +145,7 @@ TECHNOLOGY_ANALYST_SPEC = AgentSpec(
                 "Structured analysis comparing build vs. buy on: time to market, "
                 "total cost of ownership (5-year), strategic differentiation, "
                 "maintenance burden, team capability, and opportunity cost. The "
-                "recommendation is not 'build is better' or 'buy is better' — it's "
+                "recommendation is not 'build is better' or 'buy is better', it's "
                 "the one that best fits the business context. If the feature is "
                 "strategic differentiation, build. If it's table stakes, buy."
             ),
@@ -157,7 +157,7 @@ TECHNOLOGY_ANALYST_SPEC = AgentSpec(
             description=(
                 "5-year total cost of ownership including licensing, infrastructure, "
                 "maintenance, integration, and switching costs. Not just licensing "
-                "cost — the full picture. A vendor that's 20% cheaper but impossible "
+                "cost, the full picture. A vendor that's 20% cheaper but impossible "
                 "to leave is more expensive than one that's 20% pricier but easy to "
                 "switch. Include switching cost as a hidden tax on the decision."
             ),
@@ -171,7 +171,7 @@ TECHNOLOGY_ANALYST_SPEC = AgentSpec(
                 "integration ecosystem, and extensibility. A platform is more "
                 "expensive upfront but enables future use cases. A point solution "
                 "is cheaper and faster but creates silos. The assessment depends on "
-                "the business roadmap — if multiple use cases are planned, platform. "
+                "the business roadmap, if multiple use cases are planned, platform. "
                 "If one use case, point solution."
             ),
             inputs=["vendor_platform", "use_case_count", "roadmap", "integration_requirements"],
@@ -179,7 +179,7 @@ TECHNOLOGY_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Technology Analyst — the specialist who evaluates "
+        "You are the HYPERION Technology Analyst, the specialist who evaluates "
         "technology stacks, assesses build-vs-buy decisions, maps digital "
         "transformation paths, and evaluates vendor platforms.\n\n"
         "Your proprietary frameworks:\n"
@@ -192,28 +192,28 @@ TECHNOLOGY_ANALYST_SPEC = AgentSpec(
         "4. Build-vs-buy: Time to market, 5-year TCO, strategic differentiation, "
         "maintenance burden, team capability, opportunity cost. Strategic = build, "
         "table stakes = buy.\n"
-        "5. TCO analysis: 5-year total cost — licensing + infrastructure + "
+        "5. TCO analysis: 5-year total cost, licensing + infrastructure + "
         "maintenance + integration + switching costs. Switching cost is a hidden tax.\n"
         "6. Platform assessment: Platform vs. point solution. API quality, ecosystem, "
         "extensibility. Multiple use cases → platform. One use case → point solution.\n\n"
         "Rules:\n"
         "- EVALUATE TECH AGAINST BUSINESS REQUIREMENTS, NOT ENGINEERING PREFERENCES. "
-        "Don't recommend Kubernetes because it's 'modern' — recommend the simplest "
+        "Don't recommend Kubernetes because it's 'modern', recommend the simplest "
         "technology that meets the scalability/reliability requirements.\n"
         "- ALWAYS calculate 5-year TCO, not just licensing cost.\n"
         "- ALWAYS assess lock-in risk. A vendor that's 20% cheaper but impossible "
         "to leave is more expensive than one that's 20% pricier but easy to switch.\n"
         "- Vendor scores must be 1-5 per dimension with justification.\n"
-        "- Build-vs-buy must consider opportunity cost — what are we NOT doing if "
+        "- Build-vs-buy must consider opportunity cost, what are we NOT doing if "
         "we build this?\n"
         "- Architecture review must identify SPECIFIC anti-patterns, not generic "
         "'could be better.' Name the pattern (distributed monolith, shared DB, etc.).\n"
-        "- TCO must include switching cost — the cost to leave the vendor.\n\n"
+        "- TCO must include switching cost, the cost to leave the vendor.\n\n"
         "You can spawn up to 3 sub-agents for parallel vendor data collection:\n"
         "- Sub-agent A: Scrape [vendor1] pricing and features (MICRO, Obscura)\n"
         "- Sub-agent B: Scrape [vendor2] pricing and features (MICRO, Obscura)\n"
         "- Sub-agent C: Find developer reviews for [technology] (FAST, SearxNG + Jina)\n\n"
-        "Your output is a TechnologyAssessment Pydantic model — structured, not free text."
+        "Your output is a TechnologyAssessment Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves technology selection, "
                      "build-vs-buy decisions, vendor evaluation, digital "
@@ -236,7 +236,7 @@ class TechnologyAnalyst(BaseAgent):
     paths, and evaluates vendor platforms. Scores vendors across 7 dimensions,
     calculates 5-year TCO, assesses lock-in risk, and reviews architectures
     against business requirements. Always recommends the simplest technology
-    that meets requirements — not the trendiest. (§4.4, Agent 7)
+    that meets requirements, not the trendiest. (§4.4, Agent 7)
 
     Lifecycle:
     1. Receives task from Engagement Director via AgentBus HANDOFF
@@ -351,7 +351,7 @@ class TechnologyAnalyst(BaseAgent):
             # handover via self._context.get("technology_category", ""), and a
             # question that is not phrased as a tech-selection problem carries
             # no such key. The templates below then interpolated "" and this
-            # agent searched for "vendor comparison 2024 2025" — a query with
+            # agent searched for "vendor comparison 2024 2025", a query with
             # no subject, which cannot return anything about the engagement.
             subject = resolve_subject(
                 self._context,
@@ -545,7 +545,7 @@ class TechnologyAnalyst(BaseAgent):
         Uses SearxNG to find: Stack Overflow discussions, GitHub issues,
         Reddit threads, Hacker News discussions, engineering blog posts
         about the technology. Developer sentiment is a leading indicator
-        of long-term viability — if developers hate a tool, it'll be
+        of long-term viability, if developers hate a tool, it'll be
         hard to hire and retain.
         """
         results: list[dict[str, Any]] = []
@@ -566,7 +566,7 @@ class TechnologyAnalyst(BaseAgent):
                 # Without a subject these become bare site names
                 # ("developer review reddit"), which return noise. Returning
                 # early is the honest outcome.
-                self._log("No resolvable technology subject — skipping practitioner-sentiment "
+                self._log("No resolvable technology subject, skipping practitioner-sentiment "
                     "search")
                 return results
 
@@ -579,7 +579,7 @@ class TechnologyAnalyst(BaseAgent):
             # ("... reddit", "... stack overflow", "... github",
             # "... hacker news"). Those are the right venues when the subject
             # is a software product, and the wrong ones when the engagement is
-            # about, say, national import dependence — a site-restricted query
+            # about, say, national import dependence, a site-restricted query
             # returns noise rather than nothing, which is worse. So the
             # site-anchored variants are only issued when the subject actually
             # looks like a software/technology product; otherwise we ask for
@@ -755,8 +755,7 @@ class TechnologyAnalyst(BaseAgent):
 
         Compares build vs. buy on: time to market, 5-year TCO, strategic
         differentiation, maintenance burden, team capability, and opportunity
-        cost. The recommendation is not 'build is better' or 'buy is better'
-        — it's the one that best fits the business context.
+        cost. The recommendation is not 'build is better' or 'buy is better', it's the one that best fits the business context.
         """
         vendor_summary = "\n".join(
             f"- {v.vendor_name}: Score {v.overall_score}, Pricing {v.pricing}/5, "
@@ -816,7 +815,7 @@ class TechnologyAnalyst(BaseAgent):
                 maintenance_burden_buy="Unknown",
                 team_capability_assessment="Unknown",
                 opportunity_cost="Unknown",
-                rationale="Build-vs-buy analysis failed — insufficient data",
+                rationale="Build-vs-buy analysis failed, insufficient data",
             )
 
         try:
@@ -848,7 +847,7 @@ class TechnologyAnalyst(BaseAgent):
                 maintenance_burden_buy="Parse error",
                 team_capability_assessment="Parse error",
                 opportunity_cost="Parse error",
-                rationale="Build-vs-buy analysis failed — parsing error",
+                rationale="Build-vs-buy analysis failed, parsing error",
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -865,7 +864,7 @@ class TechnologyAnalyst(BaseAgent):
         """Calculate 5-year TCO for each option.
 
         Includes licensing, infrastructure, maintenance, integration, and
-        switching costs. Not just licensing cost — the full picture.
+        switching costs. Not just licensing cost, the full picture.
         """
         vendor_summary = "\n".join(
             f"- {v.vendor_name}: Pricing {v.pricing}/5, {v.pricing_details or 'No pricing details'}"
@@ -884,7 +883,7 @@ class TechnologyAnalyst(BaseAgent):
             "2. Infrastructure costs (hosting, compute, storage)\n"
             "3. Maintenance costs (updates, patches, upgrades)\n"
             "4. Integration costs (connecting to existing systems)\n"
-            "5. Switching costs (cost to leave this option — the hidden tax)\n\n"
+            "5. Switching costs (cost to leave this option, the hidden tax)\n\n"
             "Return JSON:\n"
             "{\n"
             '  "tco_options": [{\n'
@@ -979,7 +978,7 @@ class TechnologyAnalyst(BaseAgent):
             "3. Maintainability: Code quality, documentation, team familiarity?\n"
             "4. Cost: Infrastructure cost at scale?\n"
             "5. Anti-patterns: Name SPECIFIC anti-patterns (distributed monolith, "
-            "shared database, chatty services, etc.) — not generic 'could be better'\n"
+            "shared database, chatty services, etc.), not generic 'could be better'\n"
             "6. Single points of failure: List each SPOF and its blast radius\n\n"
             "Return JSON:\n"
             "{\n"
@@ -1170,7 +1169,7 @@ class TechnologyAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 8-step methodology
+    # Main execution, the 8-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1195,7 +1194,7 @@ class TechnologyAnalyst(BaseAgent):
         self._engagement_id = engagement_id or self._engagement_id
         self._context = context or self._context
 
-        # Subscribe to bus — specialists need findings + requests
+        # Subscribe to bus, specialists need findings + requests
         self.subscribe_to_bus()
 
         await self._transition(

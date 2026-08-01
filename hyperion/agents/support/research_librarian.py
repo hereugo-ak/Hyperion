@@ -1,41 +1,41 @@
 """
-HYPERION Research Librarian — Agent 15, the vault manager and source organizer.
+HYPERION Research Librarian, Agent 15, the vault manager and source organizer.
 
 This is NOT a generic "search and organize" agent. This is a specialist with
 5 proprietary skills:
 
 - Keyword retrieval: Find relevant prior research using keyword matching with
-  relevance scoring (threshold: 0.15). No embeddings — lightweight and fast.
-  This is why it runs on MICRO tier (Gemma 4 31B) — it doesn't need strong
+  relevance scoring (threshold: 0.15). No embeddings, lightweight and fast.
+  This is why it runs on MICRO tier (Gemma 4 31B), it doesn't need strong
   reasoning, it needs fast, high-throughput keyword matching.
 - Source deduplication: Detect when multiple agents cite the same source and
-  deduplicate the source list. Not just "remove duplicates" — normalize URLs,
+  deduplicate the source list. Not just "remove duplicates", normalize URLs,
   detect same-domain citations, and merge source metadata.
 - Citation management: Format citations consistently (footnote style) and
   ensure every claim in the final report has a traceable source. Not just
-  "list sources" — format as numbered footnotes with author, title, URL,
+  "list sources", format as numbered footnotes with author, title, URL,
   accessed date, and credibility tier.
 - Cross-engagement knowledge linking: When a new engagement touches a topic
   researched in a prior engagement, link the prior research for the Synthesis
-  Lead to reference. This makes the system smarter over time — each
+  Lead to reference. This makes the system smarter over time, each
   engagement makes the next one faster and better.
 - Source credibility scoring: Score each source on credibility (peer-reviewed
   > government > industry report > news > blog > social media) and flag low-
-  credibility sources. Not just "this is a blog" — "this source is a blog
-  post with no author attribution and no citations — flagged as low
+  credibility sources. Not just "this is a blog""this source is a blog
+  post with no author attribution and no citations, flagged as low
   credibility."
 
 It runs on MICRO tier (Gemma 4 31B, 14.4K RPD) because it doesn't need strong
-reasoning — it needs fast, high-throughput keyword matching. It makes the
+reasoning, it needs fast, high-throughput keyword matching. It makes the
 system smarter over time by accumulating knowledge in the vault. Each
 engagement makes the next one faster and better because the Librarian can
 retrieve prior findings. (§4.5, Agent 15)
 
-Model Tier: MICRO (Gemma 4 31B — keyword matching and note management, not
+Model Tier: MICRO (Gemma 4 31B, keyword matching and note management, not
 complex reasoning)
-Tools: Second Brain (Obsidian vault) — read/write markdown notes, keyword
+Tools: Second Brain (Obsidian vault), read/write markdown notes, keyword
        retrieval, tag-based search, cross-note linking
-Sub-agents: 0 (this agent doesn't spawn sub-agents — it's a support agent)
+Sub-agents: 0 (this agent doesn't spawn sub-agents, it's a support agent)
 Output: SourceCollection (deduplicated sources with credibility scores, prior
         research links, formatted citations)
 
@@ -96,9 +96,9 @@ RESEARCH_LIBRARIAN_SPEC = AgentSpec(
             name="Keyword retrieval",
             description=(
                 "Find relevant prior research using keyword matching with "
-                "relevance scoring (threshold: 0.15). No embeddings — "
+                "relevance scoring (threshold: 0.15). No embeddings"
                 "lightweight and fast. This is why the Librarian runs on "
-                "MICRO tier — it doesn't need strong reasoning, it needs "
+                "MICRO tier, it doesn't need strong reasoning, it needs "
                 "fast, high-throughput keyword matching. Scores each note "
                 "on keyword overlap with the query and returns notes above "
                 "the 0.15 threshold."
@@ -111,7 +111,7 @@ RESEARCH_LIBRARIAN_SPEC = AgentSpec(
             description=(
                 "Detect when multiple agents cite the same source and "
                 "deduplicate the source list. Not just 'remove duplicates' "
-                "— normalize URLs (strip tracking params, resolve redirects), "
+                "normalize URLs (strip tracking params, resolve redirects), "
                 "detect same-domain citations, and merge source metadata. "
                 "Track duplicates_removed count."
             ),
@@ -125,7 +125,7 @@ RESEARCH_LIBRARIAN_SPEC = AgentSpec(
                 "every claim in the final report has a traceable source. "
                 "Format as numbered footnotes: [1] Author, 'Title', URL, "
                 "accessed DATE, credibility: TIER. Not just 'list sources' "
-                "— proper academic footnote format."
+                "proper academic footnote format."
             ),
             inputs=["deduplicated_sources", "claims_with_sources"],
             outputs=["formatted_citations", "uncovered_claims", "citation_index"],
@@ -135,7 +135,7 @@ RESEARCH_LIBRARIAN_SPEC = AgentSpec(
             description=(
                 "When a new engagement touches a topic researched in a prior "
                 "engagement, link the prior research for the Synthesis Lead "
-                "to reference. This makes the system smarter over time — "
+                "to reference. This makes the system smarter over time"
                 "each engagement makes the next one faster and better "
                 "because the Librarian can retrieve prior findings."
             ),
@@ -147,9 +147,9 @@ RESEARCH_LIBRARIAN_SPEC = AgentSpec(
             description=(
                 "Score each source on credibility (peer-reviewed > government "
                 "> industry report > news > blog > social media) and flag "
-                "low-credibility sources. Not just 'this is a blog' — 'this "
+                "low-credibility sources. Not just 'this is a blog''this "
                 "source is a blog post with no author attribution and no "
-                "citations — flagged as low credibility.' Track "
+                "citations, flagged as low credibility.' Track "
                 "sources_by_credibility counts."
             ),
             inputs=["sources", "source_metadata"],
@@ -157,12 +157,12 @@ RESEARCH_LIBRARIAN_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Research Librarian — the manager of the "
+        "You are the HYPERION Research Librarian, the manager of the "
         "Obsidian vault (Second Brain) and the source organization specialist.\n\n"
         "Your role:\n"
         "1. RETRIEVE prior research from the vault when a new engagement "
         "starts. Use keyword matching with a 0.15 relevance threshold. No "
-        "embeddings — lightweight and fast.\n"
+        "embeddings, lightweight and fast.\n"
         "2. DEDUPLICATE sources collected from all agents. Normalize URLs, "
         "detect same-domain citations, merge metadata.\n"
         "3. SCORE source credibility: peer-reviewed > government > industry "
@@ -171,12 +171,12 @@ RESEARCH_LIBRARIAN_SPEC = AgentSpec(
         "4. FORMAT citations as numbered footnotes for the final report.\n"
         "5. SAVE engagement findings to the vault for future reference.\n\n"
         "You run on MICRO tier (Gemma 4 31B) because you don't need strong "
-        "reasoning — you need fast, high-throughput keyword matching. You "
+        "reasoning, you need fast, high-throughput keyword matching. You "
         "make the system smarter over time by accumulating knowledge in the "
         "vault. Each engagement makes the next one faster and better.\n\n"
         "Rules:\n"
         "- KEYWORD MATCHING, NOT EMBEDDINGS. You use simple keyword overlap "
-        "scoring with a 0.15 threshold. This is deliberate — it's fast and "
+        "scoring with a 0.15 threshold. This is deliberate, it's fast and "
         "doesn't require a GPU.\n"
         "- URL NORMALIZATION: strip tracking parameters (utm_*, fbclid, "
         "gclid), resolve redirects, normalize trailing slashes. Two URLs "
@@ -189,9 +189,9 @@ RESEARCH_LIBRARIAN_SPEC = AgentSpec(
         "- SAVE TO VAULT: after each engagement, write a markdown note with "
         "the engagement topic, key findings, sources, and agents used. Tag "
         "it with relevant keywords for future retrieval.\n\n"
-        "You do NOT spawn sub-agents. You are a support agent — your job is "
+        "You do NOT spawn sub-agents. You are a support agent, your job is "
         "to serve other agents by managing the vault and organizing sources.\n\n"
-        "Your output is a SourceCollection Pydantic model — structured, not "
+        "Your output is a SourceCollection Pydantic model, structured, not "
         "free text."
     ),
     spawn_condition="Spawned at engagement start (to retrieve prior research) "
@@ -213,7 +213,7 @@ class ResearchLibrarian(BaseAgent):
 
     Manages the Obsidian vault (Second Brain), retrieves prior research,
     organizes sources, and links findings across engagements. Runs on MICRO
-    tier because it doesn't need strong reasoning — it needs fast, high-
+    tier because it doesn't need strong reasoning, it needs fast, high-
     throughput keyword matching. Makes the system smarter over time by
     accumulating knowledge in the vault. (§4.5, Agent 15)
 
@@ -272,7 +272,7 @@ class ResearchLibrarian(BaseAgent):
 
         # D5.1: inbound `prior_research` requests from other agents. The bus
         # handler used to read `topic`/`from_agent` off the payload into locals
-        # and drop them with the comment "Will be handled in run()" — but nothing
+        # and drop them with the comment "Will be handled in run()", but nothing
         # was stored, so run() had nothing to handle (ruff F841 caught both
         # locals). Step 2 of this agent's own documented methodology is "retrieve
         # relevant notes and return to requesting agent"; without a queue that
@@ -323,7 +323,7 @@ class ResearchLibrarian(BaseAgent):
             request_type = payload.get("request_type", "")
             if request_type == "prior_research":
                 # An agent is requesting prior research on a topic. Queue it so
-                # run() can actually answer (D5.1 — previously these two fields
+                # run() can actually answer (D5.1, previously these two fields
                 # were read into locals and discarded, so the request vanished).
                 self._pending_requests.append({
                     "topic": str(payload.get("topic", "")),
@@ -381,7 +381,7 @@ class ResearchLibrarian(BaseAgent):
         """Query the Obsidian vault for prior research on the engagement topic.
 
         Uses keyword matching with relevance scoring (threshold: 0.15). No
-        embeddings — lightweight and fast. This is why the Librarian runs on
+        embeddings, lightweight and fast. This is why the Librarian runs on
         MICRO tier.
         """
         prior_links: list[PriorResearchLink] = []
@@ -476,7 +476,7 @@ class ResearchLibrarian(BaseAgent):
             normalized = self._normalize_url(source.url)
 
             if normalized in seen_urls:
-                # Duplicate — merge metadata (keep higher credibility)
+                # Duplicate, merge metadata (keep higher credibility)
                 existing = seen_urls[normalized]
                 if self.CREDIBILITY_RANK.get(source.credibility, 0) > self.CREDIBILITY_RANK.get(existing.credibility, 0):
                     # Replace with higher-credibility version
@@ -542,7 +542,7 @@ class ResearchLibrarian(BaseAgent):
             source_lines = []
             for i, src in enumerate(sources[:50], 1):
                 source_lines.append(
-                    f"- [{i}] {src.title} — {src.url} "
+                    f"- [{i}] {src.title}, {src.url} "
                     f"(credibility: {src.credibility.value})"
                 )
 
@@ -639,7 +639,7 @@ tags: {", ".join(tags)}
     def _extract_keywords(self, topic: str) -> list[str]:
         """Extract keywords from the topic for vault search.
 
-        Simple keyword extraction — no embeddings, no NLP. Just split on
+        Simple keyword extraction, no embeddings, no NLP. Just split on
         whitespace and filter short words. This is deliberate: the Librarian
         runs on MICRO tier and uses lightweight keyword matching.
         """
@@ -661,7 +661,7 @@ tags: {", ".join(tags)}
         return keywords[:15]  # Top 15 keywords
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 7-step methodology
+    # Main execution, the 7-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -723,7 +723,7 @@ tags: {", ".join(tags)}
             )
 
         # D5.1: answer the agents that explicitly asked. The broadcast above goes
-        # to FINDINGS, which is a fan-out — it does not tell a requester "this is
+        # to FINDINGS, which is a fan-out, it does not tell a requester "this is
         # the reply to *your* question", and an agent awaiting a directed
         # response on REQUESTS would never see it. Now each queued request gets
         # an addressed reply, which is what Step 2 ("return to requesting agent")

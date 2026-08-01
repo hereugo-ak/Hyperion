@@ -1,4 +1,4 @@
-"""Delivery agents — presentation designer, render engine."""
+"""Delivery agents, presentation designer, render engine."""
 
 from hyperion.agents.delivery.presentation_designer import (
     PRESENTATION_DESIGNER_SPEC,

@@ -1,5 +1,5 @@
 """
-HYPERION Engagement Director — Agent 1, the partner.
+HYPERION Engagement Director, Agent 1, the partner.
 
 This is NOT a generic planner. This is the senior consulting partner who:
 - Identifies the key question behind the question
@@ -9,17 +9,17 @@ This is NOT a generic planner. This is the senior consulting partner who:
 
 The Engagement Director is the entry point for every engagement. It
 receives the business question, decomposes it into research domains,
-selects the right specialists (not all 12 — only the ones that matter
+selects the right specialists (not all 12, only the ones that matter
 for this question), builds a dependency graph, assigns model tiers
 based on complexity and budget, and dispatches to the AgentBus.
 
 During execution, it monitors the bus for ESCALATION messages and
-adapts the plan mid-flight — spawning new agents, rerouting
+adapts the plan mid-flight, spawning new agents, rerouting
 dependencies, or reallocating tiers. This is adaptive replanning
 (§10.2), and it is what makes HYPERION dynamic, not a fixed pipeline.
 
-Model Tier: STRONG (Nemotron 3 Super 120B — planning requires strong reasoning)
-Tools: All tools (read-only) — can see everything, modify nothing directly
+Model Tier: STRONG (Nemotron 3 Super 120B, planning requires strong reasoning)
+Tools: All tools (read-only), can see everything, modify nothing directly
 Output: WorkflowDAG (Pydantic model with all task nodes, dependencies, tiers)
 
 Methodology (§4.3, Agent 1):
@@ -35,12 +35,12 @@ Methodology (§4.3, Agent 1):
 10. Monitor execution, adapt if needed
 
 What makes it the best version of itself:
-It doesn't just "plan." It thinks like a senior consulting partner — it
+It doesn't just "plan." It thinks like a senior consulting partner, it
 identifies the key question behind the question, knows which frameworks
 apply, anticipates which findings will change the analysis direction,
 and adjusts the team composition in real-time. A generic planner says
 "research these 5 topics." The Engagement Director says "Market sizing
-is the critical path — start it first and give it STRONG tier.
+is the critical path, start it first and give it STRONG tier.
 Competitive intelligence can run in parallel at STANDARD. Financial
 depends on Market's TAM number, so queue it. If Regulatory finds a
 compliance barrier, reroute to add a Legal Risk sub-task."
@@ -94,7 +94,7 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
     display_name="Engagement Director",
     model_tier=ModelTier.STRONG,
     tools=[
-        # Orchestrator — needs SECOND_BRAIN for prior research context, DEEP_SEARCH for initial
+        # Orchestrator, needs SECOND_BRAIN for prior research context, DEEP_SEARCH for initial
         # scoping
         ToolName.SECOND_BRAIN,
         ToolName.DEEP_SEARCH,
@@ -108,7 +108,7 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
                 "determines which specialists to spawn. A go/no-go question "
                 "needs Market + Financial + Risk. A comparison needs all options "
                 "analyzed side-by-side. A forecast needs Market + Innovation + "
-                "Technology. This is not a guess — it is a structured "
+                "Technology. This is not a guess, it is a structured "
                 "classification that maps question types to agent rosters."
             ),
             inputs=["business_question", "conversation_context"],
@@ -131,7 +131,7 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
             name="Agent Selection",
             description=(
                 "Chooses which of the 12 specialists to activate based on the "
-                "question. Not all 12 are spawned every time — that would waste "
+                "question. Not all 12 are spawned every time, that would waste "
                 "resources. A pricing question needs Financial + Market + "
                 "Consumer, not Regulatory + M&A. A market entry question needs "
                 "Market + Competitive + Financial + Risk + Consumer. Selection "
@@ -159,7 +159,7 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
                 "unexpected regulatory barrier that changes the market sizing'), "
                 "the Engagement Director can spawn a new agent (Regulatory) "
                 "mid-engagement and reroute the DAG. This is not error handling "
-                "— it is strategic adaptation. The Director evaluates the "
+                "it is strategic adaptation. The Director evaluates the "
                 "escalation, determines if it changes the analysis direction, "
                 "and adjusts the plan accordingly."
             ),
@@ -182,7 +182,7 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
     ],
     system_prompt=(
         "You are the Engagement Director at HYPERION Consulting, a premium AI "
-        "consulting firm. You are the partner — the one who receives the "
+        "consulting firm. You are the partner, the one who receives the "
         "question, decomposes it, selects the team, and orchestrates the "
         "engagement.\n\n"
         "You are NOT a generic planner. You think like a senior consulting "
@@ -202,17 +202,17 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
         "know that regulatory barriers can invalidate market sizing. You know "
         "that competitive moats can make financial models irrelevant. You "
         "build the DAG so that if a critical finding emerges, the team can "
-        "adapt — not start over.\n\n"
+        "adapt, not start over.\n\n"
         "4. Adjust team composition in real-time. If the Regulatory Analyst "
         "finds a compliance barrier, you spawn the Regulatory Analyst (even "
         "if it wasn't in the original plan) and reroute the Financial Analyst "
         "to include compliance costs. This is adaptive replanning, not error "
         "handling.\n\n"
-        "5. Allocate budget deliberately. Market sizing is the critical path — "
+        "5. Allocate budget deliberately. Market sizing is the critical path"
         "give it STRONG tier. Competitive intelligence can run at STANDARD. "
         "Keyword expansion can use MICRO. Synthesis gets DEEP. The 20% reserve "
-        "is for the Quality Gate and final render — never spend it on research.\n\n"
-        "Your output is a WorkflowDAG — a typed Pydantic model with task nodes, "
+        "is for the Quality Gate and final render, never spend it on research.\n\n"
+        "Your output is a WorkflowDAG, a typed Pydantic model with task nodes, "
         "dependencies, tier assignments, and budget estimates. This is the "
         "blueprint for the entire engagement. Every task has a specific agent, "
         "a specific question, a specific tier, and specific dependencies. "
@@ -222,19 +222,19 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
         "wrong team, or missed a critical dependency. That is the weight of "
         "being the Engagement Director."
     ),
-    spawn_condition="Always active — the Engagement Director is the first agent initialized and the last to shut down.",
+    spawn_condition="Always active, the Engagement Director is the first agent initialized and the last to shut down.",
     max_sub_agents=0,  # Director does not spawn sub-agents directly
     output_model="WorkflowDAG",
 )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# W-06: Subject ontology + method eligibility — the roster's second axis
+# W-06: Subject ontology + method eligibility, the roster's second axis
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # The roster used to be a function of question_type ALONE: QUESTION_TYPE_AGENTS
 # put FINANCIAL_ANALYST in all six question types, so "Should India increase
-# manufacturing?" got a DCF analyst — a firm-level method aimed at a nation
+# manufacturing?" got a DCF analyst, a firm-level method aimed at a nation
 # state, which then spent three retrieval rounds discovering it had nothing to
 # retrieve (RC-6: six empty chapters).
 #
@@ -243,7 +243,7 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
 # subject class that decides which METHODS are meaningful. The roster is now
 # gated by method eligibility: each specialist declares its analytical methods
 # and the subject classes each method applies to. An agent with no eligible
-# method for the classified subject class is not dispatched — and the
+# method for the classified subject class is not dispatched, and the
 # exclusion is RECORDED with its reason, because the methodology section
 # (W-10) and the report's scope note must state that the omission was
 # deliberate, and the audit trail is what makes a future DCF-on-a-country
@@ -251,10 +251,10 @@ ENGAGEMENT_DIRECTOR_SPEC = AgentSpec(
 #
 # This is deliberately method eligibility, not an agent-exclusion table:
 # FINANCIAL_ANALYST retains DCF for COMPANY and gains fiscal-cost and
-# public-investment analysis for POLICY and NATION_OR_REGION — it is never
+# public-investment analysis for POLICY and NATION_OR_REGION, it is never
 # "dropped"; some of its methods simply do not apply to some subjects.
 
-# The pool from which every roster is drawn — question type no longer picks
+# The pool from which every roster is drawn, question type no longer picks
 # agents; it only shapes priority and tiers downstream.
 _SPECIALIST_POOL: tuple[AgentName, ...] = (
     AgentName.MARKET_ANALYST,
@@ -285,7 +285,7 @@ AGENT_METHODS: dict[AgentName, dict[str, frozenset[SubjectClass]]] = {
     },
     AgentName.COMPETITIVE_INTEL: {
         # a competitor matrix requires identifiable competing FIRMS. Nations
-        # compete too, but that comparison is jurisdiction/policy work — it
+        # compete too, but that comparison is jurisdiction/policy work, it
         # belongs to regulatory_analyst and strategy_analyst, not to an
         # agent whose craft is profiling firms.
         "competitor matrix": frozenset({SubjectClass.COMPANY, SubjectClass.MARKET}),
@@ -378,8 +378,8 @@ class SubjectClassAbstain(RuntimeError):
 
     Raised by the planning path when the classifier abstains and no
     interactive user is available to answer a clarifying question. The
-    engagement must fail at PLANNING time — before a single token is spent
-    on dispatch — rather than guess a subject class and staff the roster
+    engagement must fail at PLANNING time, before a single token is spent
+    on dispatch, rather than guess a subject class and staff the roster
     on the guess. A guessed subject class is exactly the bug this work item
     removes.
     """
@@ -401,7 +401,7 @@ class SubjectClassAbstain(RuntimeError):
 
 
 # Below this confidence the Director must not proceed on the classifier's
-# guess — it asks one clarifying question (interactive) or abstains-and-fails
+# guess, it asks one clarifying question (interactive) or abstains-and-fails
 # (scripted). Never guess: a wrong subject class staffs the wrong roster.
 SUBJECT_CLASS_CONFIDENCE_THRESHOLD: float = 0.6
 
@@ -417,7 +417,7 @@ def eligible_methods(agent: AgentName, subject_class: SubjectClass) -> list[str]
         if subject_class in classes
     ]
 
-# ── Keyword fallbacks — the LAST resort, never the decision ──────────────────
+# ── Keyword fallbacks, the LAST resort, never the decision ──────────────────
 #
 # These lists used to run UNCONDITIONALLY, forcing specialists onto the roster
 # before the LLM was even asked. That is backwards. The Director already makes
@@ -427,7 +427,7 @@ def eligible_methods(agent: AgentName, subject_class: SubjectClass) -> list[str]
 #
 # A keyword list cannot tell "we have no plans to acquire anyone" from "we are
 # evaluating an acquisition", and it silently misses every phrasing its author
-# did not think of — "tuck-in", "roll-up", "bolt-on", "carve-out" are all
+# did not think of"tuck-in""roll-up""bolt-on""carve-out" are all
 # ordinary M&A vocabulary and none of them contain "acqui" or "merger".
 #
 # They are therefore consulted ONLY when the LLM decomposition fails outright.
@@ -453,7 +453,7 @@ _TRIGGER_FALLBACKS: tuple[tuple[list[str], AgentName], ...] = (
 
 
 class EngagementDirector(BaseAgent):
-    """Agent 1: The Engagement Director — the partner.
+    """Agent 1: The Engagement Director, the partner.
 
     This is the entry point for every engagement. It decomposes the
     question, selects specialists, builds the workflow DAG, and
@@ -480,7 +480,7 @@ class EngagementDirector(BaseAgent):
         self._max_escalation_evaluations: int = 12
 
     # ─────────────────────────────────────────────────────────────────────
-    # Bus message handling — the Director is omniscient
+    # Bus message handling, the Director is omniscient
     # ─────────────────────────────────────────────────────────────────────
 
     async def _handle_bus_message(self, msg: Any) -> None:
@@ -500,7 +500,7 @@ class EngagementDirector(BaseAgent):
             await self._handle_status_update(msg)
 
     async def _handle_escalation(self, msg: Any) -> None:
-        """Handle an escalation from an agent — adaptive replanning (§10.2).
+        """Handle an escalation from an agent, adaptive replanning (§10.2).
 
         When an agent publishes an ESCALATION, the Director evaluates:
         1. Does this change the analysis direction?
@@ -580,7 +580,7 @@ class EngagementDirector(BaseAgent):
         """Use LLM to evaluate an escalation and determine the adaptation.
 
         This is NOT a generic "handle the error" function. It is strategic
-        adaptation — the Director asks the LLM whether this finding changes
+        adaptation, the Director asks the LLM whether this finding changes
         the analysis direction and what adjustments to make.
         """
         prompt = (
@@ -625,7 +625,7 @@ class EngagementDirector(BaseAgent):
             return None
 
     async def _apply_adaptation(self, adaptation: dict[str, Any]) -> None:
-        """Apply an adaptation to the current DAG — adaptive replanning (§10.2)."""
+        """Apply an adaptation to the current DAG, adaptive replanning (§10.2)."""
         if self._current_dag is None:
             return
 
@@ -685,7 +685,7 @@ class EngagementDirector(BaseAgent):
                 pass
 
     async def _handle_status_update(self, msg: Any) -> None:
-        """Handle a status update from an agent — update task status in DAG."""
+        """Handle a status update from an agent, update task status in DAG."""
         if self._current_dag is None:
             return
 
@@ -713,14 +713,14 @@ class EngagementDirector(BaseAgent):
                 task.error = payload.get("detail", "")
 
     # ─────────────────────────────────────────────────────────────────────
-    # Second Brain query — prior research (§12.8)
+    # Second Brain query, prior research (§12.8)
     # ─────────────────────────────────────────────────────────────────────
 
     async def _query_second_brain(self, question: str) -> str:
         """Query the Second Brain vault for prior research on this topic.
 
         HYPERION is a learning system (§12.8). The Director doesn't start
-        from scratch — it checks the vault for prior engagements, market
+        from scratch, it checks the vault for prior engagements, market
         research, and competitor profiles that are relevant to this question.
         This context is passed to specialists as starting context.
         """
@@ -745,7 +745,7 @@ class EngagementDirector(BaseAgent):
     def _classify_question_heuristic(self, question: str) -> list[QuestionType]:
         """Heuristic pre-classification before LLM refinement.
 
-        This is NOT the final classification — it's a starting point that
+        This is NOT the final classification, it's a starting point that
         the LLM refines. The heuristic catches obvious cases quickly
         without burning an LLM call for trivial classifications.
         """
@@ -789,7 +789,7 @@ class EngagementDirector(BaseAgent):
         return types
 
     def _trigger_fallback_agents(self, question: str) -> list[AgentName]:
-        """Keyword-implied specialists — only for use when the LLM call fails.
+        """Keyword-implied specialists, only for use when the LLM call fails.
 
         See the note on MA_TRIGGERS. This is deliberately NOT called on the
         happy path: substring matching cannot read intent, and running it
@@ -809,48 +809,45 @@ class EngagementDirector(BaseAgent):
 
         THE DECOMPOSING AGENT OWNS THE SCOPE. This method is where the
         question is first read and broken down, so it is also where the
-        question's *scope* — which country it concerns and which industry —
-        is established. Everything downstream consumes that decision instead
+        question's *scope*, which country it concerns and which industry, is established. Everything downstream consumes that decision instead
         of re-deriving it.
 
         This is a correction of a real architectural inversion. Geography used
         to be decided further down the pipeline by a regex gazetteer scanning
-        the raw question, while the Director — which was already spending an
-        LLM call on this very question — was never asked. The gazetteer then
+        the raw question, while the Director, which was already spending an
+        LLM call on this very question, was never asked. The gazetteer then
         matched the English pronoun "us" in "help us decide whether to enter
         India" and anchored the entire engagement to the United States. No
         word list can be trusted with a judgement like that; a model that has
         read the sentence can.
 
         The LLM now returns, in one call:
-        1. question_types      — the grammatical classification
-        2. subject_class       — W-06 second axis: what the question is ABOUT
+        1. question_types, the grammatical classification
+        2. subject_class, W-06 second axis: what the question is ABOUT
                                  (company/nation_or_region/technology/policy/
-                                 market/person_or_org), with a confidence —
-                                 the roster is gated on this, never on
+                                 market/person_or_org), with a confidence, the roster is gated on this, never on
                                  question type alone
-        3. selected_agents     — the LLM's proposed roster, INCLUDING any
+        3. selected_agents, the LLM's proposed roster, INCLUDING any
                                  specialist implied by the question's
-                                 substance (M&A, ESG, regulatory) — a PROPOSAL
+                                 substance (M&A, ESG, regulatory), a PROPOSAL
                                  that the subject-class gate then filters by
                                  method eligibility
-        4. key_question        — the question behind the question
-        5. geographies         — jurisdictions the question is about, primary
+        4. key_question, the question behind the question
+        5. geographies, jurisdictions the question is about, primary
                                  first, or [] if it names none
-        6. subject             — the industry/sector/topic
-        7. research_domains    — the decomposition proper
-        8. critical_path       — sequencing
+        6. subject, the industry/sector/topic
+        7. research_domains, the decomposition proper
+        8. critical_path, sequencing
 
         Geography and subject are recorded on ``self._llm_geographies`` and
         ``self._llm_subject``; subject class on ``self._llm_subject_class``
-        for ``_build_dag`` to publish on the DAG. Every roster decision —
-        dispatched or excluded, with its reason — is recorded on
+        for ``_build_dag`` to publish on the DAG. Every roster decision, dispatched or excluded, with its reason, is recorded on
         ``self._roster_decisions`` (W-06; consumed by W-10's methodology
         section and the report scope note).
 
         When subject-class confidence is below the threshold the Director
         does NOT guess: it asks one clarifying question (interactive shell)
-        or raises SubjectClassAbstain (scripted run) — a thirty second
+        or raises SubjectClassAbstain (scripted run), a thirty second
         clarification is cheaper than a thirty minute engagement that
         produces six empty chapters.
 
@@ -860,7 +857,7 @@ class EngagementDirector(BaseAgent):
         heuristic_str = ", ".join(qt.value for qt in heuristic_types)
 
         # Reset per-call so a failed decomposition cannot silently reuse the
-        # scope of the previous engagement — that is exactly the kind of leak
+        # scope of the previous engagement, that is exactly the kind of leak
         # that produces a confident report about the wrong country.
         self._llm_geographies: list[str] = []
         self._llm_subject: str = ""
@@ -888,7 +885,7 @@ class EngagementDirector(BaseAgent):
             f"Return a JSON object with:\n"
             f"  - question_types: array of types (from: go_no_go, comparison, "
             f"forecast, diagnostic, optimization, general)\n"
-            f"  - selected_agents: array of agent names from the list above — "
+            f"  - selected_agents: array of agent names from the list above, "
             f"select ALL specialists that are relevant (typically 8-12 for a "
             f"comprehensive analysis; never fewer than 6)\n"
             f"  - key_question: the real question behind the question (1-2 sentences)\n"
@@ -896,10 +893,10 @@ class EngagementDirector(BaseAgent):
             f"actually about, MOST IMPORTANT FIRST. Use canonical names "
             f"(\"India\", \"US\", \"EU\", \"China\", \"Brazil\"). Include a country "
             f"ONLY if the question is about it. Return [] if the question names "
-            f"no jurisdiction — [] is a correct and useful answer meaning "
+            f"no jurisdiction, [] is a correct and useful answer meaning "
             f"\"analyse without a country filter\". NEVER guess or default to "
             f"\"US\"/\"EU\": a wrong country makes the entire report wrong. "
-            f"Beware the English pronoun \"us\" (as in \"help us decide\") — that "
+            f"Beware the English pronoun \"us\" (as in \"help us decide\"), that "
             f"is NOT the United States.\n"
             f"  - subject: the industry, sector or topic the question is about, "
             f"as a short noun phrase of 1-5 words (e.g. \"electronics imports\", "
@@ -912,13 +909,13 @@ class EngagementDirector(BaseAgent):
             f"tariff, subsidy, regulation or scheme), market (a market or "
             f"industry as a whole), person_or_org (an individual, regulator "
             f"or institution). This is the decision that gates which "
-            f"analytical methods are meaningful — a DCF values a firm, it "
+            f"analytical methods are meaningful, a DCF values a firm, it "
             f"cannot value a nation state. If the question is ambiguous, "
             f"choose the best fit and lower your confidence; NEVER omit the "
             f"field.\n"
             f"  - subject_class_confidence: your confidence in subject_class, "
             f"a number 0.0-1.0. Below 0.6 the Director will ask the user a "
-            f"clarifying question rather than proceed on your guess — an "
+            f"clarifying question rather than proceed on your guess, an "
             f"honest low number is a correct and useful answer.\n"
             f"  - research_domains: array of {{name, question, agent, priority}} objects "
             f"(8-12 domains, each with a specific question and assigned agent)\n"
@@ -962,7 +959,7 @@ class EngagementDirector(BaseAgent):
 
             # No unconditional keyword injection here. The LLM's roster is a
             # PROPOSAL: W-06 gates it below by method eligibility against the
-            # subject class — a firm-level method is never aimed at a nation
+            # subject class, a firm-level method is never aimed at a nation
             # state, however strongly the decomposition asks for it. Keyword
             # triggers only rescue an EMPTY proposal.
             if not selected_agents:
@@ -979,7 +976,7 @@ class EngagementDirector(BaseAgent):
             # evidence that the model is wrong.
             #
             # The deterministic scan is consulted ONLY if the Director
-            # returned nothing at all — a partial JSON object is common enough
+            # returned nothing at all, a partial JSON object is common enough
             # that losing the country anchor to it is a real risk. Even then
             # it only DETECTS what the user wrote; [] stays [].
             geographies = canonicalize_geographies(data.get("geographies"))
@@ -994,12 +991,12 @@ class EngagementDirector(BaseAgent):
             subject = data.get("subject") or data.get("industry") or ""
             self._llm_subject = self._clean_subject(subject)
 
-            # ── W-06: the second axis — subject class, with an abstain path ──
+            # ── W-06: the second axis, subject class, with an abstain path ──
             #
             # The roster below is gated on this classification, so accepting
             # it on low confidence would staff the engagement on a guess.
             # Below the threshold the Director asks one clarifying question
-            # when a user is present, and abstains-and-fails when it is not —
+            # when a user is present, and abstains-and-fails when it is not, 
             # never guesses.
             subject_class, sc_confidence = self._parse_subject_class(data)
             self._llm_subject_class = subject_class
@@ -1011,7 +1008,7 @@ class EngagementDirector(BaseAgent):
 
             # ── W-06: the roster is gated by method eligibility ──────────
             #
-            # Every agent considered is recorded — dispatched WITH its
+            # Every agent considered is recorded, dispatched WITH its
             # eligible methods, or excluded WITH its reason. The exclusion
             # record is not optional: it is the audit trail that makes the
             # omission deliberate and quotable in the methodology section.
@@ -1035,13 +1032,13 @@ class EngagementDirector(BaseAgent):
 
         Reached when the LLM is unreachable, rate-limited, or returns
         unparseable content. Before W-06 this method staffed the engagement
-        from the single-axis QUESTION_TYPE_AGENTS table — knowingly weak,
+        from the single-axis QUESTION_TYPE_AGENTS table, knowingly weak,
         but survivable, because question type only shaped the roster.
 
         W-06 changed the stakes: the roster is now gated by SUBJECT CLASS,
         and this path has no subject class. Guessing one here (or worse,
         defaulting to COMPANY) would dispatch firm-level methods at nation
-        states — precisely the DCF-on-a-country failure this work item
+        states, precisely the DCF-on-a-country failure this work item
         removes, dressed up as a resilience feature. The documented
         behaviour for scripted runs is therefore abstain-and-fail: the
         engagement stops at planning time, before a single dispatch token
@@ -1066,7 +1063,7 @@ class EngagementDirector(BaseAgent):
     def _parse_subject_class(data: dict[str, Any]) -> tuple[SubjectClass, float]:
         """Read the LLM's subject classification, tolerating its sloppiness.
 
-        Unknown or misspelled class values do not raise — they collapse to
+        Unknown or misspelled class values do not raise, they collapse to
         the default class with zero confidence, which routes to the abstain
         path. That is deliberate: an unparseable classification IS low
         confidence, and the low-confidence path is already the safe one.
@@ -1091,16 +1088,16 @@ class EngagementDirector(BaseAgent):
     def _resolve_low_confidence_subject(
         self, question: str, confidence: float, raw: str
     ) -> SubjectClass:
-        """The abstain path: clarify with the user, or fail — never guess (W-06).
+        """The abstain path: clarify with the user, or fail, never guess (W-06).
 
         Interactive shell: one clarifying question, the user's own words
-        decide the subject class. Scripted run: SubjectClassAbstain — the
+        decide the subject class. Scripted run: SubjectClassAbstain, the
         engagement dies at planning time, before any dispatch token is
         spent, rather than proceed on a guessed subject class. A guessed
         subject class is how a DCF ends up aimed at a nation state.
         """
         if sys.stdin.isatty():
-            # Exactly one clarifying question — thirty seconds of the user's
+            # Exactly one clarifying question, thirty seconds of the user's
             # time against thirty minutes of an engagement with empty
             # chapters.
             print(
@@ -1139,7 +1136,7 @@ class EngagementDirector(BaseAgent):
     ) -> list[AgentName]:
         """Filter the proposed roster by method eligibility, recording every call.
 
-        The roster is a function of (question_type, subject_class) — this
+        The roster is a function of (question_type, subject_class), this
         method is the subject-class half. Each specialist is dispatched only
         if at least one of its declared methods applies to the classified
         subject class, and the decision is recorded either way:
@@ -1147,7 +1144,7 @@ class EngagementDirector(BaseAgent):
           - dispatched:    (agent, eligible_methods, dispatched=True, reason)
           - excluded:      (agent, [], dispatched=False, reason)
           - added (empty proposal): recorded with the reason that the LLM
-            proposed no eligible specialist — visibility, not silence.
+            proposed no eligible specialist, visibility, not silence.
 
         Every dispatched agent is guaranteed to carry at least one eligible
         method; _build_dag asserts that invariant again before the DAG
@@ -1184,7 +1181,7 @@ class EngagementDirector(BaseAgent):
                 ))
 
         # Pad from the pool when the (filtered) proposal is thin. Padding is
-        # itself subject-gated — the pool never smuggles a firm-level-only
+        # itself subject-gated, the pool never smuggles a firm-level-only
         # agent past the gate the way QUESTION_TYPE_AGENTS used to.
         if len(roster) < min_agents:
             for agent in _SPECIALIST_POOL:
@@ -1277,13 +1274,13 @@ class EngagementDirector(BaseAgent):
         5. Estimates LLM calls and token consumption
         6. Returns a complete WorkflowDAG
 
-        The DAG is NOT a fixed pipeline — it is custom-built for this
+        The DAG is NOT a fixed pipeline, it is custom-built for this
         specific question. No two DAGs are identical.
         """
         # ── W-06 sanity assertion ─────────────────────────────────────────
         # Every dispatched specialist must have at least one declared method
         # eligible for the classified subject class. If this fails, the
-        # subject gate was bypassed — fail at PLANNING time, before any
+        # subject gate was bypassed, fail at PLANNING time, before any
         # tokens are spent, rather than discover empty chapters at delivery.
         subject_class = getattr(self, "_llm_subject_class", None)
         if isinstance(subject_class, SubjectClass):
@@ -1313,7 +1310,7 @@ class EngagementDirector(BaseAgent):
                 except (ValueError, TypeError):
                     agent_name = AgentName.MARKET_ANALYST
 
-                # Coerce priority to int — LLMs sometimes return "high"/"low"
+                # Coerce priority to int, LLMs sometimes return "high"/"low"
                 raw_priority = domain_data.get("priority", 3)
                 if isinstance(raw_priority, int):
                     priority = raw_priority
@@ -1359,7 +1356,7 @@ class EngagementDirector(BaseAgent):
         # Wave 6: Render Engine (depends on Presentation Designer)
 
         # D5.1: a `wave_0_agents = [...]` list of 11 AgentNames sat here,
-        # assigned and never read (ruff F841). It was not merely unused — it was
+        # assigned and never read (ruff F841). It was not merely unused, it was
         # actively *misleading*: it listed MA_ANALYST and STRATEGY_ANALYST as
         # wave-0 (independent) agents, while the dependency edges built below
         # give M&A a dependency on Financial and Strategy dependencies on Market
@@ -1367,7 +1364,7 @@ class EngagementDirector(BaseAgent):
         # reader trusting it would conclude the graph was wrong.
         #
         # Waves are not declared anywhere; they *emerge* from the `dependencies`
-        # edges assigned per task below, which is the correct design — one source
+        # edges assigned per task below, which is the correct design, one source
         # of truth. The comment block above documents the resulting shape; this
         # list pretended to implement it and did not.
 
@@ -1417,7 +1414,7 @@ class EngagementDirector(BaseAgent):
         # Add support agents: Fact Checker, Synthesis Lead, Quality Gate
         # These are always part of the engagement
 
-        # Synthesis Lead — depends on all specialist tasks
+        # Synthesis Lead, depends on all specialist tasks
         specialist_task_ids = [t.id for t in tasks]
         synthesis_task = TaskNode(
             id="task_synthesis_lead",
@@ -1431,7 +1428,7 @@ class EngagementDirector(BaseAgent):
         )
         tasks.append(synthesis_task)
 
-        # Fact Checker — depends on all specialist tasks (runs in parallel with Synthesis)
+        # Fact Checker, depends on all specialist tasks (runs in parallel with Synthesis)
         fact_check_task = TaskNode(
             id="task_fact_checker",
             agent=AgentName.FACT_CHECKER,
@@ -1444,7 +1441,7 @@ class EngagementDirector(BaseAgent):
         )
         tasks.append(fact_check_task)
 
-        # Quality Gate — depends on Synthesis + Fact Checker
+        # Quality Gate, depends on Synthesis + Fact Checker
         quality_task = TaskNode(
             id="task_quality_gate",
             agent=AgentName.QUALITY_GATE,
@@ -1460,15 +1457,15 @@ class EngagementDirector(BaseAgent):
         # W-03: delivery chain re-pointed so the writer runs LAST and every
         # input exists before the stage that consumes it:
         #   Data Visualizer  (charts exist as FILES before any HTML references
-        #                     them — previously the designer staged HTML that
+        # them, previously the designer staged HTML that
         #                     pointed at chart files the visualizer had not
         #                     rendered yet)
         #   Presentation Designer  (consumes charts, stages HTML + layout plan
-        #                     ONLY — W-03 removes its PDF authorship)
+        # ONLY, W-03 removes its PDF authorship)
         #   Render Engine    (the single PDF writer; reads the staged HTML,
         #                     renders, audits, finalises)
 
-        # Data Visualizer — depends on Quality Gate (chart data comes from the
+        # Data Visualizer, depends on Quality Gate (chart data comes from the
         # FinalReport, gated by quality)
         viz_task = TaskNode(
             id="task_data_visualizer",
@@ -1482,7 +1479,7 @@ class EngagementDirector(BaseAgent):
         )
         tasks.append(viz_task)
 
-        # Presentation Designer — depends on Quality Gate + Data Visualizer
+        # Presentation Designer, depends on Quality Gate + Data Visualizer
         design_task = TaskNode(
             id="task_presentation_designer",
             agent=AgentName.PRESENTATION_DESIGNER,
@@ -1495,7 +1492,7 @@ class EngagementDirector(BaseAgent):
         )
         tasks.append(design_task)
 
-        # Render Engine — depends on Presentation Designer (the ONLY writer)
+        # Render Engine, depends on Presentation Designer (the ONLY writer)
         render_task = TaskNode(
             id="task_render_engine",
             agent=AgentName.RENDER_ENGINE,
@@ -1539,7 +1536,7 @@ class EngagementDirector(BaseAgent):
             subject=str(getattr(self, "_llm_subject", "") or ""),
             # W-06: the subject class the roster was gated on, and the full
             # recorded roster decisions (dispatched AND excluded, with
-            # reasons) — the methodology section (W-10) and the report's
+            # reasons), the methodology section (W-10) and the report's
             # scope note quote these verbatim.
             subject_class=(
                 self._llm_subject_class.value
@@ -1557,7 +1554,7 @@ class EngagementDirector(BaseAgent):
     def _assign_tier(self, agent: AgentName, question_types: list[QuestionType]) -> ModelTier:
         """Assign a model tier to a task based on the agent and question type.
 
-        This is budget allocation (Skill 6). The tier is NOT random — it
+        This is budget allocation (Skill 6). The tier is NOT random, it
         is based on:
         - The agent's default tier (from ARCHITECTURE.md)
         - The question complexity (GO_NO_GO needs higher tiers than GENERAL)
@@ -1593,7 +1590,7 @@ class EngagementDirector(BaseAgent):
         """Estimate LLM calls for a task based on the agent's methodology.
 
         Each agent's methodology has a specific number of steps, each
-        potentially requiring an LLM call. This is NOT a guess — it's
+        potentially requiring an LLM call. This is NOT a guess, it's
         based on the agent's documented methodology in ARCHITECTURE.md.
         """
         estimates: dict[AgentName, int] = {
@@ -1631,7 +1628,7 @@ class EngagementDirector(BaseAgent):
         return calls * (input_per_call + output_per_call)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 10-step methodology
+    # Main execution, the 10-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(self, question: str, conversation_context: str = "") -> WorkflowDAG:
@@ -1651,11 +1648,11 @@ class EngagementDirector(BaseAgent):
         9. Dispatch to AgentBus
         10. Monitor execution, adapt if needed
 
-        Returns the WorkflowDAG — the blueprint for the engagement.
+        Returns the WorkflowDAG, the blueprint for the engagement.
         """
         engagement_id = f"eng_{uuid.uuid4().hex[:12]}"
 
-        # Subscribe to ALL bus channels — the Director is omniscient (§4.8)
+        # Subscribe to ALL bus channels, the Director is omniscient (§4.8)
         self.subscribe_to_bus()
 
         # Step 1: Receive question + conversation context

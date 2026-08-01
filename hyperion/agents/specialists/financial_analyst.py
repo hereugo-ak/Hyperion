@@ -1,5 +1,5 @@
 """
-HYPERION Financial Analyst — Agent 5, the financial modeling specialist.
+HYPERION Financial Analyst, Agent 5, the financial modeling specialist.
 
 This is NOT a generic "analyze the finances" agent. This is a specialist
 with 7 proprietary analytical frameworks:
@@ -19,15 +19,14 @@ with 7 proprietary analytical frameworks:
   margin of safety.
 
 It NEVER reports a single valuation number. It always reports a range
-with sensitivity tables. It always identifies the key value drivers —
-the 2-3 assumptions that account for 80% of the valuation variance. It
+with sensitivity tables. It always identifies the key value drivers, the 2-3 assumptions that account for 80% of the valuation variance. It
 always cross-validates DCF with comparable company analysis. If the DCF
 says $100M but comparables say $50M, it flags the discrepancy and
 explains it. (§4.4, Agent 5)
 
 Model Tier: STANDARD+ (STANDARD for research, STRONG for modeling)
 Tools: Alpha Vantage, FRED, SearxNG, Jina
-Sub-agents: Max 3 — financial statements, margin benchmarks, cost structure
+Sub-agents: Max 3, financial statements, margin benchmarks, cost structure
 Output: FinancialAnalysis (DCF, comparables, unit economics, sensitivity,
         scenarios, break-even, key value drivers, confidence, sources)
 
@@ -102,7 +101,7 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
                 "calculation (cost of equity via CAPM, cost of debt after-tax, "
                 "capital structure weights), (5) sensitivity table on discount rate "
                 "× terminal growth rate. The DCF is only as good as its assumptions "
-                "— each assumption must cite a source."
+                "each assumption must cite a source."
             ),
             inputs=["revenue_projections", "margin_assumptions", "capex", "wacc_inputs", "terminal_growth_rate"],
             outputs=["dcf_valuation", "sensitivity_table", "wacc_breakdown", "key_assumptions"],
@@ -113,7 +112,7 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
                 "Model LBO scenarios with: (1) debt structure (senior debt, subordinated "
                 "debt, equity contribution), (2) interest coverage ratios, (3) IRR "
                 "calculation for equity holders, (4) exit assumptions (exit multiple, "
-                "timing). Used for M&A support — the M&A Analyst requests LBO scenarios "
+                "timing). Used for M&A support, the M&A Analyst requests LBO scenarios "
                 "when evaluating leveraged acquisitions."
             ),
             inputs=["target_financials", "debt_structure", "exit_multiple", "holding_period"],
@@ -126,7 +125,7 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
                 "(EV/Revenue, EV/EBITDA, P/E), and apply to the target company. "
                 "Comparables must be in the same industry, similar growth stage, and "
                 "similar geography. Adjust for growth premium/discount. The comp set "
-                "must be justified — don't just grab the nearest 10 tickers."
+                "must be justified, don't just grab the nearest 10 tickers."
             ),
             inputs=["target_company", "industry", "geography", "growth_stage"],
             outputs=["comparable_multiples", "valuation_range", "comp_set_justification"],
@@ -160,8 +159,8 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
             description=(
                 "Build best case, base case, worst case scenarios with assigned "
                 "probabilities and expected values. Best case is not 'everything goes "
-                "right' — it's 'the upside scenario with a 20% probability.' Worst "
-                "case is not 'everything goes wrong' — it's 'the downside scenario with "
+                "right', it's 'the upside scenario with a 20% probability.' Worst "
+                "case is not 'everything goes wrong', it's 'the downside scenario with "
                 "a 20% probability.' Base case is the most likely (60%). Expected "
                 "value = sum of (scenario_value × probability)."
             ),
@@ -181,7 +180,7 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Financial Analyst — the specialist who builds financial "
+        "You are the HYPERION Financial Analyst, the specialist who builds financial "
         "models, evaluates unit economics, runs valuations, and assesses financial "
         "viability. You answer 'do the numbers work?'\n\n"
         "Your proprietary frameworks:\n"
@@ -190,7 +189,7 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
         "table on discount rate × terminal growth.\n"
         "2. LBO: Debt structure, interest coverage, IRR, exit assumptions. For M&A support.\n"
         "3. Comparable company analysis: 5-10 comparables, EV/Revenue, EV/EBITDA, P/E. "
-        "Comp set must be justified — same industry, growth stage, geography.\n"
+        "Comp set must be justified, same industry, growth stage, geography.\n"
         "4. Unit economics: LTV, CAC, LTV/CAC (>3 healthy, <1 unsustainable), payback "
         "(<12mo strong, >24mo concerning), gross margin, contribution margin, burn rate.\n"
         "5. Sensitivity analysis: Two-variable tables (price×volume, discount×terminal "
@@ -201,7 +200,7 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
         "Rules:\n"
         "- NEVER report a single valuation number. ALWAYS report a range with "
         "sensitivity tables.\n"
-        "- ALWAYS identify the key value drivers — the 2-3 assumptions that account "
+        "- ALWAYS identify the key value drivers, the 2-3 assumptions that account "
         "for 80% of the valuation variance.\n"
         "- ALWAYS cross-validate DCF with comparable company analysis. If DCF says "
         "$100M but comparables say $50M, flag the discrepancy and explain it.\n"
@@ -219,7 +218,7 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
         "SearxNG + Jina)\n"
         "- Sub-agent C: Find cost structure data for [business model] (FAST, "
         "SearxNG + Jina)\n\n"
-        "Your output is a FinancialAnalysis Pydantic model — structured, not free text."
+        "Your output is a FinancialAnalysis Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves financial viability, valuation, "
                      "unit economics, or investment decision (GO_NO_GO, MARKET_ENTRY, "
@@ -239,7 +238,7 @@ class FinancialAnalyst(BaseAgent):
 
     Builds DCF models, comparable company analysis, unit economics,
     sensitivity tables, scenario models, and break-even analysis.
-    NEVER reports a single valuation — always a range with sensitivity.
+    NEVER reports a single valuation, always a range with sensitivity.
     Always cross-validates DCF with comparables. Always identifies key
     value drivers. (§4.4, Agent 5)
 
@@ -328,7 +327,7 @@ class FinancialAnalyst(BaseAgent):
                 return
             if request_type == "lbo_scenario":
                 # M&A Analyst requesting LBO model for a target
-                # Handled during run() — just note the request
+                # Handled during run(), just note the request
                 pass
             elif request_type == "key_value_drivers":
                 # Synthesis Lead requesting key value drivers for confidence calibration
@@ -380,7 +379,7 @@ class FinancialAnalyst(BaseAgent):
 
                     self._sources.append(Source(
                         id=f"src_{len(self._sources):03d}",
-                        title=f"Alpha Vantage — {ticker} ({overview.get('Name', '')})",
+                        title=f"Alpha Vantage, {ticker} ({overview.get('Name', '')})",
                         url=f"https://www.alphavantage.co/query?symbol={ticker}",
                         credibility=SourceCredibility.GOVERNMENT,
                         key_data=f"P/E: {overview.get('PERatio', 'N/A')}, "
@@ -406,13 +405,13 @@ class FinancialAnalyst(BaseAgent):
         - GDP growth → terminal growth rate ceiling
         - Interest rates → cost of debt
 
-        IMPORTANT — THIS IS UNITED STATES DATA. The FRED series pulled below
+        IMPORTANT, THIS IS UNITED STATES DATA. The FRED series pulled below
         (DGS10, CPIAUCSL, GDP, FEDFUNDS) are US series and nothing else. The
         ``geography`` argument does not and cannot change which series are
-        fetched — it only labelled the source. That combination was actively
+        fetched, it only labelled the source. That combination was actively
         dangerous: the default was ``"US"``, but when a caller passed "India"
         the same US Treasury yields and US CPI came back and the source was
-        then labelled "FRED Macroeconomic Data — India". A DCF built on that
+        then labelled "FRED Macroeconomic Data, India". A DCF built on that
         discounts Indian cash flows at a US risk-free rate while the citation
         claims Indian provenance.
 
@@ -434,7 +433,7 @@ class FinancialAnalyst(BaseAgent):
             }
             self._log(
                 f"FRED macro inputs are US-only; requested geography {requested!r} "
-                "cannot be served — flagging mismatch"
+                "cannot be served, flagging mismatch"
             )
 
         try:
@@ -464,13 +463,13 @@ class FinancialAnalyst(BaseAgent):
             # requested. Mislabelling a source is worse than lacking one.
             self._sources.append(Source(
                 id=f"src_{len(self._sources):03d}",
-                title="FRED Macroeconomic Data — United States",
+                title="FRED Macroeconomic Data, United States",
                 url="https://fred.stlouisfed.org",
                 credibility=SourceCredibility.GOVERNMENT,
                 key_data=(
                     "US risk-free rate, inflation, GDP growth, Fed funds rate"
                     + (
-                        f" (US proxy — {requested} series unavailable from FRED)"
+                        f" (US proxy, {requested} series unavailable from FRED)"
                         if macro.get("geography_mismatch")
                         else ""
                     )
@@ -590,7 +589,7 @@ class FinancialAnalyst(BaseAgent):
         prompt = (
             "You are the Financial Analyst building a DCF model.\n\n"
             f"Question: {question}\n"
-            f"TAM from Market Analyst: {tam_from_market or 'Not available — estimate from '
+            f"TAM from Market Analyst: {tam_from_market or 'Not available, estimate from '
                 'benchmarks'}\n\n"
             f"Comparable companies:\n{comp_summary}\n\n"
             f"Macroeconomic data:\n{macro_summary}\n\n"
@@ -605,7 +604,7 @@ class FinancialAnalyst(BaseAgent):
             "   - Beta from comparable companies\n"
             "   - Cost of debt = risk-free rate + credit spread\n"
             "   - WACC = weighted average\n"
-            "5. Terminal value via Gordon growth (g ≤ 3% — GDP ceiling)\n"
+            "5. Terminal value via Gordon growth (g ≤ 3%, GDP ceiling)\n"
             "6. Discount everything to present value\n"
             "7. Build sensitivity table: WACC (±2% in 0.5% steps) × Terminal growth (0-3% in 0.5% steps)\n\n"
             "Return JSON:\n"
@@ -648,9 +647,9 @@ class FinancialAnalyst(BaseAgent):
             return (
                 FinancialMetric(
                     name="DCF Valuation",
-                    value="Unable to calculate — insufficient data",
+                    value="Unable to calculate, insufficient data",
                     unit="$",
-                    assumptions=["DCF model failed — LLM error or no data"],
+                    assumptions=["DCF model failed, LLM error or no data"],
                 ),
                 [],
             )
@@ -694,7 +693,7 @@ class FinancialAnalyst(BaseAgent):
                     name="DCF Valuation",
                     value="Parse error",
                     unit="$",
-                    assumptions=["DCF model failed — parsing error"],
+                    assumptions=["DCF model failed, parsing error"],
                 ),
                 [],
             )
@@ -735,7 +734,7 @@ class FinancialAnalyst(BaseAgent):
             "or discount (if slower)\n"
             "4. Produce a valuation range (low = 25th percentile multiple, "
             "high = 75th percentile)\n"
-            "5. Justify the comp set — why these companies are comparable\n\n"
+            "5. Justify the comp set, why these companies are comparable\n\n"
             "Return JSON:\n"
             "{\n"
             '  "comp_value": "range string",\n'
@@ -762,9 +761,9 @@ class FinancialAnalyst(BaseAgent):
         if not response.success or not response.content:
             return FinancialMetric(
                 name="Comparable Company Analysis",
-                value="Unable to calculate — insufficient data",
+                value="Unable to calculate, insufficient data",
                 unit="$",
-                assumptions=["Comp analysis failed — no data or LLM error"],
+                assumptions=["Comp analysis failed, no data or LLM error"],
             )
 
         try:
@@ -788,7 +787,7 @@ class FinancialAnalyst(BaseAgent):
                 name="Comparable Company Analysis",
                 value="Parse error",
                 unit="$",
-                assumptions=["Comp analysis failed — parsing error"],
+                assumptions=["Comp analysis failed, parsing error"],
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -805,7 +804,7 @@ class FinancialAnalyst(BaseAgent):
         LTV = ARPU × Gross Margin × (1 / Churn Rate)
         CAC = Sales & Marketing Spend / New Customers
         LTV/CAC > 3 is healthy, < 1 is unsustainable
-        Payback = CAC / (ARPU × Gross Margin) — in months
+        Payback = CAC / (ARPU × Gross Margin), in months
         """
         benchmark_summary = "\n".join(
             f"- {r.get('title', '')}: {r.get('snippet', '')[:150]}"
@@ -817,13 +816,13 @@ class FinancialAnalyst(BaseAgent):
             f"Question: {question}\n\n"
             f"Industry benchmarks:\n{benchmark_summary}\n\n"
             "Calculate unit economics:\n"
-            "1. ARPU (Average Revenue Per User) — with source\n"
-            "2. Gross Margin — with source\n"
-            "3. Churn Rate — with source\n"
+            "1. ARPU (Average Revenue Per User), with source\n"
+            "2. Gross Margin, with source\n"
+            "3. Churn Rate, with source\n"
             "4. LTV = ARPU × Gross Margin × (1 / Churn)\n"
-            "5. CAC — with source (or estimate from industry benchmarks)\n"
+            "5. CAC, with source (or estimate from industry benchmarks)\n"
             "6. LTV/CAC ratio (>3 healthy, <1 unsustainable)\n"
-            "7. Payback Period = CAC / (ARPU × Gross Margin) — in months\n"
+            "7. Payback Period = CAC / (ARPU × Gross Margin), in months\n"
             "8. Contribution Margin = (ARPU - Variable Cost) / ARPU\n"
             "9. Burn Rate (if applicable)\n"
             "10. Identify which assumption is most sensitive\n\n"
@@ -985,7 +984,7 @@ class FinancialAnalyst(BaseAgent):
             f"Question: {question}\n\n"
             f"Unit economics:\n{ue_summary}\n\n"
             "Calculate break-even:\n"
-            "1. Estimate fixed costs (salaries, rent, infrastructure) — with source\n"
+            "1. Estimate fixed costs (salaries, rent, infrastructure), with source\n"
             "2. Contribution margin per unit = Price - Variable Cost per unit\n"
             "3. Break-even units = Fixed Costs / Contribution Margin per unit\n"
             "4. Break-even revenue = Break-even units × Price\n"
@@ -1017,7 +1016,7 @@ class FinancialAnalyst(BaseAgent):
                 name="Break-Even Analysis",
                 value="Unable to calculate",
                 unit="$",
-                assumptions=["Break-even calculation failed — no data or LLM error"],
+                assumptions=["Break-even calculation failed, no data or LLM error"],
             )
 
         try:
@@ -1039,7 +1038,7 @@ class FinancialAnalyst(BaseAgent):
                 name="Break-Even Analysis",
                 value="Parse error",
                 unit="$",
-                assumptions=["Break-even calculation failed — parsing error"],
+                assumptions=["Break-even calculation failed, parsing error"],
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -1068,13 +1067,13 @@ class FinancialAnalyst(BaseAgent):
                 if dcf_base > comp_base:
                     discrepancy_flag = (
                         f"DCF (${dcf_base:,.0f}) is significantly higher than comparables "
-                        f"(${comp_base:,.0f}) — {divergence:.0%} divergence. This suggests "
+                        f"(${comp_base:,.0f}), {divergence:.0%} divergence. This suggests "
                         f"the DCF assumes growth/margins above industry norms."
                     )
                 else:
                     discrepancy_flag = (
                         f"Comparables (${comp_base:,.0f}) are significantly higher than DCF "
-                        f"(${dcf_base:,.0f}) — {divergence:.0%} divergence. This suggests "
+                        f"(${dcf_base:,.0f}), {divergence:.0%} divergence. This suggests "
                         f"the market is pricing in growth not captured in the DCF."
                     )
 
@@ -1085,7 +1084,7 @@ class FinancialAnalyst(BaseAgent):
             f"Discrepancy: {discrepancy_flag or 'No significant discrepancy'}\n\n"
             f"DCF assumptions: {dcf_valuation.assumptions}\n"
             f"Comp assumptions: {comp_valuation.assumptions}\n\n"
-            "Identify the 2-3 key value drivers — the assumptions that account "
+            "Identify the 2-3 key value drivers, the assumptions that account "
             "for 80% of the valuation variance. These are the assumptions that, "
             "if wrong, would most significantly change the recommendation.\n\n"
             "Return JSON:\n"
@@ -1138,7 +1137,7 @@ class FinancialAnalyst(BaseAgent):
                     id=f"finding_{uuid.uuid4().hex[:8]}",
                     agent=self.name.value,
                     finding_type="key_value_driver",
-                    title=f"Key Value Driver — {driver}",
+                    title=f"Key Value Driver, {driver}",
                     content=rationale_text,
                     confidence=ConfidenceLevel.HIGH,
                     sources=self._sources[:2],
@@ -1246,7 +1245,7 @@ class FinancialAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 9-step methodology
+    # Main execution, the 9-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1272,7 +1271,7 @@ class FinancialAnalyst(BaseAgent):
         self._engagement_id = engagement_id or self._engagement_id
         self._context = context or self._context
 
-        # Subscribe to bus — specialists need findings + requests
+        # Subscribe to bus, specialists need findings + requests
         self.subscribe_to_bus()
 
         await self._transition(

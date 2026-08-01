@@ -1,4 +1,4 @@
-"""Support agents — librarian, fact checker, data viz, quality gate."""
+"""Support agents, librarian, fact checker, data viz, quality gate."""
 
 from hyperion.agents.support.data_visualizer import DATA_VISUALIZER_SPEC, DataVisualizer
 from hyperion.agents.support.fact_checker import FACT_CHECKER_SPEC, FactChecker

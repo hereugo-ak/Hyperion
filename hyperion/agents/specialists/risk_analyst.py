@@ -1,5 +1,5 @@
 """
-HYPERION Risk Analyst — Agent 6, the risk identification and mitigation specialist.
+HYPERION Risk Analyst, Agent 6, the risk identification and mitigation specialist.
 
 This is NOT a generic "list the risks" agent. This is a specialist with 6
 proprietary analytical frameworks:
@@ -8,24 +8,24 @@ proprietary analytical frameworks:
 - Monte Carlo simulation: 10,000-trial simulations on key variables producing
   P10/P50/P90 probability distributions.
 - Black swan analysis: Low-probability, high-impact events that could
-  invalidate the entire strategy — risks that don't appear in the matrix
+  invalidate the entire strategy, risks that don't appear in the matrix
   because they're too unlikely, but if they happen, they're catastrophic.
 - Scenario planning: Best/base/worst with trigger conditions, leading
   indicators, and response plans.
 - Mitigation design: Specific action, assigned owner, residual risk.
-- Residual risk scoring: Re-score after mitigation — some risks are fully
+- Residual risk scoring: Re-score after mitigation, some risks are fully
   mitigatable, others are inherent.
 
 It thinks in scenarios, not in lists. A generic risk analyst lists 20 risks.
 The HYPERION Risk Analyst identifies the 5 risks that actually matter,
 explains why the other 15 are noise, and designs mitigations that are
 specific enough to act on. It always asks "what would kill this?" before
-asking "what could help this?" — because surviving the downside is more
+asking "what could help this?", because surviving the downside is more
 important than capturing the upside. (§4.4, Agent 6)
 
 Model Tier: STANDARD
 Tools: SearxNG, Jina, Obscura
-Sub-agents: Max 3 — historical failures, regulatory risks, technology/cyber risks
+Sub-agents: Max 3, historical failures, regulatory risks, technology/cyber risks
 Output: RiskAnalysis (risks, top risks with mitigations, black swans,
         residual risk summary, scenario plan, confidence, sources)
 
@@ -98,7 +98,7 @@ RISK_ANALYST_SPEC = AgentSpec(
                 "Build a probability × impact matrix with risks plotted on a 5×5 grid. "
                 "Each risk is scored on probability (1-5) and impact (1-5), with "
                 "color-coded zones: green (1-6 score), yellow (7-14), red (15-25). "
-                "The matrix is not just a chart — it's a prioritization tool. Risks "
+                "The matrix is not just a chart, it's a prioritization tool. Risks "
                 "in the red zone get mitigations first. Risks in the green zone are "
                 "monitored but don't require immediate action."
             ),
@@ -112,7 +112,7 @@ RISK_ANALYST_SPEC = AgentSpec(
                 "cost, timeline) to produce probability distributions of outcomes. "
                 "Shows P10 (optimistic), P50 (median), P90 (conservative) values. "
                 "The simulation reveals not just the expected outcome but the range "
-                "of possible outcomes and their likelihood — critical for risk-aware "
+                "of possible outcomes and their likelihood, critical for risk-aware "
                 "decision making."
             ),
             inputs=["key_variables", "probability_distributions", "correlation_matrix"],
@@ -123,9 +123,9 @@ RISK_ANALYST_SPEC = AgentSpec(
             description=(
                 "Identify low-probability, high-impact events that could invalidate "
                 "the entire strategy. These are risks that don't appear in the risk "
-                "matrix because they're too unlikely — but if they happen, they're "
+                "matrix because they're too unlikely, but if they happen, they're "
                 "catastrophic. Examples: regulatory ban, founder death, supply chain "
-                "collapse, black swan market crash. Each black swan has a 'canary' — "
+                "collapse, black swan market crash. Each black swan has a 'canary'"
                 "an early warning indicator that would signal the risk is materializing."
             ),
             inputs=["industry_context", "historical_black_swans", "strategy_dependencies"],
@@ -138,7 +138,7 @@ RISK_ANALYST_SPEC = AgentSpec(
                 "conditions, leading indicators, and response plans for each. "
                 "Trigger conditions are observable events that signal a scenario "
                 "is materializing. Leading indicators are metrics to monitor "
-                "weekly/monthly. Response plans are pre-committed actions — not "
+                "weekly/monthly. Response plans are pre-committed actions, not "
                 "'we'll figure it out when it happens.'"
             ),
             inputs=["base_case_model", "risk_catalog", "industry_drivers"],
@@ -149,7 +149,7 @@ RISK_ANALYST_SPEC = AgentSpec(
             description=(
                 "For each risk, design a specific mitigation action, assign an owner "
                 "(which agent monitors it), and calculate residual risk (risk after "
-                "mitigation). Mitigations must be specific enough to act on — not "
+                "mitigation). Mitigations must be specific enough to act on, not "
                 "'monitor the situation' but 'set up weekly Google Alerts for "
                 "[regulator] announcements and flag any policy changes to the "
                 "Regulatory Analyst.'"
@@ -163,9 +163,9 @@ RISK_ANALYST_SPEC = AgentSpec(
                 "After mitigations, re-score each risk to show residual risk. Some "
                 "risks are fully mitigatable (e.g., regulatory risk mitigated by "
                 "compliance audit → residual probability drops from 4 to 1). Others "
-                "are inherent (e.g., market risk — you can hedge but not eliminate). "
+                "are inherent (e.g., market risk, you can hedge but not eliminate). "
                 "The residual risk profile shows what risk remains after all "
-                "reasonable mitigations — this is the risk the organization must "
+                "reasonable mitigations, this is the risk the organization must "
                 "accept to proceed."
             ),
             inputs=["original_risk_scores", "mitigation_effectiveness", "inherent_risks"],
@@ -173,20 +173,20 @@ RISK_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Risk Analyst — the specialist who identifies risks, "
+        "You are the HYPERION Risk Analyst, the specialist who identifies risks, "
         "builds risk matrices, plans scenarios, and designs mitigations. Every "
-        "engagement includes a risk analysis — risk is universal.\n\n"
+        "engagement includes a risk analysis, risk is universal.\n\n"
         "Your proprietary frameworks:\n"
         "1. Risk matrix: 5×5 probability × impact grid. Green (1-6), yellow (7-14), "
         "red (15-25). Red zone gets mitigations first.\n"
         "2. Monte Carlo simulation: 10,000 trials on key variables. Shows P10/P50/P90 "
         "and probability distributions.\n"
         "3. Black swan analysis: Low-probability, high-impact events that could "
-        "invalidate the strategy. Each has a 'canary' — an early warning indicator.\n"
+        "invalidate the strategy. Each has a 'canary', an early warning indicator.\n"
         "4. Scenario planning: Best/base/worst with trigger conditions, leading "
         "indicators, and pre-committed response plans.\n"
         "5. Mitigation design: Specific action, assigned owner, residual risk. Not "
-        "'monitor the situation' — 'set up weekly alerts for [X] and flag to [agent].'\n"
+        "'monitor the situation''set up weekly alerts for [X] and flag to [agent].'\n"
         "6. Residual risk scoring: Re-score after mitigation. Some risks are fully "
         "mitigatable, others are inherent. Show what risk remains.\n\n"
         "Rules:\n"
@@ -200,19 +200,19 @@ RISK_ANALYST_SPEC = AgentSpec(
         "residual scores.\n"
         "- Mitigations must be SPECIFIC enough to act on. Not 'monitor the market' "
         "but 'set up Google Alerts for [regulator] + weekly check of [metric].'\n"
-        "- Black swans must have CANARY indicators — early warning signs that the "
+        "- Black swans must have CANARY indicators, early warning signs that the "
         "risk is materializing.\n"
-        "- Scenario plans must have TRIGGER CONDITIONS — observable events that "
+        "- Scenario plans must have TRIGGER CONDITIONS, observable events that "
         "signal which scenario is unfolding.\n"
         "- Residual risk must show what risk remains after all reasonable "
-        "mitigations — this is the risk the organization must accept.\n\n"
+        "mitigations, this is the risk the organization must accept.\n\n"
         "You can spawn up to 3 sub-agents for parallel risk data collection:\n"
         "- Sub-agent A: Find historical failures in [industry] (MICRO, SearxNG + Jina)\n"
         "- Sub-agent B: Find regulatory risks in [jurisdiction] (MICRO, SearxNG)\n"
         "- Sub-agent C: Find technology/cyber risks in [space] (FAST, SearxNG + Jina)\n\n"
-        "Your output is a RiskAnalysis Pydantic model — structured, not free text."
+        "Your output is a RiskAnalysis Pydantic model, structured, not free text."
     ),
-    spawn_condition="Spawned for every engagement — risk is universal. Always "
+    spawn_condition="Spawned for every engagement, risk is universal. Always "
                      "activated alongside the core question type (GO_NO_GO, "
                      "MARKET_ENTRY, MA_EVALUATION, etc.)",
     max_sub_agents=3,
@@ -231,7 +231,7 @@ class RiskAnalyst(BaseAgent):
     Identifies risks across 6 categories, scores them on a 5×5 matrix,
     designs specific mitigations with owners, calculates residual risk,
     identifies black swan scenarios, and builds scenario plans with
-    trigger conditions. Thinks in scenarios, not lists — identifies the
+    trigger conditions. Thinks in scenarios, not lists, identifies the
     5 risks that matter, explains why the rest are noise. (§4.4, Agent 6)
 
     Lifecycle:
@@ -400,14 +400,14 @@ class RiskAnalyst(BaseAgent):
         """Find official regulatory sources for a non-US jurisdiction by search.
 
         Mirrors the Regulatory Analyst's discovery step. Returns [] on any
-        failure — an empty portal list is honest, whereas falling back to the
+        failure, an empty portal list is honest, whereas falling back to the
         US portals would file US federal material as this jurisdiction's
         regulatory risk.
         """
         urls: list[str] = []
         try:
             searxng = self.get_tool(ToolName.SEARXNG)
-            # `industry` is not a parameter of this method — resolve the
+            # `industry` is not a parameter of this method, resolve the
             # subject the same way `run()` does, so the discovery query is
             # never subject-less.
             sector = resolve_subject(
@@ -439,7 +439,7 @@ class RiskAnalyst(BaseAgent):
 
         Uses Obscura to scrape JS-rendered government portals for jurisdiction-
         specific risk data. This catches regulatory risks that search engines
-        might miss — e.g., pending legislation, sanctions lists, compliance
+        might miss, e.g., pending legislation, sanctions lists, compliance
         requirements.
         """
         results: list[dict[str, Any]] = []
@@ -451,7 +451,7 @@ class RiskAnalyst(BaseAgent):
             #
             # govinfo.gov and sanctionslist.gov are UNITED STATES government
             # sites. Passing a non-US jurisdiction to them does not retrieve
-            # that country's rules — it queries US databases for a foreign
+            # that country's rules, it queries US databases for a foreign
             # country name, which returns US material about that country (or
             # nothing) and was then filed as that country's regulatory risk.
             # Combined with the caller's old `jurisdiction="US"` default, an
@@ -474,7 +474,7 @@ class RiskAnalyst(BaseAgent):
                 portals.extend(discovered)
                 if not portals:
                     self._log(
-                        f"No regulatory portal found for jurisdiction {jurisdiction!r} — "
+                        f"No regulatory portal found for jurisdiction {jurisdiction!r}, "
                         "skipping portal scrape rather than substituting US sources"
                     )
 
@@ -492,7 +492,7 @@ class RiskAnalyst(BaseAgent):
                         })
                         self._sources.append(Source(
                             id=f"src_{len(self._sources):03d}",
-                            title=f"Regulatory database — {jurisdiction}",
+                            title=f"Regulatory database, {jurisdiction}",
                             url=url,
                             credibility=SourceCredibility.GOVERNMENT,
                             key_data=f"Regulatory risk data for {jurisdiction}",
@@ -541,12 +541,12 @@ class RiskAnalyst(BaseAgent):
             f"Regulatory data:\n{regulatory_summary or 'No regulatory data collected'}\n\n"
             f"Context from other agents:\n{context_summary}\n\n"
             "Identify risks across 6 categories:\n"
-            "1. MARKET — market size risk, demand risk, timing risk, competition risk\n"
-            "2. FINANCIAL — funding risk, unit economics risk, cash flow risk, FX risk\n"
-            "3. OPERATIONAL — supply chain risk, key person risk, execution risk, scaling risk\n"
-            "4. REGULATORY — compliance risk, licensing risk, policy change risk, sanctions risk\n"
-            "5. TECHNOLOGY — tech obsolescence risk, cyber risk, data breach risk, vendor lock-in\n"
-            "6. STRATEGIC — positioning risk, moat erosion risk, pivot risk, partnership risk\n\n"
+            "1. MARKET, market size risk, demand risk, timing risk, competition risk\n"
+            "2. FINANCIAL, funding risk, unit economics risk, cash flow risk, FX risk\n"
+            "3. OPERATIONAL, supply chain risk, key person risk, execution risk, scaling risk\n"
+            "4. REGULATORY, compliance risk, licensing risk, policy change risk, sanctions risk\n"
+            "5. TECHNOLOGY, tech obsolescence risk, cyber risk, data breach risk, vendor lock-in\n"
+            "6. STRATEGIC, positioning risk, moat erosion risk, pivot risk, partnership risk\n\n"
             "For each risk, provide:\n"
             "- category: one of MARKET, FINANCIAL, OPERATIONAL, REGULATORY, TECHNOLOGY, STRATEGIC\n"
             "- description: specific, not generic (e.g., not 'market risk' but 'TAM may be 40% "
@@ -671,7 +671,7 @@ class RiskAnalyst(BaseAgent):
 
         Also identifies which risks are noise (low score, low relevance).
         """
-        # Sort by risk score descending — top 10 get mitigations
+        # Sort by risk score descending, top 10 get mitigations
         sorted_risks = sorted(risks, key=lambda r: r.risk_score, reverse=True)
         top_10 = sorted_risks[:10]
 
@@ -691,7 +691,7 @@ class RiskAnalyst(BaseAgent):
             "technology_analyst, operations_analyst, strategy_analyst)\n"
             "- residual_probability: probability after mitigation (1-5)\n"
             "- residual_impact: impact after mitigation (1-5)\n\n"
-            "Also explain why the remaining risks (outside top 10) are noise — "
+            "Also explain why the remaining risks (outside top 10) are noise"
             "why they don't require immediate action.\n\n"
             "Return JSON:\n"
             "{\n"
@@ -749,7 +749,7 @@ class RiskAnalyst(BaseAgent):
         Some risks are fully mitigatable (residual score << original).
         Others are inherent (residual score ≈ original).
         The residual risk profile shows what risk remains after all
-        reasonable mitigations — this is the risk the organization must
+        reasonable mitigations, this is the risk the organization must
         accept to proceed.
         """
         total_original = sum(r.risk_score for r in risks)
@@ -798,8 +798,8 @@ class RiskAnalyst(BaseAgent):
         """Identify low-probability, high-impact black swan events.
 
         Black swans are risks that don't appear in the risk matrix because
-        they're too unlikely — but if they happen, they're catastrophic.
-        Each black swan has a 'canary' — an early warning indicator.
+        they're too unlikely, but if they happen, they're catastrophic.
+        Each black swan has a 'canary', an early warning indicator.
         """
         risk_summary = "\n".join(
             f"- [{r.category.value}] {r.description[:100]}"
@@ -810,7 +810,7 @@ class RiskAnalyst(BaseAgent):
             "You are the HYPERION Risk Analyst identifying black swan scenarios.\n\n"
             f"Question: {question}\n\n"
             f"Known risks:\n{risk_summary}\n\n"
-            "Identify 3-5 black swan events — low-probability, high-impact events "
+            "Identify 3-5 black swan events, low-probability, high-impact events "
             "that could INVALIDATE the entire strategy. These are NOT in the risk "
             "matrix because they're too unlikely, but if they happen, they're "
             "catastrophic.\n\n"
@@ -958,7 +958,7 @@ class RiskAnalyst(BaseAgent):
         """Run a 10,000-trial Monte Carlo simulation on key risk variables.
 
         Produces P10/P50/P90 probability distributions. Shows the range
-        of possible outcomes and their likelihood — critical for risk-aware
+        of possible outcomes and their likelihood, critical for risk-aware
         decision making.
         """
         # Identify key variables from context (financial projections, market size)
@@ -973,7 +973,7 @@ class RiskAnalyst(BaseAgent):
             "1. Identify 3-5 key variables that drive the outcome (revenue, cost, timeline)\n"
             "2. Assign probability distributions to each (normal, triangular, uniform)\n"
             "3. Describe the correlation between variables\n"
-            "4. Run 10,000 trials (conceptually — describe the output distribution)\n"
+            "4. Run 10,000 trials (conceptually, describe the output distribution)\n"
             "5. Report P10 (optimistic), P50 (median), P90 (conservative) values\n"
             "6. Calculate VaR at 95% confidence\n\n"
             "Return JSON:\n"
@@ -1021,7 +1021,7 @@ class RiskAnalyst(BaseAgent):
         """
         sub_specs = [
             SubAgentSpec(
-                question=f"Find historical failures in {industry} — startups that failed, companies that went bankrupt, projects that collapsed. What caused each failure?",
+                question=f"Find historical failures in {industry}, startups that failed, companies that went bankrupt, projects that collapsed. What caused each failure?",
                 parent_agent=self.name,
                 model_tier=ModelTier.MICRO,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
@@ -1030,7 +1030,7 @@ class RiskAnalyst(BaseAgent):
                 context={"industry": industry},
             ),
             SubAgentSpec(
-                question=f"Find regulatory risks in {jurisdiction} — pending legislation, compliance requirements, licensing risks, sanctions exposure",
+                question=f"Find regulatory risks in {jurisdiction}, pending legislation, compliance requirements, licensing risks, sanctions exposure",
                 parent_agent=self.name,
                 model_tier=ModelTier.MICRO,
                 tools=[ToolName.SEARXNG],
@@ -1039,7 +1039,7 @@ class RiskAnalyst(BaseAgent):
                 context={"jurisdiction": jurisdiction},
             ),
             SubAgentSpec(
-                question=f"Find technology and cyber risks in {space} — data breaches, tech obsolescence, vendor lock-in, infrastructure risks",
+                question=f"Find technology and cyber risks in {space}, data breaches, tech obsolescence, vendor lock-in, infrastructure risks",
                 parent_agent=self.name,
                 model_tier=ModelTier.FAST,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
@@ -1088,7 +1088,7 @@ class RiskAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 10-step methodology
+    # Main execution, the 10-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1116,7 +1116,7 @@ class RiskAnalyst(BaseAgent):
         self._engagement_id = engagement_id or self._engagement_id
         self._context = context or self._context
 
-        # Subscribe to bus — specialists need findings + requests
+        # Subscribe to bus, specialists need findings + requests
         self.subscribe_to_bus()
 
         await self._transition(
@@ -1131,7 +1131,7 @@ class RiskAnalyst(BaseAgent):
         # `context.get("industry", "")`. An empty industry used to
         # interpolate straight into `_search_known_risks`'s query templates
         # (f"{industry} industry risks challenges" -> " industry risks
-        # challenges", a subject-less search) — this was one of the three
+        # challenges", a subject-less search), this was one of the three
         # specialists Finding B-9 named as missing `resolve_subject` entirely.
         industry = resolve_subject(
             self._context, "industry", "sector", question=self._question
@@ -1170,14 +1170,14 @@ class RiskAnalyst(BaseAgent):
 
         if not risks:
             await self._escalate(
-                issue="No risks identified from available sources — publishing gap finding",
+                issue="No risks identified from available sources, publishing gap finding",
                 suggested_action="Proceed with degraded analysis; flag data gap in report",
             )
             gap_finding = KeyFinding(
                 id=f"finding_{uuid.uuid4().hex[:8]}",
                 agent=self.name.value,
                 finding_type="risk_gap",
-                title="Risk analysis gap — insufficient source data",
+                title="Risk analysis gap, insufficient source data",
                 content=(
                     f"No specific risks could be identified for the question: "
                     f"'{self._question[:120]}'. This is a data-availability gap, "
@@ -1190,7 +1190,7 @@ class RiskAnalyst(BaseAgent):
             return RiskAnalysis(
                 risks=[],
                 residual_risk_summary=(
-                    "Risk analysis incomplete — insufficient source data to identify "
+                    "Risk analysis incomplete, insufficient source data to identify "
                     "specific risks. This gap is flagged in findings."
                 ),
                 confidence=ConfidenceLevel.LOW,
@@ -1267,7 +1267,7 @@ class RiskAnalyst(BaseAgent):
                 id=f"finding_{uuid.uuid4().hex[:8]}",
                 agent=self.name.value,
                 finding_type="risk",
-                title=f"Risk — {risk.category.value.title()} (Score {risk.risk_score})",
+                title=f"Risk, {risk.category.value.title()} (Score {risk.risk_score})",
                 content=(
                     f"{risk.description}. "
                     f"Probability: {risk.probability}/5, Impact: {risk.impact}/5. "
@@ -1286,7 +1286,7 @@ class RiskAnalyst(BaseAgent):
                 id=f"finding_{uuid.uuid4().hex[:8]}",
                 agent=self.name.value,
                 finding_type="black_swan",
-                title=f"Black Swan — {bs.description[:60]}",
+                title=f"Black Swan, {bs.description[:60]}",
                 content=(
                     f"{bs.description}. "
                     f"Canary indicator: {bs.trigger_conditions or 'N/A'}. "

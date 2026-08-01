@@ -1,5 +1,5 @@
 """
-HYPERION Operations Analyst — Agent 8, the process optimization specialist.
+HYPERION Operations Analyst, Agent 8, the process optimization specialist.
 
 This is NOT a generic "map the process" agent. This is a specialist with 7
 proprietary analytical frameworks:
@@ -14,12 +14,12 @@ proprietary analytical frameworks:
   suppliers, geographic concentration risks, and lead time vulnerabilities.
 - Capacity planning: Current capacity utilization, capacity constraints, and
   expansion scenarios.
-- Operational KPI design: Not generic metrics — the 5-7 metrics that actually
+- Operational KPI design: Not generic metrics, the 5-7 metrics that actually
   drive performance for this specific operational model.
 - Efficiency benchmarking: Benchmark against industry leaders. Identify the
   gap and estimate the improvement potential.
 
-It doesn't just map processes — it identifies the binding constraint and
+It doesn't just map processes, it identifies the binding constraint and
 estimates the improvement potential in dollars. A generic ops analyst says
 "the process has bottlenecks." The HYPERION Operations Analyst says "Step 3
 is the bottleneck at 40 units/hour vs. 60 units/hour for the rest of the
@@ -29,7 +29,7 @@ by 50%, generating $200K/year in additional contribution margin. ROI = 300%."
 
 Model Tier: STANDARD
 Tools: SearxNG, Jina, Obscura
-Sub-agents: Max 3 — operational benchmarks, supply chain data, efficiency metrics
+Sub-agents: Max 3, operational benchmarks, supply chain data, efficiency metrics
 Output: OperationsAnalysis (process map, bottlenecks, capacity, benchmarks,
         KPI dashboard, improvement opportunities, total improvement value,
         confidence, sources)
@@ -100,9 +100,9 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
             description=(
                 "Map end-to-end processes using SIPOC (Supplier-Input-Process-"
                 "Output-Customer) and value stream mapping. Identify non-value-"
-                "adding steps — steps that the customer wouldn't pay for if they "
+                "adding steps, steps that the customer wouldn't pay for if they "
                 "knew about them. Each step has a cycle time, throughput rate, "
-                "and value-adding classification. The map is not a flowchart — "
+                "and value-adding classification. The map is not a flowchart"
                 "it's a diagnostic tool that reveals where time and money leak."
             ),
             inputs=["process_description", "business_model", "industry"],
@@ -111,10 +111,10 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
         SkillSpec(
             name="Lean/Six Sigma",
             description=(
-                "Apply Lean principles (eliminate waste — the 8 wastes: defects, "
+                "Apply Lean principles (eliminate waste, the 8 wastes: defects, "
                 "overproduction, waiting, non-utilized talent, transportation, "
                 "inventory, motion, extra-processing) and Six Sigma (reduce "
-                "variation — calculate process sigma level and DPMO). Identify "
+                "variation, calculate process sigma level and DPMO). Identify "
                 "which wastes exist in this process and prioritize by $ impact."
             ),
             inputs=["process_map", "defect_data", "cycle_times", "throughput_data"],
@@ -125,10 +125,10 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
             description=(
                 "Identify process bottlenecks using theory of constraints. "
                 "Calculate throughput at each stage and identify the binding "
-                "constraint — the one step that limits the entire process. "
+                "constraint, the one step that limits the entire process. "
                 "Quantify the improvement potential in DOLLARS: cost to resolve, "
                 "throughput increase, annual $ value, and ROI. Not just 'Step 3 "
-                "is slow' — 'Step 3 at 40 units/hr vs 60 units/hr downstream. "
+                "is slow''Step 3 at 40 units/hr vs 60 units/hr downstream. "
                 "Adding 1 worker costs $50K, generates $200K/yr. ROI=300%.'"
             ),
             inputs=["process_map", "throughput_per_step", "cost_data", "contribution_margin"],
@@ -161,7 +161,7 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
         SkillSpec(
             name="Operational KPI design",
             description=(
-                "Design a KPI dashboard specific to the business — not generic "
+                "Design a KPI dashboard specific to the business, not generic "
                 "metrics, but the 5-7 metrics that actually drive performance for "
                 "this specific operational model. Each KPI has a formula, target, "
                 "measurement frequency, and the levers that move it. A SaaS company "
@@ -175,7 +175,7 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
             description=(
                 "Benchmark operational metrics against industry leaders. Identify "
                 "the gap between current performance and best-in-class. Estimate "
-                "the improvement potential — both the operational improvement (% "
+                "the improvement potential, both the operational improvement (% "
                 "efficiency gain) and the financial improvement ($ annual value "
                 "of closing the gap)."
             ),
@@ -184,7 +184,7 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Operations Analyst — the specialist who optimizes "
+        "You are the HYPERION Operations Analyst, the specialist who optimizes "
         "processes, maps supply chains, identifies bottlenecks, and designs "
         "operational KPIs.\n\n"
         "Your proprietary frameworks:\n"
@@ -202,11 +202,11 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
         "5. Capacity planning: Current utilization, constraints, expansion "
         "scenarios with break-even analysis.\n"
         "6. KPI design: 5-7 metrics that drive performance for THIS operational "
-        "model. Not generic — specific to the business.\n"
+        "model. Not generic, specific to the business.\n"
         "7. Efficiency benchmarking: Gap to industry leaders + $ improvement "
         "potential.\n\n"
         "Rules:\n"
-        "- DON'T JUST MAP PROCESSES — IDENTIFY THE BINDING CONSTRAINT AND "
+        "- DON'T JUST MAP PROCESSES, IDENTIFY THE BINDING CONSTRAINT AND "
         "ESTIMATE THE IMPROVEMENT POTENTIAL IN DOLLARS.\n"
         "- A generic ops analyst says 'the process has bottlenecks.' You say "
         "'Step 3 is the bottleneck at 40 units/hr vs 60 units/hr downstream. "
@@ -215,7 +215,7 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
         "increase, annual $ value, and ROI.\n"
         "- KPIs must be SPECIFIC to the operational model, not generic. A SaaS "
         "company needs different KPIs than a manufacturing plant.\n"
-        "- Supply chain risks must have MITIGATIONS — not just 'single source "
+        "- Supply chain risks must have MITIGATIONS, not just 'single source "
         "risk' but 'qualify a second supplier within 90 days.'\n"
         "- Benchmark gaps must be quantified in both % and $ annual value.\n"
         "- Lean waste identification must categorize each waste type (DOWNTIME) "
@@ -224,7 +224,7 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
         "- Sub-agent A: Find operational benchmarks for [industry] (MICRO, SearxNG)\n"
         "- Sub-agent B: Find supply chain data for [sector] (MICRO, SearxNG + Jina)\n"
         "- Sub-agent C: Find efficiency metrics for [process type] (FAST, SearxNG)\n\n"
-        "Your output is an OperationsAnalysis Pydantic model — structured, not free text."
+        "Your output is an OperationsAnalysis Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves process optimization, "
                      "supply chain analysis, capacity planning, operational "
@@ -247,7 +247,7 @@ class OperationsAnalyst(BaseAgent):
     quantifies improvement potential in dollars, designs operational KPIs
     specific to the business model, benchmarks against industry leaders, and
     applies Lean/Six Sigma to identify waste. Doesn't just say "there are
-    bottlenecks" — says "Step 3 is the bottleneck, costs $50K to fix, generates
+    bottlenecks", says "Step 3 is the bottleneck, costs $50K to fix, generates
     $200K/yr, ROI=300%." (§4.4, Agent 8)
 
     Lifecycle:
@@ -441,7 +441,7 @@ class OperationsAnalyst(BaseAgent):
                         })
                         self._sources.append(Source(
                             id=f"src_{len(self._sources):03d}",
-                            title=f"Supply chain data — {sector}",
+                            title=f"Supply chain data, {sector}",
                             url=url,
                             credibility=SourceCredibility.INDUSTRY_REPORT,
                             key_data=f"Supply chain data for {sector}",
@@ -562,8 +562,7 @@ class OperationsAnalyst(BaseAgent):
         """Identify bottlenecks using theory of constraints.
 
         For each bottleneck, quantify: improvement action, cost, throughput
-        increase, annual $ value, and ROI. Not just "Step 3 is slow" —
-        "Step 3 at 40 units/hr vs 60 units/hr. Adding 1 worker costs $50K,
+        increase, annual $ value, and ROI. Not just "Step 3 is slow""Step 3 at 40 units/hr vs 60 units/hr. Adding 1 worker costs $50K,
         generates $200K/yr. ROI=300%."
         """
         process_summary = "\n".join(
@@ -691,7 +690,7 @@ class OperationsAnalyst(BaseAgent):
         if response.success and response.content:
             return response.content
 
-        return "Capacity utilization analysis failed — insufficient data"
+        return "Capacity utilization analysis failed, insufficient data"
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 5: Benchmark against industry leaders
@@ -829,7 +828,7 @@ class OperationsAnalyst(BaseAgent):
             "6. Sum all improvement values for total annual $ potential\n\n"
             "Return JSON:\n"
             "{\n"
-            '  "improvements": ["improvement1 — $X/yr", "improvement2 — $Y/yr", ...],\n'
+            '  "improvements": ["improvement1, $X/yr", "improvement2, $Y/yr", ...],\n'
             '  "wastes_identified": [{"waste_type": "...", "location": "...", "impact": "$..."}],\n'
             '  "sigma_level": "...",\n'
             '  "dpmo": "...",\n'
@@ -868,7 +867,7 @@ class OperationsAnalyst(BaseAgent):
     ) -> list[OperationalKPI]:
         """Design a KPI dashboard specific to the business.
 
-        Not generic metrics — the 5-7 metrics that actually drive performance
+        Not generic metrics, the 5-7 metrics that actually drive performance
         for this specific operational model. Each KPI has a formula, target,
         measurement frequency, and the levers that move it.
         """
@@ -886,7 +885,7 @@ class OperationsAnalyst(BaseAgent):
             f"Industry: {industry}\n\n"
             f"Process:\n{process_summary}\n\n"
             "Design 5-7 KPIs that ACTUALLY DRIVE PERFORMANCE for this operational model.\n"
-            "NOT generic metrics — specific to this business.\n"
+            "NOT generic metrics, specific to this business.\n"
             "For each KPI:\n"
             "1. name: KPI name\n"
             "2. category: efficiency, quality, throughput, cost, or customer\n"
@@ -966,7 +965,7 @@ class OperationsAnalyst(BaseAgent):
         """
         sub_specs = [
             SubAgentSpec(
-                question=f"Find operational benchmarks for {industry} — throughput rates, cycle times, capacity utilization, efficiency metrics",
+                question=f"Find operational benchmarks for {industry}, throughput rates, cycle times, capacity utilization, efficiency metrics",
                 parent_agent=self.name,
                 model_tier=ModelTier.MICRO,
                 tools=[ToolName.SEARXNG],
@@ -975,7 +974,7 @@ class OperationsAnalyst(BaseAgent):
                 context={"industry": industry},
             ),
             SubAgentSpec(
-                question=f"Find supply chain data for {sector} — supplier concentration, lead times, logistics costs, single-source risks",
+                question=f"Find supply chain data for {sector}, supplier concentration, lead times, logistics costs, single-source risks",
                 parent_agent=self.name,
                 model_tier=ModelTier.MICRO,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
@@ -984,7 +983,7 @@ class OperationsAnalyst(BaseAgent):
                 context={"sector": sector},
             ),
             SubAgentSpec(
-                question=f"Find efficiency metrics for {process_type} — best-in-class performance, industry averages, improvement potential",
+                question=f"Find efficiency metrics for {process_type}, best-in-class performance, industry averages, improvement potential",
                 parent_agent=self.name,
                 model_tier=ModelTier.FAST,
                 tools=[ToolName.SEARXNG],
@@ -1035,7 +1034,7 @@ class OperationsAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 8-step methodology
+    # Main execution, the 8-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1060,7 +1059,7 @@ class OperationsAnalyst(BaseAgent):
         self._engagement_id = engagement_id or self._engagement_id
         self._context = context or self._context
 
-        # Subscribe to bus — specialists need findings + requests
+        # Subscribe to bus, specialists need findings + requests
         self.subscribe_to_bus()
 
         await self._transition(
@@ -1101,14 +1100,14 @@ class OperationsAnalyst(BaseAgent):
 
         if not process_map:
             await self._escalate(
-                issue="No process steps identified from available sources — publishing gap finding",
+                issue="No process steps identified from available sources, publishing gap finding",
                 suggested_action="Proceed with degraded analysis; flag data gap in report",
             )
             gap_finding = KeyFinding(
                 id=f"finding_{uuid.uuid4().hex[:8]}",
                 agent=self.name.value,
                 finding_type="operations_gap",
-                title="Operations analysis gap — insufficient source data",
+                title="Operations analysis gap, insufficient source data",
                 content=(
                     f"No process steps could be mapped for the question: "
                     f"'{self._question[:120]}'. This is a data-availability gap, "
@@ -1185,7 +1184,7 @@ class OperationsAnalyst(BaseAgent):
                 id=f"finding_{uuid.uuid4().hex[:8]}",
                 agent=self.name.value,
                 finding_type="bottleneck",
-                title=f"Bottleneck — {bn.step_name} (ROI: {bn.roi})",
+                title=f"Bottleneck, {bn.step_name} (ROI: {bn.roi})",
                 content=(
                     f"{bn.step_name}: Current {bn.current_throughput} vs downstream "
                     f"{bn.max_downstream_throughput}. Constraint type: {bn.constraint_type}. "
