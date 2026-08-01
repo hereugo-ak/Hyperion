@@ -716,6 +716,48 @@ class FactChecker(BaseAgent):
         except (ValueError, AttributeError, RuntimeError) as e:
             logger.warning("Fact checker SearXNG search failed: %s", e)
 
+        # W-14: attributed/event/relationship claims benefit from Google's
+        # citation supports. This is a high-value escalation and remains
+        # fail-open: the local corpus and SearXNG sources above are retained.
+        attribution_types = {
+            ClaimType.QUOTE,
+            ClaimType.EVENT,
+            ClaimType.RELATIONSHIP,
+        }
+        if claim.claim_type in attribution_types and query:
+            try:
+                from hyperion.tools.deep_search import (
+                    record_retrieval_backend,
+                    record_retrieval_constraints,
+                )
+                from hyperion.tools.grounded_search import (
+                    GroundedSearchClient,
+                    GroundingReason,
+                )
+
+                grounded = await GroundedSearchClient(settings=self.settings).search(
+                    query,
+                    reason=GroundingReason.ATTRIBUTION_VERIFICATION,
+                )
+                record_retrieval_backend("gemini", grounded.actual_units)
+                record_retrieval_constraints(grounded.constraints)
+                for result in grounded.results:
+                    if any(source.url == result.url for source in verification_sources):
+                        continue
+                    verification_sources.append(Source(
+                        id=(
+                            "verify_grounded_"
+                            f"{hashlib.md5(result.url.encode()).hexdigest()[:8]}"
+                        ),
+                        title=result.title,
+                        url=result.url,
+                        credibility=self._score_domain_credibility(result.url),
+                        accessed_at=datetime.now(),
+                        key_data=result.snippet,
+                    ))
+            except (ValueError, AttributeError, RuntimeError) as exc:
+                logger.warning("Fact checker grounded verification failed open: %s", exc)
+
         # Step 3: Use Jina to extract content from top results for evidence chain validation
         if verification_sources:
             try:

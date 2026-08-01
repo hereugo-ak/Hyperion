@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 from urllib.parse import urlparse
 
@@ -334,7 +334,14 @@ class RetrievalStats:
     — it never invents a query count.
     """
 
-    __slots__ = ("queries_issued", "pools", "escalations", "distinct_triples")
+    __slots__ = (
+        "queries_issued",
+        "pools",
+        "escalations",
+        "distinct_triples",
+        "backend_query_counts",
+        "constraints",
+    )
 
     def __init__(
         self,
@@ -342,15 +349,27 @@ class RetrievalStats:
         pools: Iterable[str] = (),
         escalations: int = 0,
         distinct_triples: int = 0,
+        backend_query_counts: Mapping[str, int] | None = None,
+        constraints: Sequence[str] = (),
     ) -> None:
         self.queries_issued = queries_issued
         self.pools = list(dict.fromkeys(pools))
         self.escalations = escalations
         self.distinct_triples = distinct_triples
+        self.backend_query_counts = {
+            str(name): int(count)
+            for name, count in (backend_query_counts or {}).items()
+            if int(count) > 0
+        }
+        self.constraints = [str(item) for item in constraints if str(item).strip()]
 
     @classmethod
     def from_resolutions(
-        cls, resolutions: Sequence[Any], queries_issued: int | None = None
+        cls,
+        resolutions: Sequence[Any],
+        queries_issued: int | None = None,
+        backend_query_counts: Mapping[str, int] | None = None,
+        constraints: Sequence[str] = (),
     ) -> RetrievalStats:
         pools: list[str] = []
         identities: set[tuple[str, ...]] = set()
@@ -375,6 +394,8 @@ class RetrievalStats:
             pools=pools,
             escalations=escalations,
             distinct_triples=len(identities),
+            backend_query_counts=backend_query_counts,
+            constraints=constraints,
         )
 
 
@@ -666,6 +687,21 @@ def _sub_retrieval(
             f"{_plural(retrieval.queries_issued, 'distinct query', 'distinct queries')} "
             f"{'was' if retrieval.queries_issued == 1 else 'were'} issued."
         )
+    independent_queries = sum(
+        retrieval.backend_query_counts.get(name, 0)
+        for name in ("searxng", "jina")
+    )
+    grounded_queries = retrieval.backend_query_counts.get("gemini", 0)
+    if independent_queries or grounded_queries:
+        parts.append(
+            f"The recorded backend mix was {independent_queries} independent "
+            f"index queries and {grounded_queries} grounded model search queries."
+        )
+    if retrieval.constraints:
+        parts.append(
+            f"{_plural(len(retrieval.constraints), 'grounded retrieval constraint')} "
+            "was recorded; affected attempts fell back to the independent index pool."
+        )
     parts.append(
         f"The surviving corpus spans "
         f"{_plural(stats.n_domains, 'distinct source domain')} across "
@@ -707,6 +743,9 @@ def _sub_retrieval(
         ),
         f"Retrieval escalations triggered: {retrieval.escalations}.",
         f"Distinct retrieval strategies attempted: {retrieval.distinct_triples}.",
+        f"Independent index backend queries: {independent_queries}.",
+        f"Grounded model backend search queries: {grounded_queries}.",
+        f"Grounded retrieval constraints recorded: {len(retrieval.constraints)}.",
     )
     return MethodologySubsection(
         key="retrieval_strategy_and_coverage",
@@ -883,6 +922,8 @@ def build_methodology(
     dag: Any = None,
     resolutions: Sequence[Any] | None = None,
     queries_issued: int | None = None,
+    backend_query_counts: Mapping[str, int] | None = None,
+    retrieval_constraints: Sequence[str] = (),
 ) -> MethodologyRecord:
     """Build the six-subsection methodology from recorded structures only.
 
@@ -895,7 +936,12 @@ def build_methodology(
     """
     resolutions = list(resolutions or [])
     stats = CorpusStats(collect_sources(report))
-    retrieval = RetrievalStats.from_resolutions(resolutions, queries_issued)
+    retrieval = RetrievalStats.from_resolutions(
+        resolutions,
+        queries_issued,
+        backend_query_counts=backend_query_counts,
+        constraints=retrieval_constraints,
+    )
     fact_check = getattr(report, "fact_check_report", None)
 
     subsections = [

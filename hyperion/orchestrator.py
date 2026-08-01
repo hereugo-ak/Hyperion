@@ -1215,7 +1215,43 @@ class WorkflowEngine:
                         f"resolved after scope change ({scope_change}) "
                         f"via {triple.describe()}"
                     )
-            # Phase 3: classify the survivors.
+            # Phase 3: one scarce, independently failed grounded-search attempt
+            # after the W-07 strategies are exhausted and before declaring a gap.
+            if not gap.resolved and ladder.budget_exhausted():
+                try:
+                    from hyperion.tools.deep_search import (
+                        record_retrieval_backend,
+                        record_retrieval_constraints,
+                    )
+                    from hyperion.tools.grounded_search import (
+                        GroundedSearchClient,
+                        GroundingReason,
+                    )
+
+                    grounded = await GroundedSearchClient().search(
+                        gap.question,
+                        engagement_id=self._engagement_id,
+                        reason=GroundingReason.RETRY_EXHAUSTED,
+                    )
+                    record_retrieval_backend("gemini", grounded.actual_units)
+                    record_retrieval_constraints(grounded.constraints)
+                    gap.attempts += 1
+                    if grounded.results:
+                        gap.resolved = True
+                        authorities = ", ".join(
+                            result.url for result in grounded.results[:3]
+                        )
+                        gap.resolution = (
+                            "resolved by grounded authority retrieval: "
+                            f"{authorities}"
+                        )
+                except Exception as exc:  # noqa: BLE001 - gap classification continues
+                    logger.warning(
+                        "gap_closure: grounded escalation for %s failed open: %s",
+                        gap.id,
+                        exc,
+                    )
+            # Phase 4: classify the survivors.
             if not gap.resolved:
                 outcome, justification = classify_gap(
                     gap.question,
@@ -1790,12 +1826,16 @@ class WorkflowEngine:
         ``TypeError``/``AttributeError`` cover a malformed report or DAG.
         """
         from hyperion.output.methodology import build_methodology
+        from hyperion.tools.deep_search import engagement_yield_report
 
         try:
+            retrieval = engagement_yield_report()
             report.methodology = build_methodology(
                 report,
                 dag=dag,
                 resolutions=list(getattr(self, "_insufficiency_resolutions", []) or []),
+                backend_query_counts=retrieval.get("backend_query_counts", {}),
+                retrieval_constraints=retrieval.get("retrieval_constraints", []),
             )
             n = len(report.methodology.subsections)
             self._log(f"METHODOLOGY: {n} subsections built from recorded structures")
@@ -2095,8 +2135,10 @@ class WorkflowEngine:
         # so engagement_yield_report() covers THIS engagement only.
         try:
             from hyperion.tools.deep_search import reset_engagement_yield
+            from hyperion.tools.grounded_search import set_grounding_engagement_id
 
             reset_engagement_yield()
+            set_grounding_engagement_id(self._engagement_id)
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("%s: %s", "run_engagement", exc)
         # Seed the search anchor from the raw question immediately, so any

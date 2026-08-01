@@ -8,6 +8,7 @@ outcome; callers never branch on a result's backend identity.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -20,6 +21,18 @@ from hyperion.tools.query_utils import ground_query_or_raise
 from hyperion.tools.searxng import HEALTHY_ENGINE_FLOOR, SearchResult, referenced_engines
 
 logger = logging.getLogger(__name__)
+_current_engagement_id: ContextVar[str] = ContextVar(
+    "grounding_engagement_id", default="unknown"
+)
+
+
+def set_grounding_engagement_id(engagement_id: str) -> None:
+    """Bind grounded-search audit entries to the current orchestration run."""
+    _current_engagement_id.set(engagement_id or "unknown")
+
+
+def get_grounding_engagement_id() -> str:
+    return _current_engagement_id.get()
 
 
 class GroundingReason(StrEnum):
@@ -72,21 +85,20 @@ class GroundedSearchClient:
     def searxng_is_degraded() -> bool:
         from hyperion.tools.engine_health import get_engine_health
 
-        return (
-            get_engine_health().healthy_count(referenced_engines())
-            < HEALTHY_ENGINE_FLOOR
-        )
+        healthy = int(get_engine_health().healthy_count(referenced_engines()))
+        return bool(healthy < int(HEALTHY_ENGINE_FLOOR))
 
     async def search(
         self,
         query: str,
         *,
-        engagement_id: str,
+        engagement_id: str | None = None,
         reason: GroundingReason,
         subject: str = "",
         geography: str = "",
     ) -> GroundedSearchOutcome:
         grounded = ground_query_or_raise(query, subject=subject, geography=geography)
+        engagement_id = engagement_id or get_grounding_engagement_id()
         outcome = GroundedSearchOutcome(query=grounded, reason=reason)
         if not bool(self.settings.google_grounding_enabled):
             outcome.constraints.append("grounded retrieval disabled by configuration")
