@@ -447,7 +447,17 @@ def _render_exhibit(placement: ChartPlacement) -> str:
 
     from hyperion.agents.delivery.presentation_designer import HTML_TEMPLATE
 
-    start = HTML_TEMPLATE.index("{% for chart in section_charts[section.id] %}")
+    import re as _re
+
+    # The loop header carries a Jinja filter expression (P2-34 added
+    # ``if chart``); match up to its closing ``%}`` rather than pinning the
+    # exact text, so a legitimate change to the guard cannot turn this locator
+    # into a silent no-match.
+    m = _re.search(
+        r"\{% for chart in section_charts\[section\.id\][^%]*%\}", HTML_TEMPLATE
+    )
+    assert m, "exhibit loop not found in HTML_TEMPLATE — did the markup move?"
+    start = m.start()
     end = HTML_TEMPLATE.index("{% endfor %}", start) + len("{% endfor %}")
     fragment = HTML_TEMPLATE[start:end]
 

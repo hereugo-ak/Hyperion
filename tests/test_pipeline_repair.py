@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import inspect
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -213,14 +214,29 @@ class TestFredGeographyHonesty:
         ["financial_analyst.py", "market_analyst.py"],
     )
     def test_fred_source_is_cited_as_united_states(self, filename):
-        """The source line used to read "FRED Macroeconomic Data — India" while
-        serving US Treasury yields (DGS10, CPIAUCSL, GDP, FEDFUNDS, PCES)."""
+        """The source line used to read "FRED Macroeconomic Data, India" while
+        serving US Treasury yields (DGS10, CPIAUCSL, GDP, FEDFUNDS, PCES).
+
+        The separator is asserted loosely on purpose. P2-32's global em/en dash
+        ban rewrote the original "Data — United States" to "Data, United
+        States"; pinning the dash here would make this test require a string
+        the typography ban forbids. What matters is the jurisdiction, so that
+        is what is pinned, and the fabricated form is pinned as absent.
+        """
         root = Path(__file__).resolve().parent.parent
         src = (root / "hyperion" / "agents" / "specialists" / filename).read_text(
             encoding="utf-8"
         )
-        assert "FRED Macroeconomic Data — United States" in src, (
-            f"{filename} must cite FRED as United States, not as the requested geography"
+        cited = re.search(
+            r'title\s*=\s*"FRED Macroeconomic Data[^"]*"', src
+        )
+        assert cited, f"{filename} does not cite a FRED source title at all"
+        assert "United States" in cited.group(0), (
+            f"{filename} must cite FRED as United States, not as the requested "
+            f"geography; found {cited.group(0)!r}"
+        )
+        assert "\u2014" not in cited.group(0) and "\u2013" not in cited.group(0), (
+            "P2-32 bans em/en dashes globally, including in source titles"
         )
         assert "geography_mismatch" in src, (
             f"{filename} must record requested-vs-actual geography for the Fact Checker"

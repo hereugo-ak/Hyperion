@@ -89,8 +89,13 @@ def _enforce(*charts: ChartPlacement) -> tuple[list[str], list[ChartPlacement]]:
 
 def _render_exhibit(chart: ChartPlacement) -> str:
     """Render just the exhibit loop from the real HTML_TEMPLATE."""
+    # The loop header carries a Jinja filter expression (P2-34 added
+    # ``if chart`` so a falsy placement cannot render an empty <figure>), and
+    # more filters may be added. Match the header up to its closing ``%}``
+    # rather than pinning the exact expression, so this locator survives a
+    # legitimate change to the guard without silently matching nothing.
     m = re.search(
-        r"(\{% for chart in section_charts\[section\.id\] %\}.*?\{% endfor %\})",
+        r"(\{% for chart in section_charts\[section\.id\][^%]*%\}.*?\{% endfor %\})",
         HTML_TEMPLATE,
         re.S,
     )

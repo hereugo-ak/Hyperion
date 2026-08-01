@@ -224,11 +224,23 @@ class TestSearxNGGrounding:
         )
         monkeypatch.setattr(client, "_search_jina_fallback", fake_jina_fallback)
 
+        # One search() can issue MORE THAN ONE network query: P2-26 added
+        # standby-pool rotation on a zero-result response, so a positional
+        # index into seen_queries no longer identifies "the query from the
+        # second call". The list is drained between calls instead, and every
+        # query the call issued is asserted, which is the stronger claim
+        # anyway: drop_geography must hold for the retry as well as the first
+        # attempt, or the anchor leaks back in on rotation.
         asyncio.run(client.search("steel tariff exemptions", drop_geography=True))
+        dropped = list(seen_queries)
+        seen_queries.clear()
         asyncio.run(client.search("steel tariff exemptions", drop_geography=False))
+        anchored = list(seen_queries)
 
-        assert "india" not in seen_queries[0].lower()
-        assert "india" in seen_queries[1].lower()
+        assert dropped, "drop_geography=True issued no network query at all"
+        assert all("india" not in q.lower() for q in dropped), dropped
+        assert anchored, "drop_geography=False issued no network query at all"
+        assert all("india" in q.lower() for q in anchored), anchored
 
 
 class TestJinaGrounding:
