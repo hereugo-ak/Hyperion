@@ -729,6 +729,16 @@ class Settings(BaseSettings):
 
     # ── Provider Base URLs ──
     google_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    # W-14: native Gemini grounding is intentionally separate from Google's
+    # OpenAI-compatible completion endpoint. Quota units are provider-issued
+    # search queries for Gemini 3 models, not ordinary completion requests.
+    google_grounding_enabled: bool = True
+    google_grounding_model: str = "gemini-3.1-flash-lite"
+    google_grounding_daily_limit: int = 500
+    google_grounding_monthly_limit: int = 15_000
+    google_grounding_reserve_fraction: float = 0.10
+    google_grounding_max_queries_per_call: int = 4
+    google_grounding_ledger_path: Path = Path("./vault/grounding_quota.json")
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     cerebras_base_url: str = "https://api.cerebras.ai/v1"
     groq_base_url: str = "https://api.groq.com/openai/v1"
@@ -923,7 +933,13 @@ class Settings(BaseSettings):
     def flaresolverr_host(self) -> str:
         return _host_from_url(self.flaresolverr_url, default="localhost")
 
-    @field_validator("vault_path", "reports_dir", "assets_dir", mode="before")
+    @field_validator(
+        "vault_path",
+        "reports_dir",
+        "assets_dir",
+        "google_grounding_ledger_path",
+        mode="before",
+    )
     @classmethod
     def validate_paths(cls, v: Any) -> Path:
         """Coerce to an absolute Path anchored at the project root.
