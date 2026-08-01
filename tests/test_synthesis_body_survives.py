@@ -17,6 +17,7 @@ would render — not on the internal reordering.
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock
 
 import pytest
@@ -35,22 +36,94 @@ QUESTION = "should india import less ?"
 
 
 class _StubLLMResponse:
-    """RouterResponse stand-in. success=False makes the section builder take
-    its deterministic findings-concatenation fallback — the sandbox suite
-    must never place a live LLM call."""
+    """RouterResponse stand-in — the sandbox suite must never place a live
+    LLM call.
 
-    success = False
-    content = ""
-    model = "stub"
-    provider = "stub"
+    STALE-FIXTURE NOTE (P2-11). This stub used to be ``success = False`` with
+    a comment saying that made "the section builder take its deterministic
+    findings-concatenation fallback". P2-11 DELETED that fallback: a section
+    with no synthesized narrative is now a ``SectionGapError`` and the section
+    is omitted (``synthesis_lead.py:1318-1324``). A failing stub therefore
+    produced zero sections and this file's invariant ("sections survive a
+    mid-synthesis crash") became untestable rather than false.
+
+    The stub is now SUCCESSFUL and prompt-aware: it returns a narrative long
+    enough to clear ``min_body_chars`` for a section-narrative prompt, and a
+    JSON object for the structured prompts. That is what the post-P2-11
+    design requires of a real provider, so the fixture now models the
+    provider contract instead of a deleted fallback.
+    """
+
+    def __init__(self, content: str) -> None:
+        self.success = True
+        self.content = content
+        self.model = "stub"
+        self.provider = "stub"
+        self.error = None
+
+
+_MIN_WORDS_RE = re.compile(r"not write fewer than\s+(\d+)\s+words")
+
+# One paragraph, repeated as many times as the prompt's own stated minimum
+# requires. Deriving the length from the prompt (rather than hardcoding a
+# character count) is what keeps this fixture correct when plan_budget()'s
+# per-section word allocation changes: min_body_chars is
+# ``max(800, words_per_section * 6 * 0.5)`` and the prompt states
+# ``words_per_section * 0.9``, so scaling off the stated minimum can never
+# fall under the acceptance threshold.
+_STUB_PARAGRAPH = (
+    "Import volumes fell 14 percent year on year while domestic capacity "
+    "utilisation rose to 78 percent, and the two movements are the same "
+    "story told from opposite ends of the supply chain. The ministry series "
+    "shows the decline concentrated in intermediate goods rather than "
+    "finished products, which means the substitution is happening upstream "
+    "where it compounds through the value chain rather than downstream "
+    "where it would be a one-off. "
+)
+def stub_narrative(min_words: int = 2000) -> str:
+    """A narrative body of at least ``min_words`` words."""
+    per = len(_STUB_PARAGRAPH.split())
+    reps = max(4, (min_words * 2) // max(1, per))
+    return ("**Framing**\n\n" + _STUB_PARAGRAPH * reps).strip()
+
+
+STUB_NARRATIVE = stub_narrative()
+
+
+def _stub_content_for(prompt: str) -> str:
+    """Return the shape a real provider would return for this prompt."""
+    text = prompt or ""
+    lowered = text.lower()
+    is_narrative = (
+        "write a deep, analytical narrative section" in lowered
+        or "write a comprehensive section body" in lowered
+        or "consulting prose" in lowered
+    )
+    if is_narrative:
+        match = _MIN_WORDS_RE.search(lowered)
+        return stub_narrative(int(match.group(1)) if match else 2000)
+    return "{}"
 
 
 @pytest.fixture(autouse=True)
 def _no_live_llm(monkeypatch):
     async def _stub_complete(self, *args, **kwargs):
-        return _StubLLMResponse()
+        prompt = kwargs.get("user_prompt") or (args[0] if args else "")
+        return _StubLLMResponse(_stub_content_for(str(prompt)))
 
     monkeypatch.setattr(SynthesisLead, "_llm_complete", _stub_complete)
+
+    # W-05 rebuilt contradiction resolution; two findings of equal evidence
+    # weight now dispatch ``_deep_dive_contradiction`` -> ``_spawn_sub_agent``,
+    # which performs LIVE web retrieval. The fixture's findings are
+    # deliberately symmetric, so that path fires on every run and the test
+    # hangs on the network rather than failing. Stubbed here: the sandbox
+    # suite must never place a live call, and the sub-agent's verdict is not
+    # what this file asserts on.
+    async def _no_sub_agent(self, *args, **kwargs):
+        return []
+
+    monkeypatch.setattr(SynthesisLead, "_spawn_sub_agent", _no_sub_agent)
 
 
 def _finding(agent: str, i: int) -> KeyFinding:
@@ -218,12 +291,16 @@ class TestDegradedFlag:
         # Simulate: sections were built, then something downstream raised.
         lead._partial_sections = [
             # Minimal stand-in; _minimal_report must carry the list object.
+            # `confidence` is REQUIRED on AnalysisSection: P2-16 removed its
+            # default so a section can never silently inherit a confidence
+            # nobody derived. The fixture states it explicitly.
             __import__("hyperion.schemas.models", fromlist=["AnalysisSection"]).AnalysisSection(
                 id="section_market_analyst",
                 title="Market Landscape",
                 agent="market_analyst",
                 key_insight="k",
                 body="b" * 200,
+                confidence=ConfidenceLevel.MEDIUM,
             )
         ]
         report = lead._minimal_report(reason="late crash")

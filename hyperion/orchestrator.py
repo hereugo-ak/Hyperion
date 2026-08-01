@@ -1589,7 +1589,7 @@ class WorkflowEngine:
             )
 
             self._log(
-                f"QUALITY iteration {iteration}/{self.MAX_QUALITY_ITERATIONS}: "
+                f"QUALITY iteration {iteration}/{max_iterations}: "
                 f"score={current_score.total_score:.1f}/{current_score.threshold:.1f} "
                 f"approved={current_score.approved} "
                 f"critical={len(current_score.critical_dimensions)} "
@@ -1791,7 +1791,9 @@ class WorkflowEngine:
             from hyperion.config import get_settings
 
             reports_dir = get_settings().reports_dir
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - settings may be unconfigured on a
+            # blocked run; the diagnostic must still be written, so fall back
+            # to the conventional ./reports directory rather than raise.
             from pathlib import Path as _P
 
             reports_dir = _P("./reports")

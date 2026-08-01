@@ -197,7 +197,11 @@ class TestOrchestrator:
 
         engine = WorkflowEngine()
         assert engine is not None
-        assert engine.MAX_QUALITY_ITERATIONS == 2  # P7: capped at ≤2
+        # W-08 step 3 raised the cap from 2 to 4 deliberately: two iterations
+        # cannot close sixteen gaps. The runaway risk the old P7 cap of 2 was
+        # guarding against is now bounded by a wall-clock budget plus early
+        # termination on a no-improvement iteration, not by the count alone.
+        assert engine.MAX_QUALITY_ITERATIONS == 4
         assert engine.TASK_TIMEOUT_SECONDS == 600
 
     def test_engagement_result_dataclass(self):

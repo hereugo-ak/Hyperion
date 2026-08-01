@@ -19,10 +19,12 @@ PDF), not on the prompt.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
 from hyperion.agents.synthesis_lead import SynthesisLead
+from tests.test_synthesis_body_survives import stub_narrative
 from hyperion.schemas.models import (
     ConfidenceLevel,
     KeyFinding,
@@ -70,6 +72,29 @@ def _failing_quality_score() -> QualityScore:
         approved=False,
         iteration=1,
     )
+
+
+class _StubNarrativeResponse:
+    """A successful narrative response, sized from the prompt's own stated
+    minimum word count (see tests/test_synthesis_body_survives.py for the
+    same helper and the P2-11 rationale)."""
+
+    def __init__(self, prompt: str) -> None:
+        self.success = True
+        self.content = stub_narrative(_min_words_from(prompt))
+        self.model = "stub"
+        self.provider = "stub"
+        self.error = None
+
+
+def _min_words_from(prompt: str) -> int:
+    match = re.search(r"not write fewer than\s+(\d+)\s+words", prompt or "")
+    return int(match.group(1)) if match else 2000
+
+
+async def _narrative_stub(*args, **kwargs):
+    prompt = kwargs.get("user_prompt") or (args[0] if args else "")
+    return _StubNarrativeResponse(str(prompt))
 
 
 def _seed_lead_with_findings(lead: SynthesisLead) -> None:
@@ -156,11 +181,21 @@ class TestDegradedReportCannotBeReProsed:
                 }
             )
 
-        monkeypatch.setattr(lead, "_llm_complete", _stub)
-
         # Sections come from the D-01 path: built from findings, parked on
         # _partial_sections, carried into the degraded report.
+        #
+        # P2-11 DELETED the findings-concatenation fallback, so
+        # _build_analysis_sections() only yields a section when the narrative
+        # LLM call returns a body longer than min_body_chars. The stub above
+        # returns the quality-feedback JSON, which is far too short, so the
+        # section builder correctly declares three gaps and returns []. The
+        # narrative call therefore gets its own prompt-aware stub, installed
+        # BEFORE the section build and replaced by the quality-feedback stub
+        # afterwards — the two prompts are different calls and modelling them
+        # as one response was the stale part of this fixture.
+        monkeypatch.setattr(lead, "_llm_complete", _narrative_stub)
         lead._partial_sections = await lead._build_analysis_sections()
+        monkeypatch.setattr(lead, "_llm_complete", _stub)
         degraded = lead._minimal_report(reason="crash")
         assert degraded.sections, "fixture: degraded report carries the body"
 
