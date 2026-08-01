@@ -2125,7 +2125,10 @@ class WorkflowEngine:
         self._start_time = time.time()
         # W-18: the router singleton can serve multiple consultations in one
         # shell; reset only the engagement cost accumulator, never daily usage.
-        self.router.budget_planner.reset_engagement_cost()
+        # WorkflowEngine intentionally permits router=None for deterministic
+        # offline quality-gate runs, which accrue no LLM cost.
+        if self.router is not None:
+            self.router.budget_planner.reset_engagement_cost()
         # W-20: deterministic run id — the durable-execution journal below
         # only resumes a crashed engagement if a re-run of the same question
         # lands on the SAME run_id. ``fresh=True`` forces a random id for a
@@ -2722,7 +2725,9 @@ class WorkflowEngine:
         finally:
             # W-18: every success and failure result carries the cost accrued
             # before return; Python executes this mutation before returning it.
-            result.estimated_llm_cost_usd = self.router.get_engagement_cost_usd()
+            # Router-free deterministic runs truthfully report zero cost.
+            if self.router is not None:
+                result.estimated_llm_cost_usd = self.router.get_engagement_cost_usd()
             # P10: Close journal
             if self._journal:
                 self._journal.close()
