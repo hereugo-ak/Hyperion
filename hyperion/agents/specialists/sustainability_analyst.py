@@ -493,7 +493,7 @@ class SustainabilityAnalyst(BaseAgent):
                             title=f"ESG platform, {url.split('/')[2]}",
                             url=url,
                             credibility=SourceCredibility.INDUSTRY_REPORT,
-                            key_data=f"ESG rating data from {url}",
+                            key_data=page_data["content"][:500],
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue
@@ -539,7 +539,12 @@ class SustainabilityAnalyst(BaseAgent):
                             title=f"FRED, {series_id}",
                             url=f"https://fred.stlouisfed.org/series/{series_id}",
                             credibility=SourceCredibility.GOVERNMENT,
-                            key_data=f"FRED economic data: {series_id}",
+                            key_data=(
+                        "; ".join(
+                            f"{obs.get('date', '?')}: {obs.get('value', 'N/A')}"
+                            for obs in (data.data_points[-3:] if getattr(data, "data_points", None) else [])
+                        ) or None
+                    ),
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue

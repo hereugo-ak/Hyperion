@@ -478,7 +478,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
                             title=f"Review site, {url.split('/')[2]}",
                             url=url,
                             credibility=SourceCredibility.NEWS,
-                            key_data=f"Customer reviews from {url.split('/')[2]}",
+                            key_data=page_data["content"][:500],
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue

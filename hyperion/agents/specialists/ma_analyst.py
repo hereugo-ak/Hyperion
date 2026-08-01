@@ -504,7 +504,7 @@ class MAAnalyst(BaseAgent):
                                 title=f"Deal database, {url.split('/')[2]}",
                                 url=url,
                                 credibility=SourceCredibility.INDUSTRY_REPORT,
-                                key_data=f"M&A database data from {url.split('/')[2]}",
+                                key_data=page_data["content"][:500],
                             ))
                     except (ValueError, AttributeError, RuntimeError):
                         continue
@@ -667,7 +667,13 @@ class MAAnalyst(BaseAgent):
                         title=f"Alpha Vantage, {target.ticker}",
                         url=f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={target.ticker}",
                         credibility=SourceCredibility.GOVERNMENT,
-                        key_data=f"Financial data for {target.company_name} ({target.ticker})",
+                        key_data=(
+                        f"Market cap: {overview.get('MarketCapitalization', 'N/A')}, "
+                        f"P/E: {overview.get('PERatio', 'N/A')}, "
+                        f"EPS: {overview.get('EPS', 'N/A')}, "
+                        f"Revenue TTM: {overview.get('RevenueTTM', 'N/A')}, "
+                        f"Profit margin: {overview.get('ProfitMargin', 'N/A')}"
+                    ),
                     ))
                 except (ValueError, AttributeError, RuntimeError):
                     results.append({

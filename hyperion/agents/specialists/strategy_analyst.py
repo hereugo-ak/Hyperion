@@ -479,7 +479,7 @@ class StrategyAnalyst(BaseAgent):
                                 title=f"Strategy DB, {url.split('/')[2]}",
                                 url=url,
                                 credibility=SourceCredibility.INDUSTRY_REPORT,
-                                key_data=f"Strategy data from {url.split('/')[2]}",
+                                key_data=page_data["content"][:500],
                             ))
                     except (ValueError, AttributeError, RuntimeError):
                         continue

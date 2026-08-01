@@ -277,8 +277,20 @@ class FactChecker(BaseAgent):
         re.IGNORECASE,
     )
 
-    # Suspicious round number thresholds
+    # Suspicious round number thresholds (canonical units, post-normalisation)
     ROUND_NUMBER_SUSPECTS = {10_000_000_000, 1_000_000_000, 100_000_000, 10_000_000}
+    # Denomination multipliers for normalising "$1.2B" and "$1200M" to the
+    # same canonical value before comparing against the suspect set (W-15).
+    _UNIT_MULTIPLIERS = {
+        "trillion": 1_000_000_000_000,
+        "t": 1_000_000_000_000,
+        "billion": 1_000_000_000,
+        "b": 1_000_000_000,
+        "million": 1_000_000,
+        "m": 1_000_000,
+        "thousand": 1_000,
+        "k": 1_000,
+    }
     IMPLAUSIBLE_GROWTH_THRESHOLD = 300  # % YoY
 
     # Concurrency limit for web verification searches
@@ -814,21 +826,22 @@ class FactChecker(BaseAgent):
         claim.credibility_weighted_score = self._calculate_credibility_weighted_score(verification_sources)
         claim.verification_sources = verification_sources
 
-        # Check if the claim data appears in the source content
+        # Check if the claim data appears in the source content.
+        # W-15: exactly one matching algorithm in this file. The naive
+        # substring/word-overlap block that used to live here measured a
+        # different strictness than _validate_evidence_chains, so
+        # verification_rate and hallucinated_count could disagree about the
+        # same corpus for no principled reason. Both paths now call the
+        # same token-boundary matcher.
         supporting_sources = 0
         contradicting_sources = 0
 
-        claim_lower = claim.claim.lower()
         for source in verification_sources:
-            source_data = (source.key_data or "").lower()
-            if claim_lower in source_data or any(
-                word in source_data for word in claim_lower.split() if len(word) > 4
-            ):
+            if self._source_supports_claim(claim, source):
                 supporting_sources += 1
-            else:
-                # Check for contradiction (source mentions the topic but with different data)
-                # This is a simplified check, the LLM would do deeper analysis
-                pass
+            # Contradiction detection requires deeper analysis than token
+            # overlap; sources that do not support the claim are not
+            # automatically contradicting it.
 
         # Determine status
         if supporting_sources >= 2 and is_independent:
@@ -1200,9 +1213,12 @@ class FactChecker(BaseAgent):
             # No overlap found. Require a SECOND independent signal, a dead
             # URL, before asserting the citation was invented. A live source
             # whose fetched text simply does not mention the claim is
-            # UNVERIFIABLE, not HALLUCINATED.
-            url_alive = await self._any_source_url_alive(content_sources)
-            if not url_alive:
+            # UNVERIFIABLE, not HALLUCINATED. An UNKNOWN liveness result
+            # (our own egress failed) is also UNVERIFIABLE, W-15: "cannot
+            # prove the citation was invented" is a reason not to assert
+            # HALLUCINATED, never a reason to assert the source is alive.
+            liveness = await self._any_source_url_alive(content_sources)
+            if liveness is False:
                 claim.evidence_chain_valid = False
                 claim.evidence_chain_break = (
                     "Cited source does not contain the claimed data and the "
@@ -1250,20 +1266,31 @@ class FactChecker(BaseAgent):
         overlap = sum(1 for kw in keywords if kw in source_stems or EvidenceScorer._stem(kw) in source_stems)
         return overlap >= 2
 
-    async def _any_source_url_alive(self, sources: list[Source]) -> bool:
-        """True if at least one cited URL responds (liveness second signal)."""
-        for source in sources:
-            if await self._url_alive(source.url):
-                return True
-        return False
+    async def _any_source_url_alive(self, sources: list[Source]) -> bool | None:
+        """Tri-state liveness aggregate across the cited URLs.
 
-    async def _url_alive(self, url: str) -> bool:
+        True: at least one URL confirmed alive. False: every URL confirmed
+        dead (none unknown). None: no URL confirmed alive and at least one
+        check was inconclusive (network failure), so liveness is UNKNOWN.
+        """
+        saw_unknown = False
+        for source in sources:
+            result = await self._url_alive(source.url)
+            if result is True:
+                return True
+            if result is None:
+                saw_unknown = True
+        return None if saw_unknown else False
+
+    async def _url_alive(self, url: str) -> bool | None:
         """Liveness check: HEAD (fall back to GET) the cited URL.
 
-        Any response below HTTP 400 counts as alive: 301/302 redirects and
-        200s mean the source exists. A connection error, timeout, or 4xx/5xx
-        means dead. Network failures default to alive (we cannot prove the
-        citation was invented because our own egress failed).
+        Tri-state (W-15): True means a response below HTTP 400 came back
+        (301/302 redirects and 200s mean the source exists). False means a
+        response with status >= 400 came back: the source is confirmed dead.
+        None means the check itself failed (connection error, timeout), so
+        liveness is UNKNOWN. An egress failure is not evidence the source
+        is alive, and it is not evidence the source is dead either.
         """
         if not url:
             return False
@@ -1278,9 +1305,9 @@ class FactChecker(BaseAgent):
                 except Exception:  # noqa: BLE001 - some servers reject HEAD
                     resp = await client.get(url, headers={"Range": "bytes=0-0"})
                 return resp.status_code < 400
-        except Exception as exc:  # noqa: BLE001 - egress failure ≠ dead source
+        except Exception as exc:  # noqa: BLE001 - egress failure: UNKNOWN, not alive
             logger.debug("url liveness check failed for %s: %s", url, exc)
-            return True
+            return None
 
     # ─────────────────────────────────────────────────────────────────────
     # Statistical sanity checks (part of Step 4)
@@ -1301,18 +1328,30 @@ class FactChecker(BaseAgent):
             if claim.claim_type != ClaimType.NUMBER:
                 continue
 
-            # Extract the numeric value
-            nums = re.findall(r'\$?(\d[\d,]*)\.?\d*', claim.claim)
-            for num_str in nums:
+            # Extract numeric values WITH their denomination. W-15: the
+            # previous regex read the digits only, so "$1.2B" parsed as 1.2
+            # and could never match the suspect set, while "$1200M" parsed
+            # as 1200, also a miss. Values are normalised to canonical
+            # units (billion/million/trillion/thousand multiplied out)
+            # before comparison, so equivalent magnitudes match regardless
+            # of notation.
+            flagged_values: set[float] = set()
+            nums = re.findall(
+                r'\$?(\d[\d,]*\.?\d*)\s*(trillion|billion|million|thousand|[TtBbMmKk])?\b',
+                claim.claim,
+            )
+            for num_str, unit in nums:
                 try:
-                    # Remove commas and convert
-                    value = int(num_str.replace(",", ""))
+                    value = float(num_str.replace(",", ""))
+                    multiplier = self._UNIT_MULTIPLIERS.get(unit.lower(), 1) if unit else 1
+                    normalised = value * multiplier
 
                     # Check against suspicious round numbers
-                    if value in self.ROUND_NUMBER_SUSPECTS:
+                    if normalised in self.ROUND_NUMBER_SUSPECTS and normalised not in flagged_values:
+                        flagged_values.add(normalised)
                         red_flags.append(
                             f"Suspiciously round number: {claim.claim} "
-                            f"(from {claim.agent}), exactly ${value:,} "
+                            f"(from {claim.agent}), exactly ${normalised:,.0f} "
                             f"is suspicious. Verify with primary source."
                         )
                 except (ValueError, TypeError):
@@ -1371,6 +1410,31 @@ class FactChecker(BaseAgent):
     # ─────────────────────────────────────────────────────────────────────
     # Confidence calibration
     # ─────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _telemetry_confidence(count: int, total_claims: int) -> ConfidenceLevel:
+        """Derive the confidence attached to a telemetry count (W-15).
+
+        A count is not itself a confidence-calibrated statement, so the
+        confidence reflects how material the measured pattern is relative
+        to the corpus it was measured over:
+
+        - HIGH: the pattern touches at least 10% of all claims checked, or
+          3+ claims when the corpus is small. Material either way.
+        - MEDIUM: more than one occurrence, but below the materiality line.
+        - LOW: a single isolated occurrence.
+
+        Replaces the hardcoded ``ConfidenceLevel.HIGH`` that previously made
+        "1 hallucinated citation out of 400 checked" and "40 out of 50"
+        indistinguishable in the telemetry stream.
+        """
+        if total_claims > 0 and count / total_claims >= 0.10:
+            return ConfidenceLevel.HIGH
+        if count >= 3 and total_claims <= 20:
+            return ConfidenceLevel.HIGH
+        if count >= 2:
+            return ConfidenceLevel.MEDIUM
+        return ConfidenceLevel.LOW
 
     def _calibrate_confidence(
         self,
@@ -1579,7 +1643,13 @@ class FactChecker(BaseAgent):
                     f"Affected agents: {', '.join(set(c.agent for c in self._hallucinated))}. "
                     f"Claims: {', '.join(c.claim[:50] for c in self._hallucinated[:3])}"
                 ),
-                confidence=ConfidenceLevel.HIGH,
+                # W-15: derived, not hardcoded. The confidence attached to
+                # the count reflects how material the measured pattern is
+                # relative to the total claims checked, since a count is
+                # not itself a confidence-calibrated statement.
+                confidence=self._telemetry_confidence(
+                    len(self._hallucinated), total_claims
+                ),
             )
             await self._publish_finding(finding)
 
@@ -1594,7 +1664,11 @@ class FactChecker(BaseAgent):
                     f"Detected {len(self._statistical_red_flags)} statistical "
                     f"red flag(s): {'; '.join(self._statistical_red_flags[:3])}"
                 ),
-                confidence=ConfidenceLevel.HIGH,
+                # W-15: derived, not hardcoded (same rationale as the
+                # hallucination finding above).
+                confidence=self._telemetry_confidence(
+                    len(self._statistical_red_flags), total_claims
+                ),
             )
             await self._publish_finding(finding)
 

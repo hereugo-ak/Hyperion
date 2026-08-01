@@ -513,7 +513,7 @@ class RegulatoryAnalyst(BaseAgent):
                             title=f"Government portal, {url.split('/')[2]}",
                             url=url,
                             credibility=SourceCredibility.GOVERNMENT,
-                            key_data=f"Regulatory portal data from {url}",
+                            key_data=page_data["content"][:500],
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue
@@ -561,7 +561,13 @@ class RegulatoryAnalyst(BaseAgent):
                             title=f"Historical regulatory snapshots, {url}",
                             url=url,
                             credibility=SourceCredibility.GOVERNMENT,
-                            key_data=f"3-year regulatory evolution for {url}",
+                            key_data=(
+                            "\n---\n".join(
+                                f"Snapshot {snap.timestamp}: {snap.snapshot_url}"
+                                for snap in snapshots[:6]
+                            )[:500]
+                            or None
+                        ),
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue

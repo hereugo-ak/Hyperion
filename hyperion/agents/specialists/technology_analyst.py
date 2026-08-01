@@ -494,7 +494,7 @@ class TechnologyAnalyst(BaseAgent):
                                 title=f"{vendor} pricing page",
                                 url=url,
                                 credibility=SourceCredibility.VENDOR,
-                                key_data=f"Pricing and features for {vendor}",
+                                key_data=page_data["content"][:500],
                             ))
                             break  # Got data for this vendor, move to next
                     except (ValueError, AttributeError, RuntimeError):

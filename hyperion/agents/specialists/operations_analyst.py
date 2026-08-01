@@ -444,7 +444,7 @@ class OperationsAnalyst(BaseAgent):
                             title=f"Supply chain data, {sector}",
                             url=url,
                             credibility=SourceCredibility.INDUSTRY_REPORT,
-                            key_data=f"Supply chain data for {sector}",
+                            key_data=page_data["content"][:500],
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue

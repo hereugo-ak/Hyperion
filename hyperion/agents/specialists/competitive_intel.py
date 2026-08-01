@@ -507,7 +507,7 @@ class CompetitiveIntel(BaseAgent):
                             title=f"{competitor}, {page_type} page",
                             url=url,
                             credibility=SourceCredibility.BLOG,
-                            key_data=f"Scraped {page_type} content from {competitor}",
+                            key_data=content[:500],
                         ))
 
     async def _find_competitor_website(self, competitor_name: str) -> str:
@@ -552,7 +552,13 @@ class CompetitiveIntel(BaseAgent):
                         title=f"Wayback Machine, {competitor} historical snapshots",
                         url=f"https://web.archive.org/web/*/{url}",
                         credibility=SourceCredibility.NEWS,
-                        key_data=f"Historical snapshots for {competitor} (1y, 2y, 5y)",
+                        key_data=(
+                        "\n---\n".join(
+                            f"Snapshot {snap.timestamp}: {snap.snapshot_url}"
+                            for snap in snapshots[:6]
+                        )[:500]
+                        or None
+                    ),
                     ))
 
         except (ValueError, AttributeError, RuntimeError):

@@ -495,7 +495,7 @@ class RiskAnalyst(BaseAgent):
                             title=f"Regulatory database, {jurisdiction}",
                             url=url,
                             credibility=SourceCredibility.GOVERNMENT,
-                            key_data=f"Regulatory risk data for {jurisdiction}",
+                            key_data=page_data["content"][:500],
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue

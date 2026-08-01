@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -454,6 +454,85 @@ class WaybackClient:
             snapshot_url=snapshot_url,
             error="All retries exhausted",
         )
+
+    async def get_snapshot(
+        self,
+        url: str,
+        years_ago: int = 1,
+    ) -> WaybackSnapshot | None:
+        """Return the snapshot closest to ``years_ago`` years before today.
+
+        Real implementation over the Availability API: computes the target
+        date, asks for the closest archived capture, and returns a
+        ``WaybackSnapshot`` (with ``snapshot_url`` and ``timestamp``) or
+        ``None`` when the URL has no capture near that date. Never raises on
+        network failure; a failed lookup is indistinguishable from "no
+        archive" at this layer and the caller decides what that means.
+        """
+        if years_ago < 0:
+            raise ValueError("years_ago must be >= 0")
+        target = datetime.now() - timedelta(days=365 * years_ago)
+        timestamp = target.strftime("%Y%m%d%H%M%S")
+        availability = await self.check_availability(url, timestamp=timestamp)
+        if not availability.available or availability.closest_snapshot is None:
+            return None
+        return availability.closest_snapshot
+
+    async def get_snapshots(
+        self,
+        url: str,
+        intervals: list[str] | None = None,
+        years_back: int | None = None,
+    ) -> list[WaybackSnapshot]:
+        """Return snapshots for ``url`` at the requested lookback points.
+
+        Two call shapes, both fully implemented:
+
+        - ``intervals=["1y", "2y", "5y"]``: one Availability lookup per
+          interval, closest capture to each target date. Deduplicated by
+          timestamp (adjacent targets often resolve to the same capture).
+        - ``years_back=3``: one CDX timeline query covering the window,
+          one snapshot kept per calendar year (the latest capture in each
+          year), which is what regulatory-evolution tracking actually needs.
+
+        Returns ``[]`` on any failure; never raises on network errors.
+        """
+        if intervals:
+            seen: set[str] = set()
+            out: list[WaybackSnapshot] = []
+            for interval in intervals:
+                try:
+                    years = int(str(interval).rstrip("yY"))
+                except (TypeError, ValueError):
+                    logger.warning("Wayback interval %r not parseable as years; skipped", interval)
+                    continue
+                snapshot = await self.get_snapshot(url, years_ago=years)
+                if snapshot and snapshot.timestamp not in seen:
+                    seen.add(snapshot.timestamp)
+                    out.append(snapshot)
+            return out
+
+        if years_back is not None:
+            if years_back <= 0:
+                raise ValueError("years_back must be > 0")
+            from_date = (datetime.now() - timedelta(days=365 * years_back)).strftime("%Y%m%d")
+            timeline = await self.get_timeline(
+                url,
+                from_date=from_date,
+                limit=500,
+                filter_status=[200],
+            )
+            # One capture per calendar year, the latest in that year, so a
+            # 3-year window yields at most 3-4 representative snapshots
+            # rather than hundreds of monthly captures.
+            by_year: dict[str, WaybackSnapshot] = {}
+            for snapshot in timeline.snapshots:
+                year = snapshot.timestamp[:4]
+                if year and (year not in by_year or snapshot.timestamp > by_year[year].timestamp):
+                    by_year[year] = snapshot
+            return sorted(by_year.values(), key=lambda s: s.timestamp)
+
+        return []
 
     async def compare_snapshots(
         self,

@@ -471,7 +471,7 @@ class InnovationAnalyst(BaseAgent):
                             title=f"Patent/Research, {url.split('/')[2]}",
                             url=url,
                             credibility=SourceCredibility.INDUSTRY_REPORT,
-                            key_data=f"Patent/research data from {url.split('/')[2]}",
+                            key_data=page_data["content"][:500],
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue
@@ -522,7 +522,7 @@ class InnovationAnalyst(BaseAgent):
                                 title=f"Wayback, {url.split('/')[2]} ({years_ago}y ago)",
                                 url=url,
                                 credibility=SourceCredibility.NEWS,
-                                key_data=f"Historical snapshot from {years_ago} years ago",
+                                key_data=f"Snapshot {snapshot.timestamp}: {snapshot.snapshot_url}",
                             ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue
