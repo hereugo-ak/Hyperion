@@ -830,7 +830,7 @@ class TestSearchInfrastructure:
         cats = SearxNGClient.CATEGORY_ENGINES
         assert "arxiv" in cats["science"].lower()
         assert "github" in cats["it"].lower()
-        assert "news" in cats["news"].lower()
+        assert cats["news"].lower() == "mojeek,marginalia"
 
     def test_forwarded_headers_are_sent(self):
         """Host-originated requests carried no X-Forwarded-For, so the limiter
@@ -1177,7 +1177,9 @@ class TestFreshProcessState:
         self._fake_docker(monkeypatch, seen)
         await boot_mod.stop_services()
 
-        for container in ("searxng", "flaresolverr"):
+        from hyperion.infra.services import MANAGED_CONTAINERS
+
+        for container in MANAGED_CONTAINERS:
             stopped = any(
                 cmd[:2] == ["docker", "stop"] and container in cmd for cmd in seen
             )
@@ -1269,7 +1271,7 @@ class TestToolConfiguration:
 
         assert boot.SEARXNG_IMAGE is services.SEARXNG_IMAGE
         assert boot.FLARESOLVERR_IMAGE is services.FLARESOLVERR_IMAGE
-        assert boot.SEARXNG_PORT is services.SEARXNG_PORT
+        assert boot.SEARXNG_REPLICAS is services.SEARXNG_REPLICAS
         assert boot.FLARESOLVERR_PORT is services.FLARESOLVERR_PORT
 
     def test_aged_out_pin_is_gone(self):
@@ -1400,15 +1402,16 @@ class TestToolConfiguration:
                 f"between launchers"
             )
 
-    def test_searxng_port_matches_client_default(self):
-        """A published port that disagrees with the client's base URL means
-        every search fails with a connection error, silently."""
+    def test_searxng_replica_ports_match_compose(self):
+        """Every profile endpoint must be published loopback-only by compose."""
         from hyperion.infra import services
 
-        assert f":{services.SEARXNG_PORT}" in self._compose(), (
-            f"SEARXNG_PORT {services.SEARXNG_PORT} is not the port published by "
-            f"docker-compose.yml"
-        )
+        compose = self._compose()
+        for replica in services.SEARXNG_REPLICAS:
+            assert f"127.0.0.1:{replica.port}:8080" in compose, (
+                f"replica {replica.profile} port {replica.port} is not published "
+                "by docker-compose.yml"
+            )
 
     def test_settings_port_is_derived_from_the_configured_url(self):
         """Health checks must track `searxng_url`, not a second hardcoded port.

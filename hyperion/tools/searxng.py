@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import random
@@ -41,6 +42,7 @@ import httpx
 from hyperion.tools.engine_health import get_engine_health
 from hyperion.tools.jina import JinaClient
 from hyperion.tools.query_utils import grounded_search_or_empty
+from hyperion.tools.valkey import get_valkey_store
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +85,7 @@ def referenced_engines() -> set[str]:
     }
 
 
-class EngineRegistryMismatch(RuntimeError):
+class EngineRegistryMismatch(RuntimeError):  # noqa: N818 - public W-11 contract
     """The running instance does not implement the code's engine contract."""
 
 
@@ -103,6 +105,7 @@ async def reconcile_engine_registry(
     base_url: str,
     *,
     client: httpx.AsyncClient | None = None,
+    expected_engines: set[str] | frozenset[str] | None = None,
 ) -> EngineRegistryReport:
     """Fail closed when /config and the code registry disagree.
 
@@ -125,7 +128,7 @@ async def reconcile_engine_registry(
         if item.get("enabled", not item.get("disabled", False))
         and str(item.get("name", "")).strip()
     )
-    expected = referenced_engines()
+    expected = set(expected_engines) if expected_engines is not None else referenced_engines()
     report = EngineRegistryReport(
         base_url=base_url,
         enabled=enabled,
@@ -158,6 +161,19 @@ class EngineTokenBucket:
     async def acquire(cls, engines: set[str]) -> None:
         if not engines:
             return
+
+        shared_wait = await get_valkey_store().reserve_engine_window(
+            engines,
+            interval_ms=max(1, int(cls.interval_seconds * 1000)),
+            jitter_ms=random.randint(0, 200),
+        )
+        if shared_wait is not None:
+            if shared_wait:
+                await asyncio.sleep(shared_wait)
+            return
+
+        # Retrieval remains available when Docker/Valkey is down, but one
+        # HYPERION process still honours the same per-engine safety interval.
         if cls._lock is None:
             cls._lock = asyncio.Lock()
         loop = asyncio.get_running_loop()
@@ -249,6 +265,121 @@ class SearchResponse:
         return bool(self.results)
 
 
+@dataclass
+class SearxngEndpoint:
+    base_url: str
+    profile: str
+    port: int
+    engines: frozenset[str] = field(default_factory=frozenset)
+    outstanding: int = 0
+    consecutive_failures: int = 0
+    circuit_open: bool = False
+
+
+class SearxngPool:
+    """Profile-aware endpoint pool with circuit breakers and fallback."""
+
+    CATEGORY_PROFILE = {
+        "science": "scholar", "medical": "scholar",
+        "it": "reference", "geo": "reference", "reference": "reference",
+        "general": "web", "news": "web",
+    }
+    FALLBACKS = {
+        "web": ("reference", "scholar"),
+        "reference": ("scholar", "web"),
+        "scholar": ("reference", "web"),
+    }
+
+    def __init__(self, endpoints: list[SearxngEndpoint]) -> None:
+        self.endpoints = endpoints
+
+    @classmethod
+    def from_config(cls) -> SearxngPool:
+        from hyperion.infra.services import SEARXNG_REPLICAS
+
+        return cls([
+            SearxngEndpoint(
+                f"http://127.0.0.1:{item.port}",
+                item.profile,
+                item.port,
+                frozenset(item.engines),
+            )
+            for item in SEARXNG_REPLICAS
+        ])
+
+    def preferred_profile(self, category: str) -> str:
+        """Return the primary profile for a SearXNG category."""
+        return self.CATEGORY_PROFILE.get(category.lower(), "web")
+
+    def endpoint_for(
+        self,
+        *,
+        category: str = "general",
+        requested_engines: set[str] | None = None,
+    ) -> SearxngEndpoint:
+        preferred = self.preferred_profile(category)
+        profiles: tuple[str, ...] = (preferred, *self.FALLBACKS[preferred])
+        if requested_engines:
+            owners = tuple(
+                profile
+                for profile in profiles
+                if any(
+                    requested_engines <= endpoint.engines
+                    for endpoint in self.endpoints
+                    if endpoint.profile == profile
+                )
+            )
+            if not owners:
+                raise EngineRegistryMismatch(
+                    "Explicit engine request crosses isolated SearXNG profiles: "
+                    f"{sorted(requested_engines)}"
+                )
+            # Explicit requests are a caller contract, not a hint. Never silently
+            # replace them with a different profile's corpus during failover.
+            profiles = owners
+
+        for profile in profiles:
+            candidates = [
+                endpoint for endpoint in self.endpoints
+                if endpoint.profile == profile and not endpoint.circuit_open
+            ]
+            if candidates:
+                return min(candidates, key=lambda endpoint: endpoint.outstanding)
+        raise RuntimeError("No healthy SearXNG endpoint is available")
+
+    def engines_for(
+        self,
+        endpoint: SearxngEndpoint,
+        *,
+        category: str,
+        requested_engines: set[str],
+        explicit: bool,
+    ) -> set[str]:
+        """Return only engines that the selected isolated replica actually serves."""
+        if explicit and requested_engines <= endpoint.engines:
+            return set(requested_engines)
+
+        category_engines = {
+            engine.strip()
+            for engine in CATEGORY_ENGINES.get(category.lower(), "").split(",")
+            if engine.strip()
+        }
+        compatible = category_engines & endpoint.engines
+        if compatible:
+            return compatible
+        return set(endpoint.engines)
+
+    def mark_unhealthy(self, port: int) -> None:
+        endpoint = next(item for item in self.endpoints if item.port == port)
+        endpoint.consecutive_failures += 1
+        endpoint.circuit_open = True
+
+    def mark_success(self, port: int) -> None:
+        endpoint = next(item for item in self.endpoints if item.port == port)
+        endpoint.consecutive_failures = 0
+        endpoint.circuit_open = False
+
+
 class SearxNGClient:
     """SearxNG meta-search client.
 
@@ -286,14 +417,13 @@ class SearxNGClient:
         # container spec) meant a port change moved the container without moving
         # the client, and every search then failed with a connection error that
         # surfaced only as "search returned no results".
-        from hyperion.infra.services import SEARXNG_PORT
-
-        default_url = f"http://localhost:{SEARXNG_PORT}"
+        self._pool = SearxngPool.from_config()
+        default_url = self._pool.endpoint_for(category="science").base_url
         self._base_url = default_url
         if settings:
             self._base_url = getattr(settings, "searxng_url", "") or default_url
         self._base_url = self._base_url.rstrip("/")
-        self._client: httpx.AsyncClient | None = None
+        self._clients: dict[str, httpx.AsyncClient] = {}
         self._cache: dict[str, tuple[float, SearchResponse]] = {}
         os.makedirs(self.CACHE_DIR, exist_ok=True)
         if SearxNGClient._semaphore is None:
@@ -304,10 +434,12 @@ class SearxNGClient:
         """Public accessor for the SearxNG base URL."""
         return self._base_url
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self._base_url,
+    async def _get_client(self, base_url: str | None = None) -> httpx.AsyncClient:
+        url = (base_url or self._base_url).rstrip("/")
+        client = self._clients.get(url)
+        if client is None or client.is_closed:
+            client = httpx.AsyncClient(
+                base_url=url,
                 timeout=httpx.Timeout(self.REQUEST_TIMEOUT),
                 headers={
                     "Accept": "application/json",
@@ -331,27 +463,75 @@ class SearxNGClient:
                     "X-Real-IP": "127.0.0.1",
                 },
             )
-        return self._client
+            self._clients[url] = client
+        return client
 
     def _cache_key(self, query: str, **kwargs: Any) -> str:
-        """Generate a cache key from query and parameters."""
-        key_str = f"{query}:{kwargs}"
-        return hashlib.md5(key_str.encode()).hexdigest()
+        """Generate a stable key from a normalized query and engine set."""
+        normalized = " ".join(query.casefold().split())
+        values = dict(kwargs)
+        raw_engines = str(values.get("engines", ""))
+        values["engines"] = sorted(
+            engine.strip().casefold()
+            for engine in raw_engines.split(",")
+            if engine.strip()
+        )
+        payload = json.dumps(
+            {"query": normalized, "parameters": values},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        digest = hashlib.sha256(payload.encode()).hexdigest()
+        return f"hyperion:retrieval:cache:{digest}"
 
-    def _get_cached(self, key: str) -> SearchResponse | None:
-        """Get a cached response if it exists and is not expired."""
+    @staticmethod
+    def _response_from_dict(payload: dict[str, Any]) -> SearchResponse:
+        return SearchResponse(
+            query=str(payload.get("query", "")),
+            results=[
+                SearchResult(
+                    title=str(item.get("title", "")),
+                    url=str(item.get("url", "")),
+                    snippet=str(item.get("snippet", "")),
+                    engine=str(item.get("engine", "")),
+                    score=float(item.get("score", 0.0)),
+                    category=str(item.get("category", "general")),
+                    published_date=str(item.get("published_date", "")),
+                )
+                for item in payload.get("results", [])
+                if isinstance(item, dict)
+            ],
+            total=int(payload.get("total", 0)),
+            took_ms=int(payload.get("took_ms", 0)),
+            engines_used=[str(item) for item in payload.get("engines_used", [])],
+            cached=True,
+            retrieval_degraded=bool(payload.get("retrieval_degraded", False)),
+            degradation_events=list(payload.get("degradation_events", [])),
+        )
+
+    async def _get_cached(self, key: str) -> SearchResponse | None:
+        """Read through the shared cache, falling back to local memory."""
+        payload = await get_valkey_store().get_json(key)
+        if payload is not None:
+            return self._response_from_dict(payload)
+
         if key in self._cache:
             timestamp, response = self._cache[key]
             if time.time() - timestamp < self.CACHE_TTL_SECONDS:
                 response.cached = True
                 return response
-            else:
-                del self._cache[key]
+            del self._cache[key]
         return None
 
-    def _set_cached(self, key: str, response: SearchResponse) -> None:
-        """Cache a response."""
+    async def _set_cached(self, key: str, response: SearchResponse) -> None:
+        """Write a normalized response to both local and shared caches."""
         self._cache[key] = (time.time(), response)
+        await get_valkey_store().set_json(
+            key,
+            response.to_dict(),
+            self.CACHE_TTL_SECONDS,
+        )
 
     def _deduplicate(self, results: list[SearchResult]) -> list[SearchResult]:
         """Deduplicate results by URL, keeping the highest-scored version."""
@@ -384,27 +564,11 @@ class SearxNGClient:
         time_range: str,
         engines: str,
         safesearch: int,
+        *,
+        explicit_engines: bool = False,
     ) -> SearchResponse | None:
-        """Query the SearXNG JSON API directly.
-
-        SearXNG aggregates 70+ search engines in a single request.
-        No API key, no rate limit, no browser, no CAPTCHA.
-        Returns None if the request fails or SearXNG is unavailable.
-        """
-        client = await self._get_client()
-
-        params: dict[str, Any] = {
-            "q": query,
-            "format": "json",
-            "categories": categories,
-            "language": language,
-            "safesearch": safesearch,
-        }
-        if time_range:
-            params["time_range"] = time_range
-        if engines:
-            params["engines"] = engines
-
+        """Query one profile and fail over without sending it foreign engines."""
+        category = categories or "general"
         requested_engines = {
             engine.strip() for engine in engines.split(",") if engine.strip()
         }
@@ -414,18 +578,48 @@ class SearxNGClient:
                 f"Tier C engines are forbidden by W-11 policy: {sorted(forbidden)}"
             )
 
+        endpoint: SearxngEndpoint | None = None
         for attempt in range(self.MAX_RETRIES):
             try:
-                await EngineTokenBucket.acquire(requested_engines)
-                response = await client.get("/search", params=params)
-                response.raise_for_status()
+                endpoint = self._pool.endpoint_for(
+                    category=category,
+                    requested_engines=requested_engines if explicit_engines else None,
+                )
+                selected_engines = self._pool.engines_for(
+                    endpoint,
+                    category=category,
+                    requested_engines=requested_engines,
+                    explicit=explicit_engines,
+                )
+                params: dict[str, Any] = {
+                    "q": query,
+                    "format": "json",
+                    "categories": (
+                        category
+                        if endpoint.profile == self._pool.preferred_profile(category)
+                        else "general"
+                    ),
+                    "language": language,
+                    "safesearch": safesearch,
+                    "engines": ",".join(sorted(selected_engines)),
+                }
+                if time_range:
+                    params["time_range"] = time_range
+
+                endpoint.outstanding += 1
+                client = await self._get_client(endpoint.base_url)
+                try:
+                    await EngineTokenBucket.acquire(selected_engines)
+                    response = await client.get("/search", params=params)
+                    response.raise_for_status()
+                finally:
+                    endpoint.outstanding = max(0, endpoint.outstanding - 1)
+                self._pool.mark_success(endpoint.port)
 
                 data = response.json()
                 raw_results = data.get("results", [])
-
                 results: list[SearchResult] = []
                 engines_used_set: set[str] = set()
-
                 for item in raw_results:
                     url = item.get("url", "")
                     if not url:
@@ -438,14 +632,10 @@ class SearxNGClient:
                         snippet=item.get("content", ""),
                         engine=engine_name,
                         score=float(item.get("score", 1.0)),
-                        category=item.get("category", categories),
+                        category=item.get("category", category),
                         published_date=item.get("publishedDate", ""),
                     ))
 
-                # P2-26: consume unresponsive_engines instead of logging and
-                # discarding. The tracker applies a per-engine cooldown (24h
-                # on a suspended_time 403 ban) and the cooled engine is
-                # excluded from the NEXT request's engines= parameter.
                 unresponsive = data.get("unresponsive_engines", [])
                 degradation_events: list[dict[str, object]] = []
                 health = get_engine_health()
@@ -477,16 +667,21 @@ class SearxNGClient:
                         "SearXNG unresponsive engines for '%s': %s",
                         query[:80], unresponsive,
                     )
+                logger.debug(
+                    "SearXNG returned 0 results for '%s' (attempt %d)",
+                    query,
+                    attempt + 1,
+                )
+                break
 
-                # SearXNG returned zero results — don't retry, engines are likely blocked
-                logger.debug("SearXNG returned 0 results for '%s' (attempt %d)", query, attempt + 1)
-                break  # No point retrying if engines are blocked/CAPTCHA'd
-
-            except (httpx.HTTPError, httpx.RequestError, KeyError, ValueError) as e:
-                logger.warning("SearXNG JSON API error (attempt %d): %s", attempt + 1, e)
+            except (httpx.HTTPError, httpx.RequestError, KeyError, ValueError) as exc:
+                if endpoint is not None:
+                    self._pool.mark_unhealthy(endpoint.port)
+                logger.warning("SearXNG JSON API error (attempt %d): %s", attempt + 1, exc)
                 if attempt < self.MAX_RETRIES - 1:
                     await asyncio.sleep(self.RETRY_DELAY * (attempt + 1))
-                continue
+                    continue
+                return None
 
         return None
 
@@ -499,6 +694,8 @@ class SearxNGClient:
         time_range: str,
         engines: str,
         safesearch: int,
+        *,
+        explicit_engines: bool = False,
     ) -> SearchResponse | None:
         """Search, and on a zero-result response rotate engines once.
 
@@ -519,6 +716,7 @@ class SearxNGClient:
             time_range=time_range,
             engines=engines,
             safesearch=safesearch,
+            explicit_engines=explicit_engines,
         )
         if response is not None and response.results:
             return response
@@ -547,6 +745,7 @@ class SearxNGClient:
             time_range=time_range,
             engines=",".join(rotated),
             safesearch=safesearch,
+            explicit_engines=explicit_engines,
         )
         if retry is not None and retry.results:
             return retry
@@ -734,7 +933,7 @@ class SearxNGClient:
 
         cache_key = self._cache_key(query, num_results=num_results, categories=categories,
                                      language=language, time_range=time_range, engines=effective_engines)
-        cached = self._get_cached(cache_key)
+        cached = await self._get_cached(cache_key)
         if cached:
             return cached
 
@@ -761,10 +960,11 @@ class SearxNGClient:
                 time_range=time_range,
                 engines=effective_engines,
                 safesearch=safesearch,
+                explicit_engines=bool(engines),
             )
 
             if searxng_response and searxng_response.results:
-                self._set_cached(cache_key, searxng_response)
+                await self._set_cached(cache_key, searxng_response)
                 return searxng_response
 
             # ── FALLBACK: Jina Search (s.jina.ai) ──
@@ -776,7 +976,7 @@ class SearxNGClient:
             )
 
             if jina_response and jina_response.results:
-                self._set_cached(cache_key, jina_response)
+                await self._set_cached(cache_key, jina_response)
                 return jina_response
 
         # All search paths exhausted
@@ -855,10 +1055,11 @@ class SearxNGClient:
         )
 
     async def close(self) -> None:
-        """Close the HTTP client."""
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
+        """Close every pooled endpoint client."""
+        for client in self._clients.values():
+            if not client.is_closed:
+                await client.aclose()
+        self._clients.clear()
 
     async def __aenter__(self) -> SearxNGClient:
         return self

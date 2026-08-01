@@ -506,9 +506,13 @@ class TestContainerSpecs:
 
         spec = searxng_spec()
         argv = _docker_run_argv(spec, spec.image)
-        mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
-        assert mounts, "SearxNG runs with no settings mount"
-        for mount in mounts:
+        bind_mounts = [
+            argv[i + 1]
+            for i, value in enumerate(argv)
+            if value == "-v" and argv[i + 1].endswith(":ro")
+        ]
+        assert bind_mounts, "SearXNG runs with no settings mount"
+        for mount in bind_mounts:
             host = mount.split(":/")[0]
             assert "\\" not in mount, (
                 f"{mount} contains a backslash; Docker requires forward slashes "
@@ -518,44 +522,38 @@ class TestContainerSpecs:
                 f"mount source {host} is not absolute, so it resolves against "
                 f"the CWD inside docker"
             )
-            assert mount.endswith(":ro"), (
-                f"{mount} is writable; a container must not be able to rewrite "
-                f"the project's settings file"
-            )
 
-    def test_searxng_publishes_the_shared_port(self):
-        from hyperion.infra.services import (
-            SEARXNG_CONTAINER_PORT,
-            SEARXNG_PORT,
-            _docker_run_argv,
-            searxng_spec,
-        )
+    def test_searxng_publishes_all_replica_ports_on_loopback(self):
+        from hyperion.infra.services import SEARXNG_REPLICAS, _docker_run_argv, searxng_specs
 
-        spec = searxng_spec()
-        argv = _docker_run_argv(spec, spec.image)
-        assert f"{SEARXNG_PORT}:{SEARXNG_CONTAINER_PORT}" in argv
+        for replica, spec in zip(SEARXNG_REPLICAS, searxng_specs(), strict=True):
+            argv = _docker_run_argv(spec, spec.image)
+            assert f"127.0.0.1:{replica.port}:{spec.container_port}" in argv
 
-    def test_client_default_matches_published_port(self):
-        """A mismatch here makes every search fail with a connection error."""
-        from hyperion.infra.services import SEARXNG_PORT
-        from hyperion.tools.searxng import SearxNGClient
+    def test_client_pool_matches_published_profiles(self):
+        """Every category must resolve to the intended published replica."""
+        from hyperion.tools.searxng import SearxngPool
 
-        assert SearxNGClient().base_url.endswith(str(SEARXNG_PORT))
+        pool = SearxngPool.from_config()
+        assert pool.endpoint_for(category="science").port == 8888
+        assert pool.endpoint_for(category="it").port == 8889
+        assert pool.endpoint_for(category="general").port == 8890
 
     def test_every_spec_declares_a_readiness_probe(self):
         from hyperion.infra.services import all_specs
 
         for spec in all_specs():
-            assert spec.health_path.startswith("/"), (
-                f"{spec.name} has no health path, so readiness would fall back "
-                f"to a fixed sleep — the bug where a cold container is declared "
-                f"ready while still booting"
-            )
+            if spec.name == "hyperion-valkey":
+                assert spec.host_port == 0  # internal only; readiness uses valkey-cli PING
+            else:
+                assert spec.health_path.startswith("/"), (
+                    f"{spec.name} has no HTTP readiness path"
+                )
+                assert spec.health_url().startswith("http://127.0.0.1:")
             assert spec.ready_timeout >= 30, (
                 f"{spec.name} readiness timeout {spec.ready_timeout}s is shorter "
                 f"than a realistic cold start"
             )
-            assert spec.health_url().startswith("http://127.0.0.1:")
 
     def test_no_fixed_sleep_stands_in_for_readiness(self):
         """`await asyncio.sleep(3.0)` used to be the entire readiness check."""

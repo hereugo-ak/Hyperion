@@ -75,7 +75,6 @@ logger = logging.getLogger(__name__)
 # Ports and images — ONE definition, imported by every caller
 # ─────────────────────────────────────────────────────────────────────────────
 
-SEARXNG_PORT = 8888
 SEARXNG_CONTAINER_PORT = 8080
 FLARESOLVERR_PORT = 8191
 FLARESOLVERR_CONTAINER_PORT = 8191
@@ -95,12 +94,44 @@ SEARXNG_IMAGE_FALLBACK = "searxng/searxng:2025.9.10-a9b088d"
 # and why its use is reported rather than hidden.
 SEARXNG_IMAGE_FLOATING = "searxng/searxng:latest"
 
+VALKEY_IMAGE = "valkey/valkey:8.1.3-alpine"
+VALKEY_IMAGE_FALLBACK = "valkey/valkey:8-alpine"
+VALKEY_IMAGE_FLOATING = "valkey/valkey:alpine"
+
 # FlareSolverr keeps every release tag, so this pin is stable.
 FLARESOLVERR_IMAGE = "flaresolverr/flaresolverr:v3.3.21"
 FLARESOLVERR_IMAGE_FALLBACK = "flaresolverr/flaresolverr:v3.4.6"
 FLARESOLVERR_IMAGE_FLOATING = "flaresolverr/flaresolverr:latest"
 
-MANAGED_CONTAINERS: tuple[str, ...] = ("searxng", "flaresolverr")
+@dataclass(frozen=True)
+class SearxngReplica:
+    name: str
+    port: int
+    profile: str
+    engines: tuple[str, ...]
+
+
+SEARXNG_REPLICAS = (
+    SearxngReplica(
+        "hyperion-searxng-scholar", 8888, "scholar",
+        ("arxiv", "crossref", "openalex", "semantic scholar", "pubmed"),
+    ),
+    SearxngReplica(
+        "hyperion-searxng-reference", 8889, "reference",
+        ("wikipedia", "wikidata", "openstreetmap", "github", "stackexchange", "hackernews"),
+    ),
+    SearxngReplica(
+        "hyperion-searxng-web", 8890, "web",
+        ("mojeek", "marginalia", "brave", "yep", "wiby"),
+    ),
+)
+SEARXNG_PRIMARY_PORT = SEARXNG_REPLICAS[0].port
+RETRIEVAL_NETWORK = "hyperion-retrieval"
+MANAGED_CONTAINERS: tuple[str, ...] = (
+    *(replica.name for replica in SEARXNG_REPLICAS),
+    "hyperion-valkey",
+    "flaresolverr",
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,46 +191,66 @@ class ContainerSpec:
     env: dict[str, str] = field(default_factory=dict)
     #: Seconds to wait for the readiness probe to pass.
     ready_timeout: float = 90.0
+    named_volumes: list[tuple[str, str]] = field(default_factory=list)
 
     def health_url(self) -> str:
         return f"http://127.0.0.1:{self.host_port}{self.health_path}"
 
 
-def _searxng_secret() -> str:
-    """Return an operator secret or a fresh high-entropy instance secret."""
-    configured = os.environ.get("SEARXNG_SECRET", "").strip()
+def _searxng_secret(profile: str) -> str:
+    """Return a per-profile operator secret or fresh high-entropy secret."""
+    key = f"SEARXNG_{profile.upper()}_SECRET"
+    configured = os.environ.get(key, "").strip()
     return configured or secrets.token_urlsafe(48)
 
 
-def searxng_spec() -> ContainerSpec:
-    """Container spec for SearxNG, mounting the project's real settings files."""
+def searxng_spec(replica: SearxngReplica | None = None) -> ContainerSpec:
+    """Build one isolated SearXNG replica spec."""
+    replica = replica or SEARXNG_REPLICAS[0]
     volumes: list[tuple[Path, str]] = []
-    settings = searxng_settings_file()
+    settings = searxng_settings_file().with_name(
+        f"searxng_settings.{replica.profile}.yml"
+    )
     if settings.exists():
         volumes.append((settings, "/etc/searxng/settings.yml"))
     limiter = searxng_limiter_file()
     if limiter.exists():
         volumes.append((limiter, "/etc/searxng/limiter.toml"))
     return ContainerSpec(
-        name="searxng",
+        name=replica.name,
         image=SEARXNG_IMAGE,
         image_fallback=SEARXNG_IMAGE_FALLBACK,
         image_floating=SEARXNG_IMAGE_FLOATING,
-        host_port=SEARXNG_PORT,
+        host_port=replica.port,
         container_port=SEARXNG_CONTAINER_PORT,
-        # `/healthz` is not present on every build; the root document is, and a
-        # 200 from it means Flask is serving, which is what we need to know.
         health_path="/",
         volumes=volumes,
+        named_volumes=[(f"{replica.name}-data", "/var/cache/searxng")],
         env={
-            "SEARXNG_BASE_URL": f"http://localhost:{SEARXNG_PORT}/",
-            # The settings profile contains ${SEARXNG_SECRET}; the official
-            # image entrypoint substitutes this value before SearXNG starts.
-            "SEARXNG_SECRET": _searxng_secret(),
+            "SEARXNG_BASE_URL": f"http://localhost:{replica.port}/",
+            "SEARXNG_SECRET": _searxng_secret(replica.profile),
+            "SEARXNG_SETTINGS_PATH": "/etc/searxng/settings.yml",
             "HYPERION_CONTACT_EMAIL": os.environ.get(
                 "HYPERION_CONTACT_EMAIL", "research@localhost"
             ),
         },
+    )
+
+
+def searxng_specs() -> list[ContainerSpec]:
+    return [searxng_spec(replica) for replica in SEARXNG_REPLICAS]
+
+
+def valkey_spec() -> ContainerSpec:
+    return ContainerSpec(
+        name="hyperion-valkey",
+        image=VALKEY_IMAGE,
+        image_fallback=VALKEY_IMAGE_FALLBACK,
+        image_floating=VALKEY_IMAGE_FLOATING,
+        host_port=0,
+        container_port=6379,
+        health_path="",
+        named_volumes=[("hyperion-valkey-data", "/data")],
     )
 
 
@@ -219,8 +270,12 @@ def flaresolverr_spec() -> ContainerSpec:
     )
 
 
-def all_specs() -> list[ContainerSpec]:
-    return [searxng_spec(), flaresolverr_spec()]
+def all_specs(*, include_flaresolverr: bool = False) -> list[ContainerSpec]:
+    """Default retrieval stack; CAPTCHA tooling is explicitly opt-in."""
+    specs = [*searxng_specs(), valkey_spec()]
+    if include_flaresolverr:
+        specs.append(flaresolverr_spec())
+    return specs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -497,6 +552,18 @@ async def wait_until_ready(spec: ContainerSpec) -> bool:
     while the container was still booting — and the first searches of the
     engagement failed against a service that was "already reported ready".
     """
+    if spec.host_port == 0:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + spec.ready_timeout
+        while loop.time() < deadline:
+            rc, out, _ = await run_command(
+                ["docker", "exec", spec.name, "valkey-cli", "ping"], timeout=5
+            )
+            if rc == 0 and out.strip() == "PONG":
+                return True
+            await asyncio.sleep(1.0)
+        return False
+
     try:
         import httpx
     except ImportError:
@@ -554,10 +621,14 @@ def _docker_run_argv(spec: ContainerSpec, image: str) -> list[str]:
     argv = [
         "docker", "run", "-d",
         "--name", spec.name,
-        "-p", f"{spec.host_port}:{spec.container_port}",
+        "--network", RETRIEVAL_NETWORK,
     ]
+    if spec.host_port:
+        argv += ["-p", f"127.0.0.1:{spec.host_port}:{spec.container_port}"]
     for host_path, container_path in spec.volumes:
         argv += ["-v", f"{docker_mount_path(host_path)}:{container_path}:ro"]
+    for volume, container_path in spec.named_volumes:
+        argv += ["-v", f"{volume}:{container_path}"]
     for key, value in spec.env.items():
         argv += ["-e", f"{key}={value}"]
     argv.append(image)
@@ -649,11 +720,53 @@ async def start_services(*, on_progress: object = None) -> dict[str, ServiceStat
             )
         return results
 
-    # Sequential, not concurrent: two simultaneous cold pulls saturate the
-    # connection and both appear to hang.
-    for spec in all_specs():
-        results[spec.name] = await ensure_container(spec, on_progress=on_progress)
-    return results
+    rc, _, err = await run_command(
+        ["docker", "network", "inspect", RETRIEVAL_NETWORK], timeout=20
+    )
+    if rc != 0:
+        created, _, create_err = await run_command(
+            ["docker", "network", "create", RETRIEVAL_NETWORK], timeout=30
+        )
+        if created != 0:
+            detail = create_err or err or "unable to create retrieval network"
+            return {
+                spec.name: ServiceStatus(spec.name, state=FAIL, detail=detail)
+                for spec in all_specs()
+            }
+
+    specs = all_specs()
+    deadline = max(spec.ready_timeout for spec in specs) + 210.0
+    tasks = {
+        spec.name: asyncio.create_task(
+            ensure_container(spec, on_progress=on_progress),
+            name=f"start-{spec.name}",
+        )
+        for spec in specs
+    }
+    done, pending = await asyncio.wait(tasks.values(), timeout=deadline)
+    statuses: dict[str, ServiceStatus] = {}
+    names_by_task = {task: name for name, task in tasks.items()}
+    for task in done:
+        name = names_by_task[task]
+        try:
+            statuses[name] = task.result()
+        except Exception as exc:  # noqa: BLE001 - convert startup faults to status
+            statuses[name] = ServiceStatus(
+                name=name,
+                state=FAIL,
+                detail=f"startup raised {type(exc).__name__}: {exc}",
+            )
+    for task in pending:
+        task.cancel()
+        name = names_by_task[task]
+        statuses[name] = ServiceStatus(
+            name=name,
+            state=FAIL,
+            detail=f"startup exceeded shared {deadline:.0f}s deadline",
+        )
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    return statuses
 
 
 async def stop_services() -> dict[str, bool]:
@@ -663,16 +776,22 @@ async def stop_services() -> dict[str, bool]:
     its cached SERPs and its old settings mount, so the next boot would not be
     the fresh instance the boot sequence claims to create.
     """
-    removed: dict[str, bool] = {}
     if not docker_available():
         return {name: False for name in MANAGED_CONTAINERS}
 
-    for name in MANAGED_CONTAINERS:
+    async def _remove(name: str) -> tuple[str, bool]:
         try:
             await remove_container(name)
-            removed[name] = True
+            return name, True
         except Exception:  # noqa: BLE001 - failure is recorded in the result
-            removed[name] = False
+            return name, False
+
+    outcomes = await asyncio.gather(*(_remove(name) for name in MANAGED_CONTAINERS))
+    removed = dict(outcomes)
+    # The network is HYPERION-owned and can only be removed after every
+    # attached managed container has been removed. Failure is harmless and is
+    # intentionally not conflated with a container removal result.
+    await run_command(["docker", "network", "rm", RETRIEVAL_NETWORK], timeout=25)
     return removed
 
 

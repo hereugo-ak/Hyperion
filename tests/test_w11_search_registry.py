@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import os
 from pathlib import Path
 from typing import Any
 
@@ -14,13 +13,12 @@ import yaml
 from hyperion.infra.services import searxng_spec
 from hyperion.tools.engine_health import EngineHealthTracker, EngineState
 from hyperion.tools.searxng import (
+    TIER_C_ENGINES,
     EngineRegistryMismatch,
     EngineTokenBucket,
-    TIER_C_ENGINES,
     reconcile_engine_registry,
     referenced_engines,
 )
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = ROOT / "searxng_settings.yml"
@@ -69,13 +67,13 @@ def test_settings_registry_is_exact_and_contains_no_tier_c_engines() -> None:
 
 
 def test_runtime_secret_is_generated_or_operator_supplied(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("SEARXNG_SECRET", raising=False)
+    monkeypatch.delenv("SEARXNG_SCHOLAR_SECRET", raising=False)
     first = searxng_spec().env["SEARXNG_SECRET"]
     second = searxng_spec().env["SEARXNG_SECRET"]
     assert len(first) >= 48
     assert first != second
 
-    monkeypatch.setenv("SEARXNG_SECRET", "operator-controlled-secret")
+    monkeypatch.setenv("SEARXNG_SCHOLAR_SECRET", "operator-controlled-secret")
     assert searxng_spec().env["SEARXNG_SECRET"] == "operator-controlled-secret"
 
 

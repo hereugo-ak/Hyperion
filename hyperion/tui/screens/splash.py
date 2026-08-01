@@ -210,7 +210,7 @@ class SplashScreen(Screen):
         searx = self.query_one("#stat-searxng", SplashStatus)
         try:
             from hyperion.infra.services import (
-                SEARXNG_PORT,
+                SEARXNG_REPLICAS,
                 docker_available,
                 docker_engine_version,
                 run_command,
@@ -230,8 +230,12 @@ class SplashScreen(Screen):
                         ["docker", "ps", "--filter", "name=searxng", "--format", "{{.Status}}"],
                         timeout=8,
                     )
-                    if rc == 0 and "Up" in out:
-                        searx.set_status(f"running · localhost:{SEARXNG_PORT}", ok=True)
+                    running = sum(replica.name in out for replica in SEARXNG_REPLICAS)
+                    if rc == 0 and running == len(SEARXNG_REPLICAS):
+                        ports = ",".join(str(replica.port) for replica in SEARXNG_REPLICAS)
+                        searx.set_status(f"3 replicas running · localhost:{ports}", ok=True)
+                    elif rc == 0 and running:
+                        searx.set_status(f"partial retrieval stack · {running}/3 running", ok=None)
                     else:
                         searx.set_status("container stopped — will auto-start", ok=None)
         except Exception:  # noqa: BLE001 - best-effort, failure must not propagate

@@ -64,12 +64,9 @@ from hyperion.infra.services import (
     FLARESOLVERR_PORT,
     MANAGED_CONTAINERS,
     SEARXNG_IMAGE,
-    SEARXNG_PORT,
-    ensure_container,
+    SEARXNG_REPLICAS,
     ensure_docker_engine,
-    flaresolverr_spec,
     run_command,
-    searxng_spec,
 )
 from hyperion.infra.services import (
     start_services as _infra_start_services,
@@ -87,7 +84,7 @@ __all__ = [
     "FLARESOLVERR_PORT",
     "MANAGED_CONTAINERS",
     "SEARXNG_IMAGE",
-    "SEARXNG_PORT",
+    "SEARXNG_REPLICAS",
     "BootStep",
     "ProvenanceRefusal",
     "reset_process_state",
@@ -262,44 +259,44 @@ async def run_boot_sequence(
     _finish_step(step, docker_status.state, docker_status.detail)
     results["docker"] = (docker_status.state, docker_status.detail)
 
-    # ── Step 3: SearxNG ───────────────────────────────────────────────────
+    # ── Step 3: profile-isolated retrieval stack ───────────────────────────
     if docker_status.ok:
-        step = _start_step("SEARXNG", "starting SearxNG search container")
-        searx = await ensure_container(searxng_spec(), on_progress=_progress_for(step))
-        if searx.ok:
-            try:
-                registry = await reconcile_engine_registry(
-                    f"http://127.0.0.1:{SEARXNG_PORT}"
-                )
-            except EngineRegistryMismatch as exc:
-                # W-11: drift is a boot failure. Continuing with an incomplete
-                # corpus would make downstream evidence scores untrustworthy.
-                searx.state = FAIL
-                searx.detail = str(exc)
-            else:
-                searx.detail += f" · {len(registry.enabled)} engines reconciled"
-        _finish_step(step, searx.state, f"SearxNG {searx.detail}")
-        results["searxng"] = (searx.state, searx.detail)
+        step = _start_step("SEARCH", "starting three SearXNG replicas and Valkey")
+        statuses = await _infra_start_services(on_progress=_progress_for(step))
+        replica_details: list[str] = []
+        replica_ok = True
+        for replica in SEARXNG_REPLICAS:
+            status = statuses[replica.name]
+            if status.ok:
+                try:
+                    registry = await reconcile_engine_registry(
+                        f"http://127.0.0.1:{replica.port}",
+                        expected_engines=set(replica.engines),
+                    )
+                except EngineRegistryMismatch as exc:
+                    status.state = FAIL
+                    status.detail = str(exc)
+                else:
+                    status.detail += f" · {len(registry.enabled)} engines reconciled"
+            replica_ok = replica_ok and status.ok
+            replica_details.append(f"{replica.profile}:{status.state}@{replica.port}")
+            results[f"searxng_{replica.profile}"] = (status.state, status.detail)
+        valkey = statuses["hyperion-valkey"]
+        aggregate_state = OK if replica_ok and valkey.ok else FAIL
+        aggregate_detail = " · ".join(replica_details + [f"valkey:{valkey.state}"])
+        _finish_step(step, aggregate_state, aggregate_detail)
+        results["searxng"] = (aggregate_state, aggregate_detail)
+        results["valkey"] = (valkey.state, valkey.detail)
     else:
-        step = _start_step("SEARXNG", "SearxNG — skipped (Docker unavailable)")
+        step = _start_step("SEARCH", "retrieval stack — skipped (Docker unavailable)")
         await _pause(0.2)
-        _finish_step(step, WARN, "SearxNG unavailable — agents will use the Jina fallback")
+        _finish_step(step, WARN, "SearXNG unavailable — agents will use grounded fallbacks")
         results["searxng"] = (WARN, "skipped")
+        results["valkey"] = (WARN, "skipped")
 
-    # ── Step 3b: FlareSolverr ─────────────────────────────────────────────
-    if docker_status.ok:
-        step = _start_step("FLARE", "starting FlareSolverr CAPTCHA-bypass container")
-        flare = await ensure_container(flaresolverr_spec(), on_progress=_progress_for(step))
-        # A missing FlareSolverr degrades scraping but does not break the
-        # engagement, so a hard failure is still reported as a warning.
-        state = OK if flare.ok else WARN
-        _finish_step(step, state, f"FlareSolverr {flare.detail}")
-        results["flare"] = (state, flare.detail)
-    else:
-        step = _start_step("FLARE", "FlareSolverr — skipped (Docker unavailable)")
-        await _pause(0.2)
-        _finish_step(step, WARN, "FlareSolverr unavailable — stealth Bing fallback only")
-        results["flare"] = (WARN, "skipped")
+    # W-12: CAPTCHA tooling is investigation-only. Starting it during a normal
+    # engagement would conceal a forbidden Tier C engine regression.
+    results["flare"] = (OK, "disabled by default; opt in for investigation")
 
     # ── Step 3c: Data tools readiness ───────────────────────────────────
     step = _start_step("TOOLS", "checking data source tool readiness")
