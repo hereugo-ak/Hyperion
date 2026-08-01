@@ -198,6 +198,7 @@ class SearchResult:
     score: float = 0.0
     category: str = "general"
     published_date: str = ""
+    backend: str = "searxng"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -208,6 +209,7 @@ class SearchResult:
             "score": self.score,
             "category": self.category,
             "published_date": self.published_date,
+            "backend": self.backend,
         }
 
     def get(self, key: str, default: Any = "") -> Any:
@@ -221,6 +223,7 @@ class SearchResult:
             "score": self.score,
             "category": self.category,
             "published_date": self.published_date,
+            "backend": self.backend,
         }
         return mapping.get(key, default)
 
@@ -498,6 +501,7 @@ class SearxNGClient:
                     score=float(item.get("score", 0.0)),
                     category=str(item.get("category", "general")),
                     published_date=str(item.get("published_date", "")),
+                    backend=str(item.get("backend", "searxng")),
                 )
                 for item in payload.get("results", [])
                 if isinstance(item, dict)
