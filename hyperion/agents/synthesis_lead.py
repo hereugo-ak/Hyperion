@@ -60,6 +60,12 @@ from typing import Any
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
+from hyperion.agents.claim_triples import (
+    MAX_MATERIAL_CONTRADICTIONS,
+    extract_triple,
+    opposition,
+    rank_materiality,
+)
 from hyperion.config import ModelTier
 from hyperion.output.dedup import dedup_paragraphs
 from hyperion.output.display import DisplayError, display_value
@@ -568,12 +574,20 @@ class SynthesisLead(BaseAgent):
     # ─────────────────────────────────────────────────────────────────────
 
     def _identify_contradictions(self, matrix: dict[str, Any]) -> list[Contradiction]:
-        """Identify contradictions between agents' findings.
+        """Identify contradictions between agents' findings (W-05).
 
-        Uses the finding matrix to detect:
-        - Data conflicts: same finding_type, different values from different agents
-        - Interpretation conflicts: same data, different conclusions
-        - Scope conflicts: agents analyzed different scopes
+        A contradiction is two claims about the SAME subject with
+        incompatible values or polarity — nothing else. Every finding is
+        normalised into a ``ClaimTriple`` via ``hyperion.agents.claim_triples``;
+        triples pair only on predicate + subject-token match, and opposition
+        is explicit (numeric beyond tolerance after unit normalisation with a
+        temporal guard, or supports-vs-opposes polarity). Telemetry findings
+        ("Confidence: low", agent names, dict reprs) are ineligible and
+        logged, never forced into the analysis.
+
+        ``finding_a``/``finding_b`` carry the triple's ``claim_text`` — the
+        exact string the detector compared — never the finding title, so the
+        appendix renders the same text that was analysed.
 
         Also incorporates contradictions from the FactCheckReport if available.
         """
@@ -585,79 +599,76 @@ class SynthesisLead(BaseAgent):
             for fc_contradiction in self._fact_check_report.contradictions:
                 contradictions.append(fc_contradiction)
 
-        # From finding matrix, look for same finding_type from different agents
+        # From finding matrix: per finding_type (predicate), extract triples
+        # and pair them across agents through the opposition test.
         m = matrix.get("matrix", {})
+        opposing_pairs: list[tuple[Any, Any, str]] = []
         for ftype, entries in m.items():
             if len(entries) < 2:
                 continue
 
-            # Group by agent
             agents_present = {e["agent"] for e in entries}
             if len(agents_present) < 2:
                 continue
 
-            # Compare pairs from different agents
-            for i, entry_a in enumerate(entries):
-                for j, entry_b in enumerate(entries):
+            triples = []
+            ineligible = 0
+            for entry in entries:
+                triple = extract_triple(
+                    agent=entry["agent"],
+                    predicate=ftype,
+                    claim_text=entry["content"],
+                    source_count=entry["source_count"],
+                    confidence=entry["confidence"],
+                )
+                if triple is None:
+                    ineligible += 1
+                    continue
+                triples.append(triple)
+            if ineligible:
+                logger.info(
+                    "W-05: %d finding(s) of type %s ineligible for "
+                    "contradiction analysis (telemetry or unnormalisable)",
+                    ineligible,
+                    ftype,
+                )
+
+            for i, triple_a in enumerate(triples):
+                for j, triple_b in enumerate(triples):
                     if i >= j:
                         continue
-                    if entry_a["agent"] == entry_b["agent"]:
+                    if triple_a.agent == triple_b.agent:
                         continue
+                    kind = opposition(triple_a, triple_b)
+                    if kind is not None:
+                        opposing_pairs.append((triple_a, triple_b, kind))
 
-                    # Check if contents diverge (simple heuristic)
-                    content_a = entry_a["content"].lower().strip()
-                    content_b = entry_b["content"].lower().strip()
-                    if content_a == content_b:
-                        continue
-
-                    # Classify contradiction type
-                    ctype = self._classify_contradiction(entry_a, entry_b, ftype)
-
-                    contradiction_id += 1
-                    contradiction = Contradiction(
-                        id=f"contradiction_{contradiction_id}",
-                        agent_a=entry_a["agent"],
-                        agent_b=entry_b["agent"],
-                        finding_a=entry_a["title"],
-                        finding_b=entry_b["title"],
-                        contradiction_type=ctype,
-                    )
-                    contradictions.append(contradiction)
+        # Budget cap: keep the most material pairs only (§W-05 step 7).
+        opposing_pairs.sort(key=rank_materiality, reverse=True)
+        for triple_a, triple_b, kind in opposing_pairs[:MAX_MATERIAL_CONTRADICTIONS]:
+            contradiction_id += 1
+            contradictions.append(
+                Contradiction(
+                    id=f"contradiction_{contradiction_id}",
+                    agent_a=triple_a.agent,
+                    agent_b=triple_b.agent,
+                    finding_a=triple_a.claim_text,
+                    finding_b=triple_b.claim_text,
+                    contradiction_type=(
+                        ContradictionType.DATA_CONFLICT
+                        if kind == "data_conflict"
+                        else ContradictionType.INTERPRETATION_CONFLICT
+                    ),
+                )
+            )
+        if len(opposing_pairs) > MAX_MATERIAL_CONTRADICTIONS:
+            logger.info(
+                "W-05: %d opposing pairs found, capped at %d by materiality",
+                len(opposing_pairs),
+                MAX_MATERIAL_CONTRADICTIONS,
+            )
 
         return contradictions
-
-    def _classify_contradiction(
-        self,
-        entry_a: dict[str, Any],
-        entry_b: dict[str, Any],
-        finding_type: str,
-    ) -> ContradictionType:
-        """Classify a contradiction as data, interpretation, or scope conflict.
-
-        - Data conflict: different numbers for the same metric (e.g., market_size)
-        - Interpretation conflict: same data, different conclusions
-        - Scope conflict: agents analyzed different scopes (geography, segment, etc.)
-        """
-        # Finding types that are inherently numeric → data conflicts
-        numeric_types = {
-            "market_size", "tam", "sam", "som", "cagr", "valuation",
-            "dcf", "revenue", "margin", "ltv", "cac", "price",
-            "cost", "spend", "growth_rate", "penetration_rate",
-        }
-
-        if finding_type.lower() in numeric_types:
-            return ContradictionType.DATA_CONFLICT
-
-        # Check if agents mention different geographies or segments
-        scope_indicators = ["region", "country", "geography", "segment", "market segment"]
-        content_a = entry_a["content"].lower()
-        content_b = entry_b["content"].lower()
-        for indicator in scope_indicators:
-            if indicator in content_a or indicator in content_b:
-                return ContradictionType.SCOPE_CONFLICT
-
-        # Default: interpretation conflict (same data, different conclusions)
-        return ContradictionType.INTERPRETATION_CONFLICT
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 4: Resolve contradictions (evidence-weighted, not averaging)
@@ -749,11 +760,20 @@ class SynthesisLead(BaseAgent):
     def _find_finding_by_agent_and_title(
         self,
         agent: str,
-        title: str,
+        claim_text: str,
     ) -> KeyFinding | None:
-        """Find a specific finding by agent name and title."""
+        """Find a specific finding by agent name and claim text (W-05).
+
+        W-05 contradictions carry the claim text that was compared
+        (``finding.content``), so match content first. Title matching is
+        retained as a fallback for fact-check-origin contradictions, which
+        predate the claim-triple pipeline.
+        """
         for finding in self._collected_findings:
-            if finding.agent == agent and finding.title == title:
+            if finding.agent == agent and finding.content == claim_text:
+                return finding
+        for finding in self._collected_findings:
+            if finding.agent == agent and finding.title == claim_text:
                 return finding
         return None
 
