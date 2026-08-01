@@ -1140,68 +1140,97 @@ class WorkflowEngine:
         dag: WorkflowDAG,
         gaps: list[AnalysisGap] | None = None,
     ) -> list[AnalysisGap]:
-        """Run the GAP_CLOSURE phase (P2-16/P2-18, owned by the Director).
+        """Run the W-07 evidence-insufficiency ladder (owned by the Director).
 
-        Each unresolved gap walks a 3-round ladder: round 1 re-dispatches
-        the originating specialist (still alive in AWAITING_FOLLOWUP) one
-        tier up with urgency HIGH; round 2 sends a reformulated cross-check
-        to a different specialist; round 3 escalates to the synthesis lead
-        at STRONG tier or above. The first truthy run() result resolves
-        the gap; a gap that survives all three rounds stays unresolved and
-        is declared via _record_unresolved_gaps. After all rounds,
-        specialist tasks are finalized to COMPLETED and the closure task
-        itself is marked COMPLETED so the quality gate can proceed.
+        Each unresolved gap walks a budgeted ladder that ends in one of four
+        named outcomes (``hyperion.agents.insufficiency``):
+
+        - up to 3 ``RETRY_STRATEGY`` rounds, each changing the concrete
+          ``(query_form, engine_set, window, locale)`` triple and never
+          repeating a triple that already returned zero;
+        - then up to 2 ``RETRY_SCOPE`` rounds, broadening period/entity/
+          geography and recording the scope change;
+        - then classification as ``OUT_OF_SCOPE`` (subject-class mismatch —
+          the section is suppressed) or ``DECLARED_GAP`` (thin public record
+          — the specific gap is declared).
+
+        The first truthy agent result resolves the gap. Resolutions are
+        collected on ``self._insufficiency_resolutions`` for the scope note
+        and the declared-gap statements. After all rounds, specialist tasks
+        are finalized to COMPLETED and the closure task itself is marked
+        COMPLETED so the quality gate can proceed.
         """
-        from hyperion.config import ModelTier as _Tier
-        from hyperion.router.budget import TaskUrgency
+        from hyperion.agents.insufficiency import (
+            InsufficiencyLadder,
+            InsufficiencyOutcome,
+            classify_gap,
+        )
 
         gaps = list(gaps or [])
+        self._insufficiency_resolutions: list[Any] = []
         closure = dag.get_task(self._GAP_CLOSURE_TASK_ID)
         if closure is not None:
             closure.status = TaskStatus.RUNNING
             closure.started_at = time.time()
             self._publish_task_update(closure)
 
-        tier_ladder = [
-            _Tier.MICRO, _Tier.FAST, _Tier.STANDARD, _Tier.STRONG, _Tier.DEEP,
-        ]
+        engagement_context = getattr(self, "_engagement_context", None) or {}
 
         for gap in gaps:
             if gap.resolved:
                 continue
-            for round_no in (1, 2, 3):
-                if gap.resolved:
+            ladder = InsufficiencyLadder(
+                gap_id=gap.id, question=gap.question, section_id=gap.section_id
+            )
+            # Phase 1: RETRY_STRATEGY — concrete, non-repeating triples.
+            while not gap.resolved:
+                triple = ladder.next_strategy_round()
+                if triple is None:
                     break
                 gap.attempts += 1
-                target, question = self._gap_closure_round(
-                    dag, gap, round_no, tier_ladder
+                evidence = await self._dispatch_gap_round(
+                    dag, gap, triple.describe(), round_kind="strategy"
                 )
-                agent = self._resolve_gap_agent(target)
-                if agent is None:
-                    continue
-                try:
-                    result = await agent.run(
-                        question=question,
-                        engagement_id=self._engagement_id,
-                        urgency=TaskUrgency.HIGH,
-                    )
-                except TypeError:
-                    # Specialist run() signatures that take no urgency kwarg
-                    # still get the re-dispatch; the tier/urgency intent is
-                    # in the question text.
-                    result = await agent.run(
-                        question=question,
-                        engagement_id=self._engagement_id,
-                    )
-                except Exception as exc:  # noqa: BLE001 - logged, gap stays open
-                    logger.warning(
-                        "gap_closure: round-%d dispatch for gap %s failed: %s",
-                        round_no, gap.id, exc,
-                    )
-                    continue
-                if result:
+                ladder.record_attempt(triple, produced_evidence=evidence)
+                if evidence:
                     gap.resolved = True
-                    gap.resolution = str(result)
+                    gap.resolution = f"resolved via {triple.describe()}"
+            # Phase 2: RETRY_SCOPE — broaden period/entity/geography.
+            while not gap.resolved:
+                planned = ladder.next_scope_round()
+                if planned is None:
+                    break
+                triple, scope_change = planned
+                gap.attempts += 1
+                ladder.resolution.scope_change = scope_change
+                evidence = await self._dispatch_gap_round(
+                    dag,
+                    gap,
+                    f"{triple.describe()} — scope change: {scope_change}",
+                    round_kind="scope",
+                )
+                ladder.record_attempt(triple, produced_evidence=evidence)
+                if evidence:
+                    gap.resolved = True
+                    gap.resolution = (
+                        f"resolved after scope change ({scope_change}) "
+                        f"via {triple.describe()}"
+                    )
+            # Phase 3: classify the survivors.
+            if not gap.resolved:
+                outcome, justification = classify_gap(
+                    gap.question,
+                    gap.section_id,
+                    engagement_context,
+                    ladder.tried_triples,
+                )
+                ladder.resolution.outcome = outcome
+                ladder.resolution.justification = justification
+                self._insufficiency_resolutions.append(ladder.resolution)
+                self._log(
+                    f"GAP_CLOSURE: gap '{gap.id}' -> {outcome.value} "
+                    f"after {len(ladder.tried_triples)} strategy attempts"
+                )
 
         # Finalize: specialists leave AWAITING_FOLLOWUP, the phase completes.
         for task in dag.tasks:
@@ -1218,60 +1247,60 @@ class WorkflowEngine:
             self._publish_task_update(closure)
         return gaps
 
-    def _gap_closure_round(
+    async def _dispatch_gap_round(
         self,
         dag: WorkflowDAG,
         gap: AnalysisGap,
-        round_no: int,
-        tier_ladder: list[Any],
-    ) -> tuple[AgentName, str]:
-        """Select the target agent and question text for one closure round.
+        strategy_description: str,
+        round_kind: str,
+    ) -> bool:
+        """Dispatch one W-07 ladder round to a live specialist.
 
-        Round 1: the originating specialist, one tier up. Round 2: a
-        different specialist with a reformulated cross-check query.
-        Round 3: the synthesis lead at STRONG tier or above, with the
-        full gap context.
+        Strategy rounds re-dispatch the ORIGINATING specialist: the section
+        owner retries the same question with a different concrete query
+        construction (W-07 RETRY_STRATEGY semantics). Scope rounds prefer a
+        DIFFERENT live specialist: broadening entity/period/geography is a
+        cross-domain ask (W-07 RETRY_SCOPE semantics). The strategy
+        description is embedded in the question so the agent's query
+        construction changes observably. Returns True when the agent
+        produced evidence.
         """
-        if round_no == 1:
-            task = next((t for t in dag.tasks if t.agent == gap.agent), None)
-            base_tier = task.model_tier if task else tier_ladder[2]
-            try:
-                idx = tier_ladder.index(base_tier)
-            except ValueError:
-                idx = 2  # STANDARD
-            bumped = tier_ladder[min(idx + 1, len(tier_ladder) - 1)]
-            question = (
-                f"GAP_CLOSURE round 1 (tier {bumped.value}, urgency HIGH): "
-                f"answer this specific unresolved question for section "
-                f"'{gap.section_id}' field '{gap.field}': {gap.question}"
-            )
-            return gap.agent, question
-        if round_no == 2:
-            candidates = sorted(
-                self._SPECIALIST_AGENTS - {gap.agent}, key=lambda a: a.value
-            )
-            live = getattr(self, "_agents", None)
-            cross = candidates[0]
-            if live:
-                for cand in candidates:
-                    if cand in live:
-                        cross = cand
-                        break
-            question = (
-                "GAP_CLOSURE round 2 (cross-check, urgency HIGH): the "
-                f"originating specialist for section '{gap.section_id}' "
-                f"could not resolve field '{gap.field}'. Reformulated "
-                f"question for your domain: {gap.question}"
-            )
-            return cross, question
-        question = (
-            "GAP_CLOSURE round 3 (synthesis escalation, tier STRONG+): two "
-            f"specialists could not resolve this gap for section "
-            f"'{gap.section_id}' field '{gap.field}'; decide the answer "
-            f"from the assembled evidence or confirm it is unknowable: "
-            f"{gap.question}"
+        from hyperion.router.budget import TaskUrgency
+
+        origin = gap.agent
+        others = sorted(self._SPECIALIST_AGENTS - {origin}, key=lambda a: a.value)
+        candidates = (others + [origin]) if round_kind == "scope" else ([origin] + others)
+        live = getattr(self, "_agents", None) or {}
+        target = next(
+            (c for c in candidates if c in live), candidates[0]
         )
-        return AgentName.SYNTHESIS_LEAD, question
+        agent = self._resolve_gap_agent(target)
+        if agent is None:
+            return False
+        question = (
+            f"GAP_CLOSURE {round_kind} retry (urgency HIGH) for section "
+            f"'{gap.section_id}' field '{gap.field}' — retrieval strategy: "
+            f"{strategy_description}. Answer this specific unresolved "
+            f"question: {gap.question}"
+        )
+        try:
+            result = await agent.run(
+                question=question,
+                engagement_id=self._engagement_id,
+                urgency=TaskUrgency.HIGH,
+            )
+        except TypeError:
+            result = await agent.run(
+                question=question,
+                engagement_id=self._engagement_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - logged, round fails
+            logger.warning(
+                "gap_closure: %s round for gap %s failed: %s",
+                round_kind, gap.id, exc,
+            )
+            return False
+        return bool(result)
 
     def _resolve_gap_agent(self, agent_name: AgentName) -> Any | None:
         """Locate a live agent for a closure dispatch (None if unreachable)."""
@@ -1290,22 +1319,56 @@ class WorkflowEngine:
     def _record_unresolved_gaps(
         self, report: Any, gaps: list[AnalysisGap] | None
     ) -> None:
-        """Declare gaps that survived the closure ladder in the report.
+        """Write the W-07 outcomes of survived gaps into the report.
 
-        P2-16 sub-fix 5.6: an unresolvable gap omits its field from the
-        client content, and its specific question is recorded in
-        FinalReport.limitations so the omission is honest and visible.
+        - ``OUT_OF_SCOPE``: the section is suppressed entirely (no heading,
+          no placeholder, no TOC entry) and one consolidated line is added
+          to the scope note.
+        - ``DECLARED_GAP``: the section is retained and a SPECIFIC gap is
+          declared — the question, the strategies attempted, and what source
+          would resolve it. The banned filler phrasings ("Insufficient
+          evidence", "requires additional research") are structurally
+          unconstructible here.
+
+        Any gap with no recorded resolution (defensive: resolved or
+        unclassified) is omitted without filler prose.
         """
+        from hyperion.agents.insufficiency import (
+            InsufficiencyOutcome,
+            suppress_out_of_scope_sections,
+        )
+
         limitations = getattr(report, "limitations", None)
         if limitations is None:
             return
+
+        resolutions = list(getattr(self, "_insufficiency_resolutions", []) or [])
+
+        # OUT_OF_SCOPE: suppress sections, collect the consolidated scope note.
+        scope_note_lines = suppress_out_of_scope_sections(report, resolutions)
+        for line in scope_note_lines:
+            if line not in limitations:
+                limitations.append(line)
+
+        # DECLARED_GAP: specific statements, never filler.
+        for resolution in resolutions:
+            if resolution.outcome != InsufficiencyOutcome.DECLARED_GAP:
+                continue
+            statement = resolution.declared_gap_statement()
+            if not any(resolution.question in existing for existing in limitations):
+                limitations.append(statement)
+
+        # Defensive: a gap that survived with no classification is still
+        # declared specifically, with its real attempt count.
+        classified_ids = {r.gap_id for r in resolutions}
         for gap in gaps or []:
-            if gap.resolved:
+            if gap.resolved or gap.id in classified_ids:
                 continue
             entry = (
-                f"Unresolved research gap in section '{gap.section_id}' "
+                f"Declared research gap in section '{gap.section_id}' "
                 f"({gap.field}), unanswered after {gap.attempts} closure "
-                f"rounds: {gap.question}"
+                f"rounds: {gap.question}. A primary source naming this "
+                f"entity and period directly would resolve it."
             )
             if not any(gap.question in existing for existing in limitations):
                 limitations.append(entry)

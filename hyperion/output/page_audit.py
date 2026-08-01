@@ -59,6 +59,13 @@ BANNED_SUBSTRINGS: tuple[str, ...] = (
     "—",
     "–",
     "Insufficient evidence to state implications",
+    # W-07: the insufficiency ladder makes filler phrasings unconstructible;
+    # these render-time bans are the backstop. "Confidence: low" is telemetry
+    # rendered as prose — confidence is a structured field, never a sentence.
+    "Insufficient evidence",
+    "requires additional research",
+    "Confidence: low",
+    "confidence is low",
     "no specific implications stated",
     "no specific implications could be derived",
     "so what? no specific",
