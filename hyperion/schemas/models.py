@@ -2379,6 +2379,25 @@ class QualityDimension(BaseModel):
         "regardless of total")
 
 
+class QualityTerminalState(str, Enum):
+    """W-08: the three terminal states of the Quality Gate.
+
+    Separates "cannot improve further" from "acceptable to deliver" and
+    makes the second an actual gate:
+
+    - APPROVED: score at or above threshold, no hard blockers. Ships.
+    - SHIP_WITH_CAVEAT: score below threshold but above the floor, no hard
+      blockers. Ships only with a prominent limitations page and only when
+      the operator has explicitly enabled caveat shipping.
+    - BLOCKED: any hard blocker, or score below the floor. Does not ship;
+      the engagement ends with an operator diagnostic, not a client PDF.
+    """
+
+    APPROVED = "approved"
+    SHIP_WITH_CAVEAT = "ship_with_caveat"
+    BLOCKED = "blocked"
+
+
 class QualityScore(BaseModel):
     """Output from the Quality Gate (Agent 18).
 
@@ -2416,12 +2435,26 @@ class QualityScore(BaseModel):
         "max_iterations_reached.",
     )
     critical_dimensions: list[QualityDimensionName] = Field(default_factory=list, description="Dimensions scoring < 3 — forces iteration")
-    max_iterations_reached: bool = Field(default=False, description="True if 3 iterations done "
-        "without pass")
+    max_iterations_reached: bool = Field(default=False, description="True if iteration cap "
+        "reached without approval. DIAGNOSTIC ONLY (W-08): never read in a ship condition.")
     escalation_report: str | None = Field(default=None, description="Detailed escalation report "
         "if max iterations reached without pass")
     fix_priority: list[str] = Field(default_factory=list, description="Ordered list of fixes to "
         "apply, highest impact first")
+    # W-08: three terminal states, not two. The orchestrator computes this
+    # once, after the iteration loop, and it is the ONLY ship/no-ship
+    # decision point. "cannot improve further" (max_iterations_reached) is
+    # deliberately absent from its derivation.
+    terminal_state: QualityTerminalState = Field(
+        default=QualityTerminalState.BLOCKED,
+        description="W-08 terminal state: APPROVED ships, SHIP_WITH_CAVEAT ships only with "
+        "a limitations page and only when explicitly enabled, BLOCKED never ships.",
+    )
+    blocked_reason: str | None = Field(
+        default=None,
+        description="Why the run was BLOCKED (hard blockers and/or score below floor), "
+        "for the operator diagnostic.",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

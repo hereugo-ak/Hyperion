@@ -388,3 +388,7 @@ class EngagementMetadata(BaseModel):
     sub_agents_spawned: int = 0
     quality_iterations: int = 0
     final_quality_score: float | None = None
+    # W-08: when the Quality Gate BLOCKS a run, the path of the machine-readable
+    # operator diagnostic (dimension scores, blockers, gaps, corpus stats,
+    # roster decisions). Empty when the run shipped or failed for other reasons.
+    blocked_diagnostic_path: str = ""

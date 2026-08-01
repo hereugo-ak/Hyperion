@@ -741,8 +741,17 @@ class Settings(BaseSettings):
 
     # ── Quality Gate ──
     quality_threshold: float = 4.0
-    max_quality_iterations: int = 2  # P7: capped at ≤2 (was 3)
+    max_quality_iterations: int = 4  # W-08: raised from 2, bounded by the wall-clock budget below
+    quality_iteration_wall_clock_seconds: int = 900  # W-08: the loop cannot run away
     quality_source_floor: int = 3   # P7: stop iterating if sources < floor
+    # W-08: score below this floor is BLOCKED even with zero hard blockers.
+    # The run under audit scored 2.15 with five critical dimensions failing;
+    # any sane floor blocks that.
+    quality_ship_floor: float = 3.0
+    # W-08: SHIP_WITH_CAVEAT is off by default. When enabled, a score in
+    # [quality_ship_floor, quality_threshold) with no hard blockers may
+    # ship, but only with a prominent limitations page.
+    allow_ship_with_caveat: bool = False
 
     # ── Sub-Agent ──
     sub_agent_timeout: int = 300

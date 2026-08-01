@@ -47,6 +47,7 @@ from hyperion.schemas.models import (
     FinalReport,
     LayoutPlan,
     QualityScore,
+    QualityTerminalState,
     RenderOutput,
     VisualizationOutput,
 )
@@ -302,7 +303,10 @@ class WorkflowEngine:
             print(f"PDF: {result.pdf_path}")
     """
 
-    MAX_QUALITY_ITERATIONS = 2  # P7: capped at ≤2 (was 3) — content-aware quality gate
+    # W-08: the class-level cap is a fallback only; the authoritative value
+    # is settings.max_quality_iterations (now 4) so the operator can tune it
+    # without a code change. The wall-clock budget below is the real bound.
+    MAX_QUALITY_ITERATIONS = 4  # W-08: raised from 2 (was 3, then P7 cap 2)
     TASK_TIMEOUT_SECONDS = 600  # 10 minutes — default for most agents
     SPECIALIST_TIMEOUT_SECONDS = 1200  # 20 minutes — specialists spawn up to 3 sub-agents
     # Each sub-agent does SearxNG search + Jina read + LLM analysis.
@@ -1467,6 +1471,20 @@ class WorkflowEngine:
         # Get visualization output for visual quality scoring (Dimension 10)
         viz_output = self._get_output_by_agent(dag, AgentName.DATA_VISUALIZER)
 
+        # W-08: the iteration cap is settings-driven (default 4, was 2) and
+        # the loop is bounded by a wall-clock budget so a raised cap cannot
+        # turn a 34-minute engagement into a two-hour one.
+        try:
+            from hyperion.config import get_settings as _get_quality_settings
+            _qs = _get_quality_settings()
+            max_iterations = int(getattr(_qs, "max_quality_iterations", self.MAX_QUALITY_ITERATIONS))
+            wall_clock = float(getattr(_qs, "quality_iteration_wall_clock_seconds", 900))
+        except Exception:  # noqa: BLE001 - fall back to class constants
+            max_iterations = self.MAX_QUALITY_ITERATIONS
+            wall_clock = 900.0
+        loop_started = time.time()
+        prev_total: float | None = None
+
         # P7: Content-aware source-count floor — if the report has fewer
         # sources than this, stop iterating because more passes won't fix
         # thin evidence; the problem is insufficient data, not insufficient
@@ -1479,8 +1497,20 @@ class WorkflowEngine:
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("%s: %s", "_quality_iteration_loop", exc)
 
-        for iteration in range(1, self.MAX_QUALITY_ITERATIONS + 1):
+        for iteration in range(1, max_iterations + 1):
             iterations = iteration
+
+            # W-08: wall-clock budget. Running out of time is NOT approval;
+            # it ends the loop and the terminal-state computation below
+            # decides the outcome from the last real score.
+            if time.time() - loop_started > wall_clock:
+                self._log(
+                    f"QUALITY: wall-clock budget ({wall_clock:.0f}s) exhausted "
+                    f"after {iteration - 1} iteration(s) — stopping loop"
+                )
+                if current_score is not None:
+                    current_score.max_iterations_reached = True
+                break
 
             # Score the report
             current_score = await asyncio.wait_for(
@@ -1517,6 +1547,20 @@ class WorkflowEngine:
                 self._log(f"QUALITY: approved at iteration {iteration}")
                 break  # Quality gate approved
 
+            # W-08: an iteration that produced no score change on any
+            # dimension terminates the loop early. Looping without
+            # improvement is the signal that the input is the problem, not
+            # the polish — more passes will not fix it.
+            if prev_total is not None and abs(current_score.total_score - prev_total) < 1e-9:
+                self._log(
+                    f"QUALITY: iteration {iteration} produced no score change "
+                    f"({current_score.total_score:.2f}) — terminating early; "
+                    "the input, not the polish, is the problem"
+                )
+                current_score.max_iterations_reached = True
+                break
+            prev_total = current_score.total_score
+
             # P2-25: thin evidence triggers retrieval escalation, not a stop.
             # The old content-aware stop broke here; now a below-floor source
             # count dispatches a targeted retrieval round (new engines,
@@ -1539,7 +1583,7 @@ class WorkflowEngine:
                 )
 
             # Score below threshold — iterate with targeted fixes
-            if iteration < self.MAX_QUALITY_ITERATIONS:
+            if iteration < max_iterations:
                 # Synthesis Lead applies targeted fixes to the specific
                 # dimensions that scored below 4 (not a full re-synthesis)
                 self._log(
@@ -1556,12 +1600,23 @@ class WorkflowEngine:
                 else:
                     self._log(f"SYNTHESIS: iteration {iteration + 1} returned None — using unchanged report")
             else:
-                self._log(f"QUALITY: max iterations ({self.MAX_QUALITY_ITERATIONS}) reached — proceeding with best available")
+                self._log(f"QUALITY: max iterations ({max_iterations}) reached — loop ends")
 
-        # If we exhausted all iterations without approval, mark it so
-        # delivery agents know to proceed with the best available report
-        if current_score and not current_score.approved and iterations >= self.MAX_QUALITY_ITERATIONS:
+        # W-08: iteration exhaustion is recorded for DIAGNOSTICS ONLY. It is
+        # never read in a ship condition — the terminal-state computation
+        # below is the single ship/no-ship decision point, and it does not
+        # reference max_iterations_reached.
+        if current_score and not current_score.approved and iterations >= max_iterations:
             current_score.max_iterations_reached = True
+
+        # W-08: three terminal states, computed here and only here.
+        if current_score is not None:
+            self._compute_quality_terminal_state(current_score)
+            self._log(
+                f"QUALITY: terminal state = {current_score.terminal_state.value} "
+                f"(score={current_score.total_score:.2f}, "
+                f"blockers={len(current_score.integrity_blockers)})"
+            )
 
         # Mark the quality_gate task as COMPLETED in the DAG so that
         # delivery tasks (presentation_designer, etc.) that depend on
@@ -1579,11 +1634,157 @@ class WorkflowEngine:
             dimensions=[],
             total_score=0.0,
             approved=False,
-            iteration=iterations,
+            iteration=max(iterations, 1),
             gaps=["Quality Gate did not produce a score"],
             critical_dimensions=[],
             max_iterations_reached=True,
+            terminal_state=QualityTerminalState.BLOCKED,
+            blocked_reason="Quality Gate did not produce a score",
         ), iterations
+
+    def _compute_quality_terminal_state(self, score: QualityScore) -> None:
+        """W-08: compute the Quality Gate terminal state. The ONLY ship/no-ship decision point.
+
+        Mutates ``score.terminal_state`` (and ``score.blocked_reason`` when
+        BLOCKED) in place. Called once by ``_quality_iteration_loop`` after the
+        iteration loop ends, and read once by ``run_engagement`` to decide
+        whether Stage 5 (delivery) runs.
+
+        Derivation, in order:
+        - BLOCKED: any integrity blocker (leaked object, banned filler, verdict
+          contradiction, dishonest confidence, broken URL), OR total score below
+          the configured ship floor (``quality_ship_floor``, default 3.0).
+        - APPROVED: the gate's authoritative ``approved`` flag (score >=
+          threshold AND no hard blockers, per QualityGate._determine_approval).
+        - otherwise SHIP_WITH_CAVEAT, but only when the operator has explicitly
+          set ``allow_ship_with_caveat``; without that setting the run is
+          BLOCKED, because silent degradation is the failure mode this item
+          exists to remove.
+
+        ``max_iterations_reached`` is deliberately NOT read here. Iteration
+        exhaustion is a diagnostic, never a ship condition.
+        """
+        try:
+            from hyperion.config import get_settings
+
+            _s = get_settings()
+            ship_floor = float(getattr(_s, "quality_ship_floor", 3.0))
+            allow_caveat = bool(getattr(_s, "allow_ship_with_caveat", False))
+        except Exception:  # noqa: BLE001 - fall back to spec defaults
+            ship_floor = 3.0
+            allow_caveat = False
+
+        blockers = list(score.integrity_blockers or [])
+        if blockers or score.total_score < ship_floor:
+            score.terminal_state = QualityTerminalState.BLOCKED
+            reasons: list[str] = []
+            if blockers:
+                reasons.append(
+                    f"{len(blockers)} integrity blocker(s): " + "; ".join(blockers[:5])
+                )
+            if score.total_score < ship_floor:
+                critical_names = [
+                    d.value if hasattr(d, "value") else str(d)
+                    for d in (score.critical_dimensions or [])
+                ]
+                reasons.append(
+                    f"score {score.total_score:.2f} below ship floor {ship_floor:.2f}"
+                )
+                if critical_names:
+                    reasons.append(
+                        f"critical dimensions failing: {', '.join(critical_names)}"
+                    )
+            score.blocked_reason = " | ".join(reasons)
+            return
+
+        if score.approved:
+            score.terminal_state = QualityTerminalState.APPROVED
+            return
+
+        if allow_caveat:
+            score.terminal_state = QualityTerminalState.SHIP_WITH_CAVEAT
+            return
+
+        score.terminal_state = QualityTerminalState.BLOCKED
+        score.blocked_reason = (
+            f"score {score.total_score:.2f} below approval threshold "
+            f"{score.threshold:.2f} and allow_ship_with_caveat is disabled"
+        )
+
+    def _write_blocked_diagnostic(self, score: QualityScore) -> str:
+        """W-08: write the machine-readable operator diagnostic for a BLOCKED run.
+
+        Contains dimension scores, hard blockers, open gaps, corpus statistics
+        and roster decisions, so a blocked run is actionable instead of merely
+        disappointing. Written under ``<reports_dir>/diagnostics/`` and NEVER
+        to the deliverable path — a blocked run produces no client artifact.
+
+        Returns the diagnostic file path ("" if writing failed; the failure is
+        logged, never raised — the block decision itself must not fail).
+        """
+        import json as _json
+
+        try:
+            from hyperion.config import get_settings
+
+            reports_dir = get_settings().reports_dir
+        except Exception:  # noqa: BLE001
+            from pathlib import Path as _P
+
+            reports_dir = _P("./reports")
+
+        try:
+            diag_dir = reports_dir / "diagnostics"
+            diag_dir.mkdir(parents=True, exist_ok=True)
+            path = diag_dir / f"blocked_{self._engagement_id or 'unknown'}.json"
+
+            dimensions = [
+                {
+                    "dimension": (
+                        d.dimension.value
+                        if hasattr(getattr(d, "dimension", None), "value")
+                        else str(getattr(d, "dimension", ""))
+                    ),
+                    "score": getattr(d, "score", None),
+                    "rationale": getattr(d, "rationale", "")[:500],
+                }
+                for d in (score.dimensions or [])
+            ]
+            roster_decisions = []
+            if self._director is not None:
+                roster_decisions = list(
+                    getattr(self._director, "roster_decisions", []) or []
+                )
+            diagnostic = {
+                "engagement_id": self._engagement_id,
+                "terminal_state": score.terminal_state.value,
+                "blocked_reason": score.blocked_reason or "",
+                "total_score": score.total_score,
+                "threshold": score.threshold,
+                "iteration": score.iteration,
+                "max_iterations_reached": score.max_iterations_reached,
+                "integrity_blockers": list(score.integrity_blockers or []),
+                "critical_dimensions": [
+                    d.value if hasattr(d, "value") else str(d)
+                    for d in (score.critical_dimensions or [])
+                ],
+                "dimension_scores": dimensions,
+                "open_gaps": list(score.gaps or []),
+                "fix_priority": list(score.fix_priority or []),
+                "corpus_stats": {
+                    "findings_collected": len(self._all_findings),
+                    "task_outputs": len(self._task_outputs),
+                },
+                "roster_decisions": [
+                    str(r) for r in roster_decisions
+                ],
+            }
+            path.write_text(_json.dumps(diagnostic, indent=2, default=str))
+            self._log(f"QUALITY: operator diagnostic written to {path}")
+            return str(path)
+        except Exception as exc:  # noqa: BLE001 - logged, never raised
+            logger.warning("_write_blocked_diagnostic: %s", exc)
+            return ""
 
     def _build_floor_report(self, question: str) -> FinalReport | None:
         """Build a minimal floor-report from collected findings (D13 fix).
@@ -2027,6 +2228,78 @@ class WorkflowEngine:
             # Update the task outputs with the iterated report
             self._task_outputs["task_synthesis_lead"] = final_report
             self._task_outputs["task_quality_gate"] = quality_score
+
+            # ─────────────────────────────────────────────────────────────
+            # W-08: the Quality Gate can refuse to ship.
+            # BLOCKED means Stage 5 never runs — no HANDOFF to the delivery
+            # agents, no Presentation Designer, no Data Visualizer, no Render
+            # Engine, no client PDF under any name. The engagement ends with
+            # a machine-readable operator diagnostic instead.
+            # SHIP_WITH_CAVEAT (opt-in via allow_ship_with_caveat) ships but
+            # forces a prominent limitations declaration onto the report.
+            # ─────────────────────────────────────────────────────────────
+            terminal_state = (
+                quality_score.terminal_state if quality_score else QualityTerminalState.BLOCKED
+            )
+            if terminal_state == QualityTerminalState.BLOCKED:
+                blocked_reason = (
+                    quality_score.blocked_reason
+                    if quality_score and quality_score.blocked_reason
+                    else "Quality Gate blocked the run"
+                )
+                self._log(
+                    f"QUALITY: BLOCKED — refusing to ship. {blocked_reason}"
+                )
+                diagnostic_path = self._write_blocked_diagnostic(quality_score) if quality_score else ""
+                await self.bus.publish(
+                    channel=Channel.ESCALATION,
+                    msg_type=MessageType.ESCALATION,
+                    sender=AgentName.QUALITY_GATE,
+                    payload={
+                        "agent": AgentName.QUALITY_GATE.value,
+                        "issue": f"Quality Gate BLOCKED the run: {blocked_reason}",
+                        "suggested_action": (
+                            "Operator diagnostic written"
+                            f"{' to ' + diagnostic_path if diagnostic_path else ''}; "
+                            "engagement ends without a deliverable"
+                        ),
+                    },
+                )
+                result.success = False
+                result.failure_reason = "quality_gate"
+                result.error = f"Quality Gate BLOCKED: {blocked_reason}"
+                result.duration_seconds = time.time() - self._start_time
+                result.metadata = EngagementMetadata(
+                    engagement_id=self._engagement_id,
+                    question=question,
+                    question_type=dag.question_type,
+                    agents_used=dag.agents_selected,
+                    sources_accessed=sum(
+                        1 for f in self._all_findings if hasattr(f, "sources") and f.sources
+                    ),
+                    data_points_collected=len(self._all_findings),
+                    duration_seconds=result.duration_seconds,
+                )
+                if diagnostic_path:
+                    result.metadata.blocked_diagnostic_path = diagnostic_path
+                return result
+
+            if terminal_state == QualityTerminalState.SHIP_WITH_CAVEAT:
+                caveat_notice = (
+                    "QUALITY CAVEAT: this report shipped below the approval "
+                    f"threshold (score {quality_score.total_score:.2f}/"
+                    f"{quality_score.threshold:.2f}) under the explicit "
+                    "allow_ship_with_caveat setting. Findings should be "
+                    "treated as provisional and independently verified before "
+                    "any decision is made on them."
+                )
+                if caveat_notice not in final_report.limitations:
+                    final_report.limitations.insert(0, caveat_notice)
+                self._log(
+                    "QUALITY: SHIP_WITH_CAVEAT — limitations page notice prepended "
+                    f"(score {quality_score.total_score:.2f} below threshold "
+                    f"{quality_score.threshold:.2f})"
+                )
 
             # D4-rest: Explicit FinalReport HANDOFF on the bus so delivery
             # agents receive it via their subscription, not just via local var.

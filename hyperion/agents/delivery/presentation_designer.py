@@ -1749,7 +1749,9 @@ class PresentationDesigner(BaseAgent):
         # The FinalReport to design layout for
         self._final_report: FinalReport | None = None
 
-        # The QualityScore (must be approved)
+        # The QualityScore, stored for DISPLAY only (dimension table on the
+        # quality page). W-08: delivery never evaluates it; the orchestrator
+        # is the single ship/no-ship decision point.
         self._quality_score: QualityScore | None = None
 
         # Chart specifications from Data Visualizer
@@ -1837,7 +1839,10 @@ class PresentationDesigner(BaseAgent):
     ) -> QualityScore | None:
         """Receive the QualityScore from the Quality Gate.
 
-        The report must be approved (score ≥ 4.0) before layout design begins.
+        The score is stored for display on the quality page only. W-08:
+        whether a report ships is decided by the orchestrator's terminal
+        state; if the designer is invoked at all, the report cleared the
+        gate and is laid out unconditionally.
         """
         if quality_score:
             self._quality_score = quality_score
@@ -2930,7 +2935,7 @@ class PresentationDesigner(BaseAgent):
                 f"<td>threshold {quality.threshold:.1f}</td></tr>"
             )
             parts.append(
-                f"<tr><td>Approved</td><td>{'Yes' if quality.approved else 'No'}</td>"
+                f"<tr><td>Terminal state</td><td>{quality.terminal_state.value.replace('_', ' ')}</td>"
                 f"<td>iteration {quality.iteration}</td></tr>"
             )
             # `dimensions` is a LIST of QualityDimension models, not a dict.
@@ -3151,56 +3156,15 @@ class PresentationDesigner(BaseAgent):
             await self._transition(AgentState.DONE, "No FinalReport received")
             return LayoutPlan(engagement_id=engagement_id, confidence=ConfidenceLevel.LOW)
 
-        # Step 2: Receive QualityScore
+        # Step 2: Receive QualityScore (display only)
         await self._transition(AgentState.WORKING, "Step 2: Receiving QualityScore")
         await self._receive_quality_score(quality_score)
-
-        if self._quality_score and not self._quality_score.approved:
-            quality_note = (
-                f"Quality Gate not approved (score {self._quality_score.total_score:.1f}/5.0"
-                f", iteration {self._quality_score.iteration})"
-            )
-            # P2-23: `max_iterations_reached` is NOT a universal bypass. It
-            # partitions into two cases:
-            #   - integrity_blockers present (leaked object, banned filler,
-            #     verdict contradiction, dishonest confidence, broken URL,
-            #     meta-text): NEVER proceed, regardless of iteration count.
-            #     There is no acceptable version of shipping `{'name': ...`
-            #     to a client.
-            #   - only cosmetic/thin-evidence gaps (low score, few sources):
-            #     the max_iterations escalation MAY proceed, with the
-            #     limitation declared on the page.
-            if self._quality_score.integrity_blockers:
-                await self._transition(
-                    AgentState.DONE,
-                    f"{quality_note}, integrity blocker(s) present "
-                    f"({len(self._quality_score.integrity_blockers)}), refusing to render "
-                    "regardless of max_iterations_reached: "
-                    f"{'; '.join(self._quality_score.integrity_blockers[:3])}",
-                )
-                return LayoutPlan(
-                    engagement_id=engagement_id,
-                    confidence=ConfidenceLevel.LOW,
-                    no_blank_pages=False,
-                    no_orphaned_images=False,
-                )
-            if self._quality_score.max_iterations_reached:
-                quality_note += "max iterations reached, proceeding with best report (escalation)"
-                await self._transition(
-                    AgentState.WORKING,
-                    f"Step 2: {quality_note}",
-                )
-            else:
-                await self._transition(
-                    AgentState.DONE,
-                    f"{quality_note}, cannot design layout",
-                )
-                return LayoutPlan(
-                    engagement_id=engagement_id,
-                    confidence=ConfidenceLevel.LOW,
-                    no_blank_pages=False,
-                    no_orphaned_images=False,
-                )
+        # W-08: the escape hatch that used to live here is deleted, not
+        # repaired. Delivery NEVER evaluates quality. The orchestrator's
+        # terminal-state computation is the single ship/no-ship decision
+        # point; if this agent is running at all, the report cleared the
+        # gate and is laid out unconditionally. A second quality decision
+        # point here is a second escape hatch.
 
         # Step 3: Design layout plan
         await self._transition(AgentState.WORKING, "Step 3: Designing layout plan")

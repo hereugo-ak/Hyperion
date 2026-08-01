@@ -113,9 +113,11 @@ class TestQualityLoopReadsApproved:
     @pytest.mark.asyncio
     async def test_high_score_with_blocker_does_not_exit_loop_early(self):
         """total_score=4.5 with approved=False (integrity blocker) must NOT
-        cause the loop to stop at iteration 1. It should run through all
-        MAX_QUALITY_ITERATIONS attempting fixes, and never emit an approved
-        result, because the score was never truly approved.
+        cause the loop to stop at iteration 1. Under W-08 the loop then runs
+        one more pass; because the gate returns the identical score again,
+        the no-improvement early termination fires at iteration 2 and the
+        run escalates to BLOCKED — looping without improvement means the
+        input, not the polish, is the problem.
         """
         engine = WorkflowEngine(bus=MagicMock())
 
@@ -123,7 +125,8 @@ class TestQualityLoopReadsApproved:
         # Every iteration returns the same pathological score: score is high,
         # approved is False. If the orchestrator (incorrectly) reads
         # total_score, it will break after iteration 1. If it correctly
-        # reads `approved`, it must keep iterating until max iterations.
+        # reads `approved`, it must NOT stop at iteration 1; W-08's
+        # no-improvement rule then terminates it at iteration 2.
         quality_agent.run = AsyncMock(side_effect=lambda **kw: _score_with_integrity_blocker())
 
         synthesis_agent = MagicMock()
@@ -143,14 +146,20 @@ class TestQualityLoopReadsApproved:
             dag, _minimal_report(), None
         )
 
-        # The loop must have run to its iteration cap — it must NOT have
-        # broken out early because total_score looked fine.
-        assert iterations == engine.MAX_QUALITY_ITERATIONS
+        # The loop must NOT have broken out at iteration 1 because
+        # total_score looked fine (the P2-22 regression), and under W-08
+        # must NOT spin to the cap against an unchanged score — the
+        # no-improvement early termination fires at iteration 2.
+        assert iterations == 2
         assert score.approved is False
-        # quality_agent.run must have been called MAX_QUALITY_ITERATIONS times,
-        # proving the loop did not exit after the first high-but-unapproved
-        # score.
-        assert quality_agent.run.await_count == engine.MAX_QUALITY_ITERATIONS
+        assert quality_agent.run.await_count == 2
+        # Iteration exhaustion is recorded for diagnostics, and the terminal
+        # state is BLOCKED (integrity blocker present + score below floor is
+        # not the trigger here — the blocker is).
+        assert score.max_iterations_reached is True
+        from hyperion.schemas.models import QualityTerminalState
+
+        assert score.terminal_state == QualityTerminalState.BLOCKED
 
     @pytest.mark.asyncio
     async def test_approved_score_exits_immediately(self):
