@@ -26,13 +26,16 @@ agent that bypasses the base composition point fails CI.
 
 from __future__ import annotations
 
+from hyperion.output.typography import PROMPT_TYPOGRAPHY_RULE
+
 # Bump when the contract text changes so prompt-cache keys and audits can
 # distinguish which contract version a given run dispatched under.
-AGENT_CONTRACT_VERSION = 1
+AGENT_CONTRACT_VERSION = 2
 
 # Stable marker used by the registry-level test to prove the contract
-# reached the composed prompt. Keep this exact substring in the text below.
-AGENT_CONTRACT_MARKER = "HYPERION AGENT CONTRACT v1"
+# reached the composed prompt. Derived from the version so the two can
+# never drift apart (a bump with a stale marker fails CI immediately).
+AGENT_CONTRACT_MARKER = f"HYPERION AGENT CONTRACT v{AGENT_CONTRACT_VERSION}"
 
 AGENT_CONTRACT = (
     f"{AGENT_CONTRACT_MARKER}. These eight clauses bind every agent in this "
@@ -60,6 +63,5 @@ AGENT_CONTRACT = (
     "7. CONFLICT: When two credible sources disagree, report the "
     "disagreement with both positions and their sources. Never silently "
     "average, pick one, or drop the losing side.\n"
-    "8. TYPOGRAPHY: Never use the em dash character (U+2014) or the en "
-    "dash character (U+2013). Use a comma, a colon, or a full stop."
+    f"8. TYPOGRAPHY: {PROMPT_TYPOGRAPHY_RULE}"
 )

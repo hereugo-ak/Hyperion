@@ -577,7 +577,7 @@ class SynthesisLead(BaseAgent):
         """Identify contradictions between agents' findings (W-05).
 
         A contradiction is two claims about the SAME subject with
-        incompatible values or polarity — nothing else. Every finding is
+        incompatible values or polarity, nothing else. Every finding is
         normalised into a ``ClaimTriple`` via ``hyperion.agents.claim_triples``;
         triples pair only on predicate + subject-token match, and opposition
         is explicit (numeric beyond tolerance after unit normalisation with a
@@ -585,8 +585,8 @@ class SynthesisLead(BaseAgent):
         ("Confidence: low", agent names, dict reprs) are ineligible and
         logged, never forced into the analysis.
 
-        ``finding_a``/``finding_b`` carry the triple's ``claim_text`` — the
-        exact string the detector compared — never the finding title, so the
+        ``finding_a``/``finding_b`` carry the triple's ``claim_text``, the
+        exact string the detector compared, never the finding title, so the
         appendix renders the same text that was analysed.
 
         Also incorporates contradictions from the FactCheckReport if available.
