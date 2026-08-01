@@ -1,9 +1,9 @@
 {
   "_comment": "5.2 golden baseline for tools/audit_render_probe.py metrics, encoding audit \u00a711 DoD #7-#12. Bounds are the pass criteria; the live regression test renders the probe PDF and asserts every metric falls inside. Regenerate ONLY by re-measuring a known-good render, never by editing to fit a broken one (same rule as test_page_budget). W-09 (2026-08-01): telemetry boundary \u2014 technical appendix moved to operator artifact, glance confidence cell removed. Bounds re-measured against the new contract, not widened.",
   "page_count": {
-    "exact": 36,
+    "exact": 42,
     "dod": "10",
-    "note": "7 sections x 4 sheets + 8 front/back matter, as measured by the audit and reproduced arithmetically in test_page_budget"
+    "note": "Re-measured 2026-08-01 from a known-good render (blank_pages 0, all four leak counters 0, chars/line 54, 2 column bands, 7 exhibits). 36 -> 42: the probe had been raising AttributeError on the technical-appendix builder W-09 deleted, so this bound had not been re-measured since W-05/W-08/W-09/P2-* landed and W-10 added the six-subsection methodology (pages 35-37). Composition: 1 cover + 1 at-a-glance + 1 TOC + 2 executive summary + 28 body (7 sections x 4 sheets) + 1 risk analysis + 3 methodology + 1 endnotes + 3 source appendix + 1 colophon."
   },
   "blank_pages": {
     "max": 0,

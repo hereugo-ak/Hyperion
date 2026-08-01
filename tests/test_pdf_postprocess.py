@@ -192,9 +192,40 @@ class TestStructuralGuards:
     def test_render_routes_both_engines_through_post_pass(self):
         """render_pdf has two success paths (WeasyPrint, Playwright). Both
         must call _apply_pdf_post_pass before returning — one engine only
-        would leave the fallback deliverable un-archivable."""
+        would leave the fallback deliverable un-archivable.
+
+        AST-based, deliberately. The previous form counted the exact source
+        substring ``self._apply_pdf_post_pass(result, output_path, full_html)``.
+        The second positional argument was later renamed to ``staging_path``
+        (the post pass writes to a staging file and promotes it, so passing the
+        final ``output_path`` would have published a half-written PDF). The
+        invariant never broke, but the literal locator matched ZERO times and
+        the assertion ``0 >= 2`` failed, i.e. the test reported a defect that
+        did not exist while no longer checking the one that would. Counting
+        attribute calls by name instead tracks the invariant and survives any
+        future change of argument names or order.
+        """
+        import ast
+
         src = (REPO_ROOT / "hyperion" / "output" / "render.py").read_text()
-        assert src.count("self._apply_pdf_post_pass(result, output_path, full_html)") >= 2
+        tree = ast.parse(src)
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_apply_pdf_post_pass"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+        ]
+        assert len(calls) >= 2, (
+            "both render_pdf success paths (WeasyPrint and Playwright) must "
+            f"call self._apply_pdf_post_pass; found {len(calls)} call site(s)"
+        )
+        # Each call must hand the post pass a path and the html, so a future
+        # signature change cannot quietly reduce it to a no-arg no-op.
+        for call in calls:
+            assert len(call.args) >= 3, ast.dump(call)
 
     def test_render_method_extracts_bookmarks(self):
         src = (REPO_ROOT / "hyperion" / "output" / "render.py").read_text()
