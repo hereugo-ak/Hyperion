@@ -480,7 +480,11 @@ def measure(pdf_path: Path) -> dict:
     endnotes_idx = _page_index("Endnotes")
     tech_idx = _page_index("Technical Appendix")
 
-    glance_labels = ("RECOMMENDATION", "CONFIDENCE", "EVIDENCE BASE", "ANALYSIS DEPTH")
+    # W-09: the at-a-glance Confidence cell was internal telemetry and is
+    # removed from the client page; the remaining three labels are the
+    # contract. The old 4-label expectation is preserved in the golden file
+    # history, not here.
+    glance_labels = ("RECOMMENDATION", "EVIDENCE BASE", "ANALYSIS DEPTH")
     glance_text = page_texts[glance_idx] if glance_idx >= 0 else ""
     # Labels are uppercased by CSS, so compare uppercase.
     glance_upper = glance_text.upper()
@@ -503,18 +507,24 @@ def measure(pdf_path: Path) -> dict:
         "glance_labels_present": sum(1 for lab in glance_labels if lab in glance_upper),
         "glance_words": len(glance_text.split()),
         "endnote_entries": len(re.findall(r"(?m)^\s*\d{1,3}\.\s+\S", endnote_text)),
-        "technical_appendix_sections": sum(
-            1
-            for heading in (
-                "QUALITY ASSESSMENT",
-                "CONFIDENCE BY DIMENSION",
-                "CONTRADICTIONS",
-                "FACT CHECK",
-                "LIMITATIONS",
+        # W-09: the technical appendix is no longer a client page; its
+        # content moved to the operator telemetry artifact. A technical
+        # appendix page in the client PDF is now a DEFECT, so the metric
+        # counts down (0 = clean).
+        "technical_appendix_sections": (
+            0
+            if tech_idx < 0
+            else sum(
+                1
+                for heading in (
+                    "QUALITY ASSESSMENT",
+                    "CONFIDENCE BY DIMENSION",
+                    "CONTRADICTIONS",
+                    "FACT CHECK",
+                    "LIMITATIONS",
+                )
+                if heading in "\n".join(page_texts[tech_idx : tech_idx + 3]).upper()
             )
-            # The appendix spills onto a second page, so both are searched.
-            if tech_idx >= 0
-            and heading in "\n".join(page_texts[tech_idx : tech_idx + 3]).upper()
         ),
         # At-a-glance must precede the table of contents, as in MGI. Ordering is
         # part of the fix, so it is measured rather than eyeballed.

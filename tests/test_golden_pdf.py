@@ -193,11 +193,11 @@ def _synthetic_pdf(tmp_path: Path, *, degraded: bool) -> Path:
         page_no += 1
         return doc.new_page(width=595.2, height=841.92)
 
-    # Page 1: At a Glance (must precede the TOC) with all four labels. The
-    # probe's _page_index searches for the literal heading "At a Glance".
+    # Page 1: At a Glance (must precede the TOC) with the W-09 label set.
+    # The probe's _page_index searches for the literal heading "At a Glance".
     p = _new()
     p.insert_text((60.0, 40.0), "At a Glance", fontsize=12.0)
-    for i, label in enumerate(("RECOMMENDATION", "CONFIDENCE", "EVIDENCE BASE", "ANALYSIS DEPTH")):
+    for i, label in enumerate(("RECOMMENDATION", "EVIDENCE BASE", "ANALYSIS DEPTH")):
         p.insert_text((60.0, 70.0 + i * 30.0), f"{label}: substantive content here", fontsize=11.0)
     for row in range(25):
         p.insert_text((60.0, 250.0 + row * 20.0), body_line, fontsize=10.0)
@@ -236,19 +236,13 @@ def _synthetic_pdf(tmp_path: Path, *, degraded: bool) -> Path:
         )
     for row in range(20):
         p.insert_text((60.0, 320.0 + row * 20.0), body_line, fontsize=10.0)
-    # Technical appendix pages with all five section headings.
+    # W-09: no Technical Appendix pages. The two pages it used to occupy are
+    # ordinary body pages now; a technical appendix in the client PDF is a
+    # defect the golden counts DOWN to zero, not a section it counts up.
     p = _new()
-    p.insert_text((60.0, 60.0), "Technical Appendix", fontsize=12.0)
-    headings_1 = ("QUALITY ASSESSMENT", "CONFIDENCE BY DIMENSION", "CONTRADICTIONS")
-    for i, heading in enumerate(headings_1):
-        p.insert_text((60.0, 110.0 + i * 40.0), heading, fontsize=11.0)
-    for row in range(20):
-        p.insert_text((60.0, 280.0 + row * 20.0), body_line, fontsize=10.0)
+    _write_body(p, leaks=False)
     p = _new()
-    for i, heading in enumerate(("FACT CHECK", "LIMITATIONS")):
-        p.insert_text((60.0, 110.0 + i * 40.0), heading, fontsize=11.0)
-    for row in range(26):
-        p.insert_text((60.0, 200.0 + row * 20.0), body_line, fontsize=10.0)
+    _write_body(p, leaks=False)
     # Three filler body pages to reach the golden 36.
     for _ in range(3):
         p = _new()
@@ -301,6 +295,7 @@ class TestInstrumentHonesty:
         metrics["fonts_embedded"] = ["DejaVuSans"]     # DoD #7 fallback font
         metrics["front_back_matter"]["glance_labels_present"] = 1
         metrics["front_back_matter"]["glance_precedes_toc"] = False
+        metrics["front_back_matter"]["technical_appendix_sections"] = 5  # W-09 leak
         failures = compare_against_golden(metrics, golden)
         assert len(failures) >= 8, (
             "negative control: reintroduced DoD defects must fail the golden "

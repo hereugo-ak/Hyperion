@@ -66,6 +66,7 @@ from typing import Any
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
+from hyperion.schemas.narrative import ClientReport, write_telemetry_artifact
 from hyperion.output.confidence import derive_confidence
 from hyperion.output.images import ImageRelevanceGate
 from hyperion.output.page_budget import PAGE_COUNT_MAX, PAGE_COUNT_MIN
@@ -1164,12 +1165,9 @@ HTML_TEMPLATE = """\
     {% endif %}
     <div class="cover-title">
         <h1>{{ report.question }}</h1>
-        <p style="color: {{ palette.cream }}; font-size: 14pt; margin-top: 8px;">{{ report.recommendation.value | upper }}</p>
+        <p style="color: {{ palette.cream }}; font-size: 14pt; margin-top: 8px;">{{ report.recommendation | upper }}</p>
         <p style="color: {{ palette.warm_gray }}; font-size: 10pt; margin-top: 4px;">
             {{ report.generated_at.strftime('%B %Y') }} · Engagement {{ report.engagement_id }}
-        </p>
-        <p style="color: {{ palette.warm_gray }}; font-size: 10pt; margin-top: 2px;">
-            Confidence: <span class="confidence-badge-{{ report.confidence.value }}">{{ report.confidence.value | upper }}</span>
         </p>
     </div>
 </div>
@@ -1192,12 +1190,8 @@ HTML_TEMPLATE = """\
         <div class="glance-cell">
             <div class="glance-label">Recommendation</div>
             <div class="glance-value">
-                {{ report.recommendation.value | replace("_", " ") | title }}
+                {{ report.recommendation | replace("_", " ") | title }}
             </div>
-        </div>
-        <div class="glance-cell">
-            <div class="glance-label">Confidence</div>
-            <div class="glance-value">{{ report.confidence.value | title }}</div>
         </div>
         <div class="glance-cell">
             <div class="glance-label">Evidence base</div>
@@ -1209,8 +1203,7 @@ HTML_TEMPLATE = """\
         <div class="glance-cell">
             <div class="glance-label">Analysis depth</div>
             <div class="glance-value">
-                {{ report.sections | length }} chapters ·
-                {{ report.agents_used | length }} agents
+                {{ report.sections | length }} chapters
             </div>
         </div>
     </div>
@@ -1270,7 +1263,6 @@ HTML_TEMPLATE = """\
             {% endif %}
             <tr><td><a href="#methodology">Methodology</a></td><td class="toc-page"></td></tr>
             <tr><td><a href="#endnotes">Endnotes</a></td><td class="toc-page"></td></tr>
-            <tr><td><a href="#technical-appendix">Technical Appendix</a></td><td class="toc-page"></td></tr>
             <tr><td><a href="#appendix-sources">Appendix: Sources</a></td><td class="toc-page"></td></tr>
         </table>
     </div>
@@ -1283,7 +1275,7 @@ HTML_TEMPLATE = """\
     {# Recommendation banner #}
     <div class="recommendation-banner">
         <div class="rec-label">Recommendation</div>
-        <div class="rec-value">{{ report.recommendation.value | upper }}</div>
+        <div class="rec-value">{{ report.recommendation | upper }}</div>
     </div>
 
     {# KPI strip, key metrics at a glance #}
@@ -1304,10 +1296,6 @@ HTML_TEMPLATE = """\
             <div class="kpi-value">{{ report.sections | length }}</div>
             <div class="kpi-label">Analysis Sections</div>
         </div>
-        <div class="kpi-card">
-            <div class="kpi-value">{{ report.confidence.value | upper }}</div>
-            <div class="kpi-label">Confidence</div>
-        </div>
     </div>
 
     {{ report.executive_summary | md_to_html }}
@@ -1323,9 +1311,6 @@ HTML_TEMPLATE = """\
             <div class="dashboard-card-title">{{ finding.title }}</div>
             <div class="dashboard-card-body">
                 {{ finding.content[:300] }}
-                {% if finding.confidence %}
-                <span class="confidence-pill confidence-pill--{{ finding.confidence.value | lower }}">{{ finding.confidence.value | upper }}</span>
-                {% endif %}
             </div>
         </div>
         {% endfor %}
@@ -1446,26 +1431,23 @@ HTML_TEMPLATE = """\
 {% endif %}
 
 {# ── Methodology ──
-   P2-34: report B printed 11 empty bullet glyphs here because agents_used
-   held 11 empty strings. Both lists are pre-filtered (trim + drop falsy)
-   and the enclosing <h3>/<ul> is suppressed when nothing survives, and
-   page_audit._check_empty_list_items is the render-level backstop. #}
-{% set agents_used_clean = report.agents_used | map('trim') | select | list %}
+   W-09: the specialist roster list is deleted from client prose. It is
+   internal telemetry: the reader does not buy a roster, they buy an answer,
+   and `ClientReport` no longer carries the roster at all, so the template
+   could not resolve it even if a row were left here. The full six-subsection
+   methodology (question decomposition, method selection, retrieval coverage,
+   inclusion criteria, verification procedure, design limitations) is W-10;
+   this block keeps the evidence-base counts and the honest limitations until
+   W-10 builds the real section from recorded structures.
+   P2-34: lists are pre-filtered (trim + drop falsy) and the enclosing
+   <h3>/<ul> is suppressed when nothing survives; page_audit._check_empty_list_items
+   is the render-level backstop. #}
 {% set limitations_clean = report.limitations | map('trim') | select | list %}
 <div class="page-break" id="methodology">
     <h2>Methodology</h2>
-    {% if agents_used_clean %}
-    <h3>Agents Used</h3>
-    <ul>
-        {% for agent in agents_used_clean if agent %}
-        <li>{{ agent }}</li>
-        {% endfor %}
-    </ul>
-    {% endif %}
-    <h3>Sources Accessed</h3>
-    <p>Total unique sources: {{ report.total_sources }}</p>
-    <h3>Data Points Collected</h3>
-    <p>Total data points: {{ report.total_data_points }}</p>
+    <h3>Evidence base</h3>
+    <p>The analysis draws on {{ report.total_sources }} unique sources and
+       {{ report.total_data_points }} collected data points.</p>
     {% if limitations_clean %}
     <h3>Limitations</h3>
     <ul>
@@ -1486,17 +1468,12 @@ HTML_TEMPLATE = """\
     {{ endnotes_html | safe }}
 </div>
 
-{# ── Technical Appendix (fix 4.5) ──
-   The methodology section says WHAT was done; this says how well, and admits
-   what was not achieved. quality_score / confidence_breakdown /
-   contradictions / fact_check_report all already existed on FinalReport and
-   none of them reached the PDF, the report scored itself and then threw the
-   scorecard away. Publishing the contradictions and the residual gaps is the
-   difference between a technical appendix and a marketing annex. #}
-<div class="page-break" id="technical-appendix">
-    <h2>Technical Appendix</h2>
-    {{ technical_appendix_html | safe }}
-</div>
+{# W-09: the Technical Appendix is deleted from the client document. Every
+   input it rendered (quality_score, confidence_breakdown, contradictions,
+   fact_check_report) is operator telemetry, not client copy. It now lives in
+   the EngagementTelemetry operator artifact (reports/diagnostics/), where the
+   scorecard is genuinely valuable. The self-assessment is not discarded; it is
+   addressed to the right reader. #}
 
 {# ── Appendix: Sources ── #}
 <div class="page-break" id="appendix-sources">
@@ -2628,24 +2605,49 @@ class PresentationDesigner(BaseAgent):
         except OSError as e:
             self._log(f"DESIGNER: could not write build CSS ({e}); continuing with inline CSS")
 
+        # W-09: two transformations happen here, both named and explicit.
+        # 1. Telemetry is routed to its own destination: an operator
+        #    artifact under reports/diagnostics/ (JSON + HTML). This is
+        #    where the quality scorecard, the roster and the fact-check
+        #    counts belong. They are genuinely valuable there, they are
+        #    simply not client copy.
+        # 2. The template receives ClientReport, a view of the report
+        #    that carries no telemetry attributes at all. A client
+        #    template holding this object cannot resolve an agent name,
+        #    a quality score or a fact-check count even if one is left
+        #    behind in the markup: the leak is impossible at the type
+        #    level, not filtered after the fact.
+        # These run BEFORE the try: both render paths (JINJA2 tool and the
+        # manual fallback) must receive the SAME ClientReport view. If they
+        # ran inside the try, a get_tool() failure would leave the fallback
+        # holding an undefined name and silently ship the last-resort strip
+        # path with no sections at all (Fix 3.5's exact class of bug).
+        telemetry_path = write_telemetry_artifact(report)
+        self._log(f"DESIGNER: operator telemetry artifact written to {telemetry_path}")
+        client_report = ClientReport.from_report(report)
+
         try:
             jinja2_tool = self.get_tool(ToolName.JINJA2)
 
             # Prepare template context
             context = {
-                "report": report,
+                "report": client_report,
                 "cover_image": cover_image_abs,
                 "section_images": section_images_abs,
                 "section_charts": chart_placements_abs,
                 "palette": PDF_PALETTE,
                 "css_content": css_content,
+                # These builders still read the full FinalReport: they need
+                # Source objects, risk fields and endnote provenance that the
+                # client view deliberately does not carry. They emit HTML
+                # strings built with html_escape over real fields; no
+                # telemetry fields are read.
                 "risk_analysis_html": self._build_risk_analysis_html(report),
                 "appendix_sources_html": self._build_appendix_sources_html(report),
                 # Fix 4.5. Both call sites must be fed: this dict and the
-                # fallback env below. Fix 3.5 was exactly this class of bug, 
+                # fallback env below. Fix 3.5 was exactly this class of bug,
                 # a filter registered in one env and not the other.
                 "endnotes_html": self._build_endnotes_html(report),
-                "technical_appendix_html": self._build_technical_appendix_html(report),
             }
 
             html_content = await jinja2_tool.render_template(
@@ -2692,7 +2694,7 @@ class PresentationDesigner(BaseAgent):
                 env.filters["clean_dict_repr"] = _fallback_renderer._clean_dict_repr
                 template = env.from_string(HTML_TEMPLATE)
                 html_str = template.render(
-                    report=report,
+                    report=client_report,
                     cover_image=cover_image_abs,
                     section_images=section_images_abs,
                     section_charts=chart_placements_abs,
@@ -2701,13 +2703,12 @@ class PresentationDesigner(BaseAgent):
                     risk_analysis_html=self._build_risk_analysis_html(report),
                     appendix_sources_html=self._build_appendix_sources_html(report),
                     endnotes_html=self._build_endnotes_html(report),
-                    technical_appendix_html=self._build_technical_appendix_html(report),
                 )
             except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
                 # Last resort: strip Jinja2 tags and do basic format
                 html_str = HTML_TEMPLATE.replace("{{ css_content | safe }}", css_content)
                 html_str = html_str.replace("{{ report.question }}", str(report.question))
-                html_str = html_str.replace("{{ report.recommendation.value | upper "
+                html_str = html_str.replace("{{ report.recommendation | upper "
                     "}}", str(report.recommendation.value).upper())
 
             with open(self.HTML_OUTPUT, "w", encoding="utf-8") as f:
@@ -2889,170 +2890,6 @@ class PresentationDesigner(BaseAgent):
                     f"{html_escape(title)}{url_html}</li>"
                 )
             parts.append("</ol>")
-        return "\n".join(parts)
-
-    def _build_technical_appendix_html(self, report: FinalReport) -> str:
-        """Publish the self-assessment the report already computed.
-
-        ``quality_score``, ``confidence_breakdown``, ``contradictions`` and
-        ``fact_check_report`` all existed on ``FinalReport`` and **none of them
-        reached the PDF**: the system graded itself and then discarded the
-        scorecard. Surfacing them, including the unresolved contradictions and
-        the residual gaps, is what separates a technical appendix from a
-        marketing annex.
-
-        WHY THIS METHOD DOES NOT USE ``getattr(obj, "field", default)``
-        --------------------------------------------------------------
-        The first draft of this method did, and the fallbacks concealed three
-        genuinely wrong field names, each of which would have shipped as a
-        silently missing section rather than an error:
-
-        * ``QualityScore.dimensions`` is a ``list[QualityDimension]``, not a
-          ``dict``. The draft guarded with ``isinstance(dimensions, dict)``, so
-          the dimension table would have rendered **never**, on every report.
-        * ``FactCheckReport`` exposes ``total_claims_checked`` /
-          ``verified_count``, not ``claims_checked`` / ``claims_verified``. Both
-          reads returned ``None``, so the whole fact-check block was skipped.
-        * ``Contradiction`` carries ``finding_a`` / ``finding_b``, not
-          ``description`` / ``topic``. The draft's final ``or str(item)``
-          fallback would have dumped a **raw pydantic repr** into the PDF.
-
-        That is the audit's thesis in miniature: a defensive default turns a
-        schema mismatch into a plausible-looking empty section. Direct attribute
-        access is used throughout so a future schema change fails loudly at this
-        seam instead of quietly emptying the appendix.
-        """
-        parts: list[str] = []
-
-        quality = report.quality_score
-        if quality is not None:
-            parts.append("<h3>Quality assessment</h3>")
-            parts.append("<table class='data-table'>")
-            parts.append("<tr><th>Dimension</th><th>Score</th><th>Weight</th></tr>")
-            parts.append(
-                f"<tr><td><strong>Total score</strong></td>"
-                f"<td><strong>{quality.total_score:.1f}</strong></td>"
-                f"<td>threshold {quality.threshold:.1f}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Terminal state</td><td>{quality.terminal_state.value.replace('_', ' ')}</td>"
-                f"<td>iteration {quality.iteration}</td></tr>"
-            )
-            # `dimensions` is a LIST of QualityDimension models, not a dict.
-            for dim in quality.dimensions:
-                label = (dim.name or dim.dimension_id or "Dimension").replace("_", " ")
-                critical = " <em>(critical)</em>" if dim.critical else ""
-                parts.append(
-                    # `score` is an int constrained to 1..5 by the schema, so it
-                    # is printed as an integer out of 5 rather than formatted as
-                    # a float"4/5" is the scale the reader needs"4.0"
-                    # implies a precision the model does not carry.
-                    f"<tr><td>{html_escape(label.capitalize())}{critical}</td>"
-                    f"<td>{dim.score}/5</td>"
-                    f"<td>{dim.weight:.2f}</td></tr>"
-                )
-            parts.append("</table>")
-
-            if quality.gaps:
-                parts.append("<h3>Residual gaps</h3><ul>")
-                parts.extend(f"<li>{html_escape(str(g))}</li>" for g in quality.gaps)
-                parts.append("</ul>")
-
-        if report.confidence_breakdown:
-            parts.append("<h3>Confidence by dimension</h3>")
-            parts.append("<table class='data-table'>")
-            parts.append("<tr><th>Dimension</th><th>Confidence</th></tr>")
-            for name, level in report.confidence_breakdown.items():
-                label = str(name).replace("_", " ").capitalize()
-                # dict[str, ConfidenceLevel], enum, so `.value` is the wire form.
-                value = level.value if hasattr(level, "value") else str(level)
-                parts.append(
-                    f"<tr><td>{html_escape(label)}</td>"
-                    f"<td>{html_escape(str(value).replace('_', ' ').title())}</td></tr>"
-                )
-            parts.append("</table>")
-
-        if report.contradictions:
-            # Deliberately published rather than resolved-away. An unreconciled
-            # conflict the reader can see is evidence of rigour; one silently
-            # dropped is a defect. Rendered as the opposed pair it actually is, 
-            # two findings and the agents that produced them, because a
-            # contradiction printed as one sentence loses the thing that makes
-            # it a contradiction.
-            parts.append("<h3>Contradictions</h3>")
-            parts.append("<table class='data-table'>")
-            parts.append(
-                "<tr><th>Type</th><th>Position A</th><th>Position B</th>"
-                "<th>Resolution</th></tr>"
-            )
-            for item in report.contradictions:
-                ctype = str(
-                    item.contradiction_type.value
-                    if hasattr(item.contradiction_type, "value")
-                    else item.contradiction_type
-                ).replace("_", " ")
-                resolution = item.resolution or (
-                    "Resolved" if item.resolved else "Unresolved"
-                )
-                parts.append(
-                    f"<tr><td>{html_escape(ctype.title())}</td>"
-                    f"<td>{html_escape(item.finding_a)}"
-                    f"<br/><span class='endnote-url'>{html_escape(item.agent_a)}</span></td>"
-                    f"<td>{html_escape(item.finding_b)}"
-                    f"<br/><span class='endnote-url'>{html_escape(item.agent_b)}</span></td>"
-                    f"<td>{html_escape(resolution)}</td></tr>"
-                )
-            parts.append("</table>")
-
-        fact_check = report.fact_check_report
-        if fact_check is not None:
-            parts.append("<h3>Fact check</h3>")
-            parts.append("<table class='data-table'>")
-            parts.append("<tr><th>Measure</th><th>Value</th></tr>")
-            parts.append(
-                f"<tr><td>Claims checked</td>"
-                f"<td>{fact_check.total_claims_checked}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Verified</td><td>{fact_check.verified_count}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Unverified</td><td>{fact_check.unverified_count}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Contradicted</td>"
-                f"<td>{fact_check.contradicted_count}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Verification rate</td>"
-                f"<td>{fact_check.verification_rate:.0%}</td></tr>"
-            )
-            # Hallucinated citations and broken evidence chains are the two
-            # failure modes a reader cannot detect for themselves. Always shown,
-            # including when zero, so that "0" is an affirmative claim rather
-            # than an absent section that might mean either.
-            parts.append(
-                f"<tr><td>Hallucinated citations</td>"
-                f"<td>{fact_check.hallucinated_citation_count}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Evidence-chain breaks</td>"
-                f"<td>{fact_check.evidence_chain_break_count}</td></tr>"
-            )
-            parts.append("</table>")
-
-        if report.limitations:
-            parts.append("<h3>Limitations</h3><ul>")
-            parts.extend(
-                f"<li>{html_escape(str(item))}</li>" for item in report.limitations
-            )
-            parts.append("</ul>")
-
-        if not parts:
-            return (
-                "<p class='appendix-empty'>No quality assessment data was "
-                "recorded for this engagement.</p>"
-            )
         return "\n".join(parts)
 
     # ─────────────────────────────────────────────────────────────────────

@@ -1,4 +1,6 @@
-"""Tests for the MBB front/back matter — At-a-glance, Endnotes, Technical appendix (fix 4.5).
+"""Tests for the MBB front/back matter — At-a-glance, Endnotes (fix 4.5),
+and the W-09 telemetry boundary (the technical appendix moved to the
+operator artifact).
 
 WHAT THIS FIX WAS FOR
 ---------------------
@@ -10,7 +12,9 @@ sections that every MGI/BCG report carries:
 * **Endnotes** — numbered continuously across the document and grouped by the
   chapter that cited them, so a claim can be walked back to its evidence.
 * **Technical appendix** — how well the work was done, and what it failed to
-  achieve.
+  achieve. W-09 re-addressed it: its inputs are operator telemetry, so it now
+  renders to ``reports/diagnostics/telemetry_<id>.html`` via
+  ``EngagementTelemetry``, never to the client PDF.
 
 The third was the worst of the three, and not because it was merely absent.
 ``FinalReport`` already carried ``quality_score``, ``confidence_breakdown``,
@@ -48,9 +52,9 @@ mismatch into a plausible-looking empty section. So these tests:
    directly against ``model_fields``. If the schema is renamed, that class fails
    loudly instead of the appendix silently emptying.
 
-`TestTheAppendixCannotBeSilentlyEmpty` is the centre of this file: each of its
-tests fails if the corresponding block is removed from the builder or if its
-field reads regress to the wrong names.
+`TestTheTelemetryArtifactCannotBeSilentlyEmpty` is the centre of this file:
+each of its tests fails if the corresponding block is removed from the
+telemetry artifact or if its field reads regress to the wrong names.
 """
 
 from __future__ import annotations
@@ -64,6 +68,7 @@ from hyperion.agents.delivery.presentation_designer import (
     HTML_TEMPLATE,
     PresentationDesigner,
 )
+from hyperion.schemas.narrative import EngagementTelemetry
 from hyperion.schemas.models import (
     AnalysisSection,
     ConfidenceLevel,
@@ -402,151 +407,123 @@ class TestEndnotesAreAnApparatusNotAList:
         assert "<li" not in html
 
 
-class TestTheAppendixCannotBeSilentlyEmpty:
-    """The centre of this file: each test fails if its block regresses.
+class TestTheTelemetryArtifactCannotBeSilentlyEmpty:
+    """W-09: the scorecard moved from the client PDF to the operator artifact.
 
     Every assertion here targets a value that could ONLY appear if the correct
-    schema field was read. Asserting on the heading would pass with the field
-    reads broken — which is how the first draft looked healthy.
+    schema field was read — the same discipline as the fix-4.5 tests this
+    class replaces, but pointed at ``EngagementTelemetry.render_html()``, the
+    telemetry's new destination. The client template assertions live in
+    tests/test_w09_narrative_boundary.py.
     """
 
+    def _html(self, **overrides: object) -> str:
+        return EngagementTelemetry.from_report(_report(**overrides)).render_html()
+
     def test_quality_dimensions_render_as_rows(self) -> None:
-        """Fails if the `isinstance(dimensions, dict)` guard comes back."""
-        html = _designer()._build_technical_appendix_html(_report())
+        html = self._html()
         assert "Evidence sufficiency" in html and "Analytical depth" in html, (
             "QualityScore.dimensions is a list; a dict guard renders nothing."
         )
         assert "4/5" in html and "3/5" in html
 
     def test_the_critical_dimension_is_marked_as_critical(self) -> None:
-        html = _designer()._build_technical_appendix_html(_report())
-        assert "(critical)" in html
+        assert "(critical)" in self._html()
 
     def test_total_score_is_shown_against_its_threshold(self) -> None:
-        html = _designer()._build_technical_appendix_html(_report())
+        html = self._html()
         assert "4.1" in html and "4.0" in html, (
             "A score without its threshold is not interpretable."
         )
 
     def test_residual_gaps_are_published(self) -> None:
-        html = _designer()._build_technical_appendix_html(_report())
-        assert "Hourly dispatch data unavailable." in html
+        assert "Hourly dispatch data unavailable." in self._html()
 
     def test_confidence_breakdown_renders_each_dimension(self) -> None:
-        html = _designer()._build_technical_appendix_html(_report())
-        text = _strip_tags(html)
+        text = _strip_tags(self._html())
         assert "Market sizing" in text and "Unit economics" in text
         assert "High" in text and "Medium" in text
 
     def test_contradictions_render_both_opposed_findings(self) -> None:
-        """A contradiction printed as one sentence is not a contradiction."""
-        html = _designer()._build_technical_appendix_html(_report())
+        html = self._html()
         assert "Four zones clear the spread." in html
         assert "Only two clear once curtailment is priced." in html
 
     def test_contradictions_name_the_disagreeing_agents(self) -> None:
-        html = _designer()._build_technical_appendix_html(_report())
+        """Agent names are legitimate HERE — this is the operator artifact."""
+        html = self._html()
         assert "market_analyst" in html and "financial_analyst" in html
 
     def test_an_unresolved_contradiction_is_labelled_unresolved(self) -> None:
-        """Published rather than resolved-away: a visible conflict is rigour."""
-        html = _designer()._build_technical_appendix_html(_report())
-        assert "Unresolved" in html
+        assert "Unresolved" in self._html()
 
     def test_a_resolved_contradiction_shows_its_resolution(self) -> None:
-        html = _designer()._build_technical_appendix_html(_report())
-        assert "Adopted the 42-month figure." in html
+        assert "Adopted the 42-month figure." in self._html()
 
-    def test_no_raw_pydantic_repr_leaks_into_the_appendix(self) -> None:
-        """The `or str(item)` fallback in the first draft would do exactly this.
-
-        THIS TEST WAS WRONG FIRST, and the negative control is what caught it.
-        The original version asserted ``"Contradiction(" not in html`` and
-        ``"id='c1'" not in html``. Both passed while the raw-repr bug was
-        deliberately reinstated, because:
-
-        * pydantic v2's ``str()`` is **not** ``repr()`` — it emits
-          ``id='c1' agent_a='...'`` with no ``ClassName(`` prefix; and
-        * ``html_escape`` rewrites ``'`` to ``&#x27;``, so the literal
-          ``id='c1'`` could never appear even when the leak was present.
-
-        So the assertion tested nothing. It now looks for the actual signature
-        of a leaked model dump — ``field=`` pairs and escaped quotes around a
-        field's value — which does fail when the fallback returns.
-        """
-        html = _designer()._build_technical_appendix_html(_report())
-        # A model dump names its own fields; correctly rendered HTML never does.
+    def test_no_raw_pydantic_repr_leaks_into_the_artifact(self) -> None:
+        html = self._html()
         for marker in ("agent_a=", "finding_a=", "contradiction_type=", "resolved="):
             assert marker not in html, (
                 f"{marker!r} is pydantic field-dump syntax — a raw model leaked "
-                "into the appendix instead of being formatted into cells."
+                "into the artifact instead of being formatted into cells."
             )
-        # And the escaped-quote form the first version of this test missed.
         assert "id=&#x27;c1&#x27;" not in html
         assert "Contradiction(" not in html
 
-    def test_each_contradiction_occupies_its_own_structured_cells(self) -> None:
-        """Structural companion to the leak test above.
-
-        ``test_contradictions_render_both_opposed_findings`` also passed under
-        the reinstated bug, because a leaked ``str(item)`` happens to *contain*
-        the finding text — so a substring assertion cannot tell a formatted
-        table from a dumped object. This asserts the shape instead: four cells
-        per contradiction, which a single ``colspan`` dump cannot satisfy.
-        """
-        html = _designer()._build_technical_appendix_html(_report())
-        block = html[html.index("<h3>Contradictions</h3>") :]
+    def test_each_contradiction_occupies_structured_cells(self) -> None:
+        html = self._html()
+        block = html[html.index("<h2>Contradictions</h2>") :]
         block = block[: block.index("</table>")]
         body_rows = [r for r in block.split("<tr>") if "<td>" in r]
         assert len(body_rows) == 2, f"expected 2 contradiction rows, got {len(body_rows)}"
         for row in body_rows:
-            assert row.count("<td>") == 4, (
-                "Each contradiction needs four cells (type, position A, "
-                "position B, resolution). A single wide cell means the model was "
-                f"dumped rather than formatted. Got: {row.count('<td>')}"
+            assert row.count("<td>") == 5, (
+                "Each contradiction needs five cells (type, position A, "
+                "position B, agents, resolution). Got: "
+                f"{row.count('<td>')}"
             )
-        assert "colspan" not in block
 
     def test_fact_check_counts_render(self) -> None:
-        """Fails if the field names regress to claims_checked/claims_verified."""
-        html = _designer()._build_technical_appendix_html(_report())
-        text = _strip_tags(html)
+        text = _strip_tags(self._html())
         assert "48" in text, "total_claims_checked did not render"
         assert "41" in text, "verified_count did not render"
 
     def test_verification_rate_renders_as_a_percentage(self) -> None:
-        html = _designer()._build_technical_appendix_html(_report())
-        assert "85%" in html
+        assert "85%" in self._html()
 
     def test_zero_hallucinated_citations_is_stated_not_omitted(self) -> None:
-        """"0" must be an affirmative claim, not an absent section."""
-        html = _designer()._build_technical_appendix_html(_report())
-        text = _strip_tags(html)
-        assert "Hallucinated citations" in text, (
+        text = _strip_tags(self._html())
+        assert "hallucinated citations" in text.lower(), (
             "A zero count must still be printed: an absent row could mean "
-            "'none found' or 'never checked', and the reader cannot tell."
+            "'none found' or 'never checked', and the operator cannot tell."
         )
 
     def test_evidence_chain_breaks_are_reported(self) -> None:
-        html = _designer()._build_technical_appendix_html(_report())
-        assert "Evidence-chain breaks" in _strip_tags(html)
+        assert "evidence-chain breaks" in _strip_tags(self._html()).lower()
 
     def test_limitations_are_published(self) -> None:
-        html = _designer()._build_technical_appendix_html(_report())
-        assert "Pricing data is quarterly." in html
+        assert "Pricing data is quarterly." in self._html()
 
-    def test_a_report_with_no_assessment_data_says_so(self) -> None:
-        html = _designer()._build_technical_appendix_html(
-            _report(
-                quality_score=None,
-                confidence_breakdown={},
-                contradictions=[],
-                fact_check_report=None,
-                limitations=[],
-            )
+    def test_the_roster_is_published_to_the_operator(self) -> None:
+        """The roster the client page lost (W-09) is not lost — it moved."""
+        assert "market_analyst" in self._html()
+
+    def test_a_report_with_no_assessment_data_still_identifies_itself(self) -> None:
+        html = self._html(
+            quality_score=None,
+            confidence_breakdown={},
+            contradictions=[],
+            fact_check_report=None,
+            limitations=[],
         )
-        assert "appendix-empty" in html
-        assert "No quality assessment data" in _strip_tags(html)
+        assert "Engagement telemetry" in html
+        assert "TEST-001" in html
+
+    def test_the_client_template_no_longer_consumes_appendix_html(self) -> None:
+        """The render-context key and the template slot are both gone; a
+        regression reintroducing one without the other renders an empty page."""
+        assert "technical_appendix_html" not in HTML_TEMPLATE
+        assert "technical-appendix" not in HTML_TEMPLATE
 
 
 class TestAtAGlanceIsWiredIntoTheTemplate:
@@ -570,8 +547,7 @@ class TestAtAGlanceIsWiredIntoTheTemplate:
         "field",
         [
             "report.question",
-            "report.recommendation.value",
-            "report.confidence.value",
+            "report.recommendation",
             "report.total_sources",
             "report.total_data_points",
             "report.recommendation_rationale",
@@ -601,7 +577,7 @@ class TestBothRenderPathsAreFed:
     back matter. So both are asserted, by count.
     """
 
-    @pytest.mark.parametrize("name", ["endnotes_html", "technical_appendix_html"])
+    @pytest.mark.parametrize("name", ["endnotes_html"])
     def test_the_variable_reaches_both_render_call_sites(self, name: str) -> None:
         # One `"name": ...` dict entry + one `name=...` kwarg = 2 producers,
         # plus the template's own `{{ name | safe }}` consumer.
@@ -612,7 +588,7 @@ class TestBothRenderPathsAreFed:
             "silently emits an empty section (this is the fix-3.5 bug class)."
         )
 
-    @pytest.mark.parametrize("name", ["endnotes_html", "technical_appendix_html"])
+    @pytest.mark.parametrize("name", ["endnotes_html"])
     def test_the_template_actually_consumes_it(self, name: str) -> None:
         assert f"{{{{ {name} | safe }}}}" in HTML_TEMPLATE
 

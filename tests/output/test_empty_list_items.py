@@ -12,6 +12,13 @@ Fix per audit: filter falsy entries in every template loop
 (``{% for x in list if x %}``), suppress the enclosing <h3>/<ul> when the
 filtered list is empty, and add a page_audit assertion that no page
 contains a list item with no text content.
+
+W-09 update: the ``agents_used`` roster loop is deleted outright — the roster
+is internal telemetry and the client template can no longer resolve
+``report.agents_used`` at all (ClientReport does not carry it). The
+falsy-filter contract still applies to every remaining loop, and the
+methodology assertions below now defend the limitations list and the
+absence of the roster, which is the stronger guarantee.
 """
 
 from __future__ import annotations
@@ -92,7 +99,6 @@ def test_methodology_lists_prefilter_trim_and_suppress_heading():
     """Whitespace-only entries must die too (map('trim') | select), and the
     enclosing <h3> + <ul> must be suppressed when nothing survives."""
     for raw, clean in (
-        ("agents_used", "agents_used_clean"),
         ("limitations", "limitations_clean"),
     ):
         expected_set = (
@@ -107,26 +113,39 @@ def test_methodology_lists_prefilter_trim_and_suppress_heading():
         )
 
 
+def test_the_roster_loop_is_deleted_not_just_guarded():
+    """W-09: filtering empty agent names was the P2-34 fix; the W-09 fix is
+    that the template cannot reference the roster at all."""
+    assert "report.agents_used" not in HTML_TEMPLATE, (
+        "the client template must not read report.agents_used — the roster "
+        "is operator telemetry and lives in the EngagementTelemetry artifact"
+    )
+    # Markup-level check: the roster HEADING element is gone. (The literal
+    # phrase may still appear inside a Jinja comment, which never renders.)
+    assert "<h3>Agents Used</h3>" not in HTML_TEMPLATE
+
+
 # ── behavioural render ───────────────────────────────────────────────────────
 
 
-def _render(agents_used, limitations, key_findings=None) -> str:
+def _render(limitations, key_findings=None) -> str:
     env = Environment(loader=BaseLoader(), autoescape=True)
     env.filters["md_to_html"] = lambda v: v or ""
     env.filters["clean_dict_repr"] = lambda v: v or ""
+    # Mirrors the W-09 ClientReport view: recommendation is a plain wire
+    # string, no confidence, no agents_used — those attributes no longer
+    # exist for the template to resolve.
     report = SimpleNamespace(
         question="Should Acme enter the market?",
-        recommendation=SimpleNamespace(value="enter"),
+        recommendation="enter",
         generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
         engagement_id="ENG-TEST",
-        confidence=SimpleNamespace(value="high"),
         recommendation_rationale="",
         executive_summary="",
         key_findings=key_findings or [],
         critical_assumptions=[],
         sections=[],
         risk_analysis=None,
-        agents_used=agents_used,
         limitations=limitations,
         total_sources=0,
         total_data_points=0,
@@ -143,7 +162,6 @@ def _render(agents_used, limitations, key_findings=None) -> str:
         risk_analysis_html="",
         appendix_sources_html="",
         endnotes_html="",
-        technical_appendix_html="",
     )
 
 
@@ -181,9 +199,10 @@ class _EmptyLiDetector(HTMLParser):
 
 
 def test_rendered_html_contains_no_empty_list_items():
-    """The report B scenario: 11 empty strings in agents_used must not
-    produce a single empty <li> anywhere in the document."""
-    html = _render(agents_used=[""] * 11, limitations=[""] * 3)
+    """The report B scenario (11 empty roster strings) is now impossible at
+    the type level; the same falsy-filter contract is defended on the
+    remaining list, limitations."""
+    html = _render(limitations=[""] * 3)
     detector = _EmptyLiDetector()
     detector.feed(html)
     assert detector.empty_items == 0, (
@@ -192,7 +211,7 @@ def test_rendered_html_contains_no_empty_list_items():
 
 
 def test_methodology_suppresses_headings_when_lists_empty():
-    region = _methodology_region(_render(agents_used=[""] * 11, limitations=[]))
+    region = _methodology_region(_render(limitations=[]))
     assert "<li" not in region
     assert "Agents Used" not in region
     assert "Limitations" not in region
@@ -200,19 +219,16 @@ def test_methodology_suppresses_headings_when_lists_empty():
 
 def test_methodology_keeps_real_entries_and_drops_blanks():
     region = _methodology_region(
-        _render(
-            agents_used=["", "   ", "Engagement Director", "Fact Checker"],
-            limitations=["Single geography in scope", " "],
-        )
+        _render(limitations=["Single geography in scope", " "])
     )
     items = re.findall(r"<li>(.*?)</li>", region, re.DOTALL)
-    assert items == ["Engagement Director", "Fact Checker", "Single geography in scope"], (
+    assert items == ["Single geography in scope"], (
         f"unexpected methodology list items: {items}"
     )
 
 
 def test_key_findings_heading_suppressed_when_no_findings():
-    html = _render(agents_used=["A"], limitations=[], key_findings=[])
+    html = _render(limitations=[], key_findings=[])
     assert "<h3>Key Findings</h3>" not in html, (
         "an empty Key Findings heading is the same defect class as an "
         "empty bullet: the heading must be suppressed with the list"
