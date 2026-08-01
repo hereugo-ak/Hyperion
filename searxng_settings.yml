@@ -1,12 +1,9 @@
-# ═══════════════════════════════════════════════════════════════════════════
-# HYPERION — SearxNG Settings
-# Self-hosted meta-search. Docker-based. Aggregates 70+ search engines.
-# No API key, no rate limit, no tracking. Used by all specialist agents.
-# ═══════════════════════════════════════════════════════════════════════════
-# IMPORTANT: use_default_settings: false — we explicitly list only engines
-# that work reliably. Setting true loads ALL 70+ default engines, most of
-# which now return CAPTCHA/403/rate-limit errors, polluting results and
-# wasting time. With false, only the engines listed below are loaded.
+# HYPERION SearXNG base profile (W-11)
+#
+# Governing policy: only documented APIs and independent crawlers are allowed.
+# Engines that CAPTCHA, IP-ban, or proxy a blocking upstream are Tier C and
+# must not appear here. use_default_settings stays false so an image upgrade
+# cannot silently reintroduce one.
 
 use_default_settings: false
 
@@ -21,37 +18,24 @@ search:
   formats:
     - html
     - json
-  # Required by recent SearXNG builds — omitting these raises
-  # KeyError: 'default_doi_resolver' → HTTP 500 on every /search request.
-  default_doi_resolver: "oadoi.org"
+  default_doi_resolver: "doi.org"
 
-# DOI resolvers map (used by the science category and required at startup).
+# One DOI map only. Duplicate YAML keys silently overwrite each other and are
+# rejected by tests/test_w11_search_registry.py.
 doi_resolvers:
-  oadoi.org: "https://oadoi.org/"
   doi.org: "https://doi.org/"
-  sci-hub.se: "https://sci-hub.se/"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DOI resolvers — REQUIRED when use_default_settings: false.
-# SearXNG's preferences layer reads `default_doi_resolver` unconditionally on
-# every /search request (searx/preferences.py). Because we disable default
-# settings, these keys are NOT auto-supplied, so their absence raises
-# `KeyError: 'default_doi_resolver'` → HTTP 500 on EVERY search. Supplying them
-# here is what keeps the search endpoint alive.
-# ─────────────────────────────────────────────────────────────────────────────
-default_doi_resolver: "oadoi.org"
-doi_resolvers:
   oadoi.org: "https://oadoi.org/"
-  doi.org: "https://doi.org/"
   doai.io: "https://dissem.in/"
-  sci-hub.se: "https://sci-hub.se/"
 
 server:
-  secret_key: "hyperion-searxng-secret-change-me"
+  # The official container entrypoint substitutes SEARXNG_SECRET at startup.
+  # services.py supplies a generated or operator-provided value; no shared
+  # placeholder secret is committed to source control.
+  secret_key: "${SEARXNG_SECRET}"
   bind_address: "0.0.0.0"
   port: 8080
   limiter: false
-  image_proxy: true
+  image_proxy: false
 
 ui:
   static_use_hash: true
@@ -60,129 +44,137 @@ ui:
   themes:
     - simple
 
+# Conservative single-user limits. HYPERION additionally applies a process-wide
+# per-engine token bucket before each request, because SearXNG's limiter only
+# protects the inbound endpoint and cannot govern upstream fan-out.
 outgoing:
-  request_timeout: 20.0
-  max_request_timeout: 45.0
-  useragent_suffix: ""
-  proxies: null
-  # Use a realistic browser user agent to avoid bot detection
-  user_agents:
-    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
-    - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-  # To use rotating proxies (uncomment and set your proxy provider URL):
-  # proxies:
-  #   all://: "http://user:pass@proxy.example.com:8080"
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 20
+  pool_maxsize: 10
+  enable_http2: true
+  keepalive_expiry: 30
+  useragent_suffix: "HYPERION research client (contact: ${HYPERION_CONTACT_EMAIL})"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Engines — ONLY explicitly listed engines are loaded (use_default_settings: false)
-# These are the engines that consistently work without CAPTCHA/403/rate-limit.
-# When SearxNG fails on all of these, the SearxNG client falls back to Jina.
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# ENGINE SELECTION RATIONALE
-# --------------------------
-# Previously this list was bing + wikipedia + arxiv + github + hackernews, and
-# the docker logs showed arxiv/github/wikipedia generating the timeouts, 403s
-# and 429s that starved research. Two separate faults:
-#
-#   1. Wrong corpus. arxiv (preprints), github (code) and hackernews (forum)
-#      cannot answer a business/strategy question, yet each one still consumed
-#      the request timeout budget — one slow engine delays the aggregated
-#      response for all of them.
-#   2. Rate limiting. wikipedia and arxiv 429 a datacenter IP that issues dozens
-#      of queries per engagement.
-#
-# General web search now uses two independent providers (bing + duckduckgo) so
-# one provider failing no longer means zero results. Specialist corpora are
-# still loaded but are only reached via an explicit category/engine request,
-# and dedicated tools (Semantic Scholar, OpenAlex) remain the primary route for
-# academic work. Timeouts are raised from 20s to 30s: the previous value was
-# below what these engines need under load, which is itself a source of the
-# "engine timeout" lines in the logs.
 engines:
-  # ── General web (default set for business research) ──
-  # P2-26: widened from a two-engine duopoly to six engines. A single
-  # engine ban (e.g. a DuckDuckGo CAPTCHA storm) must never again leave
-  # one engine carrying a whole engagement.
-  - name: bing
-    engine: bing
-    shortcut: bi
-    disabled: false
-    timeout: 30
-
-  - name: duckduckgo
-    engine: duckduckgo
-    shortcut: ddg
-    disabled: false
-    timeout: 30
-
-  - name: brave
-    engine: brave
-    shortcut: br
-    disabled: false
-    timeout: 30
-
-  - name: mojeek
-    engine: mojeek
-    shortcut: mk
-    disabled: false
-    timeout: 30
-
-  - name: startpage
-    engine: startpage
-    shortcut: sp
-    disabled: false
-    timeout: 30
-
-  - name: qwant
-    engine: qwant
-    shortcut: qw
-    disabled: false
-    timeout: 30
-
-  # ── Standby pool: registered but outside the default RELIABLE_ENGINES ──
-  # set in code; promoted by engine rotation when the primary pool returns
-  # zero results (P2-26 fix 3).
-  - name: ecosia
-    engine: ecosia
-    shortcut: eco
-    disabled: false
-    timeout: 30
-
-  - name: swisscows
-    engine: swisscows
-    shortcut: sc
-    disabled: false
-    timeout: 30
-
-  # ── Specialist corpora: loaded but NOT in the default set. ──
-  # Reached only via categories=science/it or an explicit engines= argument,
-  # so they can no longer slow down or pollute a general business query.
+  # Tier A: documented APIs
   - name: wikipedia
     engine: wikipedia
     shortcut: wp
-    disabled: true
-    timeout: 30
+    disabled: false
+    timeout: 6
+    weight: 1.0
+
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    disabled: false
+    timeout: 6
+    weight: 1.0
 
   - name: arxiv
     engine: arxiv
     shortcut: ar
     categories: science
-    disabled: true
-    timeout: 30
+    disabled: false
+    timeout: 10
+    weight: 1.0
+
+  - name: crossref
+    engine: crossref
+    shortcut: cr
+    categories: science
+    disabled: false
+    timeout: 8
+    weight: 1.0
+
+  - name: openalex
+    engine: openalex
+    shortcut: oa
+    categories: science
+    disabled: false
+    timeout: 8
+    weight: 1.0
+
+  - name: pubmed
+    engine: pubmed
+    shortcut: pm
+    categories: science
+    disabled: false
+    timeout: 8
+    weight: 0.8
+
+  - name: semantic scholar
+    engine: semantic_scholar
+    shortcut: ss
+    categories: science
+    disabled: false
+    timeout: 8
+    weight: 1.0
 
   - name: github
     engine: github
     shortcut: gh
     categories: it
-    disabled: true
-    timeout: 30
+    disabled: false
+    timeout: 8
+    weight: 0.8
+
+  - name: stackexchange
+    engine: stackexchange
+    shortcut: se
+    categories: it
+    disabled: false
+    timeout: 8
+    weight: 0.8
 
   - name: hackernews
     engine: hackernews
     shortcut: hn
     categories: it
-    disabled: true
-    timeout: 30
+    disabled: false
+    timeout: 6
+    weight: 0.6
+
+  - name: openstreetmap
+    engine: openstreetmap
+    shortcut: osm
+    disabled: false
+    timeout: 8
+    weight: 0.6
+
+  # Tier B: independent crawlers with their own indexes
+  - name: mojeek
+    engine: mojeek
+    shortcut: mj
+    disabled: false
+    timeout: 10
+    weight: 1.0
+
+  - name: marginalia
+    engine: marginalia
+    shortcut: mg
+    disabled: false
+    timeout: 10
+    weight: 0.8
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: false
+    timeout: 8
+    weight: 1.0
+
+  - name: yep
+    engine: yep
+    shortcut: yp
+    disabled: false
+    timeout: 10
+    weight: 0.6
+
+  - name: wiby
+    engine: wiby
+    shortcut: wb
+    disabled: false
+    timeout: 10
+    weight: 0.5

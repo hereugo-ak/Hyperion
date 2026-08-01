@@ -31,6 +31,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,6 +43,132 @@ from hyperion.tools.jina import JinaClient
 from hyperion.tools.query_utils import grounded_search_or_empty
 
 logger = logging.getLogger(__name__)
+
+# W-11: one code registry, built only from API-backed sources and independent
+# crawlers. Tier C engines that CAPTCHA, IP-ban, or proxy a blocking upstream
+# are forbidden everywhere, not merely omitted from the default route.
+RELIABLE_ENGINES = "wikipedia,wikidata,mojeek,marginalia,brave,crossref"
+STANDBY_ENGINES = "yep,wiby"
+CATEGORY_ENGINES = {
+    "science": "arxiv,crossref,openalex,semantic scholar",
+    "medical": "pubmed,openalex",
+    "it": "github,stackexchange,hackernews",
+    "geo": "openstreetmap,wikidata",
+    "news": "mojeek,marginalia",
+}
+TIER_C_ENGINES = frozenset({
+    "bing",
+    "bing news",
+    "duckduckgo",
+    "duckduckgo news",
+    "ecosia",
+    "google",
+    "google scholar",
+    "qwant",
+    "startpage",
+    "stackoverflow",
+    "swisscows",
+})
+HEALTHY_ENGINE_FLOOR = 4
+
+
+def referenced_engines() -> set[str]:
+    """All engine identities that code may send to SearXNG."""
+    blobs = (RELIABLE_ENGINES, STANDBY_ENGINES, *CATEGORY_ENGINES.values())
+    return {
+        engine.strip()
+        for blob in blobs
+        for engine in blob.split(",")
+        if engine.strip()
+    }
+
+
+class EngineRegistryMismatch(RuntimeError):
+    """The running instance does not implement the code's engine contract."""
+
+
+@dataclass(frozen=True)
+class EngineRegistryReport:
+    base_url: str
+    enabled: frozenset[str]
+    missing: frozenset[str]
+    forbidden: frozenset[str]
+
+    @property
+    def ok(self) -> bool:
+        return not self.missing and not self.forbidden
+
+
+async def reconcile_engine_registry(
+    base_url: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> EngineRegistryReport:
+    """Fail closed when /config and the code registry disagree.
+
+    This runs after readiness at shell boot. Drift is a boot failure because a
+    dead category route wastes W-07's retry budget and silently narrows the
+    research corpus.
+    """
+    owns_client = client is None
+    http = client or httpx.AsyncClient(timeout=10.0)
+    try:
+        response = await http.get(f"{base_url.rstrip('/')}/config")
+        response.raise_for_status()
+        payload = response.json()
+    finally:
+        if owns_client:
+            await http.aclose()
+    enabled = frozenset(
+        str(item.get("name", "")).strip()
+        for item in payload.get("engines", [])
+        if item.get("enabled", not item.get("disabled", False))
+        and str(item.get("name", "")).strip()
+    )
+    expected = referenced_engines()
+    report = EngineRegistryReport(
+        base_url=base_url,
+        enabled=enabled,
+        missing=frozenset(expected - enabled),
+        forbidden=frozenset(enabled & TIER_C_ENGINES),
+    )
+    if not report.ok:
+        raise EngineRegistryMismatch(
+            "SearXNG engine registry mismatch at "
+            f"{base_url}: missing={sorted(report.missing)}, "
+            f"forbidden={sorted(report.forbidden)}. "
+            "Edit searxng_settings.yml and restart the container."
+        )
+    return report
+
+
+class EngineTokenBucket:
+    """Process-wide per-engine outbound limiter with jitter.
+
+    SearXNG's limiter protects its inbound endpoint. This limiter protects the
+    upstream APIs and crawlers from aggregate specialist concurrency. W-12 can
+    move the same state to Valkey when multiple HYPERION processes are used.
+    """
+
+    _lock: asyncio.Lock | None = None
+    _next_allowed: dict[str, float] = {}
+    interval_seconds = 2.0
+
+    @classmethod
+    async def acquire(cls, engines: set[str]) -> None:
+        if not engines:
+            return
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+        loop = asyncio.get_running_loop()
+        async with cls._lock:
+            now = loop.time()
+            wait = max(0.0, max(cls._next_allowed.get(e, now) for e in engines) - now)
+            reservation = now + wait + cls.interval_seconds + random.uniform(0.0, 0.2)
+            for engine in engines:
+                cls._next_allowed[engine] = reservation
+        if wait:
+            await asyncio.sleep(wait)
 
 
 @dataclass
@@ -92,6 +219,8 @@ class SearchResponse:
     took_ms: int = 0
     engines_used: list[str] = field(default_factory=list)
     cached: bool = False
+    retrieval_degraded: bool = False
+    degradation_events: list[dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +230,8 @@ class SearchResponse:
             "took_ms": self.took_ms,
             "engines_used": self.engines_used,
             "cached": self.cached,
+            "retrieval_degraded": self.retrieval_degraded,
+            "degradation_events": self.degradation_events,
         }
 
     def __iter__(self):
@@ -274,8 +405,18 @@ class SearxNGClient:
         if engines:
             params["engines"] = engines
 
+        requested_engines = {
+            engine.strip() for engine in engines.split(",") if engine.strip()
+        }
+        forbidden = requested_engines & TIER_C_ENGINES
+        if forbidden:
+            raise EngineRegistryMismatch(
+                f"Tier C engines are forbidden by W-11 policy: {sorted(forbidden)}"
+            )
+
         for attempt in range(self.MAX_RETRIES):
             try:
+                await EngineTokenBucket.acquire(requested_engines)
                 response = await client.get("/search", params=params)
                 response.raise_for_status()
 
@@ -306,11 +447,18 @@ class SearxNGClient:
                 # on a suspended_time 403 ban) and the cooled engine is
                 # excluded from the NEXT request's engines= parameter.
                 unresponsive = data.get("unresponsive_engines", [])
+                degradation_events: list[dict[str, object]] = []
+                health = get_engine_health()
                 if unresponsive or engines_used_set:
-                    get_engine_health().record_response(
+                    health.record_response(
                         unresponsive_engines=unresponsive,
                         responding_engines=engines_used_set,
                     )
+                degradation = health.record_degradation_if_needed(
+                    referenced_engines(), floor=HEALTHY_ENGINE_FLOOR
+                )
+                if degradation is not None:
+                    degradation_events.append(degradation)
 
                 if results:
                     results = self._deduplicate(results)[:num_results]
@@ -320,6 +468,8 @@ class SearxNGClient:
                         total=len(results),
                         took_ms=int(data.get("number_of_results", 0)),
                         engines_used=sorted(engines_used_set),
+                        retrieval_degraded=bool(degradation_events),
+                        degradation_events=degradation_events,
                     )
 
                 if unresponsive:
@@ -470,22 +620,18 @@ class SearxNGClient:
     # reachable on demand via the `engines=` argument and the dedicated
     # science/code tools (Semantic Scholar, OpenAlex), which are the right
     # instruments for that job.
-    RELIABLE_ENGINES = "bing,duckduckgo,brave,mojeek,startpage,qwant"
+    RELIABLE_ENGINES = RELIABLE_ENGINES
 
     # Standby pool, disjoint from RELIABLE_ENGINES, promoted by
     # _search_with_rotation when the primary pool returns zero results
     # (P2-26 fix 3 / P2-G24). Wikipedia is definitional grounding only; it
     # is NOT in the general pool because it 429s a datacenter IP and its
     # corpus cannot answer a business question.
-    STANDBY_ENGINES = "google,ecosia,swisscows"
+    STANDBY_ENGINES = STANDBY_ENGINES
 
     # Engines appropriate to non-general categories, so a caller asking for
     # `categories="science"` still reaches the right corpus.
-    CATEGORY_ENGINES = {
-        "science": "arxiv,google scholar,semantic scholar",
-        "it": "github,stackoverflow",
-        "news": "bing news,duckduckgo news",
-    }
+    CATEGORY_ENGINES = CATEGORY_ENGINES
 
     async def search(
         self,

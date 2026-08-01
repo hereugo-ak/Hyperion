@@ -77,6 +77,7 @@ from hyperion.infra.services import (
 from hyperion.infra.services import (
     stop_services as _infra_stop_services,
 )
+from hyperion.tools.searxng import EngineRegistryMismatch, reconcile_engine_registry
 from hyperion.tui.widgets.transcript import LogRow, Transcript
 
 logger = logging.getLogger(__name__)
@@ -265,6 +266,18 @@ async def run_boot_sequence(
     if docker_status.ok:
         step = _start_step("SEARXNG", "starting SearxNG search container")
         searx = await ensure_container(searxng_spec(), on_progress=_progress_for(step))
+        if searx.ok:
+            try:
+                registry = await reconcile_engine_registry(
+                    f"http://127.0.0.1:{SEARXNG_PORT}"
+                )
+            except EngineRegistryMismatch as exc:
+                # W-11: drift is a boot failure. Continuing with an incomplete
+                # corpus would make downstream evidence scores untrustworthy.
+                searx.state = FAIL
+                searx.detail = str(exc)
+            else:
+                searx.detail += f" · {len(registry.enabled)} engines reconciled"
         _finish_step(step, searx.state, f"SearxNG {searx.detail}")
         results["searxng"] = (searx.state, searx.detail)
     else:

@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import time
+from enum import StrEnum
 from pathlib import Path
 
 from hyperion.infra.paths import project_root
@@ -46,6 +47,15 @@ _BASE_COOLDOWN_SECONDS = 300  # 5 minutes
 _MAX_COOLDOWN_SECONDS = 86400  # 24 hours
 
 _SUSPENDED_TIME_RE = re.compile(r"suspended_time=(\d+)")
+_CAPTCHA_MARKERS = ("captcha", "accessdenied", "access denied")
+
+
+class EngineState(StrEnum):
+    """The three operational states required by W-11."""
+
+    HEALTHY = "healthy"
+    COOLING = "cooling"
+    SUSPENDED = "suspended"
 
 
 class EngineHealthTracker:
@@ -55,6 +65,12 @@ class EngineHealthTracker:
         self._state_path = self._resolve_state_path()
         self._failures: dict[str, int] = {}
         self._cooldowns: dict[str, float] = {}
+        self._suspended: dict[str, float] = {}
+        # A CAPTCHA is a W-11 policy violation, not a routine transient. Keep
+        # the engine evicted for this process even if a later response happens
+        # to include it among responding engines.
+        self._policy_violations: set[str] = set()
+        self._degradation_events: list[dict[str, object]] = []
         self._load()
 
     @staticmethod
@@ -74,18 +90,26 @@ class EngineHealthTracker:
                 self._cooldowns = {
                     str(k): float(v) for k, v in data.get("cooldowns", {}).items()
                 }
+                self._suspended = {
+                    str(k): float(v) for k, v in data.get("suspended", {}).items()
+                }
         except (OSError, ValueError, TypeError) as exc:
             # A corrupt state file is not fatal: start fresh and say so.
             logger.warning("engine health state unreadable (%s); starting fresh", exc)
             self._failures = {}
             self._cooldowns = {}
+            self._suspended = {}
 
     def _save(self) -> None:
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._state_path.with_suffix(".tmp")
             tmp.write_text(
-                json.dumps({"failures": self._failures, "cooldowns": self._cooldowns}),
+                json.dumps({
+                    "failures": self._failures,
+                    "cooldowns": self._cooldowns,
+                    "suspended": self._suspended,
+                }),
                 encoding="utf-8",
             )
             tmp.replace(self._state_path)
@@ -114,22 +138,49 @@ class EngineHealthTracker:
             name = str(entry[0])
             reason = str(entry[1]) if len(entry) > 1 else ""
             self._failures[name] = self._failures.get(name, 0) + 1
-            cooldown = self._cooldown_for(reason, self._failures[name])
-            until = time.time() + cooldown
-            # Never shorten an existing longer ban (e.g. a 24h suspended_time
-            # ban must not be overwritten by a 5-minute generic failure).
-            if until > self._cooldowns.get(name, 0.0):
-                self._cooldowns[name] = until
-            logger.warning(
-                "ENGINE COOLDOWN: %s (reason=%r, failures=%d, cooled %.0fs)",
-                name, reason, self._failures[name], cooldown,
-            )
+            reason_lower = reason.lower()
+            explicit_suspension = _SUSPENDED_TIME_RE.search(reason) is not None
+            captcha = any(marker in reason_lower for marker in _CAPTCHA_MARKERS)
+            if captcha:
+                # The no-block pool contract says this must never happen. A
+                # CAPTCHA means an engine changed behaviour or a Tier C engine
+                # was reintroduced, so evict it for the process and make the
+                # policy breach operator-visible.
+                self._policy_violations.add(name)
+                until = time.time() + _MAX_COOLDOWN_SECONDS
+                self._suspended[name] = until
+                logger.error(
+                    "ENGINE POLICY VIOLATION: %s issued a CAPTCHA/access denial; "
+                    "evicted for this process (reason=%r)",
+                    name,
+                    reason,
+                )
+            elif explicit_suspension or ("403" in reason and "suspended" in reason_lower):
+                cooldown = self._cooldown_for(reason, self._failures[name])
+                until = time.time() + cooldown
+                self._suspended[name] = max(until, self._suspended.get(name, 0.0))
+                logger.error(
+                    "ENGINE SUSPENDED: %s (reason=%r, until=%.0f)", name, reason, until
+                )
+            else:
+                cooldown = self._cooldown_for(reason, self._failures[name])
+                until = time.time() + cooldown
+                # Never shorten an existing longer cooldown.
+                if until > self._cooldowns.get(name, 0.0):
+                    self._cooldowns[name] = until
+                logger.warning(
+                    "ENGINE COOLING: %s (reason=%r, failures=%d, cooled %.0fs)",
+                    name, reason, self._failures[name], cooldown,
+                )
             changed = True
 
         for name in responding_engines or []:
-            if name in self._failures or name in self._cooldowns:
+            if name in self._policy_violations:
+                continue
+            if name in self._failures or name in self._cooldowns or name in self._suspended:
                 self._failures.pop(name, None)
                 self._cooldowns.pop(name, None)
+                self._suspended.pop(name, None)
                 logger.info("ENGINE RECOVERED: %s (produced results)", name)
                 changed = True
 
@@ -149,20 +200,62 @@ class EngineHealthTracker:
 
     # ── Queries ────────────────────────────────────────────────────────
 
-    def is_available(self, engine: str) -> bool:
-        until = self._cooldowns.get(engine)
-        if until is None:
-            return True
-        if time.time() >= until:
+    def state(self, engine: str) -> EngineState:
+        """Return HEALTHY, COOLING, or SUSPENDED for one engine."""
+        if engine in self._policy_violations:
+            return EngineState.SUSPENDED
+        now = time.time()
+        suspended_until = self._suspended.get(engine, 0.0)
+        if suspended_until > now:
+            return EngineState.SUSPENDED
+        if suspended_until:
+            self._suspended.pop(engine, None)
+            self._failures.pop(engine, None)
+            self._save()
+        cooldown_until = self._cooldowns.get(engine, 0.0)
+        if cooldown_until > now:
+            return EngineState.COOLING
+        if cooldown_until:
             self._cooldowns.pop(engine, None)
             self._failures.pop(engine, None)
             self._save()
-            return True
-        return False
+        return EngineState.HEALTHY
+
+    def is_available(self, engine: str) -> bool:
+        return self.state(engine) is EngineState.HEALTHY
 
     def cooldown_until(self, engine: str) -> float:
-        """Absolute epoch the engine cools until (0.0 if not cooled)."""
-        return self._cooldowns.get(engine, 0.0)
+        """Absolute epoch an engine cools/suspends until (0.0 if healthy)."""
+        return max(self._cooldowns.get(engine, 0.0), self._suspended.get(engine, 0.0))
+
+    def healthy_count(self, engines: list[str] | set[str]) -> int:
+        return sum(1 for engine in engines if self.is_available(engine))
+
+    def record_degradation_if_needed(
+        self,
+        engines: list[str] | set[str],
+        *,
+        floor: int = 4,
+    ) -> dict[str, object] | None:
+        """Record and log a first-class retrieval degradation event."""
+        healthy = self.healthy_count(engines)
+        if healthy >= floor:
+            return None
+        event: dict[str, object] = {
+            "type": "retrieval_engine_pool_degraded",
+            "healthy": healthy,
+            "required": floor,
+            "states": {engine: self.state(engine).value for engine in sorted(engines)},
+            "timestamp": time.time(),
+        }
+        self._degradation_events.append(event)
+        logger.error(
+            "RETRIEVAL DEGRADED: only %d healthy engines; floor is %d", healthy, floor
+        )
+        return event
+
+    def degradation_events(self) -> list[dict[str, object]]:
+        return list(self._degradation_events)
 
     def filter_available(self, engines: list[str]) -> list[str]:
         """Drop cooled engines from a candidate list for the next request."""
@@ -172,6 +265,9 @@ class EngineHealthTracker:
         """Clear all state (used by tests)."""
         self._failures = {}
         self._cooldowns = {}
+        self._suspended = {}
+        self._policy_violations = set()
+        self._degradation_events = []
         self._save()
 
 

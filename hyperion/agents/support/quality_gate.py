@@ -568,6 +568,26 @@ class QualityGate(BaseAgent):
             feedback_parts.append(f"{single_source_sections} section(s) have only 1 source, key claims need ≥2.")
             fix_parts.append(f"Add additional independent sources to {single_source_sections} section(s).")
 
+        # W-11: retrieval health is evidence-quality input, not hidden operator
+        # telemetry. A collapsed engine pool caps evidence sufficiency until the
+        # report is rerun or explicitly caveated with the narrower corpus.
+        from hyperion.tools.engine_health import get_engine_health
+
+        retrieval_events = get_engine_health().degradation_events()
+        if retrieval_events:
+            latest = retrieval_events[-1]
+            healthy = int(latest.get("healthy", 0))
+            required = int(latest.get("required", 4))
+            score = min(score, 3)
+            feedback_parts.append(
+                f"Retrieval pool degraded to {healthy} healthy engines "
+                f"(required floor: {required}); corpus coverage is constrained."
+            )
+            fix_parts.append(
+                "Restore the retrieval engine floor and rerun evidence collection, "
+                "or disclose the constrained corpus in the client methodology."
+            )
+
         # Cross-reference with Fact Checker
         if self._fact_check_report:
             if self._fact_check_report.hallucinated_citation_count > 0:

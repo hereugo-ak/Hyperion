@@ -55,6 +55,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -164,6 +165,12 @@ class ContainerSpec:
         return f"http://127.0.0.1:{self.host_port}{self.health_path}"
 
 
+def _searxng_secret() -> str:
+    """Return an operator secret or a fresh high-entropy instance secret."""
+    configured = os.environ.get("SEARXNG_SECRET", "").strip()
+    return configured or secrets.token_urlsafe(48)
+
+
 def searxng_spec() -> ContainerSpec:
     """Container spec for SearxNG, mounting the project's real settings files."""
     volumes: list[tuple[Path, str]] = []
@@ -184,7 +191,15 @@ def searxng_spec() -> ContainerSpec:
         # 200 from it means Flask is serving, which is what we need to know.
         health_path="/",
         volumes=volumes,
-        env={"SEARXNG_BASE_URL": f"http://localhost:{SEARXNG_PORT}/"},
+        env={
+            "SEARXNG_BASE_URL": f"http://localhost:{SEARXNG_PORT}/",
+            # The settings profile contains ${SEARXNG_SECRET}; the official
+            # image entrypoint substitutes this value before SearXNG starts.
+            "SEARXNG_SECRET": _searxng_secret(),
+            "HYPERION_CONTACT_EMAIL": os.environ.get(
+                "HYPERION_CONTACT_EMAIL", "research@localhost"
+            ),
+        },
     )
 
 
