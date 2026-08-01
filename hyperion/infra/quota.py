@@ -126,13 +126,19 @@ class GroundingQuotaLedger:
             month_used = int(payload["months"].get(month, {}).get(family, 0))
             daily = max(0, self.daily_limit - day_used)
             monthly = max(0, self.monthly_limit - month_used)
-            available = min(daily, monthly)
-            if not high_value:
-                reserve = max(
-                    int(self.daily_limit * self.reserve_fraction + 0.999999),
-                    int(self.monthly_limit * self.reserve_fraction + 0.999999),
+            if high_value:
+                available = min(daily, monthly)
+            else:
+                daily_reserve = int(
+                    self.daily_limit * self.reserve_fraction + 0.999999
                 )
-                available = max(0, available - reserve)
+                monthly_reserve = int(
+                    self.monthly_limit * self.reserve_fraction + 0.999999
+                )
+                available = min(
+                    max(0, daily - daily_reserve),
+                    max(0, monthly - monthly_reserve),
+                )
             return {"daily": daily, "monthly": monthly, "available": available}
 
     def reserve(
