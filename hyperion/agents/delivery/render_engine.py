@@ -558,7 +558,7 @@ class RenderEngine(BaseAgent):
                 # The report should still render without this photo.
                 #
                 # D5.1: `as e` was captured and never read (ruff F841). That
-                # discarded the *only* record of why an image was rejected, 
+                # discarded the *only* record of why an image was rejected,
                 # `ImageTooSmallError` carries `.actual` and `.minimum`, i.e. the
                 # exact measurement. §11 exit criterion 12 requires section
                 # imagery ≥2000 px wide; when a report ships with a small image
@@ -763,9 +763,11 @@ class RenderEngine(BaseAgent):
                 resolved = self._resolve_toc_page_numbers(self._pdf_path)
                 if resolved:
                     final_html = self._inject_toc_page_numbers(html_path, resolved)
+                    with open(final_html, encoding="utf-8") as final_html_file:
+                        final_html_content = final_html_file.read()
                     pass1_pages = self._get_page_count(self._pdf_path)
                     result2 = weasyprint_tool.render_pdf(
-                        html=open(final_html, encoding="utf-8").read(),
+                        html=final_html_content,
                         output_path=self._pdf_path,
                     )
                     if result2 and result2.success:
@@ -777,7 +779,7 @@ class RenderEngine(BaseAgent):
                                 f"re-rendering to keep numbers consistent"
                             )
                             result3 = weasyprint_tool.render_pdf(
-                                html=open(final_html, encoding="utf-8").read(),
+                                html=final_html_content,
                                 output_path=self._pdf_path,
                             )
                             if not (result3 and result3.success):

@@ -53,7 +53,6 @@ import json
 import sys
 import time
 import uuid
-from enum import Enum
 from typing import Any
 
 from hyperion.agents.base import BaseAgent
@@ -373,7 +372,7 @@ AGENT_METHODS: dict[AgentName, dict[str, frozenset[SubjectClass]]] = {
 }
 
 
-class SubjectClassAbstain(RuntimeError):
+class SubjectClassAbstainError(RuntimeError):
     """Subject class could not be established with sufficient confidence (W-06).
 
     Raised by the planning path when the classifier abstains and no
@@ -398,6 +397,10 @@ class SubjectClassAbstain(RuntimeError):
                 "scripted runs abstain and fail rather than guess."
             )
         super().__init__(message)
+
+
+# Backward-compatible public name retained for callers and persisted diagnostics.
+SubjectClassAbstain = SubjectClassAbstainError
 
 
 # Below this confidence the Director must not proceed on the classifier's
@@ -996,7 +999,7 @@ class EngagementDirector(BaseAgent):
             # The roster below is gated on this classification, so accepting
             # it on low confidence would staff the engagement on a guess.
             # Below the threshold the Director asks one clarifying question
-            # when a user is present, and abstains-and-fails when it is not, 
+            # when a user is present, and abstains-and-fails when it is not,
             # never guesses.
             subject_class, sc_confidence = self._parse_subject_class(data)
             self._llm_subject_class = subject_class

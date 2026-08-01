@@ -603,7 +603,7 @@ class SubAgentRunner:
         q = re.sub(r'\([^)]*\)', '', q)
 
         # Remove em-dashes, en-dashes, and hyphens used as separators.
-        # NOTE: hyphen MUST be last (or escaped) inside a character class, 
+        # NOTE: hyphen MUST be last (or escaped) inside a character class,
         # `\u2013--` was parsed as a character RANGE (\u2013 .. -), which is
         # invalid and raised `re.PatternError` on every call under Python
         # 3.13. That crash was swallowed by the callers' bare
@@ -735,7 +735,7 @@ class SubAgentRunner:
     # `_plan_queries(leg=...)`): SearxNG takes the even-indexed planner
     # queries, Jina takes the odd-indexed ones. Because `_top_up` orders
     # the plan angle-first, an alternating split gives *each* leg a
-    # diversified subset while the **union across legs is the whole plan**, 
+    # diversified subset while the **union across legs is the whole plan**,
     # so the audit's Phase 1 exit criterion (">=8 distinct grounded queries
     # per sub-question") is met at roughly half the request cost of sending
     # every query down every leg.

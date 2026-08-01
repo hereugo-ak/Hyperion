@@ -38,6 +38,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from hyperion.agents.bus import AgentBus, Channel, MessageType, get_bus
+from hyperion.agents.prompt_contract import AGENT_CONTRACT
 from hyperion.config import ModelTier, get_settings
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
@@ -53,7 +54,6 @@ from hyperion.schemas.agents import (
     SubAgentSpec,
     ToolName,
 )
-from hyperion.agents.prompt_contract import AGENT_CONTRACT
 from hyperion.schemas.models import KeyFinding
 
 logger = logging.getLogger(__name__)

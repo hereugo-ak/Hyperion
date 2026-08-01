@@ -284,17 +284,17 @@ def classify_gap(
 
     # Subject-class mismatch signals: the question presupposes an entity or
     # market structure the engagement's subject does not have.
-    _FIRM_LEVEL = (
+    firm_level_terms = (
         "valuation", "share price", "ticker", "earnings per share",
         "consumer survey", "brand perception", "nps", "churn rate",
         "customer interview",
     )
-    _POLICY_SUBJECTS = (
+    policy_subject_terms = (
         "policy", "regulation", "national", "government", "legislation",
         "public sector", "geopolitic", "treaty", "sanction",
     )
-    subject_is_policy = any(s in subject for s in _POLICY_SUBJECTS)
-    firm_level_asked = any(k in q for k in _FIRM_LEVEL)
+    subject_is_policy = any(s in subject for s in policy_subject_terms)
+    firm_level_asked = any(k in q for k in firm_level_terms)
     if subject_is_policy and firm_level_asked:
         return (
             InsufficiencyOutcome.OUT_OF_SCOPE,

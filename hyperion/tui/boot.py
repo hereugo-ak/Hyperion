@@ -124,7 +124,7 @@ WARN = "warn"
 FAIL = "fail"
 
 
-class ProvenanceRefusal(RuntimeError):
+class ProvenanceRefusalError(RuntimeError):
     """W-01: the shell refuses to boot in an RC-1 configuration.
 
     Raised by run_boot_sequence when the loaded build is a site-packages
@@ -133,6 +133,10 @@ class ProvenanceRefusal(RuntimeError):
     pre-fix output for fifteen correct commits. This is a hard stop, never
     a warning.
     """
+
+
+# Backward-compatible public name retained for callers and boot integrations.
+ProvenanceRefusal = ProvenanceRefusalError
 
 
 class BootStep:

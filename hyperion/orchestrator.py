@@ -34,6 +34,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from hyperion.agents.bus import Channel, MessageType, get_bus, reset_bus
@@ -67,7 +68,7 @@ from hyperion.tools.query_utils import (
 logger = logging.getLogger(__name__)
 
 
-class DeliveryFailure(RuntimeError):
+class DeliveryFailureError(RuntimeError):
     """W-04: a required delivery stage failed — the engagement fails closed.
 
     Raised from the delivery loop when any of DATA_VISUALIZER,
@@ -92,7 +93,11 @@ class DeliveryFailure(RuntimeError):
         super().__init__(f"DeliveryFailure[{agent}]: {exc_type}: {message}")
 
 
-class MissingDependencyOutput(RuntimeError):
+# Backward-compatible public name retained for existing integrations.
+DeliveryFailure = DeliveryFailureError
+
+
+class MissingDependencyOutputError(RuntimeError):
     """W-20: A DAG task declared a dependency that produced no output.
 
     Raised from ``_execute_task`` when a required dependency is FAILED (or
@@ -104,6 +109,10 @@ class MissingDependencyOutput(RuntimeError):
     ``_execute_wave``, which marks the dependent task FAILED with this
     exception's message — loud and attributable, never a silent partial run.
     """
+
+
+# Backward-compatible public name retained for existing integrations.
+MissingDependencyOutput = MissingDependencyOutputError
 
 
 def derive_run_id(question: str, engagement_key: str = "") -> str:
@@ -1867,9 +1876,7 @@ class WorkflowEngine:
         except Exception:  # noqa: BLE001 - settings may be unconfigured on a
             # blocked run; the diagnostic must still be written, so fall back
             # to the conventional ./reports directory rather than raise.
-            from pathlib import Path as _P
-
-            reports_dir = _P("./reports")
+            reports_dir = Path("./reports")
 
         try:
             diag_dir = reports_dir / "diagnostics"

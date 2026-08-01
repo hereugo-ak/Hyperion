@@ -90,7 +90,6 @@ async def credential_preflight(router: Any) -> dict[Any, str]:
     process and never aggregates it into rate-limit reporting.
     """
     from hyperion.config import ModelTier
-    from hyperion.router.providers.base import ProviderStatus
 
     results: dict[Any, str] = {}
     for provider_type, provider in router._providers.items():

@@ -94,7 +94,7 @@ _STOPWORDS = {
     "now", "out", "up", "down", "after", "before", "during", "year",
     "years", "rose", "fell", "grew", "growth", "increase", "increased",
     "decrease", "decreased", "reached", "reach", "estimated", "estimate",
-    "approximately", "around", "about", "nearly", "roughly", "circa",
+    "approximately", "around", "nearly", "roughly", "circa",
 }
 
 _CONFIDENCE_VALUES = {"low", "medium", "high"}
@@ -229,8 +229,7 @@ def detect_polarity(text: str) -> Polarity | None:
     reads as its leading stance."""
     raw = re.sub(r"[^a-z\s]", " ", text.lower())
     best: tuple[int, Polarity] | None = None
-    position = 0
-    for tok in raw.split():
+    for position, tok in enumerate(raw.split()):
         if tok in _SUPPORT_TOKENS:
             if best is None:
                 best = (position, Polarity.SUPPORTS)
@@ -239,7 +238,6 @@ def detect_polarity(text: str) -> Polarity | None:
             if best is None:
                 best = (position, Polarity.OPPOSES)
             break
-        position += 1
     return best[1] if best else None
 
 

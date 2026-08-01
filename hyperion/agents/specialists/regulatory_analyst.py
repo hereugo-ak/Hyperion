@@ -1286,7 +1286,7 @@ class RegulatoryAnalyst(BaseAgent):
         # CRITICAL: jurisdictions must be derived from the question, never
         # defaulted to a hardcoded region. The previous default of
         # ["US", "EU"] meant a question about INDIA was analysed under the
-        # US Buy American Act / Trade Agreements Act / Berry Amendment, 
+        # US Buy American Act / Trade Agreements Act / Berry Amendment,
         # 119 confidently-reported findings about the wrong country. A wrong
         # jurisdiction is worse than a missing one: it looks authoritative.
         # Four-tier resolution (explicit context keys -> sector -> engagement

@@ -253,13 +253,9 @@ class LLMRouter:
         This is the per-model predicate. A model is "hot" when either its RPM
         or TPM rolling window is >85% utilised.
         """
-        if tracker.model.rpm > 0:
-            if tracker.current_rpm() / tracker.model.rpm > 0.85:
-                return True
-        if tracker.model.tpm > 0:
-            if tracker.current_tpm() / tracker.model.tpm > 0.85:
-                return True
-        return False
+        if tracker.model.rpm > 0 and tracker.current_rpm() / tracker.model.rpm > 0.85:
+            return True
+        return tracker.model.tpm > 0 and tracker.current_tpm() / tracker.model.tpm > 0.85
 
     def _candidate_rate_limited(self, candidate: ProviderCandidate) -> bool:
         """P2-30/P2-G30: evaluate the rate-limit prediction for the SPECIFIC

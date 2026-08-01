@@ -297,7 +297,7 @@ class SynthesisLead(BaseAgent):
 
         # D-01: analysis sections are built from findings BEFORE the
         # recommendation call and parked here immediately. If any later step
-        # raises, _minimal_report() carries them into the degraded report, 
+        # raises, _minimal_report() carries them into the degraded report,
         # a synthesis failure costs the recommendation, never the analysis.
         self._partial_sections: list[AnalysisSection] = []
 
@@ -592,7 +592,6 @@ class SynthesisLead(BaseAgent):
         Also incorporates contradictions from the FactCheckReport if available.
         """
         contradictions: list[Contradiction] = []
-        contradiction_id = 0
 
         # From fact check report
         if self._fact_check_report:
@@ -645,8 +644,9 @@ class SynthesisLead(BaseAgent):
 
         # Budget cap: keep the most material pairs only (§W-05 step 7).
         opposing_pairs.sort(key=rank_materiality, reverse=True)
-        for triple_a, triple_b, kind in opposing_pairs[:MAX_MATERIAL_CONTRADICTIONS]:
-            contradiction_id += 1
+        for contradiction_id, (triple_a, triple_b, kind) in enumerate(
+            opposing_pairs[:MAX_MATERIAL_CONTRADICTIONS], start=1
+        ):
             contradictions.append(
                 Contradiction(
                     id=f"contradiction_{contradiction_id}",
@@ -733,7 +733,7 @@ class SynthesisLead(BaseAgent):
                 # Equal weight, this is a deeply entrenched contradiction
                 # Spawn a sub-agent for a focused deep dive (§4.3, Agent 2)
                 # Record whether a deep dive actually ran, so the resolution
-                # text cannot claim an investigation that never happened, 
+                # text cannot claim an investigation that never happened,
                 # the sub-agent budget may already be spent.
                 _specs_before = len(self._sub_agent_specs)
                 winner = await self._deep_dive_contradiction(contradiction, finding_a, finding_b)
@@ -1147,7 +1147,7 @@ class SynthesisLead(BaseAgent):
         #
         # This function previously restated "2000-4000 words" in four separate
         # prompt strings, with no relationship to the 15-20 page deliverable
-        # target. Because the section count is `len(self._findings_by_agent)`, 
+        # target. Because the section count is `len(self._findings_by_agent)`,
         # anywhere from 1 to 12 depending on which agents reported, the page
         # count was an emergent accident: the audit measured 36 pages against a
         # stated 20-page ceiling and nothing in the codebase noticed.

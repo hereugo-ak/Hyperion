@@ -1237,11 +1237,11 @@ class QualityGate(BaseAgent):
             report.executive_summary or "",
             report.recommendation_rationale or "",
         ]
+        url_parts: list[str] = []
         for kf in report.key_findings:
             text_parts.append(f"{kf.title} {kf.content} {kf.implications or ''}")
             for src in kf.sources:
                 url_parts.append(src.url or "")
-        url_parts: list[str] = []
         for sec in report.sections:
             text_parts.append(f"{sec.title} {sec.key_insight} {sec.body} {sec.implications or ''}")
             for src in sec.sources:
