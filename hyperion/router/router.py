@@ -315,6 +315,7 @@ class LLMRouter:
         self,
         tier: ModelTier,
         urgency: TaskUrgency = TaskUrgency.NORMAL,
+        estimated_tokens: int = 0,
     ) -> set[ProviderType]:
         """Get the set of providers available for a tier and urgency level.
 
@@ -344,6 +345,7 @@ class LLMRouter:
             tier=tier,
             models_by_provider=models_by_provider,
             urgency=urgency,
+            estimated_tokens=estimated_tokens,
         )
 
         return budget_available
@@ -616,7 +618,9 @@ class LLMRouter:
         last_failure: RouterResponse | None = None
 
         while not attempt.exhausted():
-            available_providers = self.get_available_providers(tier, urgency)
+            available_providers = self.get_available_providers(
+                tier, urgency, estimated_tokens
+            )
 
             if not available_providers:
                 break
@@ -725,6 +729,14 @@ class LLMRouter:
             estimated_tokens=estimated_tokens,
             actual_tokens=response.total_tokens,
         )
+        self.budget_planner.reconcile_actual(
+            provider=candidate.provider_type,
+            model_name=candidate.model.name,
+            estimated_tokens=estimated_tokens,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            actual_tokens=response.total_tokens,
+        )
         stats = self._token_usage_by_provider.get(candidate.provider_type)
         if stats is not None:
             stats["input_tokens"] += response.input_tokens
@@ -766,20 +778,26 @@ class LLMRouter:
         if attempt.exhausted():
             return None
 
+        # W-18: atomically reserve request and estimated-token capacity at the
+        # dispatch boundary. The earlier filter is advisory; this reservation
+        # closes the concurrent check-then-consume gap and enforces model TPD.
+        if not self.budget_planner.reserve(
+            provider=candidate.provider_type,
+            model=candidate.model,
+            estimated_tokens=estimated_tokens,
+            urgency=urgency,
+        ):
+            return None
+
         provider = self._providers[candidate.provider_type]
         attempt.attempts += 1
         attempt.visited.add(candidate.provider_type)
 
-        # Record dispatch BEFORE the call (so concurrent requests see the capacity)
+        # Record dispatch AFTER the durable reservation and before the call.
         self.wait_gate.record_dispatch(
             provider=candidate.provider_type,
             model_name=candidate.model.name,
             estimated_tokens=estimated_tokens,
-        )
-        self.budget_planner.consume(
-            provider=candidate.provider_type,
-            model_name=candidate.model.name,
-            urgency=urgency,
         )
 
         # Execute the request
@@ -806,6 +824,7 @@ class LLMRouter:
             self.budget_planner.refund(
                 provider=candidate.provider_type,
                 model_name=candidate.model.name,
+                estimated_tokens=estimated_tokens,
             )
             return response
 
@@ -821,15 +840,17 @@ class LLMRouter:
             # W-17 step 5: exactly ONE same-provider retry with backoff.
             await asyncio.sleep(_TRANSIENT_BACKOFF_SECONDS)
             attempt.attempts += 1
+            if not self.budget_planner.reserve(
+                provider=candidate.provider_type,
+                model=candidate.model,
+                estimated_tokens=estimated_tokens,
+                urgency=urgency,
+            ):
+                return response
             self.wait_gate.record_dispatch(
                 provider=candidate.provider_type,
                 model_name=candidate.model.name,
                 estimated_tokens=estimated_tokens,
-            )
-            self.budget_planner.consume(
-                provider=candidate.provider_type,
-                model_name=candidate.model.name,
-                urgency=urgency,
             )
             retry = await provider.complete(
                 model=candidate.model.name,
@@ -859,8 +880,12 @@ class LLMRouter:
         return result
 
     def get_budget_status(self) -> dict[ProviderType, dict[str, float]]:
-        """Get budget usage for all providers — for TUI display."""
+        """Get persisted request and cost usage for the TUI display."""
         return self.budget_planner.get_usage_summary()
+
+    def get_engagement_cost_usd(self) -> float:
+        """Return the current engagement's estimated LLM cost."""
+        return self.budget_planner.engagement_cost_usd
 
     def get_provider_health(self) -> dict[ProviderType, dict[str, Any]]:
         """Get health status for all providers — for TUI splash screen (§8.2)."""

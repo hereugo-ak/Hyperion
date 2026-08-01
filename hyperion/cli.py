@@ -495,7 +495,8 @@ def providers() -> None:
     table.add_column("provider", style=f"bold {CYAN}")
     table.add_column("status", justify="center")
     table.add_column("tpm", justify="right")
-    table.add_column("budget", justify="right")
+    table.add_column("daily requests", justify="right")
+    table.add_column("engagement cost", justify="right")
     table.add_column("uptime", justify="right")
 
     for pt in ProviderType:
@@ -509,6 +510,7 @@ def providers() -> None:
             status,
             f"{tpm.get('percentage', 0.0):.0f}%",
             f"{budget.get('percentage', 0.0):.0f}%",
+            f"${budget.get('engagement_cost_usd', 0.0):.6f}",
             f"{h.get('uptime_pct', 0.0):.0f}%",
         )
     console.print(table)

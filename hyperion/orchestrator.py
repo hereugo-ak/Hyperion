@@ -246,6 +246,9 @@ class EngagementResult:
     # Fix 2.6 (audit §6 Phase 2): per-engagement extraction-yield metrics,
     # populated at engagement completion from engagement_yield_report().
     extraction_yield: dict[str, Any] = field(default_factory=dict)
+    # W-18: actual provider-reported tokens priced with the dated planning
+    # table in router/budget.py. This is an estimate, never presented as an invoice.
+    estimated_llm_cost_usd: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -260,6 +263,7 @@ class EngagementResult:
             "escalation_count": self.escalation_count,
             "quality_iterations": self.quality_iterations,
             "extraction_yield": self.extraction_yield,
+            "estimated_llm_cost_usd": self.estimated_llm_cost_usd,
             "quality_score": self.quality_score.model_dump() if self.quality_score else None,
             "final_report": self.final_report.model_dump() if self.final_report else None,
             "metadata": self.metadata.model_dump() if self.metadata else None,
@@ -2119,6 +2123,9 @@ class WorkflowEngine:
         Returns an EngagementResult with the PDF path and all metadata.
         """
         self._start_time = time.time()
+        # W-18: the router singleton can serve multiple consultations in one
+        # shell; reset only the engagement cost accumulator, never daily usage.
+        self.router.budget_planner.reset_engagement_cost()
         # W-20: deterministic run id — the durable-execution journal below
         # only resumes a crashed engagement if a re-run of the same question
         # lands on the SAME run_id. ``fresh=True`` forces a random id for a
@@ -2713,6 +2720,9 @@ class WorkflowEngine:
             self._print_run_summary(result)
             return result
         finally:
+            # W-18: every success and failure result carries the cost accrued
+            # before return; Python executes this mutation before returning it.
+            result.estimated_llm_cost_usd = self.router.get_engagement_cost_usd()
             # P10: Close journal
             if self._journal:
                 self._journal.close()
@@ -2769,6 +2779,7 @@ class WorkflowEngine:
         total_calls = token_summary.get("total_calls", 0)
         print(f"\n  Total Tokens:    {total_tokens:,}")
         print(f"  Total LLM Calls: {total_calls:,}")
+        print(f"  Est. LLM Cost:   ${result.estimated_llm_cost_usd:.6f}")
 
         by_provider = token_summary.get("by_provider", {})
         if by_provider:
