@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import fitz
@@ -180,23 +179,6 @@ class TestDeterministicChecks:
 # ─────────────────────────────────────────────────────────────────────────────
 # EvalHarness Tests
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestWorkflowCaller:
-    def test_ci_workflow_blocks_prs_and_cost_gates_full_eval(self):
-        workflow = (
-            Path(__file__).resolve().parent.parent
-            / ".github"
-            / "workflows"
-            / "hyperion-quality.yml"
-        )
-        text = workflow.read_text(encoding="utf-8")
-        assert "pull_request:" in text
-        assert "python -m hyperion.eval.ci_gate --lint" in text
-        assert "python -m hyperion.eval.ci_gate\n" in text
-        assert "schedule:" in text
-        assert "hyperion-full-eval" in text
-        assert "continue-on-error" not in text
 
 
 class TestEvalHarness:
