@@ -76,7 +76,7 @@ _HELP_LINES = [
 ]
 
 
-class SessionScreen(Screen):
+class SessionScreen(Screen[None]):
     """Main HYPERION session — a single, always-scrollable command surface."""
 
     DEFAULT_CSS = """
@@ -117,8 +117,8 @@ class SessionScreen(Screen):
         self._reduced = reduced_motion
         self._demo = demo
         self._session_id = "0x" + f"{random.randint(0, 0xFFFFFF):06X}"
-        self._engagement_task: asyncio.Task | None = None
-        self._boot_task: asyncio.Task | None = None
+        self._engagement_task: asyncio.Task[None] | None = None
+        self._boot_task: asyncio.Task[None] | None = None
         self._bus_sub_id = "tui_session"
         self._active_rows: dict[str, LogRow] = {}
         self._task_list_rows: dict[str, LogRow] = {}  # task_id → row in checklist
@@ -555,7 +555,7 @@ class SessionScreen(Screen):
 
     # ── DAG task checklist ──────────────────────────────────────────────────────
 
-    def _render_task_list(self, tasks: list[dict]) -> None:
+    def _render_task_list(self, tasks: list[dict[str, Any]]) -> None:
         """Render the DAG task list as a real-time checklist in the transcript."""
         from hyperion.tui.theme import agent_badge
         log = self._log()
