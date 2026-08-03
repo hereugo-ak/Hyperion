@@ -457,7 +457,7 @@ class RenderEngine(BaseAgent):
         try:
             from PIL import Image, ImageFilter
 
-            img = Image.open(image_path)
+            img: Image.Image = Image.open(image_path)
 
             # Convert to RGB if needed (handles RGBA, P, L modes)
             if img.mode not in ("RGB", "RGBA"):
@@ -484,14 +484,17 @@ class RenderEngine(BaseAgent):
                     new_width = target_width
                     new_height = int(target_width / img_aspect)
 
-                img = img.resize((new_width, new_height), Image.LANCZOS)
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
             # Step 3: Crop (center-weighted)
             img = self._center_crop(img, target_width, target_height)
 
             # Ensure exact target dimensions
             if img.size != (target_width, target_height):
-                img = img.resize((target_width, target_height), Image.LANCZOS)
+                img = img.resize(
+                    (target_width, target_height),
+                    Image.Resampling.LANCZOS,
+                )
 
             # Step 4: Color-correct (warm filter)
             img = self._apply_warm_filter(img, WARM_FILTER_INTENSITY)
