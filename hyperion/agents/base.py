@@ -229,7 +229,11 @@ class BaseAgent(ABC):
         if not response.success or not response.content:
             return {}
 
-        data = json.loads(response.content)
+        parsed = json.loads(response.content)
+        if not isinstance(parsed, dict):
+            logger.warning("Context classifier returned non-object JSON")
+            return {}
+        data: dict[str, Any] = {str(key): value for key, value in parsed.items()}
         # Normalize: ensure geography-derived fields are consistent
         geo = data.get("geography")
         if geo and "jurisdiction" not in data:
