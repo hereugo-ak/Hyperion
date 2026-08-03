@@ -96,6 +96,10 @@ def shell(
         # it with a misleading install hint.
         raise typer.Exit(code=1) from exc
 
+    # The interactive shell can own a live engagement just like `consult` and
+    # `resume`, so it needs the same journal-close and output-quarantine path.
+    _install_interrupt_handlers()
+
     # Teardown is guaranteed here as well as inside the app.
     #
     # The TUI tears down in `action_quit` / `on_unmount`, which covers a normal

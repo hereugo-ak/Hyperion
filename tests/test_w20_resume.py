@@ -233,11 +233,19 @@ def test_resume_is_a_real_command_and_banner_matches() -> None:
 
 
 def test_signal_handlers_exist_in_cli() -> None:
+    import inspect
+
+    from hyperion import cli
+
     with open("hyperion/cli.py", encoding="utf-8") as source_file:
         src = source_file.read()
     assert "signal.SIGINT" in src and "signal.SIGTERM" in src, (
         "W-20 requires SIGINT/SIGTERM handlers at the CLI entry points"
     )
+    # Every engagement entry point must install the handler. The shell is the
+    # most likely path for an interactive Ctrl-C and must not bypass cleanup.
+    for entrypoint in (cli.shell, cli.consult, cli.resume):
+        assert "_install_interrupt_handlers(" in inspect.getsource(entrypoint)
     # The handler must do the side effects (journal close + quarantine), not
     # merely log the interrupt.
     assert "journal.close()" in src
