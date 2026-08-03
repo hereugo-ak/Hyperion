@@ -30,6 +30,8 @@ from hyperion.schemas.models import (
     Claim,
     ClaimStatus,
     ClaimType,
+    ConfidenceLevel,
+    KeyFinding,
     Source,
     SourceCredibility,
 )
@@ -92,6 +94,47 @@ class TestSingleMatchingAlgorithm:
 
         tree = inspect.getsource(fc)
         assert tree.count("def _source_supports_claim") == 1
+
+
+class TestLocalCorpusIndependence:
+    @staticmethod
+    def _finding(content: str, source: Source) -> KeyFinding:
+        return KeyFinding(
+            id="f1",
+            agent="market_analyst",
+            finding_type="market_size",
+            title="Market size",
+            content=content,
+            sources=[source],
+            confidence=ConfidenceLevel.MEDIUM,
+        )
+
+    def test_finding_prose_cannot_verify_its_own_claim(self) -> None:
+        checker = _checker()
+        claim = _claim("India GST collection was 1.7 lakh crore", [])
+        source = _source("Unrelated source data about exports in 2024")
+        checker._all_findings = [self._finding(claim.claim, source)]
+
+        assert checker._check_local_corpus(claim) == []
+
+    def test_underlying_source_data_can_verify_claim(self) -> None:
+        checker = _checker()
+        claim = _claim("India GST collection was 1.7 lakh crore", [])
+        source = _source("Official data: India GST collection was 1.7 lakh crore")
+        checker._all_findings = [self._finding("Agent-authored summary", source)]
+
+        local = checker._check_local_corpus(claim)
+
+        assert len(local) == 1
+        assert local[0].key_data == source.key_data
+        assert local[0].key_data != checker._all_findings[0].content
+
+    def test_empty_source_data_cannot_borrow_finding_prose(self) -> None:
+        checker = _checker()
+        claim = _claim("Market size is $50B", [])
+        checker._all_findings = [self._finding(claim.claim, _source(None))]
+
+        assert checker._check_local_corpus(claim) == []
 
 
 class TestTriStateLiveness:

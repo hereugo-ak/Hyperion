@@ -596,36 +596,40 @@ class FactChecker(BaseAgent):
     # ─────────────────────────────────────────────────────────────────────
 
     def _check_local_corpus(self, claim: Claim) -> list[Source]:
-        """Check if the claim is already supported by sources in the local findings.
+        """Return local sources whose own fetched data supports ``claim``.
 
-        Before hitting the web, scan all collected findings' sources for
-        content that already supports this claim. This avoids redundant
-        web searches for claims that are well-sourced by specialists.
-
-        Returns a list of Source objects from the local corpus that support
-        the claim, or an empty list if no local support is found.
+        Finding prose is agent output and therefore cannot independently
+        verify a claim extracted from that same prose. Only the underlying
+        source's non-empty ``key_data`` is eligible, and it must pass the same
+        token-boundary matcher used by the web-verification and evidence-chain
+        paths. This preserves useful cached evidence without circularly treating
+        a specialist's assertion as its own proof.
         """
         local_sources: list[Source] = []
-        claim_lower = claim.claim.lower()
-        claim_words = set(w for w in claim_lower.split() if len(w) > 4)
+        seen_urls: set[str] = set()
 
         for finding in self._all_findings:
-            # Check finding content for the claim
-            content_lower = (finding.content or "").lower()
-            if claim_lower in content_lower or claim_words & set(content_lower.split()):
-                # This finding's content references the claim, use its sources
-                for src in finding.sources[:3]:
-                    if not src or not src.url:
-                        continue
-                    credibility = self._score_domain_credibility(src.url)
-                    local_sources.append(Source(
-                        id=f"local_{hashlib.md5(src.url.encode()).hexdigest()[:8]}",
-                        title=src.title or finding.title[:100],
-                        url=src.url,
-                        credibility=credibility,
-                        accessed_at=datetime.now(),
-                        key_data=finding.content[:500],
-                    ))
+            for src in finding.sources[:3]:
+                if (
+                    not src
+                    or not src.url
+                    or src.url in seen_urls
+                    or not (src.key_data or "").strip()
+                    or not self._source_supports_claim(claim, src)
+                ):
+                    continue
+
+                seen_urls.add(src.url)
+                local_sources.append(Source(
+                    id=f"local_{hashlib.md5(src.url.encode()).hexdigest()[:8]}",
+                    title=src.title or finding.title[:100],
+                    url=src.url,
+                    credibility=self._score_domain_credibility(src.url),
+                    accessed_at=src.accessed_at,
+                    author=src.author,
+                    publication_date=src.publication_date,
+                    key_data=src.key_data,
+                ))
 
         return local_sources
 
