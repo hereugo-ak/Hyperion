@@ -233,11 +233,6 @@ ignore_missing_imports = true
 # Backlog quarantine — 68 files with strict errors at the 5.1f baseline.
 # Shrink this list; never grow it.
 module = [
-    "hyperion.agents.specialists.competitive_intel",
-    "hyperion.agents.specialists.market_analyst",
-    "hyperion.agents.specialists.risk_analyst",
-    "hyperion.eval.ci_gate",
-    "hyperion.eval.harness",
     "hyperion.tui.app",
     "hyperion.tui.banner",
     "hyperion.tui.boot",
