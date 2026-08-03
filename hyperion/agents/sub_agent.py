@@ -48,7 +48,7 @@ import time
 from typing import Any
 
 from hyperion.agents.bus import AgentBus, get_bus
-from hyperion.config import ModelTier
+from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import LLMRouter, get_router
@@ -1159,6 +1159,7 @@ class SubAgentRunner:
             agent_name=f"subagent_{self.parent_agent}",
             urgency=TaskUrgency.LOW,  # Sub-agents are LOW urgency (§3.5)
             temperature=0.2,
+            max_tokens=TIER_OUTPUT_BUDGET[self.spec.model_tier],
             response_format={"type": "json_object"},
         )
 

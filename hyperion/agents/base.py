@@ -39,7 +39,7 @@ from pydantic import BaseModel
 
 from hyperion.agents.bus import AgentBus, Channel, MessageType, get_bus
 from hyperion.agents.prompt_contract import AGENT_CONTRACT
-from hyperion.config import ModelTier, get_settings
+from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier, get_settings
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import LLMRouter, get_router
@@ -617,13 +617,20 @@ class BaseAgent(ABC):
             f"Requesting {self.model_tier.value} tier completion",
         )
 
+        # D-17: every agent call owns an explicit output ceiling. Leaving this
+        # as None delegates length to provider defaults, which are often only a
+        # few hundred tokens and silently cap substantive analysis.
+        resolved_max_tokens = max_tokens or TIER_OUTPUT_BUDGET.get(self.model_tier, 4_000)
+        if resolved_max_tokens <= 0:
+            resolved_max_tokens = 4_000
+
         response = await self.router.complete(
             tier=self.model_tier,
             messages=messages,
             agent_name=self.name.value,
             urgency=urgency,
             temperature=temperature,
-            max_tokens=max_tokens,
+            max_tokens=resolved_max_tokens,
             response_format=response_format,
         )
 

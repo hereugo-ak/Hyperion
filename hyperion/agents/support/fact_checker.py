@@ -60,7 +60,7 @@ from typing import Any
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
-from hyperion.config import ModelTier
+from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.structured_validator import validate_json_list
 from hyperion.schemas.agents import (
@@ -1140,6 +1140,7 @@ class FactChecker(BaseAgent):
                 agent_name=self.name.value,
                 urgency=TaskUrgency.HIGH,
                 temperature=0.0,
+                max_tokens=TIER_OUTPUT_BUDGET[ModelTier.STRONG],
                 response_format={"type": "json_object"},
             )
         except Exception as exc:  # noqa: BLE001 - stage 1 flag stands
