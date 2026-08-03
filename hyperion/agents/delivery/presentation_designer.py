@@ -238,7 +238,6 @@ CSS_TEMPLATE = """\
    that honours them. (D-03) */
 @page {{
     size: A4;
-    dpi: 300;
     /* P2-03: paint the margin boxes too. Without this, the 25mm/15mm/19mm
        margin ring stays white while the canvas is cream. */
     background: {cream};
