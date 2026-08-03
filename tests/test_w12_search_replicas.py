@@ -208,6 +208,34 @@ async def test_result_cache_is_normalized_and_shared(
 
 
 @pytest.mark.asyncio
+async def test_startup_removes_legacy_single_instance_and_inactive_flare(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    legacy_removed = asyncio.Event()
+
+    async def fake_run_command(command: list[str], timeout: float = 30.0):
+        commands.append(command)
+        if command[:4] == ["docker", "rm", "-f", "flaresolverr"]:
+            legacy_removed.set()
+        return 0, "network-ready", ""
+
+    async def fake_ensure(spec, *, on_progress=None):
+        # No desired replica may attempt to bind 8888 before migration cleanup.
+        assert legacy_removed.is_set()
+        return services.ServiceStatus(spec.name, state=services.OK, ready=True)
+
+    monkeypatch.setattr(services, "docker_available", lambda: True)
+    monkeypatch.setattr(services, "run_command", fake_run_command)
+    monkeypatch.setattr(services, "ensure_container", fake_ensure)
+
+    await services.start_services()
+
+    assert ["docker", "rm", "-f", "searxng"] in commands
+    assert ["docker", "rm", "-f", "flaresolverr"] in commands
+
+
+@pytest.mark.asyncio
 async def test_default_services_start_concurrently(monkeypatch: pytest.MonkeyPatch) -> None:
     active = 0
     peak = 0

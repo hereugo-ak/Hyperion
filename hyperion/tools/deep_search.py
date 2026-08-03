@@ -920,6 +920,19 @@ class DeepSearchClient:
             )
 
             urls = [r.url for r in response.results if r.url]
+            grounded = any(r.backend == "gemini" for r in response.results)
+            if grounded:
+                units = sum(
+                    int(event.get("billable_queries", 0) or 0)
+                    for event in response.degradation_events
+                    if event.get("type") == "grounded_search_escalation"
+                )
+                _engagement_yield.record_backend("gemini", units)
+                return (
+                    urls,
+                    "grounded-search",
+                    "" if urls else "grounded search returned no results",
+                )
             return (urls, "searxng", "" if urls else "returned no results")
         except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("SearxNG discovery failed: %s", e)
