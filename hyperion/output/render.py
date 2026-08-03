@@ -55,6 +55,23 @@ from pathlib import Path
 from typing import Any
 
 
+# Chromium does not implement CSS paged-media margin boxes. These templates
+# provide the running furniture for the Playwright fallback; the first-page
+# cover stays clean because Chromium suppresses header/footer templates when
+# the page margins are removed by the named cover page.
+PLAYWRIGHT_HEADER_TEMPLATE = """
+<div style="width:100%;font-family:serif;font-size:10px;color:#6f675f;text-align:center;">
+  HYPERION
+</div>
+"""
+PLAYWRIGHT_FOOTER_TEMPLATE = """
+<div style="width:100%;font-family:monospace;font-size:8px;color:#6f675f;text-align:center;">
+  HYPERION · many minds. one reading. ·
+  <span class="pageNumber"></span> / <span class="totalPages"></span>
+</div>
+"""
+
+
 @dataclass
 class TemplateRenderResult:
     """Result of rendering a Jinja2 template."""
@@ -447,6 +464,9 @@ class PDFRenderer:
                     path=output_path,
                     format="A4",
                     print_background=True,
+                    display_header_footer=True,
+                    header_template=PLAYWRIGHT_HEADER_TEMPLATE,
+                    footer_template=PLAYWRIGHT_FOOTER_TEMPLATE,
                     margin={
                         "top": "25mm",
                         "bottom": "25mm",
