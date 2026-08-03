@@ -15,6 +15,7 @@ Architecture reference: §3 LLM Router, §3.1-3.4
 
 from hyperion.config import ModelTier, ProviderType
 from hyperion.router.budget import TaskUrgency
+from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import get_router, reset_router
 
 
@@ -118,3 +119,34 @@ class TestProviderHealth:
         for data in health.values():
             assert "status" in data
             assert "available" in data
+
+
+class TestResponseCompleteness:
+    """D-18: provider termination state is never discarded."""
+
+    def test_length_finish_reason_is_a_failed_truncated_response(self):
+        response = RouterResponse(
+            content="partial",
+            model="test",
+            provider=ProviderType.GOOGLE,
+            tier=ModelTier.STANDARD,
+            finish_reason="length",
+        )
+
+        assert response.truncated is True
+        assert response.is_complete is False
+        assert response.success is False
+        assert "finish_reason=length" in (response.error or "")
+
+    def test_stop_finish_reason_is_complete(self):
+        response = RouterResponse(
+            content="complete",
+            model="test",
+            provider=ProviderType.GOOGLE,
+            tier=ModelTier.STANDARD,
+            finish_reason="stop",
+        )
+
+        assert response.truncated is False
+        assert response.is_complete is True
+        assert response.success is True

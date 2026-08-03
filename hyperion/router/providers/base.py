@@ -248,6 +248,16 @@ class RouterResponse:
     # reporting must be able to state that a weaker model produced the
     # analysis than the one requested.
     downgraded: bool = False
+    # D-18: provider termination metadata is part of the response contract.
+    # ``None`` means a synthetic/legacy response where completeness is unknown;
+    # real provider responses always set both fields below.
+    finish_reason: str | None = None
+    is_complete: bool | None = None
+
+    @property
+    def truncated(self) -> bool:
+        """Whether the provider stopped because the output ceiling was hit."""
+        return self.finish_reason in {"length", "max_tokens"}
 
     def __post_init__(self) -> None:
         """Enforce the `content: str` contract at the type boundary.
@@ -261,6 +271,19 @@ class RouterResponse:
         """
         if not isinstance(self.content, str):
             self.content = _coerce_content(self.content)
+        if self.is_complete is None and self.finish_reason is not None:
+            self.is_complete = self.finish_reason in {
+                "stop",
+                "tool_calls",
+                "function_call",
+            }
+        if self.truncated:
+            self.is_complete = False
+            self.success = False
+            if not self.error:
+                self.error = (
+                    f"Incomplete LLM response (finish_reason={self.finish_reason})"
+                )
 
 
 class BaseProvider:
@@ -355,9 +378,27 @@ class BaseProvider:
             # in ma_analyst (and would eventually hit every other agent).
             # Normalizing here fixes it once for all 5 providers and all
             # call sites, rather than sprinkling isinstance checks around.
+            first_choice = response.choices[0] if response.choices else None
             content = _coerce_content(
-                response.choices[0].message.content if response.choices else None
+                first_choice.message.content if first_choice is not None else None
             )
+            finish_reason_value = getattr(first_choice, "finish_reason", None)
+            finish_reason = (
+                str(finish_reason_value).strip().lower()
+                if finish_reason_value is not None
+                else None
+            )
+            # OpenAI-compatible providers use ``stop`` for a complete response.
+            # Tool/function calls are also intentional terminal states. Every
+            # other explicit reason is incomplete and must fail over rather than
+            # being parsed or cached as a valid deliverable fragment.
+            complete_reasons = {"stop", "tool_calls", "function_call"}
+            is_complete = finish_reason in complete_reasons
+            completion_error = None
+            if not is_complete:
+                completion_error = (
+                    f"Incomplete LLM response (finish_reason={finish_reason or 'missing'})"
+                )
 
             return RouterResponse(
                 content=content,
@@ -368,7 +409,11 @@ class BaseProvider:
                 output_tokens=output_tokens,
                 total_tokens=input_tokens + output_tokens,
                 latency_ms=latency,
+                success=is_complete,
+                error=completion_error,
                 raw_response=response,
+                finish_reason=finish_reason,
+                is_complete=is_complete,
             )
 
         except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
