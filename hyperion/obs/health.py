@@ -377,16 +377,30 @@ def check_startup_health(settings: Any) -> list[ToolHealth]:
     print("\n  TOOLS:")
     print(f"  {'Tool':<22} {'Status':<10} {'Detail'}")
     print(f"  {'-'*22} {'-'*10} {'-'*36}")
-    for t in tool_results:
-        marker = "✓" if t.status == "OK" else ("⚠" if t.status == "DEGRADED" else "✗")
-        print(f"  {marker} {t.name:<20} {t.status:<10} {t.detail[:36]}")
+    for tool_health in tool_results:
+        marker = (
+            "✓"
+            if tool_health.status == "OK"
+            else ("⚠" if tool_health.status == "DEGRADED" else "✗")
+        )
+        print(
+            f"  {marker} {tool_health.name:<20} "
+            f"{tool_health.status:<10} {tool_health.detail[:36]}"
+        )
 
     print("\n  MODEL TIERS:")
     print(f"  {'Tier':<22} {'Status':<10} {'Detail'}")
     print(f"  {'-'*22} {'-'*10} {'-'*36}")
-    for t in tier_results:
-        marker = "✓" if t.status == "OK" else ("⚠" if t.status == "DEGRADED" else "✗")
-        print(f"  {marker} {t.name:<20} {t.status:<10} {t.detail[:36]}")
+    for tier_health in tier_results:
+        marker = (
+            "✓"
+            if tier_health.status == "OK"
+            else ("⚠" if tier_health.status == "DEGRADED" else "✗")
+        )
+        print(
+            f"  {marker} {tier_health.name:<20} "
+            f"{tier_health.status:<10} {tier_health.detail[:36]}"
+        )
 
     ok_count = sum(1 for t in tool_results if t.status == "OK")
     deg_count = sum(1 for t in tool_results if t.status == "DEGRADED")
