@@ -54,6 +54,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from markupsafe import Markup
+
 # Chromium does not implement CSS paged-media margin boxes. These templates
 # provide the running furniture for the Playwright fallback; the first-page
 # cover stays clean because Chromium suppresses header/footer templates when
@@ -278,14 +280,6 @@ class TemplateRenderer:
         if not value:
             return ""
 
-        try:
-            from markupsafe import Markup
-        except ImportError:
-            try:
-                from jinja2 import Markup  # deprecated fallback for old jinja2
-            except ImportError:
-                Markup = str  # noqa: N806 — fallback; str will be auto-escaped by Jinja2
-
         import re
 
         html = value
@@ -340,9 +334,7 @@ class TemplateRenderer:
             result.append("</p>")
 
         output = "\n".join(result)
-        if Markup is not str:
-            return Markup(output)
-        return output
+        return Markup(output)
 
     async def render_template(
         self,
