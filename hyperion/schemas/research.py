@@ -51,7 +51,7 @@ class ResearchBrief(BaseModel):
     - The context from the parent (what's already known)
     - The tools the sub-agent can use (subset of parent's tools)
     - The findings model the sub-agent must produce (structured, not free text)
-    - The tier to operate at (MICRO or FAST only)
+    - The tier to operate at (STANDARD or higher for adequate context)
 
     The sub-agent returns KeyFinding objects with data, sources, confidence,
     and gaps. The parent synthesizes these into its own analysis. (§4.7)
@@ -62,7 +62,7 @@ class ResearchBrief(BaseModel):
         "context")
     tools: list[ToolName] = Field(description="Subset of parent's tools needed for this "
         "sub-question")
-    model_tier: ModelTier = Field(description="MICRO or FAST — don't burn STRONG/DEEP quota")
+    model_tier: ModelTier = Field(description="STANDARD or higher for research context capacity")
     expected_findings: list[str] = Field(
         default_factory=list,
         description="What kinds of findings the parent expects (e.g., 'TAM data', 'adoption rates')"
@@ -139,7 +139,7 @@ class ResearchTree(BaseModel):
     When a specialist receives a task, it:
     1. Decomposes the task into 1-3 sub-questions
     2. Creates a ResearchNode for each sub-question
-    3. Dispatches sub-agents (MICRO or FAST tier) for each node
+    3. Dispatches sub-agents (STANDARD or higher tier) for each node
     4. Waits for all sub-agents to return (or timeout)
     5. Synthesizes the findings into its own analysis model
 

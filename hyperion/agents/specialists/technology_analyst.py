@@ -1100,7 +1100,7 @@ class TechnologyAnalyst(BaseAgent):
             sub_specs.append(SubAgentSpec(
                 question=f"Scrape {vendors[0]} pricing page and feature list. Extract pricing tiers, feature matrix, and any limitations.",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1112,7 +1112,7 @@ class TechnologyAnalyst(BaseAgent):
             sub_specs.append(SubAgentSpec(
                 question=f"Scrape {vendors[1]} pricing page and feature list. Extract pricing tiers, feature matrix, and any limitations.",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1123,7 +1123,7 @@ class TechnologyAnalyst(BaseAgent):
         sub_specs.append(SubAgentSpec(
             question=f"Find developer reviews and sentiment for {technology}. Check Stack Overflow, Reddit, Hacker News, engineering blogs. What do developers say about it?",
             parent_agent=self.name,
-            model_tier=ModelTier.FAST,
+            model_tier=ModelTier.STANDARD,
             tools=[ToolName.SEARXNG, ToolName.JINA],
             findings_model="KeyFinding",
             timeout_seconds=300,

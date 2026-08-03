@@ -943,7 +943,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Scrape reviews from G2, Capterra, Trustpilot for {company}, extract sentiment, pain points, buying triggers with frequency data",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -952,7 +952,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find consumer survey data for {segment} in {sector}, demographics, behaviors, psychographics, purchase intent",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -961,7 +961,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find willingness-to-pay studies for {product_category}, Van Westendorp, conjoint analysis, price elasticity data",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,

@@ -1175,7 +1175,7 @@ class RegulatoryAnalyst(BaseAgent):
             sub_specs.append(SubAgentSpec(
                 question=f"Find all applicable regulations for {jurisdictions[0]} in the {industry} industry. Include data protection, financial, industry-specific, labor, and environmental regulations. Extract key requirements and penalties.",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1187,7 +1187,7 @@ class RegulatoryAnalyst(BaseAgent):
             sub_specs.append(SubAgentSpec(
                 question=f"Find all applicable regulations for {jurisdictions[1]} in the {industry} industry. Include data protection, financial, industry-specific, labor, and environmental regulations. Extract key requirements and penalties.",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1198,7 +1198,7 @@ class RegulatoryAnalyst(BaseAgent):
         sub_specs.append(SubAgentSpec(
             question=f"Find pending and proposed regulations for the {industry} industry across all jurisdictions. Check government portals, regulatory agency websites, and legislative trackers for upcoming rules.",
             parent_agent=self.name,
-            model_tier=ModelTier.FAST,
+            model_tier=ModelTier.STANDARD,
             tools=[ToolName.SEARXNG, ToolName.OBSCURA],
             findings_model="KeyFinding",
             timeout_seconds=300,

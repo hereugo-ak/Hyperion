@@ -343,7 +343,7 @@ class TestSearchMethodsUseVariants:
         spec = SubAgentSpec(
             question=question,
             parent_agent=AgentName.MARKET_ANALYST,
-            model_tier=ModelTier.MICRO,
+            model_tier=ModelTier.STANDARD,
             tools=tools,
             findings_model="KeyFinding",
         )
@@ -476,7 +476,7 @@ class TestLowYieldReformulation:
         spec = SubAgentSpec(
             question=question,
             parent_agent=AgentName.MARKET_ANALYST,
-            model_tier=ModelTier.MICRO,
+            model_tier=ModelTier.STANDARD,
             tools=tools,
             findings_model="KeyFinding",
         )

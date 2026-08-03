@@ -1032,7 +1032,7 @@ class CompetitiveIntel(BaseAgent):
             SubAgentSpec(
                 question=f"Scrape {competitors[0]} pricing page, extract pricing tiers, features per tier, and any discounts",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1041,7 +1041,7 @@ class CompetitiveIntel(BaseAgent):
             SubAgentSpec(
                 question=f"Scrape {competitors[1]} pricing page, extract pricing tiers, features per tier, and any discounts",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1050,7 +1050,7 @@ class CompetitiveIntel(BaseAgent):
             SubAgentSpec(
                 question=f"Find {competitors[2]} funding stage, total raised, headcount, and key investors",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,

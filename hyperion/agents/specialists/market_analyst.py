@@ -1134,7 +1134,7 @@ class MarketAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find TAM data for: {market_query}",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1144,7 +1144,7 @@ class MarketAnalyst(BaseAgent):
                 question=f"Find {geography or 'target '
                     'geography'} spending data for: {market_query}",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1153,7 +1153,7 @@ class MarketAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find adoption and penetration rates for: {market_query}",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,

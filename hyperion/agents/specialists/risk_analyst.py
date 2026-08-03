@@ -1023,7 +1023,7 @@ class RiskAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find historical failures in {industry}, startups that failed, companies that went bankrupt, projects that collapsed. What caused each failure?",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1032,7 +1032,7 @@ class RiskAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find regulatory risks in {jurisdiction}, pending legislation, compliance requirements, licensing risks, sanctions exposure",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1041,7 +1041,7 @@ class RiskAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find technology and cyber risks in {space}, data breaches, tech obsolescence, vendor lock-in, infrastructure risks",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,

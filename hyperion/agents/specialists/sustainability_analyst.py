@@ -979,7 +979,7 @@ class SustainabilityAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find ESG ratings for {company or sector}, MSCI ESG, Sustainalytics, CDP scores, sustainability report ratings",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -988,7 +988,7 @@ class SustainabilityAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find carbon emission data for {sector}, Scope 1, 2, 3 emissions benchmarks, industry average carbon footprint, emission factors",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -998,7 +998,7 @@ class SustainabilityAnalyst(BaseAgent):
                 question=f"Find sustainability regulations for {', '
                     ''.join(jurisdictions)}, CSRD, SEC climate disclosure, TCFD, CDP requirements, mandatory vs voluntary",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,

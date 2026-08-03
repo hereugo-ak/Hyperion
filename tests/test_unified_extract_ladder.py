@@ -84,7 +84,7 @@ def _sub_agent(tools: list[ToolName], question: str = "Nigeria battery market si
     spec = SubAgentSpec(
         question=question,
         parent_agent=AgentName.MARKET_ANALYST,
-        model_tier=ModelTier.MICRO,
+        model_tier=ModelTier.STANDARD,
         tools=tools,
         findings_model="KeyFinding",
     )

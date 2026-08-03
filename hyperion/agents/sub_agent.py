@@ -18,7 +18,7 @@ HYPERION's specialists are partners; sub-agents are associates.
 
 Rules (§4.7):
 - Max 3 sub-agents per specialist per engagement (enforced in BaseAgent)
-- Sub-agents use MICRO or FAST tier only (don't burn STRONG/DEEP quota)
+- Sub-agents use STANDARD or higher tier so research has a large context window
 - Sub-agent findings are structured (KeyFinding), not free text
 - Parent specialist receives structured findings and synthesizes them
 - Sub-agents have 5-minute timeout, if a sub-agent doesn't return in
@@ -74,7 +74,7 @@ class SubAgentRunner:
     1. Takes a SubAgentSpec (question, tier, tools, findings_model)
     2. Constructs a system prompt appropriate for a junior researcher
     3. Uses the specified tools to gather data
-    4. Calls the LLM at the specified tier (MICRO or FAST)
+    4. Calls the LLM at the specified tier (STANDARD or higher)
     5. Parses the response into structured KeyFinding objects
     6. Returns the findings to the parent specialist
 
@@ -101,11 +101,15 @@ class SubAgentRunner:
         self.bus = bus or get_bus()
         self.router = router or get_router()
 
-        # Validate tier constraint (§4.7)
-        if spec.model_tier not in (ModelTier.MICRO, ModelTier.FAST):
+        # Research requires a large context window; MICRO/FAST models can
+        # truncate the evidence bundle before analysis begins.
+        if spec.model_tier not in (
+            ModelTier.STANDARD,
+            ModelTier.STRONG,
+            ModelTier.DEEP,
+        ):
             raise ValueError(
-                f"Sub-agent tier must be MICRO or FAST, got {spec.model_tier.value}. "
-                f"Sub-agents don't burn STRONG/DEEP quota (§4.7)."
+                f"Sub-agent tier must be STANDARD or higher, got {spec.model_tier.value}."
             )
 
         # Tool instances, only the subset specified in the spec

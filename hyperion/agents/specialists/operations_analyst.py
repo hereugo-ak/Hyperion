@@ -967,7 +967,7 @@ class OperationsAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find operational benchmarks for {industry}, throughput rates, cycle times, capacity utilization, efficiency metrics",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -976,7 +976,7 @@ class OperationsAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find supply chain data for {sector}, supplier concentration, lead times, logistics costs, single-source risks",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -985,7 +985,7 @@ class OperationsAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find efficiency metrics for {process_type}, best-in-class performance, industry averages, improvement potential",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
                 timeout_seconds=300,

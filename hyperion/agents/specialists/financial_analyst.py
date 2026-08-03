@@ -1201,7 +1201,7 @@ class FinancialAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Pull financial statements for: {', '.join(tickers[:3])}",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.ALPHA_VANTAGE],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1210,7 +1210,7 @@ class FinancialAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find industry margin benchmarks for: {industry}",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1219,7 +1219,7 @@ class FinancialAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find cost structure data for: {business_model} business model",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,

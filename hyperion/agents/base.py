@@ -914,7 +914,7 @@ class BaseAgent(ABC):
 
         Sub-agents handle context isolation (§4.7):
         - Max 3 per specialist per engagement
-        - MICRO or FAST tier only (don't burn STRONG/DEEP quota)
+        - STANDARD or higher tier (research needs a large context window)
         - 5-minute timeout
         - Returns structured KeyFinding objects, not free text
         - Cannot spawn their own sub-agents (no recursive spawning)
@@ -941,10 +941,14 @@ class BaseAgent(ABC):
             )
             return []
 
-        # Validate tier, sub-agents must use MICRO or FAST (§4.7)
-        if spec.model_tier not in (ModelTier.MICRO, ModelTier.FAST):
+        # Research sub-agents need the context capacity of STANDARD or higher.
+        if spec.model_tier not in (
+            ModelTier.STANDARD,
+            ModelTier.STRONG,
+            ModelTier.DEEP,
+        ):
             raise ValueError(
-                f"Sub-agent tier must be MICRO or FAST, got {spec.model_tier.value}"
+                f"Sub-agent tier must be STANDARD or higher, got {spec.model_tier.value}"
             )
 
         self._sub_agent_specs.append(spec)

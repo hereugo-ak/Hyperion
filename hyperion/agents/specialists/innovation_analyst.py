@@ -992,7 +992,7 @@ class InnovationAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find emerging technologies in {space or sector}, research papers, breakthroughs, new developments, innovation case studies",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1001,7 +1001,7 @@ class InnovationAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find patent filings for {tech_str}, Google Patents, USPTO, WIPO. Extract filing trends, top patent holders, patent categories",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1010,7 +1010,7 @@ class InnovationAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find historical adoption curves for technologies similar to {tech_str}, how long did similar technologies take to reach mainstream adoption? Use Wayback Machine for historical hype data",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.WAYBACK],
                 findings_model="KeyFinding",
                 timeout_seconds=300,

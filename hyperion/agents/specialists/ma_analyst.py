@@ -1080,7 +1080,7 @@ class MAAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Screen acquisition targets by criteria: {criteria[:200]}, find companies in {sector} matching strategic fit, size, geography",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1090,7 +1090,7 @@ class MAAnalyst(BaseAgent):
                 question=f"Pull financials for targets: {', '
                     ''.join(target_tickers) or ', '.join(target_names)}, income statement, balance sheet, cash flow, company overview",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.ALPHA_VANTAGE],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1100,7 +1100,7 @@ class MAAnalyst(BaseAgent):
                 question=f"Find cultural reviews for {', '
                     ''.join(target_names)}, Glassdoor reviews, LinkedIn company pages, employee sentiment, culture ratings",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,

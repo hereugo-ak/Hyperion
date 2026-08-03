@@ -1506,7 +1506,7 @@ class StrategyAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find Porter's Five Forces data for {sector} industry, barriers to entry, supplier power, buyer power, substitutes, rivalry intensity",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1515,7 +1515,7 @@ class StrategyAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find competitor strategic moves in {sector}, recent announcements, M&A, product launches, pricing changes, market entry/exit",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1524,7 +1524,7 @@ class StrategyAnalyst(BaseAgent):
             SubAgentSpec(
                 question=f"Find VRIO-relevant resources for {company or sector}, brand value, patents, proprietary technology, distribution networks, key partnerships, unique capabilities",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
