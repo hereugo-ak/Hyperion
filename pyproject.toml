@@ -252,7 +252,6 @@ module = [
     "hyperion.output.markdown",
     "hyperion.output.render",
     "hyperion.router.providers.base",
-    "hyperion.router.router",
     "hyperion.router.speculative_racer",
     "hyperion.router.structured_validator",
     "hyperion.tools.alpha_vantage",

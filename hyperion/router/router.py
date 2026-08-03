@@ -401,7 +401,7 @@ class LLMRouter:
         # P13: Speculative racing for DEEP tier (critical-path latency reduction)
         # _skip_speculative prevents infinite recursion when the racer falls back
         if tier == ModelTier.DEEP and urgency == TaskUrgency.HIGH and not _skip_speculative:
-            response = await self._speculative_racer.race(
+            speculative_response = await self._speculative_racer.race(
                 tier=tier,
                 messages=messages,
                 agent_name=agent_name,
@@ -410,15 +410,15 @@ class LLMRouter:
                 max_tokens=max_tokens,
                 response_format=response_format,
             )
-            if response.success:
+            if speculative_response.success:
                 self._response_cache.set(
                     tier=tier,
                     messages=messages,
-                    response=response,
+                    response=speculative_response,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-            return response
+            return speculative_response
 
         # P2-29: track every tier walked so a total failure can report it
         tiers_attempted: list[ModelTier] = [tier]
