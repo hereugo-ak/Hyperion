@@ -46,7 +46,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote_plus
 
 import httpx
@@ -246,15 +246,15 @@ class JinaClient:
             drop_geography=drop_geography,
         )
         if empty is not None:
-            return empty
+            return cast("JinaSearchResponse", empty)
         query = grounded
 
         cache_key = self._cache_key("search", query, num_results)
         if cache_key in self._search_cache:
-            timestamp, response = self._search_cache[cache_key]
+            timestamp, cached_response = self._search_cache[cache_key]
             if time.time() - timestamp < self.CACHE_TTL_SECONDS:
-                response.cached = True
-                return response
+                cached_response.cached = True
+                return cached_response
 
         client = await self._get_client()
         await self._rate_limit()
@@ -265,11 +265,11 @@ class JinaClient:
 
         for attempt in range(self.MAX_RETRIES):
             try:
-                response = await client.get(url)
-                response.raise_for_status()
+                http_response = await client.get(url)
+                http_response.raise_for_status()
 
                 # Jina returns JSON with 'data' array
-                data = response.json()
+                data = cast("dict[str, Any]", http_response.json())
                 results: list[JinaSearchResult] = []
 
                 for item in data.get("data", []):
