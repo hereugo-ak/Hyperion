@@ -342,8 +342,11 @@ class EngagementTelemetry(BaseModel):
         def _dump(obj: Any) -> dict[str, Any] | None:
             if obj is None:
                 return None
-            if hasattr(obj, "model_dump"):
-                return obj.model_dump(mode="json")
+            model_dump = getattr(obj, "model_dump", None)
+            if callable(model_dump):
+                dumped = model_dump(mode="json")
+                if isinstance(dumped, dict):
+                    return {str(key): value for key, value in dumped.items()}
             return {"repr": str(obj)}
 
         return cls(
