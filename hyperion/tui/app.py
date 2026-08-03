@@ -49,7 +49,7 @@ from hyperion.tui.theme import (
 logger = logging.getLogger(__name__)
 
 
-class HyperionApp(App):
+class HyperionApp(App[None]):
     """The HYPERION terminal interface."""
 
     TITLE = "HYPERION"
@@ -174,7 +174,7 @@ class HyperionApp(App):
             get_sel = getattr(self.screen, "get_selected_text", None)
             if callable(get_sel):
                 sel = get_sel()
-                if sel:
+                if isinstance(sel, str) and sel:
                     return sel
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.debug("%s: %s", "_gather_selection", exc)
