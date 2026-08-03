@@ -764,15 +764,15 @@ class MarketAnalyst(BaseAgent):
         tam_top_down: FinancialMetric,
         tam_bottom_up: FinancialMetric,
         search_data: list[dict[str, Any]],
-    ) -> tuple[FinancialMetric, list[KeyFinding]]:
+    ) -> tuple[FinancialMetric, FinancialMetric, list[KeyFinding]]:
         """Cross-validate market size estimates via CAGR triangulation.
 
         If Source A says the market is $2B growing to $5B in 5 years (20% CAGR)
         but Source B says the market is growing at 10% CAGR, there's a
         contradiction. The triangulated estimate weights sources by credibility.
 
-        Returns the triangulated TAM and a list of contradiction findings
-        (if any sources disagree).
+        Returns the triangulated TAM, CAGR metric, and contradiction findings.
+        The shape is invariant on success, provider failure, and parse failure.
         """
         td_summary = f"Top-down: {tam_top_down.value} (base: {tam_top_down.base_case})"
         bu_summary = f"Bottom-up: {tam_bottom_up.value} (base: {tam_bottom_up.base_case})"
@@ -824,6 +824,12 @@ class MarketAnalyst(BaseAgent):
                     value="Unable to triangulate",
                     unit="$",
                     assumptions=["CAGR triangulation failed, no data or LLM error"],
+                ),
+                FinancialMetric(
+                    name="CAGR",
+                    value="Unable to calculate",
+                    unit="%",
+                    assumptions=["CAGR calculation failed, no data or LLM error"],
                 ),
                 contradictions,
             )
@@ -1404,20 +1410,13 @@ class MarketAnalyst(BaseAgent):
 
         # Step 7: CAGR triangulation
         await self._transition(AgentState.WORKING, "Step 7: CAGR triangulation")
-        triangulated_result = await self._cagr_triangulation(
-            tam_top_down, tam_bottom_up, all_search_data,
-        )
-        # Handle both 2-tuple (error case) and 3-tuple (success case)
-        if len(triangulated_result) == 3:
-            tam_triangulated, cagr_metric, contradiction_findings = triangulated_result
-        else:
-            tam_triangulated, contradiction_findings = triangulated_result
-            cagr_metric = FinancialMetric(
-                name="CAGR",
-                value="Unable to calculate",
-                unit="%",
-                assumptions=["CAGR calculation failed"],
+        tam_triangulated, cagr_metric, contradiction_findings = (
+            await self._cagr_triangulation(
+                tam_top_down,
+                tam_bottom_up,
+                all_search_data,
             )
+        )
 
         # Calculate SAM and SOM
         await self._transition(AgentState.WORKING, "Calculating SAM and SOM")
