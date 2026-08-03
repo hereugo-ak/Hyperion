@@ -44,6 +44,7 @@ CLAUSE_KEYWORDS = (
     "UNCERTAINTY",
     "CONFLICT",
     "TYPOGRAPHY",
+    "DEPTH AND LENGTH",
 )
 
 
@@ -110,7 +111,7 @@ def test_contract_text_is_dash_free_and_versioned() -> None:
     ids=lambda spec: spec.name.value,
 )
 def test_contract_reaches_composed_prompt(spec: AgentSpec) -> None:
-    """Marker and all eight clause headers reach the dispatched prompt."""
+    """Marker and every clause header reach the dispatched prompt."""
     composed = _composed_prompt(spec)
     assert AGENT_CONTRACT_MARKER in composed
     for keyword in CLAUSE_KEYWORDS:
@@ -130,6 +131,14 @@ def test_contract_reaches_prompt_overrides(spec: AgentSpec) -> None:
     composed = _composed_prompt(spec, override="OVERRIDE ROLE PROMPT")
     assert "OVERRIDE ROLE PROMPT" in composed
     assert AGENT_CONTRACT_MARKER in composed
+
+
+def test_depth_clause_sets_a_real_word_floor() -> None:
+    """D-20: the live shared dispatch contract carries the depth budget."""
+    assert "at least 450 words" in AGENT_CONTRACT
+    for spec in REGISTERED_SPECS:
+        composed = _composed_prompt(spec)
+        assert "at least 450 words" in composed
 
 
 def test_contract_is_prepended_once() -> None:

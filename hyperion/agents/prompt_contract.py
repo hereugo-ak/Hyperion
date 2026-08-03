@@ -1,10 +1,11 @@
 """Shared, versioned agent prompt contract (W-16).
 
 PART 2 section 5 measured eight quality clauses whose presence in any given
-agent prompt depended entirely on per-file authoring discipline:
+agent prompt depended entirely on per-file authoring discipline, while the
+Part 1 depth audit found that specialists also received no minimum length:
 
   subject fit / abstain / no fabrication / evidence binding /
-  units and denomination / uncertainty / conflict / typography
+  units and denomination / uncertainty / conflict / typography / depth
 
 The measured result was 0/20 out-of-scope clauses, 1/20 anti-fabrication
 clauses, 0/20 recency discipline, and a typography rule violated by its own
@@ -13,7 +14,9 @@ shared string prepended at the dispatch composition point in
 ``BaseAgent._llm_complete``) but applied it to only one of the eight clauses.
 
 This module is the fix: one string, written once, reviewed once, composed
-into EVERY dispatched prompt by ``base.py``. Per-agent language that
+into EVERY dispatched prompt by ``base.py``. The depth clause is therefore
+on the live dispatch path for every specialist call, rather than only on the
+Synthesis Lead's section-builder path. Per-agent language that
 elaborates the same principles (for example the market analyst's
 CAGR-specific abstain instruction) stays in place; the contract is a floor,
 not a replacement.
@@ -30,7 +33,7 @@ from hyperion.output.typography import PROMPT_TYPOGRAPHY_RULE
 
 # Bump when the contract text changes so prompt-cache keys and audits can
 # distinguish which contract version a given run dispatched under.
-AGENT_CONTRACT_VERSION = 2
+AGENT_CONTRACT_VERSION = 3
 
 # Stable marker used by the registry-level test to prove the contract
 # reached the composed prompt. Derived from the version so the two can
@@ -38,7 +41,7 @@ AGENT_CONTRACT_VERSION = 2
 AGENT_CONTRACT_MARKER = f"HYPERION AGENT CONTRACT v{AGENT_CONTRACT_VERSION}"
 
 AGENT_CONTRACT = (
-    f"{AGENT_CONTRACT_MARKER}. These eight clauses bind every agent in this "
+    f"{AGENT_CONTRACT_MARKER}. These nine clauses bind every agent in this "
     "system, in addition to your role-specific instructions.\n"
     "1. SUBJECT FIT: Before applying any framework, confirm the question's "
     "subject is the kind of entity the framework was built for. Valuation "
@@ -63,5 +66,9 @@ AGENT_CONTRACT = (
     "7. CONFLICT: When two credible sources disagree, report the "
     "disagreement with both positions and their sources. Never silently "
     "average, pick one, or drop the losing side.\n"
-    f"8. TYPOGRAPHY: {PROMPT_TYPOGRAPHY_RULE}"
+    f"8. TYPOGRAPHY: {PROMPT_TYPOGRAPHY_RULE}\n"
+    "9. DEPTH AND LENGTH: For substantive analytical output, write at least "
+    "450 words across the analysis or finding content, with evidence, reasoning, "
+    "and implications. Compact classification, extraction, and routing responses "
+    "are exempt. Never pad weak evidence; state the evidence gap instead."
 )
