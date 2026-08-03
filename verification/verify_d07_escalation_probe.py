@@ -100,7 +100,7 @@ def main() -> int:
             discarded += 1
         else:
             seen.add(fp)
-            verdict = "evaluated (with EMPTY content)"
+            verdict = "evaluated with content"
             evaluated += 1
         print(f"{label:<28} {agent:<16} {issue:<16} {verdict}")
 
