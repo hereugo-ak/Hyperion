@@ -14,9 +14,10 @@ from hyperion.output.methodology import build_methodology
 from hyperion.router.providers.google import GoogleGroundingResponse, GoogleProvider
 from hyperion.tools.grounded_search import (
     GroundedSearchClient,
+    GroundedSearchOutcome,
     GroundingReason,
 )
-from hyperion.tools.searxng import SearchResult
+from hyperion.tools.searxng import SearchResult, SearxNGClient
 
 
 def fixed_now() -> datetime:
@@ -196,6 +197,50 @@ async def test_grounded_client_normalizes_to_single_search_result_type(tmp_path:
     assert outcome.results[0].backend == "gemini"
     assert outcome.results[0].snippet == "Official support."
     assert SearchResult(title="x", url="https://x").backend == "searxng"
+
+
+@pytest.mark.asyncio
+async def test_search_choke_point_escalates_to_grounding_after_local_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, GroundingReason]] = []
+
+    class FakeGroundedSearchClient:
+        def __init__(self, *, settings=None) -> None:
+            assert settings is sentinel
+
+        async def search(self, query: str, *, reason: GroundingReason):
+            calls.append((query, reason))
+            return GroundedSearchOutcome(
+                query=query,
+                reason=reason,
+                results=[SearchResult(
+                    title="Official source",
+                    url="https://authority.example/report",
+                    backend="gemini",
+                    engine="google-search-grounding",
+                )],
+                search_queries=["official source query"],
+                actual_units=1,
+            )
+
+    sentinel = object()
+    monkeypatch.setattr(
+        "hyperion.tools.grounded_search.GroundedSearchClient",
+        FakeGroundedSearchClient,
+    )
+    client = SearxNGClient(settings=sentinel)
+    response = await client._search_grounded_fallback(
+        "official market data",
+        num_results=5,
+        categories="general",
+    )
+
+    assert response is not None
+    assert calls == [("official market data", GroundingReason.RETRY_EXHAUSTED)]
+    assert response.results[0].backend == "gemini"
+    assert response.degradation_events[0]["billable_queries"] == 1
+    await client.close()
 
 
 def test_methodology_reports_recorded_backend_mix_without_engine_names() -> None:

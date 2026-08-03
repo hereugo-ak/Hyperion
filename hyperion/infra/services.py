@@ -181,6 +181,11 @@ MANAGED_CONTAINERS: tuple[str, ...] = (
     "hyperion-valkey",
     "flaresolverr",
 )
+# Names used by the pre-W-12 single-instance launcher.  The old ``searxng``
+# container publishes 8888, so leaving it alive prevents the scholar profile
+# from binding while making Docker Desktop misleadingly show "one SearXNG".
+# These names were owned by HYPERION, not arbitrary operator containers.
+LEGACY_MANAGED_CONTAINERS: tuple[str, ...] = ("searxng",)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -846,15 +851,31 @@ async def start_services(
     """Start every managed container. Returns per-service status.
 
     Used by both the TUI boot sequence and ``hyperion consult``, so the two
-    entry points cannot drift apart the way they previously did.
+    entry points cannot drift apart the way they previously did.  Before
+    binding ports, remove containers owned by the legacy single-instance
+    launcher and optional managed services that are not part of this boot.
+    This makes upgrading from ``searxng`` on port 8888 self-healing instead of
+    requiring a manual Docker Desktop cleanup.
     """
     results: dict[str, ServiceStatus] = {}
+    specs = all_specs()
     if not docker_available():
-        for spec in all_specs():
+        for spec in specs:
             results[spec.name] = ServiceStatus(
                 name=spec.name, state=WARN, detail="Docker CLI not available"
             )
         return results
+
+    desired_names = {spec.name for spec in specs}
+    stale_names = tuple(dict.fromkeys((
+        *LEGACY_MANAGED_CONTAINERS,
+        *(name for name in MANAGED_CONTAINERS if name not in desired_names),
+    )))
+    if stale_names:
+        if callable(on_progress):
+            with suppress(Exception):
+                on_progress("removing legacy single-instance retrieval containers…")
+        await asyncio.gather(*(remove_container(name) for name in stale_names))
 
     rc, _, err = await run_command(["docker", "network", "inspect", RETRIEVAL_NETWORK], timeout=20)
     if rc != 0:
@@ -868,7 +889,6 @@ async def start_services(
                 for spec in all_specs()
             }
 
-    specs = all_specs()
     deadline = max(spec.ready_timeout for spec in specs) + 210.0
     tasks = {
         spec.name: asyncio.create_task(

@@ -801,6 +801,59 @@ class SearxNGClient:
 
         return None
 
+    async def _search_grounded_fallback(
+        self,
+        query: str,
+        num_results: int,
+        categories: str,
+    ) -> SearchResponse | None:
+        """Final discovery fallback through metered Gemini Search grounding.
+
+        This is deliberately *not* part of the routine fan-out. It runs only
+        after the profile-aware SearXNG pool and Jina have both produced no
+        usable result, matching W-14's ``RETRY_STRATEGY exhausted`` policy.
+        Provider failures, safety refusals, disabled grounding and exhausted
+        quota all fail open and are retained as degradation events.
+        """
+        try:
+            from hyperion.tools.grounded_search import (
+                GroundedSearchClient,
+                GroundingReason,
+            )
+
+            outcome = await GroundedSearchClient(settings=self.settings).search(
+                query,
+                reason=GroundingReason.RETRY_EXHAUSTED,
+            )
+        except Exception as exc:  # noqa: BLE001 - final fallback must never abort search
+            logger.warning("Gemini grounded fallback failed open: %s", exc)
+            return None
+
+        if not outcome.results:
+            if outcome.constraints:
+                logger.warning(
+                    "Gemini grounded fallback unavailable for '%s': %s",
+                    query[:80],
+                    "; ".join(outcome.constraints),
+                )
+            return None
+
+        results = self._deduplicate(outcome.results)[:num_results]
+        return SearchResponse(
+            query=query,
+            results=results,
+            total=len(results),
+            engines_used=["google-search-grounding"],
+            retrieval_degraded=True,
+            degradation_events=[{
+                "type": "grounded_search_escalation",
+                "reason": outcome.reason.value,
+                "billable_queries": outcome.actual_units,
+                "constraints": list(outcome.constraints),
+                "category": categories,
+            }],
+        )
+
     # General-web engines used for business/strategy research.
     #
     # WHY THIS LIST CHANGED. It was
@@ -983,6 +1036,24 @@ class SearxNGClient:
             if jina_response and jina_response.results:
                 await self._set_cached(cache_key, jina_response)
                 return jina_response
+
+            # ── FINAL ESCALATION: metered Gemini Search grounding ──
+            # W-14 reserves this independent server-side index for a genuine
+            # local retrieval failure. It must not become the routine default,
+            # but it must also be reachable from the search choke point used by
+            # every specialist rather than only from a few bespoke call sites.
+            logger.info(
+                "SearXNG and Jina exhausted for '%s' — escalating to grounded search",
+                query,
+            )
+            grounded_response = await self._search_grounded_fallback(
+                query=query,
+                num_results=num_results,
+                categories=categories,
+            )
+            if grounded_response and grounded_response.results:
+                await self._set_cached(cache_key, grounded_response)
+                return grounded_response
 
         # All search paths exhausted
         logger.warning("All search paths exhausted for query: '%s'", query)
