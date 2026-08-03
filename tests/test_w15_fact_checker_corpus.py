@@ -21,8 +21,8 @@ production code uses.
 
 from __future__ import annotations
 
+import ast
 import inspect
-import re
 from unittest.mock import AsyncMock, patch
 
 from hyperion.agents.support.fact_checker import FACT_CHECKER_SPEC, FactChecker
@@ -182,21 +182,43 @@ class TestDerivedTelemetryConfidence:
 
 
 class TestSpecialistCorpusHygiene:
-    def test_no_provenance_sentences_remain(self) -> None:
-        """Zero key_data=f"<prose description>" assignments in specialists;
-        every remaining f-string assignment carries real data (numbers or
-        snapshot metadata), never a where-it-came-from sentence."""
+    def test_key_data_assignments_are_not_static_provenance(self) -> None:
+        """Inspect every ``key_data=`` assignment, not only f-strings.
+
+        A static sentence describes a source but cannot contain the retrieved
+        value that the Fact Checker must match. Dynamic expressions are allowed
+        because they bind key_data to fetched content, observations, or values.
+        """
         import pathlib
 
-        bad = []
-        pattern = re.compile(r'key_data=f"([^"]*)"')
-        provenance_markers = (
-            "data from", "data for", "reviews from", "snapshots for",
-            "snapshot from", "content from", "evolution for",
-        )
+        static_assignments = []
+        assignments_seen = 0
         for path in pathlib.Path("hyperion/agents/specialists").glob("*.py"):
-            for match in pattern.finditer(path.read_text()):
-                body = match.group(1)
-                if any(marker in body.lower() for marker in provenance_markers):
-                    bad.append(f"{path}: {body}")
-        assert not bad, "provenance sentences remain: " + "; ".join(bad)
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.keyword) or node.arg != "key_data":
+                    continue
+                assignments_seen += 1
+                try:
+                    ast.literal_eval(node.value)
+                except (ValueError, TypeError):
+                    continue
+                static_assignments.append(f"{path}:{node.lineno}")
+
+        assert assignments_seen >= 21, "acceptance scan did not cover every key_data= site"
+        assert not static_assignments, (
+            "key_data must contain retrieved values, not static provenance: "
+            + "; ".join(static_assignments)
+        )
+
+    def test_macro_sources_serialize_retrieved_values(self) -> None:
+        """The four regressed macro sources bind their fetched observations."""
+        import pathlib
+
+        for filename in ("financial_analyst.py", "market_analyst.py"):
+            source = pathlib.Path("hyperion/agents/specialists", filename).read_text()
+            assert "key_data=json.dumps(" in source
+            assert ".to_dict()" in source
+            assert "Country-specific GDP growth" not in source
+            assert '"US GDP growth, inflation' not in source
+            assert '"US risk-free rate, inflation' not in source

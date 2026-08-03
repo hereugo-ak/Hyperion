@@ -453,7 +453,13 @@ class FinancialAnalyst(BaseAgent):
                     title=f"World Bank Macroeconomic Data, {requested}",
                     url=f"https://data.worldbank.org/country/{country_code.lower()}",
                     credibility=SourceCredibility.GOVERNMENT,
-                    key_data="Country-specific GDP growth and inflation for DCF assumptions",
+                    key_data=json.dumps(
+                        {
+                            "gdp_growth": gdp_growth.to_dict(),
+                            "inflation": inflation.to_dict(),
+                        },
+                        default=str,
+                    )[:4000],
                 ))
                 return macro
             except (ValueError, AttributeError, RuntimeError) as exc:
@@ -495,14 +501,13 @@ class FinancialAnalyst(BaseAgent):
                 title="FRED Macroeconomic Data, United States",
                 url="https://fred.stlouisfed.org",
                 credibility=SourceCredibility.GOVERNMENT,
-                key_data=(
-                    "US risk-free rate, inflation, GDP growth, Fed funds rate"
-                    + (
-                        f" (US proxy, {requested} series unavailable from FRED)"
-                        if macro.get("geography_mismatch")
-                        else ""
-                    )
-                ),
+                key_data=json.dumps(
+                    {
+                        name: value.to_dict() if hasattr(value, "to_dict") else value
+                        for name, value in macro.items()
+                    },
+                    default=str,
+                )[:4000],
             ))
 
         except (ValueError, AttributeError, RuntimeError):
