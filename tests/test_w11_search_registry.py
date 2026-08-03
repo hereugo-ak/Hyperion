@@ -62,7 +62,9 @@ def test_settings_registry_is_exact_and_contains_no_tier_c_engines() -> None:
     }
     assert enabled == referenced_engines()
     assert enabled.isdisjoint(TIER_C_ENGINES)
-    assert data["use_default_settings"] is False
+    assert set(data["use_default_settings"]["engines"]["keep_only"]) == enabled
+    assert data["default_doi_resolver"] in data["doi_resolvers"]
+    assert "default_doi_resolver" not in data["search"]
     assert data["server"]["secret_key"] == "${SEARXNG_SECRET}"
 
 
@@ -93,8 +95,9 @@ class _Client:
         self.engines = engines
         self.requested_url = ""
 
-    async def get(self, url: str) -> _Response:
+    async def get(self, url: str, **kwargs: Any) -> _Response:
         self.requested_url = url
+        assert kwargs["headers"]["X-Forwarded-For"] == "127.0.0.1"
         return _Response(self.engines)
 
 
