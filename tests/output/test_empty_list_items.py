@@ -24,12 +24,11 @@ absence of the roster, which is the stronger guarantee.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from types import SimpleNamespace
 
 import fitz  # PyMuPDF
-import pytest
 from jinja2 import BaseLoader, Environment
 
 from hyperion.agents.delivery.presentation_designer import HTML_TEMPLATE
@@ -138,7 +137,7 @@ def _render(limitations, key_findings=None) -> str:
     report = SimpleNamespace(
         question="Should Acme enter the market?",
         recommendation="enter",
-        generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 7, 30, tzinfo=UTC),
         engagement_id="ENG-TEST",
         recommendation_rationale="",
         executive_summary="",

@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import pytest
 
+from hyperion.config import ModelTier
 from hyperion.orchestrator import DeliveryFailure, WorkflowEngine
 from hyperion.schemas.agents import AgentName
 from hyperion.schemas.models import RenderOutput
 from hyperion.schemas.workflow import QuestionType, TaskNode, TaskStatus, WorkflowDAG
-from hyperion.config import ModelTier
 
 
 def _dag_with_delivery() -> WorkflowDAG:
@@ -52,7 +52,11 @@ def _dag_with_delivery() -> WorkflowDAG:
 async def test_visualizer_crash_fails_engagement_loudly() -> None:
     engine = WorkflowEngine()
     dag = _dag_with_delivery()
-    delivery_tasks = [t for t in dag.tasks if t.id.startswith("task_") and t.status == TaskStatus.PENDING]
+    delivery_tasks = [
+        task
+        for task in dag.tasks
+        if task.id.startswith("task_") and task.status == TaskStatus.PENDING
+    ]
 
     reached: list[str] = []
 
@@ -101,7 +105,8 @@ async def test_visualizer_crash_fails_engagement_loudly() -> None:
 
 def test_unmet_dependencies_raise_not_skip() -> None:
     """The W-04 delivery loop raises on stuck tasks; the spec grep holds."""
-    src = open("hyperion/orchestrator.py", encoding="utf-8").read()
+    with open("hyperion/orchestrator.py", encoding="utf-8") as source_file:
+        src = source_file.read()
     # The old skip-and-continue condition is gone.
     assert "dependencies not met — skipping" not in src
     # The failure is a raise, not a log line.
@@ -151,10 +156,13 @@ async def test_empty_pdf_path_forces_failure() -> None:
 
 
 def test_no_except_continue_in_delivery_loop() -> None:
-    src = open("hyperion/orchestrator.py", encoding="utf-8").read()
-    delivery_region = src[src.index("DELIVERY: starting"):src.index("Collect delivery outputs")]
+    with open("hyperion/orchestrator.py", encoding="utf-8") as source_file:
+        src = source_file.read()
+    delivery_region = src[src.index("DELIVERY: starting") : src.index("Collect delivery outputs")]
     # Every except in the delivery loop must raise DeliveryFailure, not continue.
-    assert "continue" not in delivery_region.split("except Exception as e:")[-1].split("raise DeliveryFailure")[0].replace("continue\n", "")
+    exception_body = delivery_region.split("except Exception as e:")[-1]
+    before_raise = exception_body.split("raise DeliveryFailure")[0]
+    assert "continue" not in before_raise.replace("continue\n", "")
     assert "elif result.layout_plan" not in src, "RC-4 fallback must stay deleted"
     # EngagementResult carries the machine-readable failure attribution.
     assert 'failure_reason: str = ""' in src

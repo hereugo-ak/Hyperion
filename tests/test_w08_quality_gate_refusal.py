@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from hyperion.config import ModelTier
 from hyperion.orchestrator import WorkflowEngine
 from hyperion.schemas.agents import AgentName
 from hyperion.schemas.models import (
@@ -38,14 +39,11 @@ from hyperion.schemas.models import (
     Recommendation,
 )
 from hyperion.schemas.workflow import (
-    EngagementMetadata,
     QuestionType,
     TaskNode,
     TaskStatus,
     WorkflowDAG,
 )
-from hyperion.config import ModelTier
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures / builders
@@ -220,7 +218,8 @@ class TestBlockedDiagnostic:
         path = engine._write_blocked_diagnostic(score)
 
         assert path, "diagnostic path must be non-empty"
-        payload = json.loads(open(path, encoding="utf-8").read())
+        with open(path, encoding="utf-8") as diagnostic_file:
+            payload = json.load(diagnostic_file)
 
         assert payload["terminal_state"] == "blocked"
         assert payload["blocked_reason"]
@@ -429,9 +428,10 @@ class TestBlockedShortCircuit:
         # An operator diagnostic was written and surfaced on the metadata.
         assert result.metadata is not None
         assert result.metadata.blocked_diagnostic_path
-        payload = json.loads(
-            open(result.metadata.blocked_diagnostic_path, encoding="utf-8").read()
-        )
+        with open(
+            result.metadata.blocked_diagnostic_path, encoding="utf-8"
+        ) as diagnostic_file:
+            payload = json.load(diagnostic_file)
         assert payload["terminal_state"] == "blocked"
         assert len(payload["dimension_scores"]) == 5
 
@@ -505,9 +505,10 @@ class TestBlockedShortCircuit:
 class TestSourceAudits:
     def test_designer_contains_no_quality_evaluation(self):
         """Acceptance: `grep -n "approved" presentation_designer.py` → nothing."""
-        src = open(
+        with open(
             "hyperion/agents/delivery/presentation_designer.py", encoding="utf-8"
-        ).read()
+        ) as source_file:
+            src = source_file.read()
         assert "approved" not in src, (
             "the designer must contain zero 'approved' mentions — delivery "
             "never evaluates quality (W-08 step 4)"
@@ -516,7 +517,8 @@ class TestSourceAudits:
     def test_max_iterations_reached_never_in_ship_condition(self):
         """Every read of max_iterations_reached in the orchestrator must be a
         write or a diagnostic/reporting read, never a ship/no-ship branch."""
-        src = open("hyperion/orchestrator.py", encoding="utf-8").read()
+        with open("hyperion/orchestrator.py", encoding="utf-8") as source_file:
+            src = source_file.read()
         # The terminal-state method must not branch on it.
         start = src.index("def _compute_quality_terminal_state")
         end = src.index("def _write_blocked_diagnostic")
@@ -534,11 +536,13 @@ class TestSourceAudits:
             )
 
     def test_terminal_state_computed_once_in_loop(self):
-        src = open("hyperion/orchestrator.py", encoding="utf-8").read()
+        with open("hyperion/orchestrator.py", encoding="utf-8") as source_file:
+            src = source_file.read()
         assert src.count("_compute_quality_terminal_state(") == 2, (
             "exactly one definition + one call site (single decision point)"
         )
 
     def test_engagement_metadata_carries_diagnostic_path(self):
-        src = open("hyperion/schemas/workflow.py", encoding="utf-8").read()
+        with open("hyperion/schemas/workflow.py", encoding="utf-8") as source_file:
+            src = source_file.read()
         assert "blocked_diagnostic_path" in src

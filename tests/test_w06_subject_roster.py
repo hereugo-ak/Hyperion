@@ -21,7 +21,6 @@ Pins the fix for RC-6 (a DCF aimed at a nation state):
 
 from __future__ import annotations
 
-import inspect
 import json
 from types import SimpleNamespace
 
@@ -37,7 +36,6 @@ from hyperion.agents.engagement_director import (
 )
 from hyperion.schemas.agents import AgentName
 from hyperion.schemas.workflow import QuestionType, RosterDecision, SubjectClass
-
 
 INDIA_Q = "Should India increase manufacturing?"
 ACME_Q = "Should Acme Corp increase manufacturing?"

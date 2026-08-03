@@ -68,7 +68,6 @@ from hyperion.agents.delivery.presentation_designer import (
     HTML_TEMPLATE,
     PresentationDesigner,
 )
-from hyperion.schemas.narrative import EngagementTelemetry
 from hyperion.schemas.models import (
     AnalysisSection,
     ConfidenceLevel,
@@ -82,6 +81,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.schemas.narrative import EngagementTelemetry
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = (

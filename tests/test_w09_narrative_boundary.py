@@ -24,8 +24,7 @@ back into the client path, one of these fails loudly.
 from __future__ import annotations
 
 import json
-import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from jinja2 import BaseLoader, Environment
@@ -41,7 +40,6 @@ from hyperion.schemas.narrative import (
     EngagementTelemetry,
     write_telemetry_artifact,
 )
-
 
 # ── ClientProse: the six rejection categories (audit verification block) ─────
 
@@ -121,18 +119,18 @@ class TestClientProseRejectsTelemetry:
 
 
 def _report_stub(**overrides):
-    from types import SimpleNamespace as NS
+    from types import SimpleNamespace
 
     base = dict(
         engagement_id="ENG-W09",
         question="Should Acme enter the storage market?",
-        recommendation=NS(value="conditional"),
+        recommendation=SimpleNamespace(value="conditional"),
         recommendation_rationale="Two zones clear with margin.",
         executive_summary="Summary.",
         critical_assumptions=["Pack prices fall."],
-        key_findings=[NS(title="Finding", content="Content.")],
+        key_findings=[SimpleNamespace(title="Finding", content="Content.")],
         sections=[
-            NS(
+            SimpleNamespace(
                 id="market",
                 title="Market",
                 key_insight="Insight.",
@@ -145,17 +143,17 @@ def _report_stub(**overrides):
         limitations=["Pricing data is quarterly."],
         total_sources=34,
         total_data_points=112,
-        generated_at=datetime(2026, 7, 31, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 7, 31, tzinfo=UTC),
         agents_used=["market_analyst", "fact_checker"],
-        quality_score=NS(total_score=4.1),
-        fact_check_report=NS(total_claims_checked=48),
+        quality_score=SimpleNamespace(total_score=4.1),
+        fact_check_report=SimpleNamespace(total_claims_checked=48),
         confidence_breakdown={"market": ConfidenceLevel.HIGH},
         contradictions=[],
         is_degraded=False,
         chart_specifications=[{"title": "t"}],
     )
     base.update(overrides)
-    return NS(**base)
+    return SimpleNamespace(**base)
 
 
 class TestClientReportIsTelemetryFree:
@@ -199,11 +197,11 @@ class TestClientReportIsTelemetryFree:
     def test_a_telemetry_field_in_narrative_fails_at_construction(self) -> None:
         """If upstream leaks an agent name into a section title, the leak
         fails HERE — at the named transformation — not on the printed page."""
-        from types import SimpleNamespace as NS
+        from types import SimpleNamespace
 
         stub = _report_stub(
             sections=[
-                NS(
+                SimpleNamespace(
                     id="s",
                     title="Findings by Fact Checker",
                     key_insight="i",
@@ -232,14 +230,16 @@ class TestClientTemplateIsolation:
         env.filters["md_to_html"] = lambda v: v or ""
         env.filters["clean_dict_repr"] = lambda v: v or ""
         template = env.from_string(HTML_TEMPLATE)
-        from types import SimpleNamespace as NS
+        from types import SimpleNamespace
 
         return template.render(
             report=view,
             cover_image=None,
             section_images={},
             section_charts={},
-            palette=NS(cream="#F5F4EE", warm_gray="#8A8580", terracotta="#C4573A"),
+            palette=SimpleNamespace(
+                cream="#F5F4EE", warm_gray="#8A8580", terracotta="#C4573A"
+            ),
             css_content="",
             risk_analysis_html="",
             appendix_sources_html="",

@@ -15,8 +15,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import hyperion.agents as agents_pkg
 import pytest
+
+import hyperion.agents as agents_pkg
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.prompt_contract import (
     AGENT_CONTRACT,

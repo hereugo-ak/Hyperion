@@ -24,7 +24,6 @@ import re
 import pytest
 
 from hyperion.agents.synthesis_lead import SynthesisLead
-from tests.test_synthesis_body_survives import stub_narrative
 from hyperion.schemas.models import (
     ConfidenceLevel,
     KeyFinding,
@@ -34,6 +33,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from tests.test_synthesis_body_survives import stub_narrative
 
 QUESTION = "should india import less ?"
 

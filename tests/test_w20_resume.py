@@ -22,17 +22,16 @@ pre-seeding the journal exactly as a crashed run would have left it.
 from __future__ import annotations
 
 import os
-import re
 
 import pytest
 
 from hyperion.config import ModelTier
+from hyperion.obs import ArtifactStore, RunJournal
 from hyperion.orchestrator import (
     MissingDependencyOutput,
     WorkflowEngine,
     derive_run_id,
 )
-from hyperion.obs import ArtifactStore, RunJournal
 from hyperion.schemas.agents import AgentName
 from hyperion.schemas.workflow import QuestionType, TaskNode, TaskStatus, WorkflowDAG
 
@@ -234,7 +233,8 @@ def test_resume_is_a_real_command_and_banner_matches() -> None:
 
 
 def test_signal_handlers_exist_in_cli() -> None:
-    src = open("hyperion/cli.py", encoding="utf-8").read()
+    with open("hyperion/cli.py", encoding="utf-8") as source_file:
+        src = source_file.read()
     assert "signal.SIGINT" in src and "signal.SIGTERM" in src, (
         "W-20 requires SIGINT/SIGTERM handlers at the CLI entry points"
     )
@@ -264,7 +264,8 @@ def test_all_findings_guarded_by_lock() -> None:
     assert hasattr(engine, "_findings_lock")
     assert isinstance(engine._findings_lock, asyncio.Lock)
 
-    src = open("hyperion/orchestrator.py", encoding="utf-8").read()
+    with open("hyperion/orchestrator.py", encoding="utf-8") as source_file:
+        src = source_file.read()
     # Both mutation sites (cache-replay + live collector) sit under the lock.
     assert src.count("async with self._findings_lock") >= 2
     # No bare extend outside the lock remains.

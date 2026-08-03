@@ -171,7 +171,7 @@ async def test_transient_retried_once_then_failover(monkeypatch):
     # The first-dispatched provider saw exactly 2 dispatches (initial + retry);
     # every other provider at most 2 as well (they also get the transient retry).
     assert counter[first_provider] <= 2
-    for provider_type, count in counter.items():
+    for count in counter.values():
         assert count <= 2
     # And the walk did move on to at least one other provider.
     assert len(counter) >= 2

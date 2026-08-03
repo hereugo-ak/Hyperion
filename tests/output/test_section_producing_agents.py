@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 
+from hyperion.agents.support.quality_gate import QualityGate
 from hyperion.agents.synthesis_lead import (
     SECTION_PRODUCING_AGENTS,
     SynthesisLead,
@@ -28,7 +29,6 @@ from hyperion.schemas.models import (
     KeyFinding,
     Recommendation,
 )
-from hyperion.agents.support.quality_gate import QualityGate
 
 
 def _finding(agent: str, i: int) -> KeyFinding:

@@ -443,11 +443,11 @@ def _render_exhibit(placement: ChartPlacement) -> str:
     away from what actually ships — the exact failure mode the audit found in
     the dead ``.j2`` fork.
     """
+    import re as _re
+
     from jinja2 import BaseLoader, Environment
 
     from hyperion.agents.delivery.presentation_designer import HTML_TEMPLATE
-
-    import re as _re
 
     # The loop header carries a Jinja filter expression (P2-34 added
     # ``if chart``); match up to its closing ``%}`` rather than pinning the

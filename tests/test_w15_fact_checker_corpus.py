@@ -25,10 +25,7 @@ import inspect
 import re
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
-from hyperion.agents.support.fact_checker import FactChecker
-from hyperion.agents.support.fact_checker import FACT_CHECKER_SPEC
+from hyperion.agents.support.fact_checker import FACT_CHECKER_SPEC, FactChecker
 from hyperion.schemas.models import (
     Claim,
     ClaimStatus,

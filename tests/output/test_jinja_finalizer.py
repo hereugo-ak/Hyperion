@@ -37,7 +37,7 @@ class TestJinjaFinalizer:
     def test_unparseable_repr_raises_rather_than_ships(self):
         env = _env()
         template = env.from_string("<div>{{ body }}</div>")
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017 - any render failure is acceptable
             template.render(body="Build vs Buy: {'recommendation': BUY, !!!")
 
     def test_clean_dict_repr_filter_still_registered(self):

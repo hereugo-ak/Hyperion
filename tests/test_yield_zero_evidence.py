@@ -83,10 +83,12 @@ class TestEverySearchExitIsCounted:
                 url="https://example.com/0", title="t", content=body, tool_used="jina"
             )
         ]
+        discovered = (["https://example.com/0"], ["searxng"], {})
+        extracted_batch = (extracted, ["jina"], ["jina"], {})
         with patch.object(
-            client, "_discover", new=AsyncMock(return_value=(["https://example.com/0"], ["searxng"], {}))
+            client, "_discover", new=AsyncMock(return_value=discovered)
         ), patch.object(
-            client, "_extract_batch", new=AsyncMock(return_value=(extracted, ["jina"], ["jina"], {}))
+            client, "_extract_batch", new=AsyncMock(return_value=extracted_batch)
         ):
             await client.search("india import tariff trade deficit", depth="quick")
 

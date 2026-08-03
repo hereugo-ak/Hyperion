@@ -33,9 +33,9 @@ async def test_401_classified_as_auth_error_not_quota():
     async def fake_create(**kwargs):
         raise FakeAuthError("Error code: 401 - {'error': {'message': 'API key not valid'}}")
 
-    provider._client = type("C", (), {
-        "chat": type("Chat", (), {"completions": type("Comp", (), {"create": staticmethod(fake_create)})()})()
-    })()
+    completions = type("Comp", (), {"create": staticmethod(fake_create)})()
+    chat = type("Chat", (), {"completions": completions})()
+    provider._client = type("C", (), {"chat": chat})()
 
     resp = await provider.complete(
         model="gemini-2.5-flash",

@@ -9,7 +9,7 @@ CDX APIs; these tests exercise both call shapes with the HTTP layer mocked.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 

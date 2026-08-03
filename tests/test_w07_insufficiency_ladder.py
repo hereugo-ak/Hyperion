@@ -21,17 +21,14 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-import pytest
-
 from hyperion.agents.insufficiency import (
+    SCOPE_LADDER,
+    STRATEGY_LADDER,
     EngineSet,
     InsufficiencyLadder,
     InsufficiencyOutcome,
     QueryForm,
-    SCOPE_LADDER,
-    STRATEGY_LADDER,
     StrategyTriple,
-    TimeWindow,
     classify_gap,
     suppress_out_of_scope_sections,
 )
@@ -41,7 +38,6 @@ from hyperion.schemas.models import (
     FinalReport,
     Recommendation,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Four-outcome coverage
@@ -324,7 +320,10 @@ class TestOrchestratorLadder:
         from hyperion.config import ModelTier
         from hyperion.schemas.agents import AgentName
         from hyperion.schemas.workflow import (
-            QuestionType, TaskNode, TaskStatus, WorkflowDAG,
+            QuestionType,
+            TaskNode,
+            TaskStatus,
+            WorkflowDAG,
         )
 
         task = TaskNode(

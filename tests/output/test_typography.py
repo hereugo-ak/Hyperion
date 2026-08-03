@@ -13,7 +13,6 @@ Four enforcement layers are pinned here:
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -103,6 +102,7 @@ def _make_agent(system_prompt: str = "You are a specialist."):
     from unittest.mock import AsyncMock
 
     from hyperion.agents.base import BaseAgent
+    from hyperion.config import ModelTier
 
     class _Concrete(BaseAgent):
         async def run(self, *args, **kwargs):  # pragma: no cover - unused
@@ -112,7 +112,7 @@ def _make_agent(system_prompt: str = "You are a specialist."):
     agent.spec = SimpleNamespace(
         system_prompt=system_prompt,
         name=SimpleNamespace(value="TEST_AGENT"),
-        model_tier=SimpleNamespace(value="standard"),
+        model_tier=ModelTier.STANDARD,
     )
     agent.router = SimpleNamespace(
         complete=AsyncMock(
@@ -209,9 +209,12 @@ class TestSourceHygiene:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         offenders = []
         for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if EM in node.value or EN in node.value:
-                    offenders.append(f"{rel}:{node.lineno}: {node.value[:60]!r}")
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and (EM in node.value or EN in node.value)
+            ):
+                offenders.append(f"{rel}:{node.lineno}: {node.value[:60]!r}")
         assert not offenders, (
             "dash in render-path string literals:\n" + "\n".join(offenders[:25])
         )

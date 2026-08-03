@@ -77,7 +77,7 @@ def main() -> int:
         "render_engine:1285",
     ]
     fingerprints = []
-    for label, payload in zip(labels, SHAPE_B_PAYLOADS):
+    for label, payload in zip(labels, SHAPE_B_PAYLOADS, strict=True):
         agent, issue, fp = director_read(payload)
         fingerprints.append(fp)
         if fp in seen:

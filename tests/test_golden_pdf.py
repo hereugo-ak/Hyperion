@@ -164,8 +164,9 @@ def _synthetic_pdf(tmp_path: Path, *, degraded: bool) -> Path:
     Healthy: two-column 10pt body at ~55 chars/line, 7 numbered exhibits with
     Note:/Source:, At-a-Glance before the TOC, a populated technical
     appendix, zero leaks/blank pages, an embedded non-forbidden font, and
-    exactly `page_count.exact` pages read from the golden. Degraded: same document with the DoD defects reintroduced — a
-    blank page, a DejaVu span, a template leak, one exhibit, single column.
+    exactly `page_count.exact` pages read from the golden. Degraded: same
+    document with the DoD defects reintroduced — a blank page, a DejaVu span,
+    a template leak, one exhibit, single column.
     """
     import fitz
 

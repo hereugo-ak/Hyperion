@@ -18,10 +18,7 @@ without a live engagement (sandbox has no providers/Docker):
 
 from __future__ import annotations
 
-import pytest
-
 from hyperion.schemas.agents import AgentName
-
 
 # ── 1. DAG ordering ────────────────────────────────────────────────────────────
 
@@ -84,15 +81,18 @@ def test_delivery_dag_edges_repointed_and_acyclic() -> None:
 
 
 def test_designer_has_no_pdf_authorship() -> None:
-    src = open("hyperion/agents/delivery/presentation_designer.py", encoding="utf-8").read()
+    with open(
+        "hyperion/agents/delivery/presentation_designer.py", encoding="utf-8"
+    ) as source_file:
+        src = source_file.read()
     assert "async def _generate_pdf" not in src
     assert "self._generate_pdf(" not in src
     assert "get_tool(ToolName.WEASYPRINT)" not in src
     assert "render_pdf(" not in src
 
-    import re
     # The AgentSpec must not list WEASYPRINT as a designer tool (comments OK).
-    spec_block = src[src.index("PRESENTATION_DESIGNER_SPEC"):src.index("PRESENTATION_DESIGNER_SPEC") + 400]
+    spec_start = src.index("PRESENTATION_DESIGNER_SPEC")
+    spec_block = src[spec_start : spec_start + 400]
     active = "\n".join(ln for ln in spec_block.splitlines() if not ln.strip().startswith("#"))
     assert "ToolName.WEASYPRINT" not in active
 
@@ -108,7 +108,8 @@ def test_layout_plan_has_no_pdf_path() -> None:
 
 
 def test_orchestrator_pdf_path_single_source() -> None:
-    src = open("hyperion/orchestrator.py", encoding="utf-8").read()
+    with open("hyperion/orchestrator.py", encoding="utf-8") as source_file:
+        src = source_file.read()
     assert "elif result.layout_plan" not in src, "RC-4 fallback must be deleted"
     # The fix-point delivery loop must exist (designer runs after viz now).
     assert "while progressed" in src
@@ -130,8 +131,10 @@ def test_two_pass_toc_resolves_and_substitutes(tmp_path) -> None:
         </style></head><body>
         <div class="page-break"><h2>Table of Contents</h2>
         <div class="data-table toc-table"><table>
-            <tr><td><a href="#exec-summary">Executive Summary</a></td><td class="toc-page"></td></tr>
-            <tr><td><a href="#methodology">Methodology</a></td><td class="toc-page"></td></tr>
+            <tr><td><a href="#exec-summary">Executive Summary</a></td>
+            <td class="toc-page"></td></tr>
+            <tr><td><a href="#methodology">Methodology</a></td>
+            <td class="toc-page"></td></tr>
         </table></div></div>
         <div class="page-break" id="exec-summary"><h2>Executive Summary</h2><p>body</p></div>
         <div class="page-break" id="methodology"><h2>Methodology</h2><p>body</p></div>
@@ -151,7 +154,8 @@ def test_two_pass_toc_resolves_and_substitutes(tmp_path) -> None:
 
     # Pass 2: substitution must fill the TOC cells with the real numbers.
     final = engine._inject_toc_page_numbers(str(html_path), resolved)
-    updated = open(final, encoding="utf-8").read()
+    with open(final, encoding="utf-8") as rendered_file:
+        updated = rendered_file.read()
     assert 'data-toc-verified="2">2</td>' in updated
     assert 'data-toc-verified="3">3</td>' in updated
 
@@ -177,8 +181,9 @@ def test_page_audit_toc_zero_tolerance(tmp_path) -> None:
     p = tmp_path / "phantom.pdf"
     HTML(string=html).write_pdf(str(p))
 
-    from hyperion.output.page_audit import PageAuditError, _check_toc
     import fitz
+
+    from hyperion.output.page_audit import _check_toc
 
     doc = fitz.open(str(p))
     violations = _check_toc(doc)

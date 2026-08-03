@@ -17,11 +17,11 @@ high score with `approved=False` as done.
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from hyperion.config import ModelTier
 from hyperion.orchestrator import WorkflowEngine
 from hyperion.schemas.agents import AgentName
 from hyperion.schemas.models import (
@@ -33,7 +33,6 @@ from hyperion.schemas.models import (
     Recommendation,
 )
 from hyperion.schemas.workflow import QuestionType, TaskNode, TaskStatus, WorkflowDAG
-from hyperion.config import ModelTier
 
 
 def _minimal_report(sources: int = 12) -> FinalReport:
