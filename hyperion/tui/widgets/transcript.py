@@ -44,16 +44,19 @@ from __future__ import annotations
 import contextlib
 import time
 from dataclasses import dataclass, field
+from typing import Any, Literal
 
 from rich.style import Style
 from rich.text import Text
 from textual.content import Content
 from textual.geometry import Size
 from textual.scroll_view import ScrollView
+from textual.selection import Selection
 from textual.strip import Strip
+from textual.timer import Timer
 from textual.visual import Visual
 
-from hyperion.tui.content import build, span
+from hyperion.tui.content import Line, build, span
 from hyperion.tui.motion.indicators import aurora_spans, progress_line_spans, spinner_span
 from hyperion.tui.theme import (
     TEXT_DIM,
@@ -89,6 +92,11 @@ class LogRow:
         return self.spinner or self.progress is not None or self.aurora
 
 
+type ContentBlock = tuple[Literal["content"], Content]
+type TranscriptBlock = LogRow | ContentBlock
+type ProgressUpdate = tuple[int, int] | None | Literal[-1]
+
+
 class Transcript(ScrollView):
     """Scrollable, selectable, copyable badge-tagged event log.
 
@@ -113,7 +121,7 @@ class Transcript(ScrollView):
     }
     """
 
-    def __init__(self, *, auto_scroll: bool = True, **kwargs) -> None:
+    def __init__(self, *, auto_scroll: bool = True, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.auto_scroll = auto_scroll
         # Physical model. These two lists are always the same length.
@@ -121,16 +129,16 @@ class Transcript(ScrollView):
         self._plain: list[str] = []
         # _blocks preserves document order for copy: each item is either a
         # LogRow or a ("content", Content) tuple (logo / roster / raw block).
-        self._blocks: list = []
+        self._blocks: list[TranscriptBlock] = []
         self._rows: list[LogRow] = []
         self._live: list[LogRow] = []
         self._frame = 0
-        self._timer = None
+        self._timer: Timer | None = None
         self._widest = 0
-        self._render_cache: dict[int, Strip] = {}
+        self._line_render_cache: dict[int, Strip] = {}
         # Pending writes, replayed once a width is known. We manage this
         # ourselves so row indices are correct rather than all-zero.
-        self._pending: list = []
+        self._pending: list[TranscriptBlock] = []
         self._width_known = False
 
     # ── geometry ────────────────────────────────────────────────────────────
@@ -158,7 +166,7 @@ class Transcript(ScrollView):
         for _ in range(blank_after):
             self._append(("content", Content("")))
 
-    def write(self, content, **_kwargs) -> Transcript:
+    def write(self, content: str | Content, **_kwargs: Any) -> Transcript:
         """RichLog-compatible write, so existing callers keep working."""
         if isinstance(content, str):
             content = Content(content)
@@ -205,7 +213,7 @@ class Transcript(ScrollView):
         badge: str | None = None,
         content: str | None = None,
         spinner: bool | None = None,
-        progress: tuple[int, int] | None = -1,  # type: ignore[assignment]
+        progress: ProgressUpdate = -1,
         aurora: bool | None = None,
         icon: str | None = None,
     ) -> None:
@@ -216,7 +224,7 @@ class Transcript(ScrollView):
         if spinner is not None:
             row.spinner = spinner
         if progress != -1:
-            row.progress = progress  # type: ignore[assignment]
+            row.progress = progress
         if aurora is not None:
             row.aurora = aurora
         if icon is not None:
@@ -237,7 +245,7 @@ class Transcript(ScrollView):
         self.lines.clear()
         self._plain.clear()
         self._pending.clear()
-        self._render_cache.clear()
+        self._line_render_cache.clear()
         self._widest = 0
         self.virtual_size = Size(0, 0)
         self.refresh()
@@ -254,7 +262,7 @@ class Transcript(ScrollView):
 
         try:
             self.screen.selections = {self: SELECT_ALL}
-            self._render_cache.clear()
+            self._line_render_cache.clear()
             self.refresh()
         except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             with contextlib.suppress(Exception):
@@ -263,7 +271,7 @@ class Transcript(ScrollView):
     # ── selection ──────────────────────────────────────────────────────────
 
     @property
-    def text_selection(self):
+    def text_selection(self) -> Selection | None:
         """The active selection for this widget, if any."""
         try:
             return self.screen.selections.get(self)
@@ -279,7 +287,7 @@ class Transcript(ScrollView):
         """
         return list(self._plain)
 
-    def get_selection(self, selection):  # type: ignore[override]
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return ``(text, ending)`` for the selected region."""
         try:
             text = "\n".join(self._plain)
@@ -287,13 +295,13 @@ class Transcript(ScrollView):
         except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             return None
 
-    def selected_text(self, selection) -> str:
+    def selected_text(self, selection: Selection) -> str:
         result = self.get_selection(selection)
         return result[0] if result else ""
 
     # ── content building ───────────────────────────────────────────────────
 
-    def _header_spans(self, row: LogRow) -> list:
+    def _header_spans(self, row: LogRow) -> Line:
         ts = time.strftime("[%H:%M:%S]", time.localtime(row.ts))
         spans = [span(ts + "  ", TEXT_DIM)]
 
@@ -327,7 +335,7 @@ class Transcript(ScrollView):
                 spans.append(span(row.content, TEXT_PRIMARY))
         return spans
 
-    def _row_lines(self, row: LogRow) -> list:
+    def _row_lines(self, row: LogRow) -> list[Line]:
         lines = [self._header_spans(row)]
         for i, d in enumerate(row.detail):
             glyph = "└─" if i == len(row.detail) - 1 else "├─"
@@ -341,10 +349,10 @@ class Transcript(ScrollView):
 
     # ── physical line production ───────────────────────────────────────────
 
-    def _block_content(self, block) -> Content:
+    def _block_content(self, block: TranscriptBlock) -> Content:
         return block[1] if isinstance(block, tuple) else self._row_content(block)
 
-    def _render_block(self, block) -> tuple[list[Strip], list[str]]:
+    def _render_block(self, block: TranscriptBlock) -> tuple[list[Strip], list[str]]:
         """Render one block to ``(strips, plain_lines)`` at the current width.
 
         Uses ``Visual.to_strips``, which is the path Textual itself uses: it
@@ -369,7 +377,7 @@ class Transcript(ScrollView):
         plain = [strip.text for strip in strips]
         return (strips, plain)
 
-    def _append(self, block) -> None:
+    def _append(self, block: TranscriptBlock) -> None:
         """Append a block, deferring only if no width is known yet."""
         self._blocks.append(block)
         if not self._width_known:
@@ -378,7 +386,7 @@ class Transcript(ScrollView):
         self._emit(block)
         self._refresh_virtual_size()
 
-    def _emit(self, block) -> None:
+    def _emit(self, block: TranscriptBlock) -> None:
         """Materialise a block's physical lines and record its span."""
         strips, plain = self._render_block(block)
         start = len(self.lines)
@@ -393,7 +401,7 @@ class Transcript(ScrollView):
 
     def _refresh_virtual_size(self) -> None:
         self.virtual_size = Size(self._widest, len(self.lines))
-        self._render_cache.clear()
+        self._line_render_cache.clear()
         if self.auto_scroll:
             self.scroll_end(animate=False, immediate=False, x_axis=False)
         self.refresh()
@@ -432,7 +440,7 @@ class Transcript(ScrollView):
                         other._line_index += delta
                 self._refresh_virtual_size()
             else:
-                self._render_cache.clear()
+                self._line_render_cache.clear()
                 self.refresh_lines(start, len(strips))
         except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
             self.refresh()
@@ -454,8 +462,8 @@ class Transcript(ScrollView):
         if selection is None:
             return self.lines[y]
 
-        if y in self._render_cache:
-            return self._render_cache[y]
+        if y in self._line_render_cache:
+            return self._line_render_cache[y]
 
         select_span = selection.get_span(y)
         if select_span is None:
@@ -474,7 +482,7 @@ class Transcript(ScrollView):
         text.stylize(rich_style)
         text.stylize(selection_style, start, end)
         strip = Strip(text.render(self.app.console), len(plain))
-        self._render_cache[y] = strip
+        self._line_render_cache[y] = strip
         return strip
 
     def render_line(self, y: int) -> Strip:
@@ -497,11 +505,11 @@ class Transcript(ScrollView):
 
     def refresh_lines(self, y_start: int, line_count: int = 1) -> None:
         for y in range(y_start, y_start + line_count):
-            self._render_cache.pop(y, None)
+            self._line_render_cache.pop(y, None)
         super().refresh_lines(y_start, line_count=line_count)
 
     def _watch_text_selection(self) -> None:
-        self._render_cache.clear()
+        self._line_render_cache.clear()
         self.refresh()
 
     # ── animation loop (runs only while a row animates) ────────────────────
