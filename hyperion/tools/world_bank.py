@@ -234,12 +234,14 @@ class WorldBankClient:
         self,
         endpoint: str,
         params: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | list[Any]:
         """Make a rate-limited, cached request to the World Bank API."""
         cache_key = self._cache_key(endpoint, *sorted((params or {}).items()))
         cached = self._get_cached(cache_key)
-        if cached is not None:
-            return cached
+        if isinstance(cached, dict):
+            return {str(key): value for key, value in cached.items()}
+        if isinstance(cached, list):
+            return list(cached)
 
         await self._rate_limit()
         client = await self._get_client()
@@ -254,7 +256,15 @@ class WorldBankClient:
             try:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
-                data = response.json()
+                payload = response.json()
+                if isinstance(payload, dict):
+                    data: dict[str, Any] | list[Any] = {
+                        str(key): value for key, value in payload.items()
+                    }
+                elif isinstance(payload, list):
+                    data = list(payload)
+                else:
+                    return {"error": "World Bank returned an invalid JSON response"}
 
                 self._set_cached(cache_key, data)
                 return data

@@ -214,8 +214,8 @@ class OpenAlexClient:
         """Make a rate-limited, cached request to OpenAlex."""
         cache_key = self._cache_key(endpoint, *sorted((params or {}).items()))
         cached = self._get_cached(cache_key)
-        if cached is not None:
-            return cached
+        if isinstance(cached, dict):
+            return {str(key): value for key, value in cached.items()}
 
         await self._rate_limit()
         client = await self._get_client()
@@ -226,7 +226,12 @@ class OpenAlexClient:
             try:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
-                data = response.json()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    return {"error": "OpenAlex returned a non-object response"}
+                data: dict[str, Any] = {
+                    str(key): value for key, value in payload.items()
+                }
 
                 self._set_cached(cache_key, data)
                 return data

@@ -201,8 +201,8 @@ class AlphaVantageClient:
         ) else self.CACHE_TTL_SECONDS
 
         cached = self._get_cached(cache_key, ttl)
-        if cached is not None:
-            return cached
+        if isinstance(cached, dict):
+            return {str(key): value for key, value in cached.items()}
 
         # Check rate limit
         if not self._check_rate_limit():
@@ -218,7 +218,12 @@ class AlphaVantageClient:
             try:
                 response = await client.get(self.BASE_URL, params=params)
                 response.raise_for_status()
-                data = response.json()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    return {"error": "Alpha Vantage returned a non-object response"}
+                data: dict[str, Any] = {
+                    str(key): value for key, value in payload.items()
+                }
 
                 # Check for API error messages
                 if "Error Message" in data:
