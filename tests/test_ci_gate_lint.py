@@ -184,22 +184,17 @@ class TestStructuralGuards:
         for family in ("E", "F", "I", "UP", "B", "SIM"):
             assert family in select, f"ruff family {family} was dropped from select"
 
-    def test_mypy_backlog_quarantine_is_explicit_and_shrinkable_only(self):
-        """The staged allowlist exists so NEW modules are strict by default.
-        It must live in pyproject as an explicit ignore_errors list — and it
-        may only ever shrink (a growing quarantine re-creates the P0)."""
+    def test_mypy_backlog_quarantine_is_absent(self):
+        """Every project module stays under strict mypy without quarantine."""
         cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         quarantine = [
-            o for o in cfg["tool"]["mypy"]["overrides"] if o.get("ignore_errors") is True
+            override
+            for override in cfg["tool"]["mypy"]["overrides"]
+            if override.get("ignore_errors") is True
         ]
-        assert quarantine, "the backlog quarantine was removed from pyproject"
-        modules = quarantine[0]["module"]
-        assert isinstance(modules, list) and modules, "quarantine must be a module list"
-        # Baseline: 67 backlog modules at the 5.1f commit. Anything larger
-        # means someone added modules to the quarantine instead of fixing them.
-        assert len(modules) <= 67, (
-            f"backlog quarantine grew to {len(modules)} modules — fix the "
-            "module's types instead of hiding it"
+        assert not quarantine, (
+            "ignore_errors reintroduced a mypy quarantine; fix the module's "
+            "types instead of hiding errors"
         )
 
     def test_run_gate_routes_lint_before_quality_harness(self):
