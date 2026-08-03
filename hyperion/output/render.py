@@ -54,7 +54,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 # Chromium does not implement CSS paged-media margin boxes. These templates
 # provide the running furniture for the Playwright fallback; the first-page
 # cover stays clean because Chromium suppresses header/footer templates when
@@ -495,64 +494,93 @@ class PDFRenderer:
                     os.remove(temp_html)
 
     def _embed_images_as_data_uris(self, html: str) -> str:
-        """Convert img src file paths to base64 data URIs (D17 fix).
+        """Embed local images while enforcing per-asset and total byte budgets.
 
-        WeasyPrint and Playwright can't reliably load images from absolute
-        Windows paths (C:\\...) or relative paths. Embedding as data URIs
-        makes the HTML self-contained — no external file dependencies.
-
-        Handles:
-        - <img src="C:\\path\\to\\image.png">  → <img src="data:image/png;base64,...">
-        - <img src="path/to/image.png">       → resolved relative to cwd
-        - <img src="data:image/...">          → already embedded, skip
-        - <img src="https://...">             → remote URL, skip
+        Self-contained HTML is portable, but blindly base64-encoding archival
+        PNGs can add tens of megabytes to one report. Oversized photographs are
+        recompressed before embedding, charts retain lossless PNG where the
+        budget permits, and assets that cannot fit are omitted. Machine-local
+        paths are never left behind as a false promise to another renderer.
         """
         import base64
         import re
 
-        # Match img src attributes
-        img_pattern = re.compile(r'<img\s+[^>]*src="([^"]+)"', re.IGNORECASE)
+        from hyperion.output.images import (
+            MAX_CHART_IMAGE_BYTES,
+            MAX_COVER_BYTES,
+            MAX_EMBEDDED_IMAGE_BYTES,
+            MAX_SECTION_IMAGE_BYTES,
+            compress_image_for_embedding,
+        )
+
+        img_pattern = re.compile(
+            r'<img\b[^>]*\bsrc="([^"]+)"[^>]*>',
+            re.IGNORECASE,
+        )
+        embedded_bytes = 0
 
         def replace_src(match: re.Match[str]) -> str:
+            nonlocal embedded_bytes
+            tag = match.group(0)
             src = match.group(1)
+            tag_lower = tag.lower()
 
-            # Skip already-embedded data URIs
+            is_cover = "cover-image" in tag_lower
+            is_chart = any(
+                marker in tag_lower or marker in Path(src).stem.lower()
+                for marker in ("chart", "exhibit", "plot")
+            )
+            per_asset_budget = (
+                MAX_COVER_BYTES
+                if is_cover
+                else MAX_CHART_IMAGE_BYTES
+                if is_chart
+                else MAX_SECTION_IMAGE_BYTES
+            )
+            remaining = MAX_EMBEDDED_IMAGE_BYTES - embedded_bytes
+            allowed_bytes = min(per_asset_budget, remaining)
+            if allowed_bytes <= 0:
+                return ""
+
+            # Existing data URIs still count against both limits. They cannot
+            # safely be recompressed without MIME-specific decoding, so omit an
+            # over-budget payload rather than bypassing the guard.
             if src.startswith("data:"):
-                return match.group(0)
+                try:
+                    payload = src.split(",", 1)[1]
+                    size = len(base64.b64decode(payload, validate=True))
+                except (IndexError, ValueError):
+                    return ""
+                if size > allowed_bytes:
+                    return ""
+                embedded_bytes += size
+                return tag
 
-            # Skip remote URLs
-            if src.startswith("http://") or src.startswith("https://"):
-                return match.group(0)
+            # Remote URLs are deliberately left alone: this method owns local
+            # asset embedding, and callers may intentionally allow network
+            # resources in non-deliverable preview HTML.
+            if src.startswith(("http://", "https://")):
+                return tag
 
-            # Resolve to absolute path
             img_path = Path(src)
             if not img_path.is_absolute():
                 img_path = Path.cwd() / img_path
+            if not img_path.is_file():
+                return ""
 
-            if not img_path.exists():
-                return match.group(0)  # Leave as-is if file doesn't exist
+            compressed = compress_image_for_embedding(
+                img_path,
+                allowed_bytes,
+                preserve_lossless=is_chart,
+            )
+            if compressed is None:
+                return ""
 
-            # Determine MIME type
-            ext = img_path.suffix.lower()
-            mime_map = {
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".gif": "image/gif",
-                ".svg": "image/svg+xml",
-                ".webp": "image/webp",
-                ".bmp": "image/bmp",
-            }
-            mime_type = mime_map.get(ext, "application/octet-stream")
-
-            # Read and encode
-            try:
-                img_data = img_path.read_bytes()
-                b64 = base64.b64encode(img_data).decode("ascii")
-                new_src = f"data:{mime_type};base64,{b64}"
-                return match.group(0).replace(src, new_src)
-            except (OSError, ValueError):
-                return match.group(0)
+            img_data, mime_type = compressed
+            embedded_bytes += len(img_data)
+            b64 = base64.b64encode(img_data).decode("ascii")
+            new_src = f"data:{mime_type};base64,{b64}"
+            return tag.replace(src, new_src, 1)
 
         return img_pattern.sub(replace_src, html)
 

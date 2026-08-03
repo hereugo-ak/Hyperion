@@ -50,6 +50,7 @@ dependencies = [
     "kaleido>=0.2.1,<1.0",  # D26: pin to static engine (v1.x needs Chrome)
     "matplotlib>=3.8.0",  # D26: chart fallback when kaleido fails
     "pillow>=10.4.0",
+    "fonttools>=4.53.0",  # D-15: subset embedded fonts to the report glyph budget
     "pymupdf>=1.24.0",  # fitz: PDF page-count + blank-page + font-embed verification
     "playwright>=1.46.0",  # Chromium PDF fallback when WeasyPrint native libs are unavailable
 

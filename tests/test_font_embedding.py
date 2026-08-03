@@ -19,6 +19,7 @@ These tests cover:
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 from pathlib import Path
@@ -29,6 +30,8 @@ from hyperion.agents.delivery.presentation_designer import (
     _FONTS_DIR,
     _VENDORED_FONTS,
     CSS_TEMPLATE,
+    MAX_EMBEDDED_FONT_BYTES,
+    MAX_EMBEDDED_FONTS_BYTES,
     _build_font_face_css,
 )
 
@@ -56,6 +59,27 @@ class TestFontFaceStructure:
             assert m is not None, f"@font-face block lacks data-URI src:\n{block[:200]}"
             # The base64 payload must be non-trivial (a real font, not a stub)
             assert len(m.group(1)) > 50_000
+
+    def test_embedded_fonts_are_subset_and_budgeted(self) -> None:
+        total = 0
+        original_by_face = {
+            (family, weight, style): (_FONTS_DIR / filename).stat().st_size
+            for family, weight, style, filename in _VENDORED_FONTS
+        }
+        for block in _font_face_blocks(CSS_TEMPLATE):
+            family = FAMILY_RE.search(block)
+            weight = WEIGHT_RE.search(block)
+            style = STYLE_RE.search(block)
+            encoded = DATA_URI_RE.search(block)
+            assert family and weight and style and encoded
+            payload = base64.b64decode(encoded.group(1), validate=True)
+            original_size = original_by_face[
+                (family.group(1), int(weight.group(1)), style.group(1))
+            ]
+            assert 0 < len(payload) < original_size
+            assert len(payload) <= MAX_EMBEDDED_FONT_BYTES
+            total += len(payload)
+        assert total <= MAX_EMBEDDED_FONTS_BYTES
 
     def test_no_relative_or_remote_url_sources(self) -> None:
         """Data-URIs only — relative url() would resolve against the caller's

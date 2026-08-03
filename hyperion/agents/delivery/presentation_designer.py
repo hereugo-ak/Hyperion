@@ -60,8 +60,12 @@ import logging
 import os
 import re
 from html import escape as html_escape
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+
+from fontTools import subset
+from fontTools.ttLib import TTFont, TTLibError
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
@@ -1094,6 +1098,60 @@ _VENDORED_FONTS: tuple[tuple[str, int, str, str], ...] = (
 
 _FONTS_DIR = Path(__file__).resolve().parents[3] / "assets" / "fonts"
 
+# D-15: report prose is English, but retain the complete Latin repertoire plus
+# common punctuation, currencies, arrows, and mathematical symbols used in
+# financial exhibits. CJK and other large unused ranges are deliberately not
+# embedded. Browsers may use a system fallback for an exceptional glyph while
+# the report's actual brand text remains embedded and portable.
+_FONT_SUBSET_RANGES: tuple[tuple[int, int], ...] = (
+    (0x0020, 0x024F),  # Basic Latin, Latin-1, Latin Extended A/B, IPA
+    (0x2000, 0x206F),  # General punctuation
+    (0x20A0, 0x20CF),  # Currency symbols
+    (0x2190, 0x21FF),  # Arrows
+    (0x2200, 0x22FF),  # Mathematical operators
+)
+DEFAULT_FONT_GLYPHS = "".join(
+    chr(codepoint)
+    for start, end in _FONT_SUBSET_RANGES
+    for codepoint in range(start, end + 1)
+)
+MAX_EMBEDDED_FONT_BYTES = 180_000
+MAX_EMBEDDED_FONTS_BYTES = 900_000
+
+
+def _subset_font_bytes(font_path: Path, glyphs: str = DEFAULT_FONT_GLYPHS) -> bytes | None:
+    """Subset one TTF to the bounded glyph repertoire used by reports."""
+    try:
+        font = TTFont(font_path, recalcTimestamp=False)
+        options = subset.Options()
+        options.layout_features = ["*"]
+        options.notdef_outline = True
+        subsetter = subset.Subsetter(options=options)
+        subsetter.populate(text=glyphs)
+        subsetter.subset(font)
+        output = BytesIO()
+        font.save(output)
+        font.close()
+        payload = output.getvalue()
+    except (OSError, TTLibError, ValueError) as exc:
+        logger.warning(
+            "Vendored font %s could not be subset: %s",
+            font_path,
+            exc,
+            exc_info=True,
+        )
+        return None
+
+    if not payload or len(payload) > MAX_EMBEDDED_FONT_BYTES:
+        logger.warning(
+            "Subset font %s exceeds its %d-byte embedding budget (%d bytes)",
+            font_path.name,
+            MAX_EMBEDDED_FONT_BYTES,
+            len(payload),
+        )
+        return None
+    return payload
+
 
 def _build_font_face_css(fonts_dir: Path = _FONTS_DIR) -> str:
     """Build @font-face blocks with base64 data-URI sources for vendored fonts.
@@ -1109,19 +1167,29 @@ def _build_font_face_css(fonts_dir: Path = _FONTS_DIR) -> str:
     whole report build.
     """
     blocks: list[str] = []
+    total_bytes = 0
     for family, weight, style, filename in _VENDORED_FONTS:
         font_path = fonts_dir / filename
-        try:
-            data = font_path.read_bytes()
-        except OSError:
+        if not font_path.is_file():
             logger.warning(
-                "Vendored font %s not readable at %s"
+                "Vendored font %s not readable at %s; "
                 "PDF will fall back to system fonts for this face",
                 filename,
                 font_path,
-                exc_info=True,
+                exc_info=FileNotFoundError(font_path),
             )
             continue
+        data = _subset_font_bytes(font_path)
+        if data is None:
+            continue
+        if total_bytes + len(data) > MAX_EMBEDDED_FONTS_BYTES:
+            logger.warning(
+                "Skipping %s: total embedded-font budget of %d bytes reached",
+                filename,
+                MAX_EMBEDDED_FONTS_BYTES,
+            )
+            continue
+        total_bytes += len(data)
         b64 = base64.b64encode(data).decode("ascii")
         blocks.append(
             "@font-face {\n"
