@@ -16,8 +16,12 @@ and the metrics rail.
 
 from __future__ import annotations
 
+from typing import Any
+
 from textual import events
+from textual.content import Content
 from textual.message import Message
+from textual.timer import Timer
 from textual.widget import Widget
 
 from hyperion.tui.content import build_line, span
@@ -57,7 +61,12 @@ class PromptBar(Widget, can_focus=True):
     }
     """
 
-    def __init__(self, agent_context: str = "orchestrator", scope: str = "~", **kwargs) -> None:
+    def __init__(
+        self,
+        agent_context: str = "orchestrator",
+        scope: str = "~",
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self._buffer = ""
         self._agent = agent_context
@@ -66,7 +75,7 @@ class PromptBar(Widget, can_focus=True):
         self._busy = False
         self._history: list[str] = []
         self._hidx = 0
-        self._blink_timer = None
+        self._blink_timer: Timer | None = None
 
     def on_mount(self) -> None:
         self._blink_timer = self.set_interval(_BLINK_MS / 1000, self._blink)
@@ -133,7 +142,7 @@ class PromptBar(Widget, can_focus=True):
 
     # ── render ──────────────────────────────────────────────────────────────────
 
-    def render(self):
+    def render(self) -> Content:
         spans = [
             span("  ", ""),
             span("hyperion", f"bold {CLAY}"),

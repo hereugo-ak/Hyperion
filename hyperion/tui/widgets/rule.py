@@ -9,7 +9,10 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
+from textual.content import Content
+from textual.timer import Timer
 from textual.widgets import Static
 
 from hyperion.tui.content import build_line, span
@@ -22,7 +25,7 @@ _DRAW_MS = 320.0
 _FPS = 30
 
 
-def hr(width: int = HR_WIDTH):
+def hr(width: int = HR_WIDTH) -> Content:
     """A static rule as Content."""
     return build_line(span("─" * width, BORDER_SUBTLE))
 
@@ -34,14 +37,14 @@ class Rule(Static):
     Rule { height: 1; width: 100%; }
     """
 
-    def __init__(self, animate: bool = False, **kwargs) -> None:
-        self._animate = animate
+    def __init__(self, animate: bool = False, **kwargs: Any) -> None:
+        self._draw_animated = animate
         self._t0 = time.monotonic()
-        self._timer = None
+        self._timer: Timer | None = None
         super().__init__(self._build(HR_WIDTH), **kwargs)
 
     def on_mount(self) -> None:
-        if self._animate:
+        if self._draw_animated:
             self._timer = self.set_interval(1 / _FPS, self._frame)
         else:
             self.update(self._build(self.size.width or HR_WIDTH))
@@ -52,8 +55,8 @@ class Rule(Static):
             self._timer = None
         self.update(self._build(self.size.width or HR_WIDTH))
 
-    def _build(self, width: int):
-        if not self._animate:
+    def _build(self, width: int) -> Content:
+        if not self._draw_animated:
             return build_line(span("─" * width, BORDER_SUBTLE))
         p = min(1.0, (time.monotonic() - self._t0) * 1000.0 / _DRAW_MS)
         drawn = int(round(expo_out(p) * width))
@@ -71,14 +74,14 @@ class PhaseRule(Static):
     PhaseRule { height: 1; width: 100%; }
     """
 
-    def __init__(self, label: str, **kwargs) -> None:
+    def __init__(self, label: str, **kwargs: Any) -> None:
         self._label = " ".join(label.upper())
         super().__init__(self._build(HR_WIDTH), **kwargs)
 
     def on_mount(self) -> None:
         self.update(self._build(self.size.width or HR_WIDTH))
 
-    def _build(self, width: int):
+    def _build(self, width: int) -> Content:
         mid = f"  {self._label}  "
         side = max(2, (width - len(mid)) // 2)
         return build_line(

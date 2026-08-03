@@ -6,6 +6,9 @@ Right: HYPERION · v{ver} · SESSION 0x{HEX}.
 
 from __future__ import annotations
 
+from typing import Any
+
+from textual.content import Content
 from textual.widgets import Static
 
 from hyperion.tui.content import build, span
@@ -31,7 +34,12 @@ class HeaderBar(Static):
     }
     """
 
-    def __init__(self, version: str = "v1.0.0", session_id: str = "0x000000", **kwargs) -> None:
+    def __init__(
+        self,
+        version: str = "v1.0.0",
+        session_id: str = "0x000000",
+        **kwargs: Any,
+    ) -> None:
         self._version = version
         self._session_id = session_id
         super().__init__(self._build(80), **kwargs)
@@ -43,7 +51,7 @@ class HeaderBar(Static):
     def _refresh(self) -> None:
         self.update(self._build(self.size.width or 80))
 
-    def _build(self, width: int):
+    def _build(self, width: int) -> Content:
         left_spans = [
             span("  ", ""),
             span("● ", _DOT),
