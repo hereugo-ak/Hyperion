@@ -638,31 +638,45 @@ class EngagementDirector(BaseAgent):
         if spawn_agent and spawn_question:
             try:
                 agent_name = AgentName(spawn_agent)
-                task_id = f"task_adapted_{agent_name.value}_{int(time.time())}"
-                new_task = TaskNode(
-                    id=task_id,
-                    agent=agent_name,
-                    model_tier=ModelTier.STANDARD,
-                    description=spawn_question,
-                    dependencies=[],
-                    status=TaskStatus.PENDING,
+                # Never duplicate work that is already in flight or complete.
+                # A FAILED task may be deliberately retried by an adaptation.
+                already_active = any(
+                    task.agent == agent_name
+                    and task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED)
+                    for task in self._current_dag.tasks
                 )
-                self._current_dag.add_task(new_task)
-                self._current_dag.adapted = True
+                if already_active:
+                    self._current_dag.adaptation_log.append(
+                        f"Spawn skipped: {agent_name.value} is already running or complete"
+                    )
+                else:
+                    task_id = f"task_adapted_{agent_name.value}_{int(time.time())}"
+                    new_task = TaskNode(
+                        id=task_id,
+                        agent=agent_name,
+                        model_tier=ModelTier.STANDARD,
+                        description=spawn_question,
+                        dependencies=[],
+                        status=TaskStatus.PENDING,
+                    )
+                    self._current_dag.add_task(new_task)
+                    self._current_dag.adapted = True
             except ValueError:
                 pass  # Invalid agent name
 
         # Reroute dependencies if needed
         reroute_from = adaptation.get("reroute_from")
         reroute_to = adaptation.get("reroute_to")
-        if reroute_from and reroute_to:
-            # Find tasks for the agent that should wait
+        if reroute_from and reroute_to and reroute_from != reroute_to:
+            # Find tasks for the agent that should wait. The name inequality
+            # prevents an adaptation from introducing a self-dependency cycle.
             for task in self._current_dag.tasks:
                 if task.agent.value == reroute_from:
                     # Add dependency on the reroute_to agent's task
                     for dep_task in self._current_dag.tasks:
                         if (
                             dep_task.agent.value == reroute_to
+                            and dep_task.id != task.id
                             and dep_task.id not in task.dependencies
                         ):
                                 task.dependencies.append(dep_task.id)
