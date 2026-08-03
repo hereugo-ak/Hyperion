@@ -367,7 +367,7 @@ def _get_pdf_page_count(pdf_path: str) -> int | None:
     try:
         import fitz
         doc = fitz.open(pdf_path)
-        count = doc.page_count
+        count = int(doc.page_count)
         doc.close()
         return count
     except (ImportError, OSError, ValueError):
