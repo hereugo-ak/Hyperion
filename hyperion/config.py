@@ -32,7 +32,7 @@ class ModelTier(str, Enum):
     budget for estimation, and the priority for daily budget allocation.
     """
 
-    MICRO = "micro"      # High RPD workhorse — query gen, fact-check snippets, sub-agent quick tasks
+    MICRO = "micro"      # High RPD workhorse — query generation, snippet checks, extraction
     FAST = "fast"        # Speed-critical — real-time extraction validation, inline fact verification
     STANDARD = "standard"  # Research & analysis — specialist analysis, structured Pydantic output
     STRONG = "strong"    # Planning & writing — engagement planning, synthesis, quality gate
@@ -124,8 +124,13 @@ GOOGLE_MODELS: list[ModelSpec] = [
         tpm=16_000,
         rpd=14_400,
         tier=ModelTier.MICRO,
-        roles=["query "
-            "generation", "fact-check snippets", "simple extraction", "sub-agent quick tasks", "keyword expansion", "tag generation"],
+        roles=[
+            "query generation",
+            "fact-check snippets",
+            "simple extraction",
+            "keyword expansion",
+            "tag generation",
+        ],
     ),
     ModelSpec(
         name="gemma-4-26b",

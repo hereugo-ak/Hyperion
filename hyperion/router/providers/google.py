@@ -7,7 +7,7 @@ both the MICRO tier (Gemma workhorses) and the DEEP tier (Gemini long
 context models). (§2.1)
 
 Models on this provider:
-- gemma-4-31b: MICRO — query gen, fact-check snippets, sub-agent quick tasks
+- gemma-4-31b: MICRO — query generation, fact-check snippets, simple extraction
 - gemma-4-26b: MICRO — backup workhorse
 - gemini-3.1-flash-lite: DEEP — deep context, long doc synthesis (500 RPD)
 - gemini-3.5-flash: DEEP — reserve (20 RPD)
