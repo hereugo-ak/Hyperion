@@ -27,12 +27,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 from hyperion.config import ModelTier, ProviderType
 from hyperion.obs import trace
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
+
+if TYPE_CHECKING:
+    from hyperion.router.router import LLMRouter
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,7 @@ class SpeculativeRacer:
     the overhead of dispatching twice outweighs the latency benefit.
     """
 
-    def __init__(self, router: Any) -> None:
+    def __init__(self, router: LLMRouter) -> None:
         self.router = router
 
     async def race(
@@ -107,7 +110,7 @@ class SpeculativeRacer:
               providers=[p.value for p in candidates], agent=agent_name)
 
         # Dispatch to both providers in parallel
-        tasks: list[asyncio.Task] = []
+        tasks: list[asyncio.Task[RouterResponse | None]] = []
         for provider_type in candidates:
             task = asyncio.create_task(
                 self._dispatch_single(
@@ -171,7 +174,7 @@ class SpeculativeRacer:
         temperature: float,
         max_tokens: int | None,
         response_format: dict[str, str] | None,
-    ) -> RouterResponse:
+    ) -> RouterResponse | None:
         """Dispatch to a single provider via the router's _try_tier method."""
         return await self.router._try_tier(
             tier=tier,
