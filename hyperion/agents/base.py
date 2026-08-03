@@ -38,7 +38,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from hyperion.agents.bus import AgentBus, Channel, MessageType, get_bus
-from hyperion.agents.prompt_contract import AGENT_CONTRACT
+from hyperion.agents.prompt_contract import compose_agent_prompt
 from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier, get_settings
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
@@ -609,7 +609,7 @@ class BaseAgent(ABC):
         # evidence binding / units / uncertainty / conflict / typography)
         # are stated once here, not 20 times across specs.
         base_prompt = system_prompt_override or self.system_prompt
-        system = f"{AGENT_CONTRACT}\n\n{base_prompt}"
+        system = compose_agent_prompt(base_prompt)
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         if conversation_history:

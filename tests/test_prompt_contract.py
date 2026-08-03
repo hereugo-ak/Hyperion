@@ -13,6 +13,7 @@ fails here, in CI, rather than silently shipping without the contract.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,8 +24,13 @@ from hyperion.agents.prompt_contract import (
     AGENT_CONTRACT,
     AGENT_CONTRACT_MARKER,
     AGENT_CONTRACT_VERSION,
+    compose_agent_prompt,
 )
+from hyperion.agents.sub_agent import SubAgentRunner
+from hyperion.agents.support.fact_checker import FACT_CHECKER_SPEC, FactChecker
+from hyperion.config import ModelTier
 from hyperion.schemas.agents import AgentSpec
+from hyperion.tools.query_planner import plan_queries
 
 # Every module-level *Spec object exported by the agents package: this is the
 # registry the orchestrator dispatches from. Iterating the package namespace
@@ -149,3 +155,57 @@ def test_contract_is_prepended_once() -> None:
     composed = _composed_prompt(spec)
     assert composed.count(AGENT_CONTRACT_MARKER) == 1
     assert composed.startswith(AGENT_CONTRACT_MARKER)
+    assert compose_agent_prompt(composed) == composed
+
+
+def _assert_router_received_contract(router: _RecordingRouter) -> None:
+    assert router.calls, "router never received a dispatch"
+    system_messages = [
+        message["content"]
+        for message in router.calls[-1]
+        if message.get("role") == "system"
+    ]
+    assert system_messages
+    assert system_messages[0].startswith(AGENT_CONTRACT_MARKER)
+    assert system_messages[0].count(AGENT_CONTRACT_MARKER) == 1
+
+
+def test_contract_reaches_sub_agent_router_payload() -> None:
+    router = _RecordingRouter()
+    runner = object.__new__(SubAgentRunner)
+    runner.router = router
+    runner.spec = SimpleNamespace(
+        model_tier=ModelTier.STANDARD,
+        parent_agent=SimpleNamespace(value="market_analyst"),
+    )
+    runner._build_system_prompt = lambda: "SUB-AGENT ROLE"  # type: ignore[method-assign]
+    runner._build_user_prompt = lambda: "question"  # type: ignore[method-assign]
+
+    asyncio.run(runner._analyze_and_produce_findings("retrieved evidence"))
+    _assert_router_received_contract(router)
+
+
+def test_contract_reaches_fact_checker_router_payload() -> None:
+    router = _RecordingRouter()
+    checker = FactChecker(FACT_CHECKER_SPEC, bus=None, router=router)  # type: ignore[arg-type]
+    messages = [
+        {"role": "system", "content": "FACT ADJUDICATOR ROLE"},
+        {"role": "user", "content": "check this claim"},
+    ]
+
+    asyncio.run(checker._stage2_verdict(messages))
+    _assert_router_received_contract(router)
+    assert messages[0]["content"] == "FACT ADJUDICATOR ROLE", "caller payload was mutated"
+
+
+def test_contract_reaches_query_planner_router_payload() -> None:
+    router = _RecordingRouter()
+
+    asyncio.run(
+        plan_queries(
+            "Assess battery market growth",
+            router=router,
+            use_cache=False,
+        )
+    )
+    _assert_router_received_contract(router)

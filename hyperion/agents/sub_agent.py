@@ -48,6 +48,7 @@ import time
 from typing import Any
 
 from hyperion.agents.bus import AgentBus, get_bus
+from hyperion.agents.prompt_contract import compose_agent_prompt
 from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
@@ -1145,7 +1146,7 @@ class SubAgentRunner:
         """
         import json
 
-        system_prompt = self._build_system_prompt()
+        system_prompt = compose_agent_prompt(self._build_system_prompt())
         user_prompt = self._build_user_prompt() + f"\n\nRaw data from tools:\n{raw_data}"
 
         messages = [

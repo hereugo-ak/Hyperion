@@ -72,3 +72,16 @@ AGENT_CONTRACT = (
     "and implications. Compact classification, extraction, and routing responses "
     "are exempt. Never pad weak evidence; state the evidence gap instead."
 )
+
+
+def compose_agent_prompt(role_prompt: str) -> str:
+    """Prepend the shared contract to one role-specific system prompt.
+
+    All direct router call sites use this function, including sub-agents and
+    support utilities that do not inherit from ``BaseAgent``. The idempotence
+    guard prevents nested helpers from dispatching the contract twice.
+    """
+    prompt = str(role_prompt or "").strip()
+    if prompt.startswith(AGENT_CONTRACT_MARKER):
+        return prompt
+    return f"{AGENT_CONTRACT}\n\n{prompt}"

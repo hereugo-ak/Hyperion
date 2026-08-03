@@ -60,6 +60,7 @@ from typing import Any
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
+from hyperion.agents.prompt_contract import compose_agent_prompt
 from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.structured_validator import validate_json_list
@@ -1134,9 +1135,22 @@ class FactChecker(BaseAgent):
         if router is None:
             return None, ""
         try:
+            contracted_messages = [dict(message) for message in messages]
+            system_message = next(
+                (message for message in contracted_messages if message.get("role") == "system"),
+                None,
+            )
+            if system_message is None:
+                contracted_messages.insert(
+                    0,
+                    {"role": "system", "content": compose_agent_prompt("")},
+                )
+            else:
+                system_message["content"] = compose_agent_prompt(system_message.get("content", ""))
+
             response = await router.complete(
                 tier=ModelTier.STRONG,
-                messages=messages,
+                messages=contracted_messages,
                 agent_name=self.name.value,
                 urgency=TaskUrgency.HIGH,
                 temperature=0.0,
