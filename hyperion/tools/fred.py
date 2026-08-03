@@ -164,8 +164,8 @@ class FredClient:
         """Make a cached request to the FRED API."""
         cache_key = self._cache_key(endpoint, *sorted(params.items()))
         cached = self._get_cached(cache_key)
-        if cached is not None:
-            return cached
+        if isinstance(cached, dict):
+            return {str(key): value for key, value in cached.items()}
 
         params["api_key"] = self._api_key
         params["file_type"] = "json"
@@ -176,7 +176,12 @@ class FredClient:
             try:
                 response = await client.get(f"{self.BASE_URL}/{endpoint}", params=params)
                 response.raise_for_status()
-                data = response.json()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    return {"error": "FRED returned a non-object response"}
+                data: dict[str, Any] = {
+                    str(key): value for key, value in payload.items()
+                }
 
                 self._set_cached(cache_key, data)
                 return data

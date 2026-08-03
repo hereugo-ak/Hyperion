@@ -63,7 +63,7 @@ class TestHandleVerifyClaims:
         from hyperion.agents.base import BaseAgent
 
         assert hasattr(BaseAgent, "_handle_verify_claims")
-        assert callable(getattr(BaseAgent, "_handle_verify_claims"))
+        assert callable(BaseAgent._handle_verify_claims)
 
     def test_verify_claims_recorded_for_next_run(self):
         agent = _make_agent()

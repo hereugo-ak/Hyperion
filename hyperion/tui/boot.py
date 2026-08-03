@@ -52,20 +52,22 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
+from collections.abc import Callable
 from typing import Any
 
 from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
+from hyperion.infra.provenance import banner as _provenance_banner
+from hyperion.infra.provenance import collect_async as _collect_provenance_async
+from hyperion.infra.provenance import refusal_reason as _provenance_refusal
 from hyperion.infra.services import (
     FLARESOLVERR_IMAGE,
     FLARESOLVERR_PORT,
     MANAGED_CONTAINERS,
     SEARXNG_IMAGE,
-    SEARXNG_PORT,
-    ensure_container,
+    SEARXNG_REPLICAS,
     ensure_docker_engine,
-    flaresolverr_spec,
     run_command,
-    searxng_spec,
 )
 from hyperion.infra.services import (
     start_services as _infra_start_services,
@@ -73,6 +75,7 @@ from hyperion.infra.services import (
 from hyperion.infra.services import (
     stop_services as _infra_stop_services,
 )
+from hyperion.tools.searxng import EngineRegistryMismatch, reconcile_engine_registry
 from hyperion.tui.widgets.transcript import LogRow, Transcript
 
 logger = logging.getLogger(__name__)
@@ -82,8 +85,9 @@ __all__ = [
     "FLARESOLVERR_PORT",
     "MANAGED_CONTAINERS",
     "SEARXNG_IMAGE",
-    "SEARXNG_PORT",
+    "SEARXNG_REPLICAS",
     "BootStep",
+    "ProvenanceRefusal",
     "reset_process_state",
     "run_boot_sequence",
     "start_services",
@@ -121,6 +125,21 @@ WARN = "warn"
 FAIL = "fail"
 
 
+class ProvenanceRefusalError(RuntimeError):
+    """W-01: the shell refuses to boot in an RC-1 configuration.
+
+    Raised by run_boot_sequence when the loaded build is a site-packages
+    copy shadowing a git checkout on sys.path, or when stale .pyc bytecode
+    sits under the package directory — the two mechanisms that served
+    pre-fix output for fifteen correct commits. This is a hard stop, never
+    a warning.
+    """
+
+
+# Backward-compatible public name retained for callers and boot integrations.
+ProvenanceRefusal = ProvenanceRefusalError
+
+
 class BootStep:
     """One step in the boot sequence."""
 
@@ -150,6 +169,34 @@ async def run_boot_sequence(
     results: dict[str, Any] = {}
     step_num = 0
 
+    # ── W-01: build provenance, before ANY service bring-up ─────────────
+    # RC-1: a merged fix is not a running fix. Fifteen correct commits
+    # produced pre-fix output because the shell booted a site-packages
+    # shadow with stale bytecode and nobody could see it. The banner is
+    # printed unconditionally (never a log line at INFO level), and the two
+    # RC-1 configurations are a hard refusal, not a warning.
+    from hyperion.config import get_settings
+
+    # collect_async: this function runs inside the Textual event loop, so
+    # the sync wrapper would have fallen back to a SHA-less snapshot. The
+    # async path runs the bounded git subprocesses and caches the snapshot
+    # for the render path's XMP stamp.
+    provenance = await _collect_provenance_async()
+    banner_text = _provenance_banner(provenance)
+    # Banner goes to the transcript AND stderr — it must be on screen even
+    # if the TUI crashes before the first frame paints.
+    print(banner_text, file=sys.stderr, flush=True)
+    log.add_entry("BUILD", banner_text, spinner=False)
+    refusal = _provenance_refusal(provenance)
+    if refusal is not None and get_settings().provenance_strict:
+        print(f"BOOT REFUSED — {refusal}", file=sys.stderr, flush=True)
+        raise ProvenanceRefusal(refusal)
+    results["build"] = (
+        OK,
+        f"build {provenance.git_sha or 'unknown'} "
+        f"{'+dirty ' if provenance.git_dirty else ''}{provenance.install_mode}",
+    )
+
     def _start_step(badge: str, label: str, spinner: bool = True) -> BootStep:
         nonlocal step_num
         step_num += 1
@@ -162,7 +209,7 @@ async def run_boot_sequence(
             logger.debug("%s: %s", "_start_step", exc)
         return step
 
-    def _progress_for(step: BootStep):
+    def _progress_for(step: BootStep) -> Callable[[str], None]:
         """Live sub-status callback for a long-running step.
 
         The container and engine helpers report what they are doing
@@ -217,32 +264,44 @@ async def run_boot_sequence(
     _finish_step(step, docker_status.state, docker_status.detail)
     results["docker"] = (docker_status.state, docker_status.detail)
 
-    # ── Step 3: SearxNG ───────────────────────────────────────────────────
+    # ── Step 3: profile-isolated retrieval stack ───────────────────────────
     if docker_status.ok:
-        step = _start_step("SEARXNG", "starting SearxNG search container")
-        searx = await ensure_container(searxng_spec(), on_progress=_progress_for(step))
-        _finish_step(step, searx.state, f"SearxNG {searx.detail}")
-        results["searxng"] = (searx.state, searx.detail)
+        step = _start_step("SEARCH", "starting three SearXNG replicas and Valkey")
+        statuses = await _infra_start_services(on_progress=_progress_for(step))
+        replica_details: list[str] = []
+        replica_ok = True
+        for replica in SEARXNG_REPLICAS:
+            status = statuses[replica.name]
+            if status.ok:
+                try:
+                    registry = await reconcile_engine_registry(
+                        f"http://127.0.0.1:{replica.port}",
+                        expected_engines=set(replica.engines),
+                    )
+                except EngineRegistryMismatch as exc:
+                    status.state = FAIL
+                    status.detail = str(exc)
+                else:
+                    status.detail += f" · {len(registry.enabled)} engines reconciled"
+            replica_ok = replica_ok and status.ok
+            replica_details.append(f"{replica.profile}:{status.state}@{replica.port}")
+            results[f"searxng_{replica.profile}"] = (status.state, status.detail)
+        valkey = statuses["hyperion-valkey"]
+        aggregate_state = OK if replica_ok and valkey.ok else FAIL
+        aggregate_detail = " · ".join(replica_details + [f"valkey:{valkey.state}"])
+        _finish_step(step, aggregate_state, aggregate_detail)
+        results["searxng"] = (aggregate_state, aggregate_detail)
+        results["valkey"] = (valkey.state, valkey.detail)
     else:
-        step = _start_step("SEARXNG", "SearxNG — skipped (Docker unavailable)")
+        step = _start_step("SEARCH", "retrieval stack — skipped (Docker unavailable)")
         await _pause(0.2)
-        _finish_step(step, WARN, "SearxNG unavailable — agents will use the Jina fallback")
+        _finish_step(step, WARN, "SearXNG unavailable — agents will use grounded fallbacks")
         results["searxng"] = (WARN, "skipped")
+        results["valkey"] = (WARN, "skipped")
 
-    # ── Step 3b: FlareSolverr ─────────────────────────────────────────────
-    if docker_status.ok:
-        step = _start_step("FLARE", "starting FlareSolverr CAPTCHA-bypass container")
-        flare = await ensure_container(flaresolverr_spec(), on_progress=_progress_for(step))
-        # A missing FlareSolverr degrades scraping but does not break the
-        # engagement, so a hard failure is still reported as a warning.
-        state = OK if flare.ok else WARN
-        _finish_step(step, state, f"FlareSolverr {flare.detail}")
-        results["flare"] = (state, flare.detail)
-    else:
-        step = _start_step("FLARE", "FlareSolverr — skipped (Docker unavailable)")
-        await _pause(0.2)
-        _finish_step(step, WARN, "FlareSolverr unavailable — stealth Bing fallback only")
-        results["flare"] = (WARN, "skipped")
+    # W-12: CAPTCHA tooling is investigation-only. Starting it during a normal
+    # engagement would conceal a forbidden Tier C engine regression.
+    results["flare"] = (OK, "disabled by default; opt in for investigation")
 
     # ── Step 3c: Data tools readiness ───────────────────────────────────
     step = _start_step("TOOLS", "checking data source tool readiness")
@@ -452,7 +511,9 @@ def _obscura_present(settings: Any) -> bool:
     return False
 
 
-async def start_services(*, on_progress: object = None) -> dict[str, bool]:
+async def start_services(
+    *, on_progress: Callable[[str], None] | None = None
+) -> dict[str, bool]:
     """Recreate the managed containers from a clean slate. Headless entry point.
 
     Delegates to :func:`hyperion.infra.services.start_services`, which owns the
@@ -464,7 +525,9 @@ async def start_services(*, on_progress: object = None) -> dict[str, bool]:
     return {name: status.ok for name, status in statuses.items()}
 
 
-async def ensure_docker_ready(*, on_progress: object = None) -> bool:
+async def ensure_docker_ready(
+    *, on_progress: Callable[[str], None] | None = None
+) -> bool:
     """Start the Docker engine if needed. True when the daemon is usable."""
     status = await ensure_docker_engine(on_progress=on_progress)
     return status.ok

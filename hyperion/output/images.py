@@ -33,6 +33,7 @@ Used by: Render Engine (PILLOW tool), Data Visualizer (PILLOW tool) (§5.1)
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,17 @@ class ImageTooSmallError(Exception):
 # An exhibit is a chart; a decorative photo that reads as one makes the reader
 # interpret it as data (report B shipped a candlestick photo on a manufacturing
 # chapter). These categories are banned outright for section decoration.
+# D-15: hard limits for assets embedded into self-contained report HTML.
+# Base64 adds roughly 33%, so budgets apply to binary bytes before encoding.
+# These limits preserve print dimensions while preventing a handful of noisy
+# source PNGs from inflating an otherwise small report by tens of megabytes.
+MAX_COVER_BYTES = 1_500_000
+MAX_SECTION_IMAGE_BYTES = 750_000
+MAX_CHART_IMAGE_BYTES = 1_000_000
+MAX_EMBEDDED_IMAGE_BYTES = 12_000_000
+MIN_EMBED_DIMENSION = 320
+
+
 CHART_LIKE_SECTION_BAN: frozenset[str] = frozenset({
     "stock chart", "candlestick", "trading screen", "trading chart",
     "financial chart", "price chart", "forex chart", "market chart",
@@ -100,7 +112,7 @@ class ImageRelevanceGate:
         content = self._candidate_text(candidate)
         if not query or not content:
             return 0.0
-        return self._scorer._score_relevance(query, content)
+        return float(self._scorer._score_relevance(query, content))
 
     def is_relevant(self, candidate: Any, subject: str, topic: str) -> bool:
         """True only when the candidate clears the floor and is not chart-like."""
@@ -164,6 +176,108 @@ class ImageProcessResult:
             "cropped": self.cropped,
             "error": self.error,
         }
+
+
+def compress_image_for_embedding(
+    image_path: Path,
+    max_bytes: int,
+    *,
+    preserve_lossless: bool = False,
+) -> tuple[bytes, str] | None:
+    """Return image bytes that fit an explicit self-contained HTML budget.
+
+    Files already within the limit are returned unchanged. Oversized raster
+    assets are progressively re-encoded and, only when needed, downsampled.
+    Charts may request lossless PNG output; photographs use high-quality JPEG,
+    which is substantially smaller than the pipeline's archival PNG. If the
+    budget cannot be met without shrinking below a readable dimension, return
+    ``None`` so the renderer can omit the asset instead of embedding an
+    unbounded payload or leaving a machine-local file path in the report.
+    """
+    if max_bytes <= 0:
+        return None
+
+    try:
+        original = image_path.read_bytes()
+    except OSError:
+        return None
+
+    mime_by_suffix = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }
+    original_mime = mime_by_suffix.get(image_path.suffix.lower())
+    if original_mime is None:
+        return None
+    if len(original) <= max_bytes:
+        return original, original_mime
+
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as source:
+            source.load()
+            image = source.copy()
+    except (OSError, ValueError):
+        return None
+
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+
+    # Try progressively smaller dimensions. Every candidate is generated from
+    # the original decoded pixels, avoiding cumulative resampling damage.
+    scale = 1.0
+    while min(image.size) * scale >= MIN_EMBED_DIMENSION:
+        width = max(MIN_EMBED_DIMENSION, round(image.width * scale))
+        height = max(MIN_EMBED_DIMENSION, round(image.height * scale))
+        candidate = image
+        if (width, height) != image.size:
+            candidate = image.resize((width, height), Image.Resampling.LANCZOS)
+
+        if preserve_lossless:
+            png = BytesIO()
+            candidate.save(
+                png,
+                format="PNG",
+                optimize=True,
+                compress_level=9,
+                dpi=(300, 300),
+            )
+            payload = png.getvalue()
+            if len(payload) <= max_bytes:
+                return payload, "image/png"
+        else:
+            # JPEG has no alpha channel. Composite transparent source imagery
+            # onto the report's cream canvas rather than silently turning it
+            # black in Chromium or WeasyPrint.
+            if candidate.mode == "RGBA":
+                background = Image.new("RGB", candidate.size, (245, 244, 238))
+                background.paste(candidate, mask=candidate.getchannel("A"))
+                candidate = background
+            elif candidate.mode != "RGB":
+                candidate = candidate.convert("RGB")
+
+            for quality in (88, 82, 76, 70, 64, 58, 52, 46, 40):
+                jpeg = BytesIO()
+                candidate.save(
+                    jpeg,
+                    format="JPEG",
+                    quality=quality,
+                    optimize=True,
+                    progressive=True,
+                    dpi=(300, 300),
+                )
+                payload = jpeg.getvalue()
+                if len(payload) <= max_bytes:
+                    return payload, "image/jpeg"
+
+        scale *= 0.82
+
+    return None
 
 
 class ImageProcessor:
@@ -470,7 +584,7 @@ class ImageProcessor:
 
         try:
             with pil_image.open(image_path) as img:
-                return img.width >= min_width and img.height >= min_height
+                return bool(img.width >= min_width and img.height >= min_height)
         except (OSError, ValueError):
             return False
 

@@ -1,5 +1,5 @@
 """
-HYPERION Data Visualizer — Agent 17, the chart generation and visual
+HYPERION Data Visualizer, Agent 17, the chart generation and visual
 storytelling engine.
 
 This is NOT a generic "make a chart" agent. This is a specialist with
@@ -9,30 +9,30 @@ This is NOT a generic "make a chart" agent. This is a specialist with
   comparison → bar, trend → line, distribution → histogram, correlation →
   scatter, composition → stacked bar/treemap, flow → sankey. Never uses a
   pie chart when a bar chart would be clearer.
-- Data viz best practices: Apply Tufte principles — minimize chartjunk,
+- Data viz best practices: Apply Tufte principles, minimize chartjunk,
   maximize data-ink ratio, use color purposefully (not decoratively). No 3D
   effects, no gradient fills, no decorative elements.
 - Brand-compliant styling: All charts use the HYPERION chart color sequence
   (terracotta, sage, deep brown, warm gray, beige, alert red). First series
   is always Terracotta. Risk data uses Alert Red. Positive findings use Sage.
   Never blue, purple, or green (standard Plotly defaults).
-- Axis calibration: Choose axis ranges that show the data honestly — no
+- Axis calibration: Choose axis ranges that show the data honestly, no
   truncated y-axes that exaggerate differences, no log scales without
   labeling. The y-axis starts at zero for bar charts (always).
 - Annotation: Add contextual annotations that help the reader understand
-  the key insight — benchmark lines, callout boxes, trend lines. Not
-  decorative — purposeful.
+  the key insight, benchmark lines, callout boxes, trend lines. Not
+  decorative, purposeful.
 
 It runs on STANDARD tier (Llama 3.3 70B / GPT OSS 120B / Nemotron 3 Nano
 30B) because chart generation requires reasoning about data shape and chart
 type selection, but doesn't need the deep analysis of STRONG/DEEP tiers.
 
-Model Tier: STANDARD (Llama 3.3 70B on Groq — chart type selection and
+Model Tier: STANDARD (Llama 3.3 70B on Groq, chart type selection and
 styling require moderate reasoning, not deep analysis)
 Tools: Plotly (generate charts with brand colors and 300 DPI export),
        Unsplash (search for contextual images to complement charts),
-       Pillow (post-process chart images — sharpen, color-correct for print)
-Sub-agents: 0 (support agent — doesn't spawn sub-agents)
+       Pillow (post-process chart images, sharpen, color-correct for print)
+Sub-agents: 0 (support agent, doesn't spawn sub-agents)
 Output: VisualizationOutput (chart specifications with generated PNG paths,
         300 DPI, brand-compliant, Tufte-compliant, Pillow-processed)
 
@@ -45,11 +45,11 @@ Methodology (§4.5, Agent 17):
 6. Return chart image paths to Presentation Designer
 
 What makes it the best version of itself:
-It follows Tufte principles — no chartjunk, no 3D effects, no gradient
+It follows Tufte principles, no chartjunk, no 3D effects, no gradient
 fills. Every chart has a purpose: it reveals a pattern that the text alone
 cannot convey. It never uses a pie chart when a bar chart would be clearer.
 It always labels axes, always cites the data source, and always chooses the
-chart type that best reveals the insight — not the chart type that looks
+chart type that best reveals the insight, not the chart type that looks
 most impressive.
 """
 
@@ -84,16 +84,16 @@ from hyperion.schemas.models import (
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HYPERION Chart Color Sequence (§7.3 — STRICT)
+# HYPERION Chart Color Sequence (§7.3, STRICT)
 # ─────────────────────────────────────────────────────────────────────────────
 
 CHART_COLORS = [
-    "#C8704D",  # Terracotta (primary — always first series)
-    "#7C9885",  # Sage (secondary — always second series)
+    "#C8704D",  # Terracotta (primary, always first series)
+    "#7C9885",  # Sage (secondary, always second series)
     "#3D3530",  # Deep Brown (tertiary)
     "#8B8680",  # Warm Gray (quaternary)
-    "#E8E6DD",  # Beige (light fill — for backgrounds/shading)
-    "#B5533C",  # Alert Red (risk series only — never default)
+    "#E8E6DD",  # Beige (light fill, for backgrounds/shading)
+    "#B5533C",  # Alert Red (risk series only, never default)
 ]
 
 # PDF palette for reference
@@ -127,8 +127,8 @@ _MBB_CHART_TYPES = frozenset({
 # Chart types with no meaningful *value* axis to label. Used by the Tufte
 # compliance check: demanding an axis label from a treemap or a pie is not
 # rigour, it is a false negative that would mark a correct exhibit
-# non-compliant. TORNADO is included for the y-axis only — its categories are
-# driver names, which are self-labelling — but its x-axis (the swing in the
+# non-compliant. TORNADO is included for the y-axis only, its categories are
+# driver names, which are self-labelling, but its x-axis (the swing in the
 # output metric) very much does need a label, so it is NOT exempt from that.
 _NO_CARTESIAN_AXES = frozenset({
     ChartType.TREEMAP,
@@ -197,7 +197,7 @@ DATA_VISUALIZER_SPEC = AgentSpec(
         SkillSpec(
             name="Axis calibration",
             description=(
-                "Choose axis ranges that show the data honestly — no "
+                "Choose axis ranges that show the data honestly, no "
                 "truncated y-axes that exaggerate differences, no log "
                 "scales without labeling. The y-axis starts at zero for "
                 "bar charts (always). Axis ranges are set to show the full "
@@ -214,14 +214,14 @@ DATA_VISUALIZER_SPEC = AgentSpec(
                 "understand the key insight: benchmark lines (industry "
                 "average, competitor position), callout boxes (highlighting "
                 "the key data point), trend lines (showing direction). Not "
-                "decorative — purposeful. Every annotation has a reason."
+                "decorative, purposeful. Every annotation has a reason."
             ),
             inputs=["chart_spec", "key_insight", "benchmark_data"],
             outputs=["annotations", "benchmark_lines", "callout_boxes"],
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Data Visualizer — the chart generation and "
+        "You are the HYPERION Data Visualizer, the chart generation and "
         "visual storytelling engine.\n\n"
         "Your role:\n"
         "1. RECEIVE chart specifications from the Presentation Designer. "
@@ -243,7 +243,7 @@ DATA_VISUALIZER_SPEC = AgentSpec(
         "- Gridlines are subtle and behind the data, not on top.\n"
         "- Never use a pie chart when a bar chart would be clearer.\n"
         "- Always label axes. Always cite the data source.\n\n"
-        "Brand Color Rules (§7.3 — STRICT):\n"
+        "Brand Color Rules (§7.3, STRICT):\n"
         "- CHART_COLORS = ['#C8704D', '#7C9885', '#3D3530', '#8B8680', "
         "'#E8E6DD', '#B5533C']\n"
         "- First series is ALWAYS Terracotta. No exceptions.\n"
@@ -264,7 +264,7 @@ DATA_VISUALIZER_SPEC = AgentSpec(
         "- Add trend lines showing direction.\n"
         "- Every annotation has a reason. No decorative annotations.\n\n"
         "You run on STANDARD tier. You do NOT spawn sub-agents.\n\n"
-        "Your output is a VisualizationOutput Pydantic model — structured, "
+        "Your output is a VisualizationOutput Pydantic model, structured, "
         "not free text. Every chart has: image_path, title, caption, "
         "source_citation, and tufte_compliant=True."
     ),
@@ -287,7 +287,7 @@ class DataVisualizer(BaseAgent):
 
     Generates charts, graphs, and visual elements for the report. Runs on
     STANDARD tier because chart type selection and styling require moderate
-    reasoning. Follows Tufte principles — no chartjunk, no 3D effects, no
+    reasoning. Follows Tufte principles, no chartjunk, no 3D effects, no
     gradient fills. Every chart has a purpose. (§4.5, Agent 17)
 
     Lifecycle:
@@ -440,7 +440,7 @@ class DataVisualizer(BaseAgent):
         #
         # So a purely additive change that appended these to the end of the
         # chain would have left every one of them unreachable for its most
-        # natural phrasing — the same class of silent, test-passing dead code
+        # natural phrasing, the same class of silent, test-passing dead code
         # the audit is about. Specific-before-generic is the invariant;
         # `tests/test_mbb_chart_vocabulary.py::TestSpecificShapesBeatGenericOnes`
         # pins it with the exact colliding phrases above.
@@ -607,7 +607,7 @@ class DataVisualizer(BaseAgent):
                 "tickfont": {"size": 12, "color": PDF_PALETTE["warm_charcoal"]},
             },
             "legend": {
-                "bgcolor": "rgba(0,0,0,0)",  # Transparent — no chartjunk
+                "bgcolor": "rgba(0,0,0,0)",  # Transparent, no chartjunk
                 "borderwidth": 0,
                 "font": {"size": 12, "color": PDF_PALETTE["warm_charcoal"]},
             },
@@ -775,12 +775,12 @@ class DataVisualizer(BaseAgent):
         # ── MBB exhibit vocabulary (fix 4.3, audit §3.9) ──────────────────
         # Delegated to `hyperion.output.charts.ChartGenerator` rather than
         # hand-built here. The five MBB exhibits are not "a trace with a
-        # different type string" — a tornado sorts its drivers by swing, a
+        # different type string", a tornado sorts its drivers by swing, a
         # marimekko puts columns on a continuous axis at computed centers, a
         # football field draws floating spans from a computed base, and both
         # bubble forms need an area `sizeref`. Reimplementing that geometry
         # inline would create a fourth place for the same logic to drift,
-        # which is the defect this fix exists to remove — the branch chain
+        # which is the defect this fix exists to remove, the branch chain
         # above is already a duplicate of `charts.py`'s creators.
         #
         # Note this is a genuine behavioural fix as well as a structural one:
@@ -788,7 +788,7 @@ class DataVisualizer(BaseAgent):
         # does not name returns an EMPTY trace list, which exports as a blank
         # chart (not a bar-chart substitute, as in `_get_chart_creator`).
         # Without this branch the five new types would render as empty
-        # exhibits — the `has_exhibits: false` family of failure again.
+        # exhibits, the `has_exhibits: false` family of failure again.
         if chart_spec.chart_type in _MBB_CHART_TYPES:
             return self._build_mbb_traces(chart_spec)
 
@@ -808,7 +808,7 @@ class DataVisualizer(BaseAgent):
 
         The row mapping follows each creator's documented layout: the first
         data series supplies `x_data` labels, and each series' values become
-        one `y_data` row in order — which is exactly how the creators read
+        one `y_data` row in order, which is exactly how the creators read
         their `y_data[0]`, `y_data[1]`, `y_data[2]`.
         """
         import plotly.graph_objects as go
@@ -845,7 +845,7 @@ class DataVisualizer(BaseAgent):
             # never let one malformed exhibit abort the whole visualization
             # run. An empty trace list degrades to a blank chart, which the
             # caller already tolerates.
-            # D-05: BaseAgent defines no self._logger — logging is module-
+            # D-05: BaseAgent defines no self._logger, logging is module-
             # level. The old attribute read raised AttributeError out of this
             # except-path, turning a degraded chart into a crashed run.
             logger.warning(
@@ -860,7 +860,7 @@ class DataVisualizer(BaseAgent):
     ) -> dict[str, Any]:
         """Extract the geometry-bearing layout keys from an MBB figure.
 
-        Only the keys that carry meaning are copied — `barmode`, `bargap`,
+        Only the keys that carry meaning are copied, `barmode`, `bargap`,
         `shapes`, and axis settings the creator computed (reversed autorange,
         array tickvals). Brand styling (colors, fonts, margins) deliberately
         stays with `_build_plotly_layout`, which is this agent's own
@@ -1008,14 +1008,14 @@ class DataVisualizer(BaseAgent):
             layout["barmode"] = "stack"
 
         # Fix 4.3: the MBB exhibits carry layout state that is part of their
-        # geometry, not decoration — `barmode="overlay"` for a tornado's
+        # geometry, not decoration, `barmode="overlay"` for a tornado's
         # back-to-back bars, `barmode="stack"` + `bargap=0` for a marimekko's
         # abutting columns, the reversed x-axis on a growth-share matrix, and
         # the quadrant/reference `shapes`. `_build_plotly_layout` above builds
         # its layout from the spec alone and knows none of that, so merging
         # the creator's own layout in is what keeps the exported figure the
         # same shape as the one `charts.py` produces. Without this, a
-        # marimekko would export with default gaps between columns — i.e. a
+        # marimekko would export with default gaps between columns, i.e. a
         # plain stacked bar, silently discarding the width dimension.
         if chart_spec.chart_type in _MBB_CHART_TYPES:
             layout.update(self._mbb_layout_overrides(chart_spec))
@@ -1046,7 +1046,7 @@ class DataVisualizer(BaseAgent):
 
         except (ValueError, AttributeError, RuntimeError) as e:
             # If Plotly tool fails, log and return empty path (D-05: module
-            # logger — BaseAgent has no self._logger).
+            # logger, BaseAgent has no self._logger).
             logger.warning(f"Plotly chart generation failed for {chart_id}: {e}")
             return ""
 
@@ -1090,7 +1090,7 @@ class DataVisualizer(BaseAgent):
 
         Pipeline (§6.4):
         1. Open and verify image resolution
-        2. Color-correct (match brand warmth — slightly warm, not cold/blue)
+        2. Color-correct (match brand warmth, slightly warm, not cold/blue)
         3. Sharpen (unsharp mask for print clarity)
         4. Export as PNG (lossless, 300 DPI)
         """
@@ -1250,14 +1250,14 @@ class DataVisualizer(BaseAgent):
         untouched, and that is deliberate rather than an omission. Forcing a
         zero-based y-range here would be actively wrong for three of them:
 
-        - `GROWTH_SHARE` — the y-axis is a market growth *rate*; anchoring it
+        - `GROWTH_SHARE`, the y-axis is a market growth *rate*; anchoring it
           at zero flattens the entire portfolio against the top of the plot
           and destroys the quadrant read, and the creator already draws its
           own growth-midpoint divider.
-        - `FOOTBALL_FIELD` — the bars are floating spans; a range starting at
+        - `FOOTBALL_FIELD`, the bars are floating spans; a range starting at
           zero compresses every valuation into the right-hand margin, which
           is exactly the distortion the exhibit form exists to avoid.
-        - `TORNADO` — the axis is signed by construction (downside is
+        - `TORNADO`, the axis is signed by construction (downside is
           negative), so a `(0, max)` range would clip every downside bar.
 
         `MARIMEKKO` and `BUBBLE` set their own axis state in the creator
@@ -1292,7 +1292,7 @@ class DataVisualizer(BaseAgent):
                 range_padding = (max_val - min_val) * 0.1
                 if range_padding == 0:
                     range_padding = max_val * 0.1
-                # Don't force zero for line charts — but don't truncate either
+                # Don't force zero for line charts, but don't truncate either
                 chart_spec.y_axis_range = (
                     min_val - range_padding,
                     max_val + range_padding,
@@ -1301,7 +1301,7 @@ class DataVisualizer(BaseAgent):
         return chart_spec
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 6-step methodology
+    # Main execution, the 6-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(

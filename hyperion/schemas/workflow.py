@@ -47,6 +47,44 @@ class QuestionType(str, Enum):
     GENERAL = "general"             # Broad strategic question
 
 
+class SubjectClass(str, Enum):
+    """The second classification axis: what the question is ABOUT (W-06).
+
+    Question type is the grammatical form ("should we", "compare", "why").
+    Subject class is the entity the analysis must operate on — and it is the
+    subject class that determines which analytical METHODS are meaningful.
+    A DCF values a firm; it cannot value a nation state. The engagement
+    roster is a function of (question_type, subject_class), never of
+    question_type alone.
+    """
+
+    COMPANY = "company"                      # a firm, a business unit
+    NATION_OR_REGION = "nation_or_region"    # India, ASEAN, Bavaria
+    TECHNOLOGY = "technology"                # solid state batteries
+    POLICY = "policy"                        # a tariff, a subsidy scheme
+    MARKET = "market"                        # the EV market in Europe
+    PERSON_OR_ORG = "person_or_org"          # a regulator, an individual
+
+
+class RosterDecision(BaseModel):
+    """One roster decision for one agent under one subject class (W-06).
+
+    For every agent considered — dispatched or not — the Director records
+    why. ``eligible_methods`` lists the agent's declared methods that apply
+    to the classified subject class; an empty list with ``dispatched=False``
+    is an EXCLUSION with a stated reason, which is what the methodology
+    section (W-10) and the report's scope statement quote. This record is
+    also the audit trail that makes a future DCF-on-a-country immediately
+    traceable to the decision that allowed it.
+    """
+
+    agent: AgentName
+    subject_class: SubjectClass
+    eligible_methods: list[str] = Field(default_factory=list)
+    dispatched: bool
+    reason: str = ""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Research Domain — a research area identified by the Engagement Director
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,6 +216,19 @@ class WorkflowDAG(BaseModel):
     subject: str = Field(
         default="",
         description="Industry/sector/topic the question is about, as extracted by the Director",
+    )
+    # W-06: the second classification axis. Empty string means "no subject
+    # class was established" — possible only on a legacy/constructed DAG;
+    # the Director's planning path always sets it or fails before building.
+    subject_class: str = Field(
+        default="",
+        description="Subject class the roster was gated on (company/nation_or_region/...), as classified by the Director",
+    )
+    # W-06: for every agent considered, why it was or was not dispatched.
+    # Input to the methodology section (W-10) and the report scope note.
+    roster_decisions: list[RosterDecision] = Field(
+        default_factory=list,
+        description="Recorded roster decision per considered agent (eligible methods, dispatched, reason)",
     )
     agents_selected: list[AgentName] = Field(
         default_factory=list,
@@ -337,3 +388,7 @@ class EngagementMetadata(BaseModel):
     sub_agents_spawned: int = 0
     quality_iterations: int = 0
     final_quality_score: float | None = None
+    # W-08: when the Quality Gate BLOCKS a run, the path of the machine-readable
+    # operator diagnostic (dimension scores, blockers, gaps, corpus stats,
+    # roster decisions). Empty when the run shipped or failed for other reasons.
+    blocked_diagnostic_path: str = ""

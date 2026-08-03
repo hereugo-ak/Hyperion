@@ -60,6 +60,12 @@ from typing import Any
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
+from hyperion.agents.claim_triples import (
+    MAX_MATERIAL_CONTRADICTIONS,
+    extract_triple,
+    opposition,
+    rank_materiality,
+)
 from hyperion.config import ModelTier
 from hyperion.output.dedup import dedup_paragraphs
 from hyperion.output.display import DisplayError, display_value
@@ -106,7 +112,7 @@ class SectionGapError(RuntimeError):
 # P2-12: the 11 specialists are the only agents whose findings may become a
 # client-facing chapter. ``_findings_by_agent`` accepts findings from any
 # sender (Fact Checker output is useful input to reconciliation), but the
-# section builder iterates THIS set — the Fact Checker never appears as a
+# section builder iterates THIS set, the Fact Checker never appears as a
 # chapter, a TOC entry, or a quoted source in At a Glance / Executive
 # Summary. Its output reaches the client only through
 # ``FinalReport.fact_check_report``, which the Technical Appendix may
@@ -291,13 +297,13 @@ class SynthesisLead(BaseAgent):
 
         # D-01: analysis sections are built from findings BEFORE the
         # recommendation call and parked here immediately. If any later step
-        # raises, _minimal_report() carries them into the degraded report —
+        # raises, _minimal_report() carries them into the degraded report,
         # a synthesis failure costs the recommendation, never the analysis.
         self._partial_sections: list[AnalysisSection] = []
 
         # D-02: structural integrity violations observed by the quality loop
         # (e.g. section_updates for a report whose body was never built).
-        # Recorded, never swallowed — the audit's lesson is that silent
+        # Recorded, never swallowed, the audit's lesson is that silent
         # degradation is how a crash became a confident PDF.
         self._recorded_failures: list[str] = []
 
@@ -318,7 +324,7 @@ class SynthesisLead(BaseAgent):
         self.section_gaps: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
-    # Bus message handling — collect findings, fact check, quality score
+    # Bus message handling, collect findings, fact check, quality score
     # ─────────────────────────────────────────────────────────────────────
 
     async def _handle_bus_message(self, msg: Any) -> None:
@@ -339,7 +345,7 @@ class SynthesisLead(BaseAgent):
                 self._findings_by_agent[agent_name].append(finding)
             else:
                 # Specialists publish full analysis objects via bus.publish
-                # without a "finding" key — extract summary data as a synthetic
+                # without a "finding" key, extract summary data as a synthetic
                 # KeyFinding so the synthesis lead has access to quantitative
                 # results (TAM, DCF, WACC, etc.) for narrative generation.
                 payload = msg.payload
@@ -457,7 +463,7 @@ class SynthesisLead(BaseAgent):
                         self._fact_check_report = FactCheckReport.model_validate(report_data)
                     except (ValueError, TypeError) as exc:
                         # A fact-check report that fails validation leaves the
-                        # Synthesis Lead blind to hallucinated citations — the
+                        # Synthesis Lead blind to hallucinated citations, the
                         # #1 quality risk per the FactCheckReport schema.
                         logger.warning(
                             "fact_check_report failed validation and was discarded: %s: %s",
@@ -472,7 +478,7 @@ class SynthesisLead(BaseAgent):
                         self._quality_iteration = self._quality_score.iteration
                     except (ValueError, TypeError) as exc:
                         # A dropped quality score leaves the revision loop on
-                        # stale iteration state — record it.
+                        # stale iteration state, record it.
                         logger.warning(
                             "quality_score failed validation and was discarded: %s: %s",
                             type(exc).__name__, exc,
@@ -568,96 +574,101 @@ class SynthesisLead(BaseAgent):
     # ─────────────────────────────────────────────────────────────────────
 
     def _identify_contradictions(self, matrix: dict[str, Any]) -> list[Contradiction]:
-        """Identify contradictions between agents' findings.
+        """Identify contradictions between agents' findings (W-05).
 
-        Uses the finding matrix to detect:
-        - Data conflicts: same finding_type, different values from different agents
-        - Interpretation conflicts: same data, different conclusions
-        - Scope conflicts: agents analyzed different scopes
+        A contradiction is two claims about the SAME subject with
+        incompatible values or polarity, nothing else. Every finding is
+        normalised into a ``ClaimTriple`` via ``hyperion.agents.claim_triples``;
+        triples pair only on predicate + subject-token match, and opposition
+        is explicit (numeric beyond tolerance after unit normalisation with a
+        temporal guard, or supports-vs-opposes polarity). Telemetry findings
+        ("Confidence: low", agent names, dict reprs) are ineligible and
+        logged, never forced into the analysis.
+
+        ``finding_a``/``finding_b`` carry the triple's ``claim_text``, the
+        exact string the detector compared, never the finding title, so the
+        appendix renders the same text that was analysed.
 
         Also incorporates contradictions from the FactCheckReport if available.
         """
         contradictions: list[Contradiction] = []
-        contradiction_id = 0
 
         # From fact check report
         if self._fact_check_report:
             for fc_contradiction in self._fact_check_report.contradictions:
                 contradictions.append(fc_contradiction)
 
-        # From finding matrix — look for same finding_type from different agents
+        # From finding matrix: per finding_type (predicate), extract triples
+        # and pair them across agents through the opposition test.
         m = matrix.get("matrix", {})
+        opposing_pairs: list[tuple[Any, Any, str]] = []
         for ftype, entries in m.items():
             if len(entries) < 2:
                 continue
 
-            # Group by agent
             agents_present = {e["agent"] for e in entries}
             if len(agents_present) < 2:
                 continue
 
-            # Compare pairs from different agents
-            for i, entry_a in enumerate(entries):
-                for j, entry_b in enumerate(entries):
+            triples = []
+            ineligible = 0
+            for entry in entries:
+                triple = extract_triple(
+                    agent=entry["agent"],
+                    predicate=ftype,
+                    claim_text=entry["content"],
+                    source_count=entry["source_count"],
+                    confidence=entry["confidence"],
+                )
+                if triple is None:
+                    ineligible += 1
+                    continue
+                triples.append(triple)
+            if ineligible:
+                logger.info(
+                    "W-05: %d finding(s) of type %s ineligible for "
+                    "contradiction analysis (telemetry or unnormalisable)",
+                    ineligible,
+                    ftype,
+                )
+
+            for i, triple_a in enumerate(triples):
+                for j, triple_b in enumerate(triples):
                     if i >= j:
                         continue
-                    if entry_a["agent"] == entry_b["agent"]:
+                    if triple_a.agent == triple_b.agent:
                         continue
+                    kind = opposition(triple_a, triple_b)
+                    if kind is not None:
+                        opposing_pairs.append((triple_a, triple_b, kind))
 
-                    # Check if contents diverge (simple heuristic)
-                    content_a = entry_a["content"].lower().strip()
-                    content_b = entry_b["content"].lower().strip()
-                    if content_a == content_b:
-                        continue
-
-                    # Classify contradiction type
-                    ctype = self._classify_contradiction(entry_a, entry_b, ftype)
-
-                    contradiction_id += 1
-                    contradiction = Contradiction(
-                        id=f"contradiction_{contradiction_id}",
-                        agent_a=entry_a["agent"],
-                        agent_b=entry_b["agent"],
-                        finding_a=entry_a["title"],
-                        finding_b=entry_b["title"],
-                        contradiction_type=ctype,
-                    )
-                    contradictions.append(contradiction)
+        # Budget cap: keep the most material pairs only (§W-05 step 7).
+        opposing_pairs.sort(key=rank_materiality, reverse=True)
+        for contradiction_id, (triple_a, triple_b, kind) in enumerate(
+            opposing_pairs[:MAX_MATERIAL_CONTRADICTIONS], start=1
+        ):
+            contradictions.append(
+                Contradiction(
+                    id=f"contradiction_{contradiction_id}",
+                    agent_a=triple_a.agent,
+                    agent_b=triple_b.agent,
+                    finding_a=triple_a.claim_text,
+                    finding_b=triple_b.claim_text,
+                    contradiction_type=(
+                        ContradictionType.DATA_CONFLICT
+                        if kind == "data_conflict"
+                        else ContradictionType.INTERPRETATION_CONFLICT
+                    ),
+                )
+            )
+        if len(opposing_pairs) > MAX_MATERIAL_CONTRADICTIONS:
+            logger.info(
+                "W-05: %d opposing pairs found, capped at %d by materiality",
+                len(opposing_pairs),
+                MAX_MATERIAL_CONTRADICTIONS,
+            )
 
         return contradictions
-
-    def _classify_contradiction(
-        self,
-        entry_a: dict[str, Any],
-        entry_b: dict[str, Any],
-        finding_type: str,
-    ) -> ContradictionType:
-        """Classify a contradiction as data, interpretation, or scope conflict.
-
-        - Data conflict: different numbers for the same metric (e.g., market_size)
-        - Interpretation conflict: same data, different conclusions
-        - Scope conflict: agents analyzed different scopes (geography, segment, etc.)
-        """
-        # Finding types that are inherently numeric → data conflicts
-        numeric_types = {
-            "market_size", "tam", "sam", "som", "cagr", "valuation",
-            "dcf", "revenue", "margin", "ltv", "cac", "price",
-            "cost", "spend", "growth_rate", "penetration_rate",
-        }
-
-        if finding_type.lower() in numeric_types:
-            return ContradictionType.DATA_CONFLICT
-
-        # Check if agents mention different geographies or segments
-        scope_indicators = ["region", "country", "geography", "segment", "market segment"]
-        content_a = entry_a["content"].lower()
-        content_b = entry_b["content"].lower()
-        for indicator in scope_indicators:
-            if indicator in content_a or indicator in content_b:
-                return ContradictionType.SCOPE_CONFLICT
-
-        # Default: interpretation conflict (same data, different conclusions)
-        return ContradictionType.INTERPRETATION_CONFLICT
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 4: Resolve contradictions (evidence-weighted, not averaging)
@@ -695,7 +706,7 @@ class SynthesisLead(BaseAgent):
             )
 
             if finding_a is None or finding_b is None:
-                # Can't resolve what we can't find — mark unresolved
+                # Can't resolve what we can't find, mark unresolved
                 contradiction.resolution = "Could not locate original findings for resolution"
                 resolved.append(contradiction)
                 continue
@@ -719,10 +730,10 @@ class SynthesisLead(BaseAgent):
                     f"{finding_b.implications or 'No implications stated.'}"
                 )
             else:
-                # Equal weight — this is a deeply entrenched contradiction
+                # Equal weight, this is a deeply entrenched contradiction
                 # Spawn a sub-agent for a focused deep dive (§4.3, Agent 2)
                 # Record whether a deep dive actually ran, so the resolution
-                # text cannot claim an investigation that never happened —
+                # text cannot claim an investigation that never happened,
                 # the sub-agent budget may already be spent.
                 _specs_before = len(self._sub_agent_specs)
                 winner = await self._deep_dive_contradiction(contradiction, finding_a, finding_b)
@@ -749,11 +760,20 @@ class SynthesisLead(BaseAgent):
     def _find_finding_by_agent_and_title(
         self,
         agent: str,
-        title: str,
+        claim_text: str,
     ) -> KeyFinding | None:
-        """Find a specific finding by agent name and title."""
+        """Find a specific finding by agent name and claim text (W-05).
+
+        W-05 contradictions carry the claim text that was compared
+        (``finding.content``), so match content first. Title matching is
+        retained as a fallback for fact-check-origin contradictions, which
+        predate the claim-triple pipeline.
+        """
         for finding in self._collected_findings:
-            if finding.agent == agent and finding.title == title:
+            if finding.agent == agent and finding.content == claim_text:
+                return finding
+        for finding in self._collected_findings:
+            if finding.agent == agent and finding.title == claim_text:
                 return finding
         return None
 
@@ -845,7 +865,7 @@ class SynthesisLead(BaseAgent):
         sub_findings = await self._spawn_sub_agent(sub_spec)
 
         if not sub_findings:
-            # Sub-agent couldn't resolve — default to the finding with more sources
+            # Sub-agent couldn't resolve, default to the finding with more sources
             if len(finding_a.sources) >= len(finding_b.sources):
                 return contradiction.agent_a
             return contradiction.agent_b
@@ -1001,15 +1021,19 @@ class SynthesisLead(BaseAgent):
             }
 
         try:
-            return json.loads(response.content)
+            parsed = json.loads(response.content)
+            if isinstance(parsed, dict):
+                return {str(key): value for key, value in parsed.items()}
         except (json.JSONDecodeError, ValueError):
-            return {
-                "recommendation": "investigate",
-                "recommendation_rationale": "LLM output parsing failed.",
-                "critical_assumptions": [],
-                "executive_summary": "Further research is needed.",
-                "key_findings_titles": [],
-            }
+            pass
+
+        return {
+            "recommendation": "investigate",
+            "recommendation_rationale": "LLM output parsing failed.",
+            "critical_assumptions": [],
+            "executive_summary": "Further research is needed.",
+            "key_findings_titles": [],
+        }
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 7: Calibrate system confidence
@@ -1051,7 +1075,7 @@ class SynthesisLead(BaseAgent):
         if not per_domain:
             return ConfidenceLevel.LOW, per_domain
 
-        # Count unresolved contradictions — they reduce system confidence
+        # Count unresolved contradictions, they reduce system confidence
         unresolved = sum(1 for c in contradictions if not c.resolved)
         if unresolved > 0:
             return ConfidenceLevel.LOW, per_domain
@@ -1103,7 +1127,7 @@ class SynthesisLead(BaseAgent):
         - Clear implications for the recommendation
         """
 
-        # Consulting-style section titles — never use raw agent names as headings
+        # Consulting-style section titles, never use raw agent names as headings
         agent_section_titles = {
             "market_analyst": "Market Landscape",
             "competitive_intel": "Competitive Landscape",
@@ -1127,8 +1151,8 @@ class SynthesisLead(BaseAgent):
         #
         # This function previously restated "2000-4000 words" in four separate
         # prompt strings, with no relationship to the 15-20 page deliverable
-        # target. Because the section count is `len(self._findings_by_agent)` —
-        # anywhere from 1 to 12 depending on which agents reported — the page
+        # target. Because the section count is `len(self._findings_by_agent)`,
+        # anywhere from 1 to 12 depending on which agents reported, the page
         # count was an emergent accident: the audit measured 36 pages against a
         # stated 20-page ceiling and nothing in the codebase noticed.
         #
@@ -1185,7 +1209,7 @@ class SynthesisLead(BaseAgent):
             # Select the best finding for the key insight box.
             # Prefer findings with real implications and non-generic titles.
             # Avoid "analysis_summary" type findings whose titles may be raw data labels.
-            def _insight_score(f: KeyFinding) -> tuple:
+            def _insight_score(f: KeyFinding) -> tuple[bool, bool, bool, int]:
                 has_implications = bool(f.implications and f.implications.strip())
                 is_specific = f.finding_type != "analysis_summary"
                 has_sources = len(f.sources) > 0
@@ -1252,7 +1276,7 @@ class SynthesisLead(BaseAgent):
                 if response.success and response.content and len(response.content) > min_body_chars:
                     section_body = response.content
                 elif response.success and response.content:
-                    # Response too short — retry with stronger instruction
+                    # Response too short, retry with stronger instruction
                     retry_prompt = (
                         f"The previous attempt was only {len(response.content)} characters, "
                         f"far too short for a consulting report section.\n\n"
@@ -1323,7 +1347,7 @@ class SynthesisLead(BaseAgent):
                 confidence=findings[0].confidence,
             )
 
-        # Build all sections in parallel — each section's LLM call is independent
+        # Build all sections in parallel, each section's LLM call is independent
         # D5: include agents with no findings so sections are never missing
         # P2-12: iterate the SECTION_PRODUCING_AGENTS allowlist, not every bus
         # sender. The Fact Checker (and any other non-specialist) may publish
@@ -1354,7 +1378,7 @@ class SynthesisLead(BaseAgent):
         return sections
 
     # ─────────────────────────────────────────────────────────────────────
-    # Quality Gate iteration — targeted refinement
+    # Quality Gate iteration, targeted refinement
     # ─────────────────────────────────────────────────────────────────────
 
     async def _apply_quality_feedback(
@@ -1388,7 +1412,7 @@ class SynthesisLead(BaseAgent):
             for d in failing_dims
         )
 
-        # Build a CONDENSED summary of the report — not the full JSON.
+        # Build a CONDENSED summary of the report, not the full JSON.
         # The LLM only needs enough context to make targeted fixes.
         section_summaries = "\n".join(
             f"  Section '{s.title}' (agent={s.agent}): "
@@ -1546,7 +1570,7 @@ class SynthesisLead(BaseAgent):
             # D-02: a degraded report may gain STRUCTURE, never CONFIDENCE.
             # The quality loop has write access to conclusions and no access
             # to evidence; without this guard it launders a crash into a
-            # confident recommendation — the exact mechanism by which the
+            # confident recommendation, the exact mechanism by which the
             # few-shot example's fabricated TAM figure overwrote the 07-30
             # degradation notice (see T-04's FORBIDDEN list for the tokens).
             # Conclusion fields are restored verbatim; section structure
@@ -1558,7 +1582,7 @@ class SynthesisLead(BaseAgent):
 
             # D-02 honesty: the loop cannot create sections out of nothing.
             # If it returned section_updates for a report with 0 sections,
-            # the body was never built (see D-01) — that is a structural
+            # the body was never built (see D-01), that is a structural
             # failure, and it must be recorded, not silently dropped by the
             # no-match loop above.
             if not updated.sections and section_updates:
@@ -1596,7 +1620,7 @@ class SynthesisLead(BaseAgent):
         self._recorded_failures.append(message)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Second Brain — query for prior engagement patterns
+    # Second Brain, query for prior engagement patterns
     # ─────────────────────────────────────────────────────────────────────
 
     async def _query_second_brain_for_patterns(self, question: str) -> str:
@@ -1681,7 +1705,7 @@ class SynthesisLead(BaseAgent):
         ) if contradictions else "No contradictions found."
 
         # D5.1: prior-engagement patterns from the Second Brain vault. Presented
-        # as precedent, explicitly NOT as evidence — a pattern from a previous
+        # as precedent, explicitly NOT as evidence, a pattern from a previous
         # engagement must not be cited as a finding about this one, or the report
         # would inherit conclusions it did not research.
         #
@@ -1807,7 +1831,7 @@ class SynthesisLead(BaseAgent):
         )
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 8-step methodology
+    # Main execution, the 8-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1859,7 +1883,7 @@ class SynthesisLead(BaseAgent):
     ) -> FinalReport:
         """Internal synthesis logic, called by run() with try/except guard."""
 
-        # Subscribe to bus channels — CORE role, but specifically needs
+        # Subscribe to bus channels, CORE role, but specifically needs
         # FINDINGS (to collect specialist output) and HANDOFF (for fact
         # check report, quality score, and start signal)
         self.subscribe_to_bus()
@@ -1877,7 +1901,7 @@ class SynthesisLead(BaseAgent):
                 issue="No specialist findings collected, cannot synthesize",
                 suggested_action="Check that specialists completed and published findings",
             )
-            # Return a minimal report — INVESTIGATE here is a placeholder,
+            # Return a minimal report, INVESTIGATE here is a placeholder,
             # not a synthesis, so the report is degraded by definition.
             return FinalReport(
                 engagement_id=self._engagement_id,
@@ -1914,7 +1938,7 @@ class SynthesisLead(BaseAgent):
         # D-01 structural fix: build the analysis body BEFORE the
         # recommendation call. Sections are a pure function of the collected
         # findings (``_build_analysis_sections`` never reads
-        # ``recommendation_data`` — the parameter is vestigial), so there is
+        # ``recommendation_data``, the parameter is vestigial), so there is
         # no dependency forcing them after the recommendation. Any raise in
         # step 5+6 below previously discarded every specialist's work because
         # the body was only assembled at the old step 8; now it already
@@ -2046,7 +2070,7 @@ class SynthesisLead(BaseAgent):
         self._quality_iteration = quality_score.iteration
 
         if self._quality_iteration >= self._max_quality_iterations:
-            # Max iterations reached — deliver with current report
+            # Max iterations reached, deliver with current report
             await self._transition(
                 AgentState.DONE,
                 f"Max quality iterations ({self._max_quality_iterations}) reached, delivering best version",

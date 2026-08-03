@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from textual.content import Content
 
-from hyperion.tui.content import build, line, span
+from hyperion.tui.content import Line, build, line, span
 from hyperion.tui.motion.color import ramp
 from hyperion.tui.roster import GROUP_ORDER, by_group
 from hyperion.tui.theme import (
@@ -43,9 +43,9 @@ TAGLINE = "Multi-Agent Consulting Intelligence"
 SUBTAGLINE = "orchestration · reasoning · synthesis"
 
 
-def _wordmark_lines() -> list[list]:
+def _wordmark_lines() -> list[Line]:
     """The gradient wordmark as styled spans (static clay ramp)."""
-    lines: list[list] = []
+    lines: list[Line] = []
     for s in WORDMARK:
         row = []
         for x, ch in enumerate(s):
@@ -77,7 +77,7 @@ def roster_summary(online: int | None = None) -> Content:
     if online is not None:
         head += f" · {online} online"
 
-    lines: list[list] = [line(span(head, f"bold {TEXT_PRIMARY}")), line("")]
+    lines: list[Line] = [line(span(head, f"bold {TEXT_PRIMARY}")), line("")]
     for grp in GROUP_ORDER:
         members = groups.get(grp) or []
         if not members:
@@ -109,7 +109,7 @@ def roster_content(online: int | None = None) -> Content:
     if online is not None:
         head += f" · {online} online"
 
-    lines: list[list] = []
+    lines: list[Line] = []
     lines.append(line(span(head, f"bold {TEXT_PRIMARY}")))
     lines.append(line(""))
 

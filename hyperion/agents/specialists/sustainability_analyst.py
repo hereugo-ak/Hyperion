@@ -1,5 +1,5 @@
 """
-HYPERION Sustainability Analyst — Agent 10, the ESG and sustainability specialist.
+HYPERION Sustainability Analyst, Agent 10, the ESG and sustainability specialist.
 
 This is NOT a generic "calculate carbon footprint" agent. This is a specialist
 with 5 proprietary analytical frameworks:
@@ -11,21 +11,21 @@ with 5 proprietary analytical frameworks:
 - Carbon footprint: Calculate Scope 1 (direct), Scope 2 (purchased electricity),
   and Scope 3 (value chain) emissions. Identify the specific emission sources
   that account for 80% of the footprint and calculate the abatement cost for
-  each. Not just 'energy use' — 'electricity from coal-fired grid power, 5000
+  each. Not just 'energy use''electricity from coal-fired grid power, 5000
   MWh/yr, 2500 tCO2e, abatement: switch to renewable PPA at $20/tCO2e, total
   cost $50K/yr.'
 - Sustainability reporting: Map reporting requirements (CSRD, SEC climate, TCFD,
   CDP). Identify which reports are mandatory vs. voluntary and the penalty for
   non-compliance.
 - Green financing: Evaluate green bonds, sustainability-linked loans, and carbon
-  credit opportunities. Calculate potential financing cost savings — not just
+  credit opportunities. Calculate potential financing cost savings, not just
   'green bonds exist' but 'a $50M green bond at 3.5% vs. 4.5% conventional saves
   $500K/yr in interest.'
 - Circular economy: Assess opportunities for circular economy models (reduce,
   reuse, recycle, refurbish) in the business model. Each opportunity has a $
   value and implementation cost.
 
-It doesn't just calculate a carbon number — it identifies the specific emission
+It doesn't just calculate a carbon number, it identifies the specific emission
 sources that account for 80% of the footprint and calculates the abatement cost
 for each. It maps ESG to financial impact (green financing savings, regulatory
 penalty avoidance, investor access) not just to compliance. It always identifies
@@ -34,7 +34,7 @@ regulators want CSRD, customers want GRI). (§4.4, Agent 10)
 
 Model Tier: STANDARD
 Tools: SearxNG, Jina, Obscura, FRED
-Sub-agents: Max 3 — ESG ratings, carbon emission data, sustainability regulations
+Sub-agents: Max 3, ESG ratings, carbon emission data, sustainability regulations
 Output: SustainabilityAnalysis (ESG scores, carbon footprint with abatement costs,
         reporting requirements, green financing opportunities, circular economy,
         total savings, financial impact summary, confidence, sources)
@@ -112,7 +112,7 @@ SUSTAINABILITY_ANALYST_SPEC = AgentSpec(
                 "Score the company/strategy on ESG frameworks: MSCI ESG Ratings, "
                 "SASB standards, TCFD recommendations, GRI standards, CSRD, CDP. "
                 "Identify which framework is most relevant for the stakeholder "
-                "audience — investors want TCFD, regulators want CSRD, customers "
+                "audience, investors want TCFD, regulators want CSRD, customers "
                 "want GRI. Each score includes key strengths, weaknesses, and "
                 "whether the framework is mandatory."
             ),
@@ -122,12 +122,12 @@ SUSTAINABILITY_ANALYST_SPEC = AgentSpec(
         SkillSpec(
             name="Carbon footprint",
             description=(
-                "Calculate Scope 1 (direct emissions — combustion, fleet), Scope 2 "
-                "(purchased electricity, heat, steam), and Scope 3 (value chain — "
+                "Calculate Scope 1 (direct emissions, combustion, fleet), Scope 2 "
+                "(purchased electricity, heat, steam), and Scope 3 (value chain"
                 "suppliers, product use, end-of-life) emissions. Identify the "
                 "specific emission sources that account for 80% of the footprint "
                 "and calculate the abatement cost for each. Not just 'energy use' "
-                "— 'electricity from coal-fired grid power, 5000 MWh/yr, 2500 "
+                "'electricity from coal-fired grid power, 5000 MWh/yr, 2500 "
                 "tCO2e, abatement: switch to renewable PPA at $20/tCO2e, total "
                 "cost $50K/yr.'"
             ),
@@ -151,7 +151,7 @@ SUSTAINABILITY_ANALYST_SPEC = AgentSpec(
             description=(
                 "Evaluate green bonds, sustainability-linked loans, and carbon "
                 "credit opportunities. Calculate potential financing cost savings "
-                "— not just 'green bonds exist' but 'a $50M green bond at 3.5% vs. "
+                "not just 'green bonds exist' but 'a $50M green bond at 3.5% vs. "
                 "4.5% conventional saves $500K/yr in interest.' Each opportunity "
                 "has eligibility criteria and estimated savings. Uses FRED data "
                 "for green bond rates and clean energy investment trends."
@@ -165,7 +165,7 @@ SUSTAINABILITY_ANALYST_SPEC = AgentSpec(
                 "Assess opportunities for circular economy models (reduce, reuse, "
                 "recycle, refurbish) in the business model. Each opportunity has "
                 "a $ value (cost savings + new revenue), implementation cost, ROI, "
-                "and feasibility rating. Not just 'recycle more' — 'remanufacturing "
+                "and feasibility rating. Not just 'recycle more''remanufacturing "
                 "returns saves $2M/yr in raw material costs, implementation cost "
                 "$500K, ROI = 300%, feasibility: high.'"
             ),
@@ -174,29 +174,29 @@ SUSTAINABILITY_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Sustainability Analyst — the specialist who "
+        "You are the HYPERION Sustainability Analyst, the specialist who "
         "assesses ESG performance, calculates carbon footprint, evaluates "
         "sustainability strategy, and maps ESG reporting requirements.\n\n"
         "Your proprietary frameworks:\n"
         "1. ESG scoring: MSCI ESG, SASB, TCFD, GRI, CSRD, CDP. Identify which "
-        "framework matters for the STAKEHOLDER — investors want TCFD, regulators "
+        "framework matters for the STAKEHOLDER, investors want TCFD, regulators "
         "want CSRD, customers want GRI. Each score has strengths, weaknesses, "
         "and mandatory status.\n"
         "2. Carbon footprint: Scope 1 (direct), Scope 2 (purchased electricity), "
         "Scope 3 (value chain). Identify the SPECIFIC sources that account for "
         "80% of the footprint and calculate abatement cost for EACH. Not just "
-        "'energy use' — 'coal-fired grid power, 5000 MWh/yr, 2500 tCO2e, "
+        "'energy use''coal-fired grid power, 5000 MWh/yr, 2500 tCO2e, "
         "abatement: renewable PPA at $20/tCO2e, total $50K/yr.'\n"
         "3. Sustainability reporting: CSRD, SEC climate, TCFD, CDP. Mandatory vs. "
         "voluntary. Penalties for non-compliance. Compliance cost estimates.\n"
         "4. Green financing: Green bonds, sustainability-linked loans, carbon "
-        "credits. Calculate $ savings — not 'green bonds exist' but '$50M green "
+        "credits. Calculate $ savings, not 'green bonds exist' but '$50M green "
         "bond at 3.5% vs 4.5% conventional saves $500K/yr.' Use FRED data for "
         "green bond rates and clean energy investment trends.\n"
         "5. Circular economy: Reduce, reuse, recycle, refurbish. Each opportunity "
         "has $ value, implementation cost, ROI, and feasibility.\n\n"
         "Rules:\n"
-        "- DON'T JUST CALCULATE A CARBON NUMBER — IDENTIFY THE SPECIFIC SOURCES "
+        "- DON'T JUST CALCULATE A CARBON NUMBER, IDENTIFY THE SPECIFIC SOURCES "
         "THAT ACCOUNT FOR 80% OF THE FOOTPRINT AND CALCULATE ABATEMENT COST FOR "
         "EACH.\n"
         "- MAP ESG TO FINANCIAL IMPACT: green financing savings, regulatory "
@@ -212,7 +212,7 @@ SUSTAINABILITY_ANALYST_SPEC = AgentSpec(
         "- Sub-agent A: Find ESG ratings for [company/sector] (MICRO, SearxNG + Jina)\n"
         "- Sub-agent B: Find carbon emission data for [industry] (MICRO, SearxNG)\n"
         "- Sub-agent C: Find sustainability regulations for [jurisdiction] (FAST, SearxNG + Obscura)\n\n"
-        "Your output is a SustainabilityAnalysis Pydantic model — structured, not free text."
+        "Your output is a SustainabilityAnalysis Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves ESG assessment, carbon "
                      "footprint, sustainability strategy, green financing, or "
@@ -353,7 +353,7 @@ class SustainabilityAnalyst(BaseAgent):
             # India reduce its dependence on imports" that handover carries no
             # sector at all. The templates below then interpolated the empty
             # string and this agent searched for literally
-            # "carbon footprint emissions data" — visible verbatim in the
+            # "carbon footprint emissions data", visible verbatim in the
             # SearxNG docker logs. A query with no subject cannot return
             # anything relevant to the engagement, so we fall back to the
             # engagement's own subject (and, failing that, the user's
@@ -459,7 +459,7 @@ class SustainabilityAnalyst(BaseAgent):
             # Parameterised URLs are only included when there is a value to
             # put in them, and the value is percent-encoded. Previously an
             # empty `company`/`sector` produced `...?id=` and
-            # `...?sector=` — requests that fetch an empty result page, and
+            # `.sector=`, requests that fetch an empty result page, and
             # an unencoded multi-word sector produced a malformed URL.
             platform_urls = [
                 "https://www.sustainalytics.com/esg-rating",
@@ -490,10 +490,10 @@ class SustainabilityAnalyst(BaseAgent):
                         })
                         self._sources.append(Source(
                             id=f"src_{len(self._sources):03d}",
-                            title=f"ESG platform — {url.split('/')[2]}",
+                            title=f"ESG platform, {url.split('/')[2]}",
                             url=url,
                             credibility=SourceCredibility.INDUSTRY_REPORT,
-                            key_data=f"ESG rating data from {url}",
+                            key_data=page_data["content"][:500],
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue
@@ -536,10 +536,15 @@ class SustainabilityAnalyst(BaseAgent):
                         })
                         self._sources.append(Source(
                             id=f"src_{len(self._sources):03d}",
-                            title=f"FRED — {series_id}",
+                            title=f"FRED, {series_id}",
                             url=f"https://fred.stlouisfed.org/series/{series_id}",
                             credibility=SourceCredibility.GOVERNMENT,
-                            key_data=f"FRED economic data: {series_id}",
+                            key_data=(
+                        "; ".join(
+                            f"{obs.get('date', '?')}: {obs.get('value', 'N/A')}"
+                            for obs in (data.data_points[-3:] if getattr(data, "data_points", None) else [])
+                        ) or None
+                    ),
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue
@@ -586,12 +591,12 @@ class SustainabilityAnalyst(BaseAgent):
             f"ESG search results:\n{search_summary}\n\n"
             f"ESG platform data:\n{platform_summary}\n\n"
             "Score the company/strategy on ALL relevant ESG frameworks:\n"
-            "1. MSCI ESG Ratings — investor-focused, letter grade (AAA-CCC)\n"
-            "2. SASB standards — industry-specific, materiality-based\n"
-            "3. TCFD recommendations — climate risk disclosure, investor-focused\n"
-            "4. GRI standards — stakeholder-focused, comprehensive sustainability\n"
-            "5. CSRD — EU mandatory corporate sustainability reporting\n"
-            "6. CDP — carbon disclosure, investor/environmental-focused\n\n"
+            "1. MSCI ESG Ratings, investor-focused, letter grade (AAA-CCC)\n"
+            "2. SASB standards, industry-specific, materiality-based\n"
+            "3. TCFD recommendations, climate risk disclosure, investor-focused\n"
+            "4. GRI standards, stakeholder-focused, comprehensive sustainability\n"
+            "5. CSRD, EU mandatory corporate sustainability reporting\n"
+            "6. CDP, carbon disclosure, investor/environmental-focused\n\n"
             "For each framework:\n"
             "- framework: which framework\n"
             "- score: the rating/score\n"
@@ -675,7 +680,7 @@ class SustainabilityAnalyst(BaseAgent):
 
         Identifies the specific emission sources that account for 80% of the
         footprint and calculates the abatement cost for each. Not just 'energy
-        use' — 'electricity from coal-fired grid power, 5000 MWh/yr, 2500
+        use''electricity from coal-fired grid power, 5000 MWh/yr, 2500
         tCO2e, abatement: switch to renewable PPA at $20/tCO2e, total $50K/yr.'
         """
         search_summary = "\n".join(
@@ -874,9 +879,9 @@ class SustainabilityAnalyst(BaseAgent):
             f"FRED environmental economic data:\n{fred_summary or 'No FRED data available'}\n\n"
             f"Carbon footprint: {footprint_summary}\n\n"
             "Identify green financing opportunities:\n"
-            "1. Green bonds — calculate $ savings vs conventional financing\n"
-            "2. Sustainability-linked loans — interest rate reductions for ESG targets\n"
-            "3. Carbon credits — revenue from carbon offset projects\n\n"
+            "1. Green bonds, calculate $ savings vs conventional financing\n"
+            "2. Sustainability-linked loans, interest rate reductions for ESG targets\n"
+            "3. Carbon credits, revenue from carbon offset projects\n\n"
             "For each:\n"
             "- instrument: green bond, sustainability-linked loan, or carbon credits\n"
             "- description: description of the opportunity\n"
@@ -972,18 +977,18 @@ class SustainabilityAnalyst(BaseAgent):
         """
         sub_specs = [
             SubAgentSpec(
-                question=f"Find ESG ratings for {company or sector} — MSCI ESG, Sustainalytics, CDP scores, sustainability report ratings",
+                question=f"Find ESG ratings for {company or sector}, MSCI ESG, Sustainalytics, CDP scores, sustainability report ratings",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
                 context={"company": company, "sector": sector},
             ),
             SubAgentSpec(
-                question=f"Find carbon emission data for {sector} — Scope 1, 2, 3 emissions benchmarks, industry average carbon footprint, emission factors",
+                question=f"Find carbon emission data for {sector}, Scope 1, 2, 3 emissions benchmarks, industry average carbon footprint, emission factors",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -991,9 +996,9 @@ class SustainabilityAnalyst(BaseAgent):
             ),
             SubAgentSpec(
                 question=f"Find sustainability regulations for {', '
-                    ''.join(jurisdictions)} — CSRD, SEC climate disclosure, TCFD, CDP requirements, mandatory vs voluntary",
+                    ''.join(jurisdictions)}, CSRD, SEC climate disclosure, TCFD, CDP requirements, mandatory vs voluntary",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1045,7 +1050,7 @@ class SustainabilityAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 8-step methodology
+    # Main execution, the 8-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1070,7 +1075,7 @@ class SustainabilityAnalyst(BaseAgent):
         self._engagement_id = engagement_id or self._engagement_id
         self._context = context or self._context
 
-        # Subscribe to bus — specialists need findings + requests
+        # Subscribe to bus, specialists need findings + requests
         self.subscribe_to_bus()
 
         await self._transition(
@@ -1090,7 +1095,7 @@ class SustainabilityAnalyst(BaseAgent):
 
         # Jurisdictions are DETECTED, never defaulted. The previous default of
         # ["US", "EU"] meant an India engagement was assessed against CSRD and
-        # SEC climate rules — an authoritative-looking answer about the wrong
+        # SEC climate rules, an authoritative-looking answer about the wrong
         # country. An empty list means "no jurisdiction filter", which is
         # honest; a wrong jurisdiction is not.
         jurisdictions = self._context.get("jurisdictions") or detect_geographies(
@@ -1111,7 +1116,7 @@ class SustainabilityAnalyst(BaseAgent):
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
         else:
-            self._log("No resolvable subject or company — skipping ESG sub-agents")
+            self._log("No resolvable subject or company, skipping ESG sub-agents")
 
         # Step 1: Search for ESG data and ratings
         await self._transition(AgentState.WORKING, f"Step 1: Searching ESG data for {company or sector or 'the engagement subject'}")

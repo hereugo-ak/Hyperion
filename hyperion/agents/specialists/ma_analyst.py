@@ -1,5 +1,5 @@
 """
-HYPERION M&A Analyst — Agent 12, the mergers & acquisitions specialist.
+HYPERION M&A Analyst, Agent 12, the mergers & acquisitions specialist.
 
 This is NOT a generic "find acquisition targets" agent. This is a specialist
 with 6 proprietary analytical frameworks:
@@ -9,7 +9,7 @@ with 6 proprietary analytical frameworks:
   long list (20-50) and short list (5-10) with rationale for each.
 - Synergy analysis: Quantify revenue synergies (cross-sell, upsell, new
   markets) and cost synergies (headcount reduction, facility consolidation,
-  procurement savings). ALWAYS with a reality discount — synergies rarely
+  procurement savings). ALWAYS with a reality discount, synergies rarely
   materialize at 100% of the estimate. 50-70% of estimated synergies typically
   materialize.
 - Integration planning: Build a 100-day integration plan with workstreams,
@@ -24,16 +24,16 @@ with 6 proprietary analytical frameworks:
   (Glassdoor reviews, LinkedIn company pages, employee sentiment). Cultural
   mismatch is the #1 reason M&A deals fail to deliver synergies.
 
-It always applies a reality discount to synergies — 50-70% of estimated
+It always applies a reality discount to synergies, 50-70% of estimated
 synergies typically materialize. It always assesses cultural fit because that's
 the #1 failure cause. It always builds an integration plan, not just a deal
-rationale — because the deal is the easy part, integration is the hard part.
+rationale, because the deal is the easy part, integration is the hard part.
 (§4.4, Agent 12)
 
-Model Tier: STRONG (Nemotron 3 Super 120B — M&A analysis is complex and
+Model Tier: STRONG (Nemotron 3 Super 120B, M&A analysis is complex and
 requires strong reasoning)
 Tools: SearxNG, Jina, Obscura, Alpha Vantage
-Sub-agents: Max 3 — target screening, financials pull, cultural reviews
+Sub-agents: Max 3, target screening, financials pull, cultural reviews
 Output: MAAnalysis (target list, synergy analysis, accretion/dilution,
         cultural fit, integration plan)
 
@@ -110,7 +110,7 @@ MA_ANALYST_SPEC = AgentSpec(
                 "Screen for acquisition targets using criteria: strategic fit, "
                 "size, geography, technology, talent, customer base. Build a "
                 "long list (20-50) and short list (5-10) with rationale for "
-                "each. Not just 'companies in the space' — each target has "
+                "each. Not just 'companies in the space', each target has "
                 "strategic_fit rationale, acquisition_rationale, revenue, "
                 "employees, and key risks."
             ),
@@ -122,9 +122,9 @@ MA_ANALYST_SPEC = AgentSpec(
             description=(
                 "Quantify revenue synergies (cross-sell, upsell, new markets) "
                 "and cost synergies (headcount reduction, facility consolidation, "
-                "procurement savings). ALWAYS with a reality discount — synergies "
+                "procurement savings). ALWAYS with a reality discount, synergies "
                 "rarely materialize at 100% of the estimate. 50-70% of estimated "
-                "synergies typically materialize. Not just 'synergies exist' — "
+                "synergies typically materialize. Not just 'synergies exist'"
                 "'$15M revenue synergies + $10M cost synergies = $25M total, "
                 "reality discount 40%, realizable = $15M over 24 months.'"
             ),
@@ -137,7 +137,7 @@ MA_ANALYST_SPEC = AgentSpec(
                 "Build a 100-day integration plan with workstreams, milestones, "
                 "owners, and risk flags. Identify the top 3 integration risks. "
                 "Each workstream has Day 1 actions, Day 30 milestones, Day 100 "
-                "milestones. The deal is the easy part — integration is the "
+                "milestones. The deal is the easy part, integration is the "
                 "hard part."
             ),
             inputs=["deal_structure", "target_operations", "acquirer_operations", "risk_assessment"],
@@ -148,7 +148,7 @@ MA_ANALYST_SPEC = AgentSpec(
             description=(
                 "Compare the acquirer's maximum acceptable price to the target's "
                 "minimum acceptable price. Identify the zone of possible "
-                "agreement. Not just 'the company is worth $X' — 'acquirer max "
+                "agreement. Not just 'the company is worth $X''acquirer max "
                 "$500M, target min $420M, zone of possible agreement $420M-"
                 "$500M, likely price $460M (15% premium to market).'"
             ),
@@ -160,7 +160,7 @@ MA_ANALYST_SPEC = AgentSpec(
             description=(
                 "Model the impact of the acquisition on the acquirer's EPS over "
                 "1-3 years. Identify whether the deal is accretive or dilutive "
-                "and under what conditions. Not just 'accretive' — 'Year 1: "
+                "and under what conditions. Not just 'accretive''Year 1: "
                 "-2% dilutive, Year 2: +1% accretive, Year 3: +4% accretive. "
                 "Becomes accretive in Year 2 if synergies are 60% realized.'"
             ),
@@ -173,7 +173,7 @@ MA_ANALYST_SPEC = AgentSpec(
                 "Evaluate cultural compatibility using public data (Glassdoor "
                 "reviews, LinkedIn company pages, employee sentiment). Cultural "
                 "mismatch is the #1 reason M&A deals fail to deliver synergies. "
-                "Not just 'cultures are different' — 'Acquirer: mission-driven, "
+                "Not just 'cultures are different''Acquirer: mission-driven, "
                 "hierarchical. Target: flat, engineering-led. Compatibility 6/10. "
                 "Key misalignment: decision-making speed. Integration risk: HIGH.'"
             ),
@@ -182,7 +182,7 @@ MA_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION M&A Analyst — the specialist who identifies "
+        "You are the HYPERION M&A Analyst, the specialist who identifies "
         "acquisition targets, conducts due diligence, models synergies, and "
         "plans integration.\n\n"
         "Your proprietary frameworks:\n"
@@ -191,12 +191,12 @@ MA_ANALYST_SPEC = AgentSpec(
         "(5-10) with rationale for each.\n"
         "2. Synergy analysis: Revenue synergies (cross-sell, upsell, new "
         "markets) + cost synergies (headcount, facilities, procurement). "
-        "ALWAYS apply a reality discount — 50-70% of estimated synergies "
-        "typically materialize. Not just 'synergies exist' — '$15M revenue + "
+        "ALWAYS apply a reality discount, 50-70% of estimated synergies "
+        "typically materialize. Not just 'synergies exist''$15M revenue + "
         "$10M cost = $25M total, reality discount 40%, realizable $15M.'\n"
         "3. Integration planning: 100-day plan with workstreams, milestones, "
         "owners, risk flags. Top 3 integration risks. The deal is the easy "
-        "part — integration is the hard part.\n"
+        "part, integration is the hard part.\n"
         "4. Valuation gap: Acquirer max price vs target min price. Zone of "
         "possible agreement. Likely transaction price with premium.\n"
         "5. Accretion/dilution: EPS impact over 1-3 years. Accretive or "
@@ -220,7 +220,7 @@ MA_ANALYST_SPEC = AgentSpec(
         "- Sub-agent A: Screen targets by [criteria] (MICRO, SearxNG + Obscura)\n"
         "- Sub-agent B: Pull financials for [target1, target2, target3] (MICRO, Alpha Vantage)\n"
         "- Sub-agent C: Find cultural reviews for [target companies] (FAST, Obscura)\n\n"
-        "Your output is an MAAnalysis Pydantic model — structured, not free text."
+        "Your output is an MAAnalysis Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves acquisitions, mergers, "
                      "target identification, synergy analysis, integration "
@@ -391,14 +391,14 @@ class MAAnalyst(BaseAgent):
         # Fallback when the LLM call fails. Built by joining non-empty parts
         # rather than interpolating: geography and size_range are frequently
         # absent, and the previous f-string then produced
-        # "Acquisition criteria for X:  semiconductors" — a doubled space and a
+        # "Acquisition criteria for X: semiconductors", a doubled space and a
         # dangling colon. This value is used downstream as search criteria, so a
         # malformed string becomes a malformed query.
         subject = (acquirer or sector or "").strip()
         # Drop any part that merely repeats the subject. With no acquirer in
         # the handover the subject falls back to the sector, and the naive
         # join then produced "Acquisition criteria for semiconductors:
-        # semiconductors" — the word twice in one search query, which wastes
+        # semiconductors", the word twice in one search query, which wastes
         # the query's signal on a duplicate token. Verified by running the
         # fallback across the six realistic handover shapes.
         parts = [
@@ -501,10 +501,10 @@ class MAAnalyst(BaseAgent):
                             })
                             self._sources.append(Source(
                                 id=f"src_{len(self._sources):03d}",
-                                title=f"Deal database — {url.split('/')[2]}",
+                                title=f"Deal database, {url.split('/')[2]}",
                                 url=url,
                                 credibility=SourceCredibility.INDUSTRY_REPORT,
-                                key_data=f"M&A database data from {url.split('/')[2]}",
+                                key_data=page_data["content"][:500],
                             ))
                     except (ValueError, AttributeError, RuntimeError):
                         continue
@@ -642,7 +642,7 @@ class MAAnalyst(BaseAgent):
                         "company": target.company_name,
                         "ticker": "",
                         "data": None,
-                        "note": "Private company — financials unavailable",
+                        "note": "Private company, financials unavailable",
                     })
                     continue
 
@@ -664,10 +664,16 @@ class MAAnalyst(BaseAgent):
 
                     self._sources.append(Source(
                         id=f"src_{len(self._sources):03d}",
-                        title=f"Alpha Vantage — {target.ticker}",
+                        title=f"Alpha Vantage, {target.ticker}",
                         url=f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={target.ticker}",
                         credibility=SourceCredibility.GOVERNMENT,
-                        key_data=f"Financial data for {target.company_name} ({target.ticker})",
+                        key_data=(
+                        f"Market cap: {overview.get('MarketCapitalization', 'N/A')}, "
+                        f"P/E: {overview.get('PERatio', 'N/A')}, "
+                        f"EPS: {overview.get('EPS', 'N/A')}, "
+                        f"Revenue TTM: {overview.get('RevenueTTM', 'N/A')}, "
+                        f"Profit margin: {overview.get('ProfitMargin', 'N/A')}"
+                    ),
                     ))
                 except (ValueError, AttributeError, RuntimeError):
                     results.append({
@@ -697,7 +703,7 @@ class MAAnalyst(BaseAgent):
 
         Quantifies revenue synergies (cross-sell, upsell, new markets) and
         cost synergies (headcount, facilities, procurement). ALWAYS with a
-        reality discount — 50-70% of estimated synergies typically materialize.
+        reality discount, 50-70% of estimated synergies typically materialize.
         """
         targets_summary = "\n".join(
             f"- {t.company_name}: {t.revenue}, {t.employees} employees, {t.strategic_fit[:100]}"
@@ -725,7 +731,7 @@ class MAAnalyst(BaseAgent):
             "- Procurement savings\n"
             "- Cost synergy value ($/yr)\n\n"
             "REALITY DISCOUNT:\n"
-            "- Apply a reality discount (40-50% is standard — synergies rarely "
+            "- Apply a reality discount (40-50% is standard, synergies rarely "
             "materialize at 100%)\n"
             "- Calculate realizable synergies after discount\n"
             "- Timeline for synergy realization\n\n"
@@ -908,7 +914,7 @@ class MAAnalyst(BaseAgent):
             f"Acquirer: {acquirer}\n"
             f"Top target: {top_target.company_name}\n\n"
             f"Cultural data (Glassdoor, LinkedIn):\n{cultural_summary or 'No cultural data '
-                'available — use general knowledge'}\n\n"
+                'available, use general knowledge'}\n\n"
             "Assess cultural compatibility:\n"
             "- acquirer_culture_summary: acquirer culture from public data\n"
             "- target_culture_summary: target culture from public data\n"
@@ -976,7 +982,7 @@ class MAAnalyst(BaseAgent):
 
         Builds a 100-day integration plan with workstreams, milestones, owners,
         and risk flags. Identifies the top 3 integration risks. The deal is
-        the easy part — integration is the hard part.
+        the easy part, integration is the hard part.
         """
         top_target = short_list[0] if short_list else None
         target_name = top_target.company_name if top_target else "the target"
@@ -1006,7 +1012,7 @@ class MAAnalyst(BaseAgent):
             "- top_3_integration_risks: the top 3 risks\n"
             "- day_1_priorities: Day 1 priorities (list)\n"
             "- success_metrics: how to measure integration success (list)\n\n"
-            "The deal is the easy part — integration is the hard part.\n\n"
+            "The deal is the easy part, integration is the hard part.\n\n"
             "Return JSON:\n"
             "{\n"
             '  "workstreams": [{...}],\n'
@@ -1072,9 +1078,9 @@ class MAAnalyst(BaseAgent):
 
         sub_specs = [
             SubAgentSpec(
-                question=f"Screen acquisition targets by criteria: {criteria[:200]} — find companies in {sector} matching strategic fit, size, geography",
+                question=f"Screen acquisition targets by criteria: {criteria[:200]}, find companies in {sector} matching strategic fit, size, geography",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1082,9 +1088,9 @@ class MAAnalyst(BaseAgent):
             ),
             SubAgentSpec(
                 question=f"Pull financials for targets: {', '
-                    ''.join(target_tickers) or ', '.join(target_names)} — income statement, balance sheet, cash flow, company overview",
+                    ''.join(target_tickers) or ', '.join(target_names)}, income statement, balance sheet, cash flow, company overview",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.ALPHA_VANTAGE],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1092,9 +1098,9 @@ class MAAnalyst(BaseAgent):
             ),
             SubAgentSpec(
                 question=f"Find cultural reviews for {', '
-                    ''.join(target_names)} — Glassdoor reviews, LinkedIn company pages, employee sentiment, culture ratings",
+                    ''.join(target_names)}, Glassdoor reviews, LinkedIn company pages, employee sentiment, culture ratings",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1148,7 +1154,7 @@ class MAAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 9-step methodology
+    # Main execution, the 9-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1290,7 +1296,7 @@ class MAAnalyst(BaseAgent):
                 finding_type="acquisition_target",
                 title=f"Top Acquisition Target: {top_target.company_name}",
                 content=(
-                    f"{top_target.company_name} — {top_target.description}. "
+                    f"{top_target.company_name}, {top_target.description}. "
                     f"Revenue: {top_target.revenue}. Employees: {top_target.employees}. "
                     f"Strategic fit: {top_target.strategic_fit}. "
                     f"Rationale: {top_target.acquisition_rationale}."

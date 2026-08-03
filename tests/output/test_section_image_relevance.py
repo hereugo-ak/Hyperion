@@ -18,8 +18,6 @@ Fix contract under test:
 
 from __future__ import annotations
 
-import pytest
-
 from hyperion.output.images import (
     CHART_LIKE_SECTION_BAN,
     ImageRelevanceGate,
@@ -78,7 +76,11 @@ class TestRelevanceGate:
             alt="factory floor with stainless steel reaction tanks",
         )
         score = self.gate.score(cand, subject="Hexense Lab", topic="chemicals manufacturing")
-        assert self.gate.is_relevant(cand, subject="Hexense Lab", topic="chemicals manufacturing"), (
+        assert self.gate.is_relevant(
+            cand,
+            subject="Hexense Lab",
+            topic="chemicals manufacturing",
+        ), (
             f"on-topic candidate scored {score:.3f}, must clear the floor"
         )
 
@@ -89,7 +91,11 @@ class TestRelevanceGate:
             desc="Stock market candlestick chart on a trading screen",
             alt="financial graphs glowing green and red",
         )
-        assert not self.gate.is_relevant(cand, subject="Hexense Lab", topic="chemicals manufacturing")
+        assert not self.gate.is_relevant(
+            cand,
+            subject="Hexense Lab",
+            topic="chemicals manufacturing",
+        )
 
     def test_no_candidate_is_acceptable(self):
         """When nothing clears the floor, the result is None (no image), never

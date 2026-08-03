@@ -59,6 +59,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from hyperion.agents.prompt_contract import compose_agent_prompt
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
 
@@ -709,7 +710,7 @@ async def plan_queries(
             response = await router.complete(
                 tier=PLANNER_TIER,
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": compose_agent_prompt(_SYSTEM_PROMPT)},
                     {
                         "role": "user",
                         "content": _build_user_prompt(

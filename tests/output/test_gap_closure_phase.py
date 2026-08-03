@@ -221,14 +221,18 @@ class TestGapClosureRounds:
         assert gap.attempts == 1
         assert other.run.await_count == 0, "round 2 must not fire after round 1 resolves"
 
-    def test_round2_uses_different_specialist_with_reformulated_query(self):
+    def test_scope_round_uses_different_specialist_after_strategy_budget(self):
+        """W-07: the 3 RETRY_STRATEGY rounds re-dispatch the ORIGINATING
+        specialist (same question, different query construction); only after
+        that budget is spent does a RETRY_SCOPE round go to a DIFFERENT live
+        specialist with a recorded scope change."""
         import asyncio
         from unittest.mock import AsyncMock
 
         origin = AsyncMock()
-        origin.run = AsyncMock(return_value=None)  # round 1 fails
+        origin.run = AsyncMock(return_value=None)  # all 3 strategy rounds fail
         other = AsyncMock()
-        other.run = AsyncMock(return_value={"finding": "cross-check answer"})
+        other.run = AsyncMock(return_value={"finding": "scope-broadened answer"})
         orch = self._orch({
             AgentName.MARKET_ANALYST: origin,
             AgentName.RISK_ANALYST: other,
@@ -243,14 +247,17 @@ class TestGapClosureRounds:
 
         asyncio.run(orch._gap_closure_phase(dag, gaps=[gap]))
 
-        assert gap.attempts == 2
+        assert origin.run.await_count == 3, "3 strategy retries on the originator"
+        assert other.run.await_count == 1, "first scope round reaches another specialist"
+        assert gap.attempts == 4
         assert gap.resolved is True
-        assert other.run.await_count == 1
         kwargs = other.run.await_args.kwargs
-        assert "round 2" in str(kwargs).lower()
+        assert "scope" in str(kwargs).lower()
         assert gap.question in str(kwargs)
 
-    def test_round3_strong_synthesis_then_gap_stays_unresolved(self):
+    def test_full_budget_exhaustion_classifies_and_stays_unresolved(self):
+        """W-07: 3 strategy + 2 scope rounds, all failing, leaves the gap
+        unresolved and records a classification with the tried-triples log."""
         import asyncio
         from unittest.mock import AsyncMock
 
@@ -258,12 +265,9 @@ class TestGapClosureRounds:
         origin.run = AsyncMock(return_value=None)
         other = AsyncMock()
         other.run = AsyncMock(return_value=None)
-        synthesis = AsyncMock()
-        synthesis.run = AsyncMock(return_value=None)  # round 3 also fails
         orch = self._orch({
             AgentName.MARKET_ANALYST: origin,
             AgentName.RISK_ANALYST: other,
-            AgentName.SYNTHESIS_LEAD: synthesis,
         })
 
         specialist = _specialist_task()
@@ -275,14 +279,21 @@ class TestGapClosureRounds:
 
         asyncio.run(orch._gap_closure_phase(dag, gaps=[gap]))
 
-        assert gap.attempts == 3, "exactly 3 rounds maximum"
+        assert gap.attempts == 5, "3 strategy + 2 scope rounds maximum"
         assert gap.resolved is False
-        assert synthesis.run.await_count == 1, "round 3 escalates to synthesis tier"
-        kwargs = synthesis.run.await_args.kwargs
-        assert "round 3" in str(kwargs).lower()
-        assert gap.question in str(kwargs)
+        # A classification was recorded with every tried triple logged.
+        resolutions = orch._insufficiency_resolutions
+        assert len(resolutions) == 1
+        resolution = resolutions[0]
+        assert resolution.gap_id == gap.id
+        assert len(resolution.tried_triples) == 5
+        # Every tried triple is distinct (non-repetition by construction).
+        identities = [t.identity() for t in resolution.tried_triples]
+        assert len(set(identities)) == len(identities)
+        # The justification is retained in one sentence.
+        assert resolution.justification
 
-    def test_max_3_rounds_even_with_everything_failing(self):
+    def test_budget_is_5_dispatches_even_with_everything_failing(self):
         import asyncio
         from unittest.mock import AsyncMock
 
@@ -290,12 +301,9 @@ class TestGapClosureRounds:
         origin.run = AsyncMock(return_value=None)
         other = AsyncMock()
         other.run = AsyncMock(return_value=None)
-        synthesis = AsyncMock()
-        synthesis.run = AsyncMock(return_value=None)
         orch = self._orch({
             AgentName.MARKET_ANALYST: origin,
             AgentName.RISK_ANALYST: other,
-            AgentName.SYNTHESIS_LEAD: synthesis,
         })
 
         specialist = _specialist_task()
@@ -307,8 +315,10 @@ class TestGapClosureRounds:
 
         asyncio.run(orch._gap_closure_phase(dag, gaps=[gap]))
 
-        total = origin.run.await_count + other.run.await_count + synthesis.run.await_count
-        assert total == 3, "the ladder is exactly 3 dispatches, no more"
+        total = origin.run.await_count + other.run.await_count
+        assert total == 5, "W-07 ladder is exactly 3 strategy + 2 scope dispatches"
+        assert origin.run.await_count == 3, "strategy rounds stay with the originator"
+        assert other.run.await_count == 2, "scope rounds rotate to another specialist"
 
     def test_unresolved_gap_question_recorded_in_limitations(self):
         """P2-16 rule 3 / sub-fix 5.6: a gap that survives all 3 rounds is

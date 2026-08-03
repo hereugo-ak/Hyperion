@@ -60,14 +60,19 @@ import logging
 import os
 import re
 from html import escape as html_escape
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+
+from fontTools import subset
+from fontTools.ttLib import TTFont, TTLibError
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.output.confidence import derive_confidence
 from hyperion.output.images import ImageRelevanceGate
+from hyperion.output.methodology import build_methodology
 from hyperion.output.page_budget import PAGE_COUNT_MAX, PAGE_COUNT_MIN
 from hyperion.router.budget import TaskUrgency
 from hyperion.schemas.agents import (
@@ -91,16 +96,17 @@ from hyperion.schemas.models import (
     QualityScore,
     VisualizationOutput,
 )
+from hyperion.schemas.narrative import ClientReport, write_telemetry_artifact
 
 # Declared after the imports, not between them. It previously sat above the
 # `hyperion.*` block, which made every one of those imports an E402 ("module
-# level import not at top of file") — 7 findings from one misplaced line. Adding
+# level import not at top of file"), 7 findings from one misplaced line. Adding
 # the page-budget import would have made it 8, so the line moved instead.
 logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PDF Palette (§7.2 — STRICT)
+# PDF Palette (§7.2, STRICT)
 # ─────────────────────────────────────────────────────────────────────────────
 
 PDF_PALETTE = {
@@ -169,7 +175,7 @@ SECTION_IMAGE_SEARCH_TERMS: dict[str, str] = {
     "regulatory_analysis": "government building columns",
     "sustainability": "green sustainable business",
     "sustainability_analysis": "green sustainable business",
-    # D5.1b (F601): "consumer_insights" was listed twice in this one dict —
+    # D5.1b (F601): "consumer_insights" was listed twice in this one dict,
     # once above as an agent-name key (it is the literal
     # `AgentName.CONSUMER_INSIGHTS` value) and again here in the topic block.
     # Both mapped to the same term, so the duplicate was inert rather than a
@@ -236,7 +242,6 @@ CSS_TEMPLATE = """\
    that honours them. (D-03) */
 @page {{
     size: A4;
-    dpi: 300;
     /* P2-03: paint the margin boxes too. Without this, the 25mm/15mm/19mm
        margin ring stays white while the canvas is cream. */
     background: {cream};
@@ -1068,11 +1073,11 @@ table, .kpi-value, .data-table, .chart-data-table {{
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Vendored brand fonts (fix 3.2 — @font-face embedding)
+# Vendored brand fonts (fix 3.2, @font-face embedding)
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# The audit (§3.2) found that the brand typography declared in CSS_TEMPLATE —
-# "Instrument Serif", "Source Sans 3", "JetBrains Mono" — was never actually
+# The audit (§3.2) found that the brand typography declared in CSS_TEMPLATE,
+# "Instrument Serif""Source Sans 3""JetBrains Mono", was never actually
 # embedded in the shipped PDF: there were zero @font-face blocks, so every
 # render silently fell back to DejaVu (WeasyPrint's system default). The fonts
 # are vendored in assets/fonts/ (fix 3.1, OFL-licensed); here they are inlined
@@ -1093,6 +1098,60 @@ _VENDORED_FONTS: tuple[tuple[str, int, str, str], ...] = (
 
 _FONTS_DIR = Path(__file__).resolve().parents[3] / "assets" / "fonts"
 
+# D-15: report prose is English, but retain the complete Latin repertoire plus
+# common punctuation, currencies, arrows, and mathematical symbols used in
+# financial exhibits. CJK and other large unused ranges are deliberately not
+# embedded. Browsers may use a system fallback for an exceptional glyph while
+# the report's actual brand text remains embedded and portable.
+_FONT_SUBSET_RANGES: tuple[tuple[int, int], ...] = (
+    (0x0020, 0x024F),  # Basic Latin, Latin-1, Latin Extended A/B, IPA
+    (0x2000, 0x206F),  # General punctuation
+    (0x20A0, 0x20CF),  # Currency symbols
+    (0x2190, 0x21FF),  # Arrows
+    (0x2200, 0x22FF),  # Mathematical operators
+)
+DEFAULT_FONT_GLYPHS = "".join(
+    chr(codepoint)
+    for start, end in _FONT_SUBSET_RANGES
+    for codepoint in range(start, end + 1)
+)
+MAX_EMBEDDED_FONT_BYTES = 180_000
+MAX_EMBEDDED_FONTS_BYTES = 900_000
+
+
+def _subset_font_bytes(font_path: Path, glyphs: str = DEFAULT_FONT_GLYPHS) -> bytes | None:
+    """Subset one TTF to the bounded glyph repertoire used by reports."""
+    try:
+        font = TTFont(font_path, recalcTimestamp=False)
+        options = subset.Options()
+        options.layout_features = ["*"]
+        options.notdef_outline = True
+        subsetter = subset.Subsetter(options=options)
+        subsetter.populate(text=glyphs)
+        subsetter.subset(font)
+        output = BytesIO()
+        font.save(output)
+        font.close()
+        payload = output.getvalue()
+    except (OSError, TTLibError, ValueError) as exc:
+        logger.warning(
+            "Vendored font %s could not be subset: %s",
+            font_path,
+            exc,
+            exc_info=True,
+        )
+        return None
+
+    if not payload or len(payload) > MAX_EMBEDDED_FONT_BYTES:
+        logger.warning(
+            "Subset font %s exceeds its %d-byte embedding budget (%d bytes)",
+            font_path.name,
+            MAX_EMBEDDED_FONT_BYTES,
+            len(payload),
+        )
+        return None
+    return payload
+
 
 def _build_font_face_css(fonts_dir: Path = _FONTS_DIR) -> str:
     """Build @font-face blocks with base64 data-URI sources for vendored fonts.
@@ -1108,19 +1167,29 @@ def _build_font_face_css(fonts_dir: Path = _FONTS_DIR) -> str:
     whole report build.
     """
     blocks: list[str] = []
+    total_bytes = 0
     for family, weight, style, filename in _VENDORED_FONTS:
         font_path = fonts_dir / filename
-        try:
-            data = font_path.read_bytes()
-        except OSError:
+        if not font_path.is_file():
             logger.warning(
-                "Vendored font %s not readable at %s"
+                "Vendored font %s not readable at %s; "
                 "PDF will fall back to system fonts for this face",
                 filename,
                 font_path,
-                exc_info=True,
+                exc_info=FileNotFoundError(font_path),
             )
             continue
+        data = _subset_font_bytes(font_path)
+        if data is None:
+            continue
+        if total_bytes + len(data) > MAX_EMBEDDED_FONTS_BYTES:
+            logger.warning(
+                "Skipping %s: total embedded-font budget of %d bytes reached",
+                filename,
+                MAX_EMBEDDED_FONTS_BYTES,
+            )
+            continue
+        total_bytes += len(data)
         b64 = base64.b64encode(data).decode("ascii")
         blocks.append(
             "@font-face {\n"
@@ -1141,7 +1210,7 @@ CSS_TEMPLATE = CSS_TEMPLATE + "\n\n" + _build_font_face_css() + "\n"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HTML Template (Jinja2 — premium report structure §6.1)
+# HTML Template (Jinja2, premium report structure §6.1)
 # ─────────────────────────────────────────────────────────────────────────────
 
 HTML_TEMPLATE = """\
@@ -1164,12 +1233,9 @@ HTML_TEMPLATE = """\
     {% endif %}
     <div class="cover-title">
         <h1>{{ report.question }}</h1>
-        <p style="color: {{ palette.cream }}; font-size: 14pt; margin-top: 8px;">{{ report.recommendation.value | upper }}</p>
+        <p style="color: {{ palette.cream }}; font-size: 14pt; margin-top: 8px;">{{ report.recommendation | upper }}</p>
         <p style="color: {{ palette.warm_gray }}; font-size: 10pt; margin-top: 4px;">
             {{ report.generated_at.strftime('%B %Y') }} · Engagement {{ report.engagement_id }}
-        </p>
-        <p style="color: {{ palette.warm_gray }}; font-size: 10pt; margin-top: 2px;">
-            Confidence: <span class="confidence-badge-{{ report.confidence.value }}">{{ report.confidence.value | upper }}</span>
         </p>
     </div>
 </div>
@@ -1192,12 +1258,8 @@ HTML_TEMPLATE = """\
         <div class="glance-cell">
             <div class="glance-label">Recommendation</div>
             <div class="glance-value">
-                {{ report.recommendation.value | replace("_", " ") | title }}
+                {{ report.recommendation | replace("_", " ") | title }}
             </div>
-        </div>
-        <div class="glance-cell">
-            <div class="glance-label">Confidence</div>
-            <div class="glance-value">{{ report.confidence.value | title }}</div>
         </div>
         <div class="glance-cell">
             <div class="glance-label">Evidence base</div>
@@ -1209,8 +1271,7 @@ HTML_TEMPLATE = """\
         <div class="glance-cell">
             <div class="glance-label">Analysis depth</div>
             <div class="glance-value">
-                {{ report.sections | length }} chapters ·
-                {{ report.agents_used | length }} agents
+                {{ report.sections | length }} chapters
             </div>
         </div>
     </div>
@@ -1270,7 +1331,6 @@ HTML_TEMPLATE = """\
             {% endif %}
             <tr><td><a href="#methodology">Methodology</a></td><td class="toc-page"></td></tr>
             <tr><td><a href="#endnotes">Endnotes</a></td><td class="toc-page"></td></tr>
-            <tr><td><a href="#technical-appendix">Technical Appendix</a></td><td class="toc-page"></td></tr>
             <tr><td><a href="#appendix-sources">Appendix: Sources</a></td><td class="toc-page"></td></tr>
         </table>
     </div>
@@ -1283,7 +1343,7 @@ HTML_TEMPLATE = """\
     {# Recommendation banner #}
     <div class="recommendation-banner">
         <div class="rec-label">Recommendation</div>
-        <div class="rec-value">{{ report.recommendation.value | upper }}</div>
+        <div class="rec-value">{{ report.recommendation | upper }}</div>
     </div>
 
     {# KPI strip, key metrics at a glance #}
@@ -1304,10 +1364,6 @@ HTML_TEMPLATE = """\
             <div class="kpi-value">{{ report.sections | length }}</div>
             <div class="kpi-label">Analysis Sections</div>
         </div>
-        <div class="kpi-card">
-            <div class="kpi-value">{{ report.confidence.value | upper }}</div>
-            <div class="kpi-label">Confidence</div>
-        </div>
     </div>
 
     {{ report.executive_summary | md_to_html }}
@@ -1323,9 +1379,6 @@ HTML_TEMPLATE = """\
             <div class="dashboard-card-title">{{ finding.title }}</div>
             <div class="dashboard-card-body">
                 {{ finding.content[:300] }}
-                {% if finding.confidence %}
-                <span class="confidence-pill confidence-pill--{{ finding.confidence.value | lower }}">{{ finding.confidence.value | upper }}</span>
-                {% endif %}
             </div>
         </div>
         {% endfor %}
@@ -1445,29 +1498,59 @@ HTML_TEMPLATE = """\
 </div>
 {% endif %}
 
-{# ── Methodology ──
-   P2-34: report B printed 11 empty bullet glyphs here because agents_used
-   held 11 empty strings. Both lists are pre-filtered (trim + drop falsy)
-   and the enclosing <h3>/<ul> is suppressed when nothing survives, and
-   page_audit._check_empty_list_items is the render-level backstop. #}
-{% set agents_used_clean = report.agents_used | map('trim') | select | list %}
+{# Methodology (W-10)
+   The four bullets this replaces (Agents Used, Sources Accessed, Data Points,
+   Limitations) were three counts and a list: they told the reader who ran the
+   engagement, when the reader was asking how the answer is known. W-09 had
+   already deleted the roster (it is telemetry, and `ClientReport` cannot
+   resolve it); W-10 replaces the remaining counts with six subsections, each
+   built from a structure the pipeline actually recorded: the DAG's roster
+   decisions, the W-07 insufficiency resolutions, the fact checker's counters
+   and the Source corpus (`hyperion/output/methodology.py`).
+
+   Every string inside `report.methodology` has been through
+   `ClientProse.of()`, so an agent name in this block is unconstructible
+   rather than merely unprinted, and no template-level filter is needed.
+
+   NOTE ON TYPOGRAPHY: this comment is inside HTML_TEMPLATE, which is a string
+   constant, and tests/output/test_typography.py walks render-path string
+   CONSTANTS for U+2014/U+2013. A Jinja comment is part of that constant even
+   though Jinja never emits it, so the dash ban applies here too. Plain
+   punctuation only.
+
+   P2-34: lists are pre-filtered (trim + drop falsy), every loop carries a
+   falsy-entry filter (tests/output/test_empty_list_items.py asserts this over
+   every for-tag in the template) and the enclosing <h3>/<ul> is suppressed
+   when nothing survives; page_audit._check_empty_list_items is the
+   render-level backstop. #}
 {% set limitations_clean = report.limitations | map('trim') | select | list %}
 <div class="page-break" id="methodology">
     <h2>Methodology</h2>
-    {% if agents_used_clean %}
-    <h3>Agents Used</h3>
-    <ul>
-        {% for agent in agents_used_clean if agent %}
-        <li>{{ agent }}</li>
+    {% if report.methodology %}
+    {% for sub in report.methodology.subsections if sub %}
+    {% set sub_facts = sub.facts | map('trim') | select | list %}
+    <h3>{{ sub.heading }}</h3>
+    <p>{{ sub.narrative }}</p>
+    {% if sub_facts %}
+    <ul class="methodology-facts">
+        {% for fact in sub_facts if fact %}
+        <li>{{ fact }}</li>
         {% endfor %}
     </ul>
     {% endif %}
-    <h3>Sources Accessed</h3>
-    <p>Total unique sources: {{ report.total_sources }}</p>
-    <h3>Data Points Collected</h3>
-    <p>Total data points: {{ report.total_data_points }}</p>
+    {% endfor %}
+    {% else %}
+    {# Defensive only: the designer builds a report-only record when the
+       orchestrator did not supply one, so this branch means the build itself
+       failed. State that, rather than printing a bare count. #}
+    <h3>Evidence base</h3>
+    <p>The analysis draws on {{ report.total_sources }} unique sources across
+       {{ report.total_data_points }} recorded data points. A full account of
+       the retrieval and verification procedure could not be assembled for
+       this engagement.</p>
+    {% endif %}
     {% if limitations_clean %}
-    <h3>Limitations</h3>
+    <h3>Evidence gaps specific to this question</h3>
     <ul>
         {% for limitation in limitations_clean if limitation %}
         <li>{{ limitation }}</li>
@@ -1486,17 +1569,12 @@ HTML_TEMPLATE = """\
     {{ endnotes_html | safe }}
 </div>
 
-{# ── Technical Appendix (fix 4.5) ──
-   The methodology section says WHAT was done; this says how well, and admits
-   what was not achieved. quality_score / confidence_breakdown /
-   contradictions / fact_check_report all already existed on FinalReport and
-   none of them reached the PDF, the report scored itself and then threw the
-   scorecard away. Publishing the contradictions and the residual gaps is the
-   difference between a technical appendix and a marketing annex. #}
-<div class="page-break" id="technical-appendix">
-    <h2>Technical Appendix</h2>
-    {{ technical_appendix_html | safe }}
-</div>
+{# W-09: the Technical Appendix is deleted from the client document. Every
+   input it rendered (quality_score, confidence_breakdown, contradictions,
+   fact_check_report) is operator telemetry, not client copy. It now lives in
+   the EngagementTelemetry operator artifact (reports/diagnostics/), where the
+   scorecard is genuinely valuable. The self-assessment is not discarded; it is
+   addressed to the right reader. #}
 
 {# ── Appendix: Sources ── #}
 <div class="page-break" id="appendix-sources">
@@ -1535,7 +1613,8 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         ToolName.UNSPLASH,
         ToolName.PLOTLY,
         ToolName.JINJA2,
-        ToolName.WEASYPRINT,
+        # W-03: ToolName.WEASYPRINT removed, the designer stages HTML and a
+        # layout plan; the Render Engine is the only agent that writes PDFs.
     ],
     skills=[
         SkillSpec(
@@ -1634,7 +1713,7 @@ PRESENTATION_DESIGNER_SPEC = AgentSpec(
         "QualityScore from the Quality Gate.\n"
         "2. DESIGN a layout plan, which content goes on which page, "
         "in what order, with what visuals.\n"
-        "3. SELECT Unsplash images for cover and section headers"
+        "3. SELECT Unsplash images for cover and section headers with "
         "specific search terms, not generic.\n"
         "4. RECEIVE chart images from the Data Visualizer.\n"
         "5. RENDER the HTML template with Jinja2.\n"
@@ -1748,7 +1827,9 @@ class PresentationDesigner(BaseAgent):
         # The FinalReport to design layout for
         self._final_report: FinalReport | None = None
 
-        # The QualityScore (must be approved)
+        # The QualityScore, stored for DISPLAY only (dimension table on the
+        # quality page). W-08: delivery never evaluates it; the orchestrator
+        # is the single ship/no-ship decision point.
         self._quality_score: QualityScore | None = None
 
         # Chart specifications from Data Visualizer
@@ -1836,7 +1917,10 @@ class PresentationDesigner(BaseAgent):
     ) -> QualityScore | None:
         """Receive the QualityScore from the Quality Gate.
 
-        The report must be approved (score ≥ 4.0) before layout design begins.
+        The score is stored for display on the quality page only. W-08:
+        whether a report ships is decided by the orchestrator's terminal
+        state; if the designer is invoked at all, the report cleared the
+        gate and is laid out unconditionally.
         """
         if quality_score:
             self._quality_score = quality_score
@@ -2079,9 +2163,12 @@ class PresentationDesigner(BaseAgent):
             if response.success and response.content:
                 import json
                 data = json.loads(response.content)
-                term = data.get("search_term", "").strip()
-                if term and len(term) < 100:
-                    return term
+                if isinstance(data, dict):
+                    raw_term = data.get("search_term")
+                    if isinstance(raw_term, str):
+                        term = raw_term.strip()
+                        if term and len(term) < 100:
+                            return term
         except (ValueError, KeyError, TypeError):
             pass
 
@@ -2109,7 +2196,7 @@ class PresentationDesigner(BaseAgent):
             img_id = getattr(img, "id", None)
             if not img_id or img_id not in self._used_image_ids:
                 return img
-        # All candidates already used — return the first as a last resort.
+        # All candidates already used, return the first as a last resort.
         return images[0]
 
     async def _select_cover_image(self, report: FinalReport) -> ImageSelection | None:
@@ -2145,7 +2232,7 @@ class PresentationDesigner(BaseAgent):
                 self._used_image_ids.add(photo_id)
 
             # Download using the UnsplashClient's download_image method.
-            # Fix 3.6: full resolution — "regular" (1080px) can never pass
+            # Fix 3.6: full resolution"regular" (1080px) can never pass
             # the cover pipeline's 1920px no-upscale gate.
             local_path = await unsplash_tool.download_image(img, quality="high")
 
@@ -2213,9 +2300,12 @@ class PresentationDesigner(BaseAgent):
             if response.success and response.content:
                 import json
                 data = json.loads(response.content)
-                term = data.get("search_term", "").strip()
-                if term and len(term) < 100:
-                    return term
+                if isinstance(data, dict):
+                    raw_term = data.get("search_term")
+                    if isinstance(raw_term, str):
+                        term = raw_term.strip()
+                        if term and len(term) < 100:
+                            return term
         except (ValueError, KeyError, TypeError):
             pass
 
@@ -2335,7 +2425,7 @@ class PresentationDesigner(BaseAgent):
                 if photo_id:
                     self._used_image_ids.add(photo_id)
 
-                # Fix 3.6: full resolution — the section pipeline targets
+                # Fix 3.6: full resolution, the section pipeline targets
                 # 2000px wide (print grade at 300 DPI), which a 1080px
                 # "regular" download can never pass under the no-upscale rule.
                 local_path = await unsplash_tool.download_image(img, quality="high")
@@ -2607,7 +2697,7 @@ class PresentationDesigner(BaseAgent):
         # HISTORY: this used to write directly to self.CSS_OUTPUT
         # (output/<slug>.css) *before* the HTML/PDF were generated. When PDF
         # rendering then failed, that stylesheet was the only file left in
-        # output/ — which is exactly how a 34-minute engagement delivered a
+        # output/, which is exactly how a 34-minute engagement delivered a
         # lone `should_india_reduce_its_dependence_on_the_imports.css` and no
         # report. A build intermediate must never be able to outlive, or be
         # mistaken for, the deliverable.
@@ -2622,24 +2712,71 @@ class PresentationDesigner(BaseAgent):
         except OSError as e:
             self._log(f"DESIGNER: could not write build CSS ({e}); continuing with inline CSS")
 
+        # W-09: two transformations happen here, both named and explicit.
+        # 1. Telemetry is routed to its own destination: an operator
+        #    artifact under reports/diagnostics/ (JSON + HTML). This is
+        #    where the quality scorecard, the roster and the fact-check
+        #    counts belong. They are genuinely valuable there, they are
+        #    simply not client copy.
+        # 2. The template receives ClientReport, a view of the report
+        #    that carries no telemetry attributes at all. A client
+        #    template holding this object cannot resolve an agent name,
+        #    a quality score or a fact-check count even if one is left
+        #    behind in the markup: the leak is impossible at the type
+        #    level, not filtered after the fact.
+        # These run BEFORE the try: both render paths (JINJA2 tool and the
+        # manual fallback) must receive the SAME ClientReport view. If they
+        # ran inside the try, a get_tool() failure would leave the fallback
+        # holding an undefined name and silently ship the last-resort strip
+        # path with no sections at all (Fix 3.5's exact class of bug).
+        telemetry_path = write_telemetry_artifact(report)
+        self._log(f"DESIGNER: operator telemetry artifact written to {telemetry_path}")
+
+        # W-10: the methodology section is normally built by the orchestrator,
+        # which holds the DAG and the insufficiency resolutions the richer
+        # subsections need. When the designer is driven directly (tests, a
+        # re-render of a stored report, the floor report path) that context is
+        # absent, and printing no methodology at all would be worse than
+        # printing one built from the report alone: the reader uses this page to
+        # calibrate the rest. build_methodology is deterministic and never
+        # raises on thin input, so this is a safe unconditional fallback.
+        if getattr(report, "methodology", None) is None:
+            try:
+                report.methodology = build_methodology(report)
+                self._log(
+                    "DESIGNER: methodology built from the report alone "
+                    "(no engagement DAG in this context)"
+                )
+            except (ValueError, TypeError, AttributeError) as exc:
+                # Never lose the whole render over the methodology page. The
+                # template's defensive branch states that the account could not
+                # be assembled, which is honest, and the failure is logged.
+                self._log(f"DESIGNER: methodology build failed ({exc})")
+
+        client_report = ClientReport.from_report(report)
+
         try:
             jinja2_tool = self.get_tool(ToolName.JINJA2)
 
             # Prepare template context
             context = {
-                "report": report,
+                "report": client_report,
                 "cover_image": cover_image_abs,
                 "section_images": section_images_abs,
                 "section_charts": chart_placements_abs,
                 "palette": PDF_PALETTE,
                 "css_content": css_content,
+                # These builders still read the full FinalReport: they need
+                # Source objects, risk fields and endnote provenance that the
+                # client view deliberately does not carry. They emit HTML
+                # strings built with html_escape over real fields; no
+                # telemetry fields are read.
                 "risk_analysis_html": self._build_risk_analysis_html(report),
                 "appendix_sources_html": self._build_appendix_sources_html(report),
                 # Fix 4.5. Both call sites must be fed: this dict and the
-                # fallback env below. Fix 3.5 was exactly this class of bug —
+                # fallback env below. Fix 3.5 was exactly this class of bug,
                 # a filter registered in one env and not the other.
                 "endnotes_html": self._build_endnotes_html(report),
-                "technical_appendix_html": self._build_technical_appendix_html(report),
             }
 
             html_content = await jinja2_tool.render_template(
@@ -2651,7 +2788,7 @@ class PresentationDesigner(BaseAgent):
             if hasattr(html_content, "html") and html_content.success:
                 html_str = html_content.html
             elif hasattr(html_content, "html"):
-                # Template rendered but with errors — use what we got
+                # Template rendered but with errors, use what we got
                 html_str = html_content.html or ""
             else:
                 html_str = str(html_content)
@@ -2686,7 +2823,7 @@ class PresentationDesigner(BaseAgent):
                 env.filters["clean_dict_repr"] = _fallback_renderer._clean_dict_repr
                 template = env.from_string(HTML_TEMPLATE)
                 html_str = template.render(
-                    report=report,
+                    report=client_report,
                     cover_image=cover_image_abs,
                     section_images=section_images_abs,
                     section_charts=chart_placements_abs,
@@ -2695,13 +2832,12 @@ class PresentationDesigner(BaseAgent):
                     risk_analysis_html=self._build_risk_analysis_html(report),
                     appendix_sources_html=self._build_appendix_sources_html(report),
                     endnotes_html=self._build_endnotes_html(report),
-                    technical_appendix_html=self._build_technical_appendix_html(report),
                 )
             except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
                 # Last resort: strip Jinja2 tags and do basic format
                 html_str = HTML_TEMPLATE.replace("{{ css_content | safe }}", css_content)
                 html_str = html_str.replace("{{ report.question }}", str(report.question))
-                html_str = html_str.replace("{{ report.recommendation.value | upper "
+                html_str = html_str.replace("{{ report.recommendation | upper "
                     "}}", str(report.recommendation.value).upper())
 
             with open(self.HTML_OUTPUT, "w", encoding="utf-8") as f:
@@ -2742,7 +2878,7 @@ class PresentationDesigner(BaseAgent):
         analysis = report.risk_analysis
         html_parts = ["<div class='risk-matrix no-break'>"]
 
-        # Zone summary — the 5x5 matrix's headline, previously discarded.
+        # Zone summary, the 5x5 matrix's headline, previously discarded.
         zone_counts = (analysis.risk_matrix or {}).get("zone_counts") or {}
         if zone_counts:
             red = int(zone_counts.get("red", 0))
@@ -2817,7 +2953,7 @@ class PresentationDesigner(BaseAgent):
         return "\n".join(html_parts)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Fix 4.5: MBB front/back matter — At-a-glance, Endnotes, Technical appendix
+    # Fix 4.5: MBB front/back matter, At-a-glance, Endnotes, Technical appendix
     # ─────────────────────────────────────────────────────────────────────
 
     def _build_endnotes_html(self, report: FinalReport) -> str:
@@ -2845,7 +2981,7 @@ class PresentationDesigner(BaseAgent):
             # wrong field names elsewhere in 4.5 (see
             # ``_build_technical_appendix_html``): the fallback made a schema
             # mismatch render as "no data" instead of raising. An AttributeError
-            # here is strictly preferable — it fails loudly at the seam.
+            # here is strictly preferable, it fails loudly at the seam.
             for source in section.sources:
                 url = (source.url or "").strip()
                 title = (source.title or "").strip()
@@ -2885,170 +3021,6 @@ class PresentationDesigner(BaseAgent):
             parts.append("</ol>")
         return "\n".join(parts)
 
-    def _build_technical_appendix_html(self, report: FinalReport) -> str:
-        """Publish the self-assessment the report already computed.
-
-        ``quality_score``, ``confidence_breakdown``, ``contradictions`` and
-        ``fact_check_report`` all existed on ``FinalReport`` and **none of them
-        reached the PDF**: the system graded itself and then discarded the
-        scorecard. Surfacing them, including the unresolved contradictions and
-        the residual gaps, is what separates a technical appendix from a
-        marketing annex.
-
-        WHY THIS METHOD DOES NOT USE ``getattr(obj, "field", default)``
-        --------------------------------------------------------------
-        The first draft of this method did, and the fallbacks concealed three
-        genuinely wrong field names, each of which would have shipped as a
-        silently missing section rather than an error:
-
-        * ``QualityScore.dimensions`` is a ``list[QualityDimension]``, not a
-          ``dict``. The draft guarded with ``isinstance(dimensions, dict)``, so
-          the dimension table would have rendered **never**, on every report.
-        * ``FactCheckReport`` exposes ``total_claims_checked`` /
-          ``verified_count``, not ``claims_checked`` / ``claims_verified``. Both
-          reads returned ``None``, so the whole fact-check block was skipped.
-        * ``Contradiction`` carries ``finding_a`` / ``finding_b``, not
-          ``description`` / ``topic``. The draft's final ``or str(item)``
-          fallback would have dumped a **raw pydantic repr** into the PDF.
-
-        That is the audit's thesis in miniature: a defensive default turns a
-        schema mismatch into a plausible-looking empty section. Direct attribute
-        access is used throughout so a future schema change fails loudly at this
-        seam instead of quietly emptying the appendix.
-        """
-        parts: list[str] = []
-
-        quality = report.quality_score
-        if quality is not None:
-            parts.append("<h3>Quality assessment</h3>")
-            parts.append("<table class='data-table'>")
-            parts.append("<tr><th>Dimension</th><th>Score</th><th>Weight</th></tr>")
-            parts.append(
-                f"<tr><td><strong>Total score</strong></td>"
-                f"<td><strong>{quality.total_score:.1f}</strong></td>"
-                f"<td>threshold {quality.threshold:.1f}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Approved</td><td>{'Yes' if quality.approved else 'No'}</td>"
-                f"<td>iteration {quality.iteration}</td></tr>"
-            )
-            # `dimensions` is a LIST of QualityDimension models, not a dict.
-            for dim in quality.dimensions:
-                label = (dim.name or dim.dimension_id or "Dimension").replace("_", " ")
-                critical = " <em>(critical)</em>" if dim.critical else ""
-                parts.append(
-                    # `score` is an int constrained to 1..5 by the schema, so it
-                    # is printed as an integer out of 5 rather than formatted as
-                    # a float — "4/5" is the scale the reader needs, "4.0"
-                    # implies a precision the model does not carry.
-                    f"<tr><td>{html_escape(label.capitalize())}{critical}</td>"
-                    f"<td>{dim.score}/5</td>"
-                    f"<td>{dim.weight:.2f}</td></tr>"
-                )
-            parts.append("</table>")
-
-            if quality.gaps:
-                parts.append("<h3>Residual gaps</h3><ul>")
-                parts.extend(f"<li>{html_escape(str(g))}</li>" for g in quality.gaps)
-                parts.append("</ul>")
-
-        if report.confidence_breakdown:
-            parts.append("<h3>Confidence by dimension</h3>")
-            parts.append("<table class='data-table'>")
-            parts.append("<tr><th>Dimension</th><th>Confidence</th></tr>")
-            for name, level in report.confidence_breakdown.items():
-                label = str(name).replace("_", " ").capitalize()
-                # dict[str, ConfidenceLevel] — enum, so `.value` is the wire form.
-                value = level.value if hasattr(level, "value") else str(level)
-                parts.append(
-                    f"<tr><td>{html_escape(label)}</td>"
-                    f"<td>{html_escape(str(value).replace('_', ' ').title())}</td></tr>"
-                )
-            parts.append("</table>")
-
-        if report.contradictions:
-            # Deliberately published rather than resolved-away. An unreconciled
-            # conflict the reader can see is evidence of rigour; one silently
-            # dropped is a defect. Rendered as the opposed pair it actually is —
-            # two findings and the agents that produced them — because a
-            # contradiction printed as one sentence loses the thing that makes
-            # it a contradiction.
-            parts.append("<h3>Contradictions</h3>")
-            parts.append("<table class='data-table'>")
-            parts.append(
-                "<tr><th>Type</th><th>Position A</th><th>Position B</th>"
-                "<th>Resolution</th></tr>"
-            )
-            for item in report.contradictions:
-                ctype = str(
-                    item.contradiction_type.value
-                    if hasattr(item.contradiction_type, "value")
-                    else item.contradiction_type
-                ).replace("_", " ")
-                resolution = item.resolution or (
-                    "Resolved" if item.resolved else "Unresolved"
-                )
-                parts.append(
-                    f"<tr><td>{html_escape(ctype.title())}</td>"
-                    f"<td>{html_escape(item.finding_a)}"
-                    f"<br/><span class='endnote-url'>{html_escape(item.agent_a)}</span></td>"
-                    f"<td>{html_escape(item.finding_b)}"
-                    f"<br/><span class='endnote-url'>{html_escape(item.agent_b)}</span></td>"
-                    f"<td>{html_escape(resolution)}</td></tr>"
-                )
-            parts.append("</table>")
-
-        fact_check = report.fact_check_report
-        if fact_check is not None:
-            parts.append("<h3>Fact check</h3>")
-            parts.append("<table class='data-table'>")
-            parts.append("<tr><th>Measure</th><th>Value</th></tr>")
-            parts.append(
-                f"<tr><td>Claims checked</td>"
-                f"<td>{fact_check.total_claims_checked}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Verified</td><td>{fact_check.verified_count}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Unverified</td><td>{fact_check.unverified_count}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Contradicted</td>"
-                f"<td>{fact_check.contradicted_count}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Verification rate</td>"
-                f"<td>{fact_check.verification_rate:.0%}</td></tr>"
-            )
-            # Hallucinated citations and broken evidence chains are the two
-            # failure modes a reader cannot detect for themselves. Always shown,
-            # including when zero, so that "0" is an affirmative claim rather
-            # than an absent section that might mean either.
-            parts.append(
-                f"<tr><td>Hallucinated citations</td>"
-                f"<td>{fact_check.hallucinated_citation_count}</td></tr>"
-            )
-            parts.append(
-                f"<tr><td>Evidence-chain breaks</td>"
-                f"<td>{fact_check.evidence_chain_break_count}</td></tr>"
-            )
-            parts.append("</table>")
-
-        if report.limitations:
-            parts.append("<h3>Limitations</h3><ul>")
-            parts.extend(
-                f"<li>{html_escape(str(item))}</li>" for item in report.limitations
-            )
-            parts.append("</ul>")
-
-        if not parts:
-            return (
-                "<p class='appendix-empty'>No quality assessment data was "
-                "recorded for this engagement.</p>"
-            )
-        return "\n".join(parts)
-
     # ─────────────────────────────────────────────────────────────────────
     # Step 7: Generate PDF with WeasyPrint
     # ─────────────────────────────────────────────────────────────────────
@@ -3061,77 +3033,6 @@ class PresentationDesigner(BaseAgent):
         mistaken for the deliverable.
         """
         return os.path.join(self.BUILD_DIR, os.path.basename(self.CSS_OUTPUT))
-
-    async def _generate_pdf(self, html_path: str) -> str:
-        """Generate the final PDF with WeasyPrint.
-
-        WeasyPrint converts HTML/CSS to PDF at 300 DPI with:
-        - A4 page size
-        - Embedded fonts (Instrument Serif, JetBrains Mono)
-        - Brand colors (warm palette, no blue)
-        - Proper margins (25mm all sides, 15mm binding)
-        - Page breaks (no blank pages, no orphaned images)
-
-        Returns the path to the produced artifact: the PDF on success, or the
-        styled HTML fallback if both PDF engines are unavailable. Returns ""
-        only when nothing at all could be produced.
-
-        Every exit path is logged. This method used to `return ""` silently
-        from five different places and swallow errors with a narrow
-        `except (ValueError, AttributeError, RuntimeError)`, so a Windows GTK
-        OSError escaped while the caller was left with an empty string and no
-        idea why, the report simply vanished with no diagnostic.
-        """
-        os.makedirs(self.OUTPUT_DIR, exist_ok=True)
-
-        try:
-            weasyprint_tool = self.get_tool(ToolName.WEASYPRINT)
-
-            # PDFRenderer.render_pdf expects HTML string content, not a file path.
-            html_content = ""
-            try:
-                with open(html_path, encoding="utf-8") as f:
-                    html_content = f.read()
-            except (OSError, ValueError) as e:
-                self._log(f"RENDER: cannot read staged HTML {html_path}: {e}")
-                return ""
-
-            if not html_content:
-                self._log(f"RENDER: staged HTML {html_path} is empty; nothing to render")
-                return ""
-
-            result = weasyprint_tool.render_pdf(
-                html=html_content,
-                output_path=self.PDF_OUTPUT,
-            )
-
-            if result and result.success:
-                self._log(f"RENDER: PDF produced at {self.PDF_OUTPUT}")
-                return self.PDF_OUTPUT
-
-            # PDF failed. The renderer now emits a styled, self-contained HTML
-            # fallback — surface it rather than discarding it. Returning ""
-            # here is what left the user with an empty output directory.
-            fallback = getattr(result, "html_path", "") if result else ""
-            if fallback and os.path.exists(fallback):
-                self._log(
-                    f"RENDER: PDF unavailable ({getattr(result, 'error', 'unknown')!s:.120}); "
-                    f"delivering HTML fallback {fallback}"
-                )
-                return fallback
-
-            self._log(
-                "RENDER: PDF generation failed with no fallback: "
-                f"{getattr(result, 'error', 'unknown error')!s:.200}"
-            )
-            return ""
-
-        except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
-            # Broad by design: WeasyPrint on Windows raises OSError/ImportError
-            # from missing GTK natives, which the old narrow tuple let escape
-            # and abort the whole delivery stage.
-            self._log(f"RENDER: PDF generation raised {type(e).__name__}: {e!s:.200}")
-            return ""
 
     # ─────────────────────────────────────────────────────────────────────
     # Page flow validation
@@ -3162,7 +3063,7 @@ class PresentationDesigner(BaseAgent):
         return (no_blank, no_orphaned)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 8-step methodology
+    # Main execution, the 8-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -3221,56 +3122,15 @@ class PresentationDesigner(BaseAgent):
             await self._transition(AgentState.DONE, "No FinalReport received")
             return LayoutPlan(engagement_id=engagement_id, confidence=ConfidenceLevel.LOW)
 
-        # Step 2: Receive QualityScore
+        # Step 2: Receive QualityScore (display only)
         await self._transition(AgentState.WORKING, "Step 2: Receiving QualityScore")
         await self._receive_quality_score(quality_score)
-
-        if self._quality_score and not self._quality_score.approved:
-            quality_note = (
-                f"Quality Gate not approved (score {self._quality_score.total_score:.1f}/5.0"
-                f", iteration {self._quality_score.iteration})"
-            )
-            # P2-23: `max_iterations_reached` is NOT a universal bypass. It
-            # partitions into two cases:
-            #   - integrity_blockers present (leaked object, banned filler,
-            #     verdict contradiction, dishonest confidence, broken URL,
-            #     meta-text): NEVER proceed, regardless of iteration count.
-            #     There is no acceptable version of shipping `{'name': ...`
-            #     to a client.
-            #   - only cosmetic/thin-evidence gaps (low score, few sources):
-            #     the max_iterations escalation MAY proceed, with the
-            #     limitation declared on the page.
-            if self._quality_score.integrity_blockers:
-                await self._transition(
-                    AgentState.DONE,
-                    f"{quality_note}, integrity blocker(s) present "
-                    f"({len(self._quality_score.integrity_blockers)}), refusing to render "
-                    "regardless of max_iterations_reached: "
-                    f"{'; '.join(self._quality_score.integrity_blockers[:3])}",
-                )
-                return LayoutPlan(
-                    engagement_id=engagement_id,
-                    confidence=ConfidenceLevel.LOW,
-                    no_blank_pages=False,
-                    no_orphaned_images=False,
-                )
-            if self._quality_score.max_iterations_reached:
-                quality_note += "max iterations reached, proceeding with best report (escalation)"
-                await self._transition(
-                    AgentState.WORKING,
-                    f"Step 2: {quality_note}",
-                )
-            else:
-                await self._transition(
-                    AgentState.DONE,
-                    f"{quality_note}, cannot design layout",
-                )
-                return LayoutPlan(
-                    engagement_id=engagement_id,
-                    confidence=ConfidenceLevel.LOW,
-                    no_blank_pages=False,
-                    no_orphaned_images=False,
-                )
+        # W-08: the escape hatch that used to live here is deleted, not
+        # repaired. Delivery NEVER evaluates quality. The orchestrator's
+        # terminal-state computation is the single ship/no-ship decision
+        # point; if this agent is running at all, the report cleared the
+        # gate and is laid out unconditionally. A second quality decision
+        # point here is a second escape hatch.
 
         # Step 3: Design layout plan
         await self._transition(AgentState.WORKING, "Step 3: Designing layout plan")
@@ -3293,7 +3153,7 @@ class PresentationDesigner(BaseAgent):
         await self._transition(AgentState.WORKING, "Step 5: Receiving chart images from Data "
             "Visualizer")
         # `report` is passed so homeless charts can be re-homed onto a section
-        # that actually exists (fix 3.7) — without it the headline exhibits
+        # that actually exists (fix 3.7), without it the headline exhibits
         # mined from `key_findings` are rendered by nobody.
         self._receive_chart_images(visualization_output, report=report)
 
@@ -3314,9 +3174,17 @@ class PresentationDesigner(BaseAgent):
             chart_placements=self._chart_placements,
         )
 
-        # Step 7: Generate PDF with WeasyPrint
-        await self._transition(AgentState.WORKING, "Step 7: Generating PDF with WeasyPrint")
-        pdf_path = await self._generate_pdf(html_path)
+        # Step 7: W-03, the designer NO LONGER writes a PDF. Its contract is
+        # the staged HTML + layout plan and nothing else; the Render Engine
+        # is the single writer. The deleted `_generate_pdf` duplicated the
+        # Render Engine's job, and the orchestrator's `layout_plan.pdf_path`
+        # fallback then let an unaudited designer-rendered PDF become the
+        # deliverable (RC-3/RC-4). Both are gone now.
+        await self._transition(
+            AgentState.WORKING,
+            "Step 7: Staged HTML + layout plan handed to Render Engine "
+            "(the single PDF writer)",
+        )
 
         # Step 8: Post-process images with Pillow (via Render Engine)
         await self._transition(AgentState.WORKING, "Step 8: Post-processing images (handed to "
@@ -3330,8 +3198,10 @@ class PresentationDesigner(BaseAgent):
         # Collect all section images
         all_section_images = list(self._section_images.values())
 
-        # Determine confidence
-        if pdf_path and no_blank and no_orphaned:
+        # Determine confidence, W-03: the designer's confidence describes
+        # its own artifact (the staged HTML + layout plan), not a PDF it no
+        # longer authors.
+        if html_path and no_blank and no_orphaned:
             confidence = ConfidenceLevel.HIGH
         elif html_path:
             confidence = ConfidenceLevel.MEDIUM
@@ -3348,7 +3218,6 @@ class PresentationDesigner(BaseAgent):
             chart_placements=all_chart_placements,
             html_template_path=html_path,
             css_path=self._css_build_path(),
-            pdf_path=pdf_path,
             typography=TYPOGRAPHY,
             color_palette=PDF_PALETTE,
             no_blank_pages=no_blank,
@@ -3367,7 +3236,6 @@ class PresentationDesigner(BaseAgent):
                 "finding_type": "layout_plan",
                 "layout_plan": layout_plan.model_dump(),
                 "total_pages": len(self._pages),
-                "has_pdf": bool(pdf_path),
                 "no_blank_pages": no_blank,
                 "no_orphaned_images": no_orphaned,
                 "cover_image": self._cover_image.image_path if self._cover_image else "",
@@ -3384,7 +3252,7 @@ class PresentationDesigner(BaseAgent):
             payload={
                 "to_agent": "render_engine",
                 "from_agent": self.name.value,
-                "task": "render_pdf",
+                "task": "render_deliverable",
                 "context_bundle": {
                     "layout_plan": layout_plan.model_dump(),
                     "html_path": html_path,
@@ -3398,8 +3266,8 @@ class PresentationDesigner(BaseAgent):
                     f"Layout plan complete: {len(self._pages)} pages, "
                     f"{len(all_section_images)} section images, "
                     f"{len(all_chart_placements)} charts. "
-                    f"PDF {'generated' if pdf_path else 'pending'}. "
-                    f"Hand off to Render Engine for final assembly."
+                    f"Hand off to Render Engine for final assembly and "
+                    f"single-writer PDF rendering."
                 ),
             },
         )
@@ -3417,7 +3285,7 @@ class PresentationDesigner(BaseAgent):
                 f"Chart placements: {len(all_chart_placements)}. "
                 f"Blank pages: {'none' if no_blank else 'detected'}. "
                 f"Orphaned images: {'none' if no_orphaned else 'detected'}. "
-                f"PDF: {'generated' if pdf_path else 'pending Render Engine'}."
+                f"PDF: authored by Render Engine (single writer)."
             ),
             confidence=confidence,
         )
@@ -3430,7 +3298,7 @@ class PresentationDesigner(BaseAgent):
             f"{len(all_chart_placements)} charts, "
             f"blank_pages: {'no' if no_blank else 'yes'}, "
             f"orphaned: {'no' if no_orphaned else 'yes'}, "
-            f"pdf: {'yes' if pdf_path else 'pending'}, "
+            f"pdf: render_engine (single writer), "
             f"confidence: {confidence.value}",
         )
 

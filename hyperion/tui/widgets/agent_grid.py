@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
+from typing import Any
 
+from textual.content import Content
+from textual.timer import Timer
 from textual.widgets import Static
 
-from hyperion.tui.content import build, span
+from hyperion.tui.content import Line, build, span
 from hyperion.tui.motion.indicators import spinner_span
 from hyperion.tui.theme import (
     CLAY,
@@ -97,10 +100,10 @@ class AgentGrid(Static):
     }
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         self._agents: dict[str, GridAgent] = {}
         self._frame = 0
-        self._timer = None
+        self._timer: Timer | None = None
         super().__init__(self._render_grid(), **kwargs)
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -184,8 +187,8 @@ class AgentGrid(Static):
 
     # ── render ────────────────────────────────────────────────────────────────
 
-    def _render_grid(self):
-        lines: list = []
+    def _render_grid(self) -> Content:
+        lines: list[Line] = []
 
         active, total = self.get_active_count()
         lines.append([

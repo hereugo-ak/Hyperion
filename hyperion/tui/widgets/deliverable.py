@@ -16,11 +16,12 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, Static
 
-from hyperion.tui.content import build, line, span
+from hyperion.tui.content import Line, build, line, span
 from hyperion.tui.theme import (
     CLAY,
     SIG_ERROR,
@@ -96,7 +97,7 @@ class DeliverableView(Widget):
     }
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._report_md: str = ""
         self._quality_scores: dict[str, float] = {}
@@ -144,8 +145,8 @@ class DeliverableView(Widget):
 
     # ── builders ──────────────────────────────────────────────────────────────
 
-    def _build_header(self):
-        lines: list = []
+    def _build_header(self) -> Content:
+        lines: list[Line] = []
         lines.append([
             span("  DELIVERABLE", f"bold {CLAY}"),
             span("  ·  ", TEXT_GHOST),
@@ -156,7 +157,7 @@ class DeliverableView(Widget):
             lines[0].append(span("no report generated yet", TEXT_GHOST))
         return build(lines)
 
-    def _render_markdown(self):
+    def _render_markdown(self) -> Content:
         """Render the report markdown as Content.
 
         For now, we render it as plain text with basic styling.
@@ -165,7 +166,7 @@ class DeliverableView(Widget):
         if not self._report_md:
             return build([line(span("  No report content yet.", TEXT_GHOST))])
 
-        lines: list = []
+        lines: list[Line] = []
         for md_line in self._report_md.split("\n"):
             if md_line.startswith("# "):
                 lines.append([span(md_line[2:], f"bold {CLAY}")])
@@ -181,8 +182,8 @@ class DeliverableView(Widget):
                 lines.append([span("  " + md_line, TEXT_PRIMARY)])
         return build(lines)
 
-    def _build_quality(self):
-        lines: list = []
+    def _build_quality(self) -> Content:
+        lines: list[Line] = []
 
         if not self._quality_scores:
             lines.append([span("  QUALITY  no scores yet", TEXT_GHOST)])

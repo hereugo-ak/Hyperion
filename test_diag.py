@@ -1,9 +1,10 @@
-import asyncio, traceback
+import asyncio
+import traceback
+
 
 async def test():
-    from hyperion.agents.bus import reset_bus, get_bus
+    from hyperion.agents.bus import get_bus, reset_bus
     from hyperion.orchestrator import WorkflowEngine
-    from hyperion.schemas.workflow import TaskStatus
 
     reset_bus()
     bus = get_bus()
@@ -18,7 +19,7 @@ async def test():
                 print(f"  {t.id}: {t.status.value} — {t.error or 'ok'}")
         if result.final_report:
             print(f"  REPORT: {result.final_report.recommendation.value}")
-    except Exception:
+    except Exception:  # noqa: BLE001 - diagnostic script must print any failure
         # D5.1: `as e` was unused (ruff F841); print_exc() already reports it.
         traceback.print_exc()
     finally:

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import math
 
+from rich.text import Text
+
 from hyperion.tui.motion.color import ramp
 from hyperion.tui.theme import BORDER_SUBTLE, CLAY, CLAY_DEEP, CLAY_SOFT, SIG_WARN, TEXT_DIM
 
@@ -90,8 +92,6 @@ def aurora_spans(tick: int, track: int = 28, sigma: float = 3.2) -> list[Span]:
 # These wrap the span builders in a Rich Text for any old caller; new code uses
 # the *_span(s) helpers above with Content.
 
-def spinner_frame(tick: int, reduced: bool = False):
-    from rich.text import Text
-
+def spinner_frame(tick: int, reduced: bool = False) -> Text:
     text, style = spinner_span(tick, reduced)
     return Text(text, style=style)

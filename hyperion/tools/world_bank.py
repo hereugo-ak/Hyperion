@@ -234,12 +234,14 @@ class WorldBankClient:
         self,
         endpoint: str,
         params: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | list[Any]:
         """Make a rate-limited, cached request to the World Bank API."""
         cache_key = self._cache_key(endpoint, *sorted((params or {}).items()))
         cached = self._get_cached(cache_key)
-        if cached is not None:
-            return cached
+        if isinstance(cached, dict):
+            return {str(key): value for key, value in cached.items()}
+        if isinstance(cached, list):
+            return list(cached)
 
         await self._rate_limit()
         client = await self._get_client()
@@ -254,7 +256,15 @@ class WorldBankClient:
             try:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
-                data = response.json()
+                payload = response.json()
+                if isinstance(payload, dict):
+                    data: dict[str, Any] | list[Any] = {
+                        str(key): value for key, value in payload.items()
+                    }
+                elif isinstance(payload, list):
+                    data = list(payload)
+                else:
+                    return {"error": "World Bank returned an invalid JSON response"}
 
                 self._set_cached(cache_key, data)
                 return data
@@ -421,6 +431,38 @@ class WorldBankClient:
     # ─────────────────────────────────────────────────────────────────────
     # Country Profiles
     # ─────────────────────────────────────────────────────────────────────
+
+    async def resolve_country_code(self, geography: str) -> str | None:
+        """Resolve an ISO2/ISO3 code or country name to a World Bank ISO2 code.
+
+        Engagement questions normally carry human-readable geographies (for
+        example ``"India"``), while indicator endpoints require a country
+        code. Aggregate regions are excluded so a country request cannot
+        silently resolve to a regional series.
+        """
+        requested = geography.strip()
+        if not requested:
+            return None
+
+        data = await self._make_request("country", params={"per_page": "400"})
+        if "error" in data or not isinstance(data, list) or len(data) < 2:
+            return None
+
+        countries = data[1] if isinstance(data[1], list) else []
+        needle = requested.casefold()
+        for country in countries:
+            region = country.get("region", {})
+            region_id = region.get("id", "") if isinstance(region, dict) else ""
+            if region_id == "NA":  # World Bank aggregates have no real region.
+                continue
+            candidates = {
+                str(country.get("id", "")).casefold(),
+                str(country.get("iso2Code", "")).casefold(),
+                str(country.get("name", "")).casefold(),
+            }
+            if needle in candidates:
+                return str(country.get("iso2Code") or country.get("id") or "") or None
+        return None
 
     async def get_country_profile(self, country_code: str) -> WorldBankCountryProfile | None:
         """Get a country profile from the World Bank.

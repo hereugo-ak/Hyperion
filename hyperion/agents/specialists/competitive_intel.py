@@ -1,5 +1,5 @@
 """
-HYPERION Competitive Intelligence — Agent 4, the competitor profiling specialist.
+HYPERION Competitive Intelligence, Agent 4, the competitor profiling specialist.
 
 This is NOT a generic "list the competitors" agent. This is a specialist
 with proprietary analytical frameworks:
@@ -12,14 +12,13 @@ with proprietary analytical frameworks:
 
 It uses Obscura's stealth mode because competitor sites actively block bots.
 It cross-references current pricing with Wayback historical pricing to show
-pricing trends, not just current prices. It doesn't just list competitors —
-it maps their moats and identifies which are defensible vs. eroding. It
-always identifies white space — where no competitor is currently playing.
+pricing trends, not just current prices. It doesn't just list competitors, it maps their moats and identifies which are defensible vs. eroding. It
+always identifies white space, where no competitor is currently playing.
 (§4.4, Agent 4)
 
 Model Tier: STANDARD
 Tools: SearxNG, Jina, Obscura, Wayback
-Sub-agents: Max 3 — scrape competitor pricing pages, find funding/headcount
+Sub-agents: Max 3, scrape competitor pricing pages, find funding/headcount
 Output: CompetitiveLandscape (competitor matrix, moat assessments, strategic
         groups, positioning map, white space, pricing trends, confidence, sources)
 
@@ -88,7 +87,7 @@ COMPETITIVE_INTEL_SPEC = AgentSpec(
                 "Build a structured comparison of competitors across 7 dimensions: "
                 "product features, pricing, target customer, geographic coverage, "
                 "funding stage, headcount, key partnerships. Each cell must cite a "
-                "source. The matrix is the foundation for all subsequent analysis — "
+                "source. The matrix is the foundation for all subsequent analysis"
                 "moat assessment, strategic grouping, and positioning all reference it."
             ),
             inputs=["competitor_list", "competitor_websites", "pricing_data", "funding_data"],
@@ -140,8 +139,8 @@ COMPETITIVE_INTEL_SPEC = AgentSpec(
                 "Plot competitors on a 2D map to identify white space and competitive "
                 "density. Common axes: price vs. quality, feature breadth vs. focus, "
                 "geographic reach vs. depth, enterprise vs. consumer. White space is "
-                "where no competitor is currently playing — these are potential "
-                "opportunities. Competitive density is where many competitors cluster — "
+                "where no competitor is currently playing, these are potential "
+                "opportunities. Competitive density is where many competitors cluster"
                 "these are red oceans."
             ),
             inputs=["competitor_matrix", "positioning_dimensions"],
@@ -149,7 +148,7 @@ COMPETITIVE_INTEL_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Competitive Intelligence analyst — the specialist who "
+        "You are the HYPERION Competitive Intelligence analyst, the specialist who "
         "profiles competitors, maps competitive positioning, assesses moats, and "
         "tracks market share. You answer 'who are we up against and how do they win?'\n\n"
         "Your proprietary frameworks:\n"
@@ -158,19 +157,19 @@ COMPETITIVE_INTEL_SPEC = AgentSpec(
         "2. Strategic group mapping: Cluster competitors into direct rivals vs. "
         "adjacent players based on strategy similarity.\n"
         "3. Market share analysis: Estimate share from revenue, customers, search "
-        "volume, or app downloads — always with confidence intervals.\n"
+        "volume, or app downloads, always with confidence intervals.\n"
         "4. Moat assessment: Hamilton Helmer 7-force framework (network effects, "
         "switching costs, scale, brand, regulatory, IP, distribution). Score "
         "strong/moderate/weak/nascent. Identify defensible vs. eroding moats.\n"
         "5. Positioning map: 2D plot (price vs. quality, breadth vs. focus) to find "
         "white space and competitive density.\n\n"
         "Rules:\n"
-        "- ALWAYS use Obscura's stealth mode for competitor sites — they block bots.\n"
+        "- ALWAYS use Obscura's stealth mode for competitor sites, they block bots.\n"
         "- ALWAYS cross-reference current pricing with Wayback historical pricing. "
         "Show pricing trends, not just current prices.\n"
-        "- DON'T just list competitors — map their moats and identify which are "
+        "- DON'T just list competitors, map their moats and identify which are "
         "defensible vs. eroding.\n"
-        "- ALWAYS identify white space — where no competitor is currently playing.\n"
+        "- ALWAYS identify white space, where no competitor is currently playing.\n"
         "- Each competitor matrix cell must cite a source. No unsourced claims.\n"
         "- Market share estimates must include confidence intervals and the proxy "
         "used (revenue, downloads, search volume).\n"
@@ -180,7 +179,7 @@ COMPETITIVE_INTEL_SPEC = AgentSpec(
         "- Sub-agent A: Scrape [competitor1] pricing page (MICRO, Obscura)\n"
         "- Sub-agent B: Scrape [competitor2] pricing page (MICRO, Obscura)\n"
         "- Sub-agent C: Find [competitor3] funding/headcount (FAST, SearxNG + Jina)\n\n"
-        "Your output is a CompetitiveLandscape Pydantic model — structured, not free text."
+        "Your output is a CompetitiveLandscape Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves competitive analysis, market entry, "
                      "or positioning (GO_NO_GO, MARKET_ENTRY, COMPARISON types)",
@@ -281,7 +280,7 @@ class CompetitiveIntel(BaseAgent):
                 return
             if request_type == "moat_assessment":
                 # Strategy Analyst requesting moat data for a specific competitor
-                # Handled during run() — just note the request
+                # Handled during run(), just note the request
                 pass
 
     # ─────────────────────────────────────────────────────────────────────
@@ -311,7 +310,7 @@ class CompetitiveIntel(BaseAgent):
         #
         # This is defence in depth, not a live bug fix: `ground_query` at the
         # single SearxNG call site already re-anchors any query that lost its
-        # subject. Making it explicit here keeps the invariant local — a reader
+        # subject. Making it explicit here keeps the invariant local, a reader
         # of this function can see that a subject-less query is impossible
         # without having to know about the choke point.
         sector = resolve_subject(
@@ -324,8 +323,7 @@ class CompetitiveIntel(BaseAgent):
             Every query is built through this helper so an absent part
             disappears instead of leaving a hole. The previous
             f"top {sector} companies {geography}" collapsed to
-            "top  companies" with a doubled space when both were empty —
-            a query that cannot return anything relevant.
+            "top  companies" with a doubled space when both were empty, a query that cannot return anything relevant.
             """
             return " ".join(p.strip() for p in parts if p and p.strip())
 
@@ -433,7 +431,12 @@ class CompetitiveIntel(BaseAgent):
 
         try:
             data = json.loads(response.content)
-            return data.get("competitors", [])
+            if not isinstance(data, dict):
+                return []
+            competitors = data.get("competitors", [])
+            if not isinstance(competitors, list):
+                return []
+            return [name for name in competitors if isinstance(name, str)]
         except (json.JSONDecodeError, ValueError):
             return []
 
@@ -506,10 +509,10 @@ class CompetitiveIntel(BaseAgent):
 
                         self._sources.append(Source(
                             id=f"src_{len(self._sources):03d}",
-                            title=f"{competitor} — {page_type} page",
+                            title=f"{competitor}, {page_type} page",
                             url=url,
                             credibility=SourceCredibility.BLOG,
-                            key_data=f"Scraped {page_type} content from {competitor}",
+                            key_data=content[:500],
                         ))
 
     async def _find_competitor_website(self, competitor_name: str) -> str:
@@ -519,7 +522,10 @@ class CompetitiveIntel(BaseAgent):
             results = await searxng.search(f"{competitor_name} official website", max_results=3)
             for r in results:
                 url = r.get("url", "")
-                if url and not any(x in url for x in ["linkedin.com", "crunchbase.com", "bloomberg.com"]):
+                if isinstance(url, str) and url and not any(
+                    blocked in url
+                    for blocked in ["linkedin.com", "crunchbase.com", "bloomberg.com"]
+                ):
                     return url
         except (ValueError, AttributeError, RuntimeError):
             pass
@@ -533,7 +539,7 @@ class CompetitiveIntel(BaseAgent):
         """Pull historical competitor website snapshots from Wayback Machine.
 
         Cross-references current pricing with historical pricing to show
-        pricing trends — not just current prices. Also tracks product
+        pricing trends, not just current prices. Also tracks product
         evolution and strategic pivots over time.
         """
         try:
@@ -551,10 +557,16 @@ class CompetitiveIntel(BaseAgent):
 
                     self._sources.append(Source(
                         id=f"src_{len(self._sources):03d}",
-                        title=f"Wayback Machine — {competitor} historical snapshots",
+                        title=f"Wayback Machine, {competitor} historical snapshots",
                         url=f"https://web.archive.org/web/*/{url}",
                         credibility=SourceCredibility.NEWS,
-                        key_data=f"Historical snapshots for {competitor} (1y, 2y, 5y)",
+                        key_data=(
+                        "\n---\n".join(
+                            f"Snapshot {snap.timestamp}: {snap.snapshot_url}"
+                            for snap in snapshots[:6]
+                        )[:500]
+                        or None
+                    ),
                     ))
 
         except (ValueError, AttributeError, RuntimeError):
@@ -581,7 +593,7 @@ class CompetitiveIntel(BaseAgent):
         for comp, pages in scraped_data.items():
             for page_type, page_data in pages.items():
                 content = page_data.get("content", "")[:500] if isinstance(page_data, dict) else str(page_data)[:500]
-                data_summary += f"\n{comp} — {page_type}: {content}\n"
+                data_summary += f"\n{comp}, {page_type}: {content}\n"
 
         search_summary = "\n".join(
             f"- {r['title']}: {r.get('snippet', '')[:150]}"
@@ -595,7 +607,7 @@ class CompetitiveIntel(BaseAgent):
             f"Search results:\n{search_summary[:2000]}\n\n"
             "Build a competitor matrix with these 7 dimensions:\n"
             "1. Product features (key features, differentiation)\n"
-            "2. Pricing (price range, model — subscription/one-time/usage-based)\n"
+            "2. Pricing (price range, model, subscription/one-time/usage-based)\n"
             "3. Target customer (SMB/mid-market/enterprise, industry vertical)\n"
             "4. Geographic coverage (regions/countries served)\n"
             "5. Funding stage (bootstrapped/seed/A/B/C/IPO/revenue-funded)\n"
@@ -628,7 +640,17 @@ class CompetitiveIntel(BaseAgent):
             return {}
 
         try:
-            return json.loads(response.content)
+            data = json.loads(response.content)
+            if not isinstance(data, dict):
+                return {}
+            return {
+                str(competitor): {
+                    str(dimension): str(value)
+                    for dimension, value in details.items()
+                }
+                for competitor, details in data.items()
+                if isinstance(details, dict)
+            }
         except (json.JSONDecodeError, ValueError):
             return {}
 
@@ -658,13 +680,13 @@ class CompetitiveIntel(BaseAgent):
             f"Competitor matrix:\n{matrix_summary}\n\n"
             "For each of the top 5 competitors, assess their moats using the "
             "Hamilton Helmer 7-force framework:\n"
-            "1. Network effects — does the product get better as more users join?\n"
-            "2. Switching costs — how hard is it for customers to leave?\n"
-            "3. Scale advantages — do they have cost advantages from size?\n"
-            "4. Brand — is their brand a competitive advantage?\n"
-            "5. Regulatory — do they have licenses/patents/regulatory moats?\n"
-            "6. IP/proprietary tech — do they have patented technology?\n"
-            "7. Distribution — do they have exclusive distribution channels?\n\n"
+            "1. Network effects, does the product get better as more users join?\n"
+            "2. Switching costs, how hard is it for customers to leave?\n"
+            "3. Scale advantages, do they have cost advantages from size?\n"
+            "4. Brand, is their brand a competitive advantage?\n"
+            "5. Regulatory, do they have licenses/patents/regulatory moats?\n"
+            "6. IP/proprietary tech, do they have patented technology?\n"
+            "7. Distribution, do they have exclusive distribution channels?\n\n"
             "Score each force as: strong, moderate, weak, or nascent.\n"
             "Also indicate trend: strengthening, stable, or eroding.\n\n"
             "Return JSON array:\n"
@@ -710,14 +732,14 @@ class CompetitiveIntel(BaseAgent):
                     if isinstance(force, dict):
                         forces.append(
                             f"{force_name}: {force.get('score', 'unknown')} "
-                            f"({force.get('trend', 'unknown')}) — {force.get('rationale', '')[:100]}"
+                            f"({force.get('trend', 'unknown')}), {force.get('rationale', '')[:100]}"
                         )
 
                 moat_findings.append(KeyFinding(
                     id=f"finding_{uuid.uuid4().hex[:8]}",
                     agent=self.name.value,
                     finding_type="moat_assessment",
-                    title=f"Moat Assessment — {competitor}",
+                    title=f"Moat Assessment, {competitor}",
                     content=(
                         f"Overall moat: {moat.get('overall_moat', 'unknown')}. "
                         f"Status: {moat.get('defensible_or_eroding', 'unknown')}. "
@@ -799,7 +821,7 @@ class CompetitiveIntel(BaseAgent):
                 density = group.get("density", "unknown")
                 desc = group.get("description", "")
                 groups.append(
-                    f"{name} ({gtype}, {density}): {', '.join(members)} — {desc}"
+                    f"{name} ({gtype}, {density}): {', '.join(members)}, {desc}"
                 )
 
         except (json.JSONDecodeError, ValueError):
@@ -856,7 +878,10 @@ class CompetitiveIntel(BaseAgent):
             return {}
 
         try:
-            return json.loads(response.content)
+            data = json.loads(response.content)
+            if not isinstance(data, dict):
+                return {}
+            return {str(key): value for key, value in data.items()}
         except (json.JSONDecodeError, ValueError):
             return {}
 
@@ -878,9 +903,12 @@ class CompetitiveIntel(BaseAgent):
         if not positioning_map:
             return []
 
-        white_space = positioning_map.get("white_space", [])
-        if not isinstance(white_space, list):
-            white_space = []
+        raw_white_space = positioning_map.get("white_space", [])
+        white_space = (
+            [item for item in raw_white_space if isinstance(item, str)]
+            if isinstance(raw_white_space, list)
+            else []
+        )
 
         # Also check for open strategic groups (less than 3 members)
         for group in strategic_groups:
@@ -912,7 +940,12 @@ class CompetitiveIntel(BaseAgent):
 
         try:
             data = json.loads(response.content)
-            return data.get("white_space", white_space)
+            if not isinstance(data, dict):
+                return white_space
+            prioritized = data.get("white_space", white_space)
+            if not isinstance(prioritized, list):
+                return white_space
+            return [item for item in prioritized if isinstance(item, str)]
         except (json.JSONDecodeError, ValueError):
             return white_space
 
@@ -928,7 +961,7 @@ class CompetitiveIntel(BaseAgent):
         """Analyze historical pricing trends from Wayback snapshots.
 
         Cross-references current pricing with historical pricing to show
-        trends — not just current prices. Shows whether a competitor is
+        trends, not just current prices. Shows whether a competitor is
         raising prices (confidence in value), lowering prices (desperation
         or scale advantage), or holding steady.
         """
@@ -988,7 +1021,7 @@ class CompetitiveIntel(BaseAgent):
                     id=f"finding_{uuid.uuid4().hex[:8]}",
                     agent=self.name.value,
                     finding_type="pricing_trend",
-                    title=f"Pricing Trend — {competitor}",
+                    title=f"Pricing Trend, {competitor}",
                     content=(
                         f"Current: {trend.get('current_pricing', 'Unknown')}. "
                         f"Historical: {trend.get('historical_pricing', 'Unknown')}. "
@@ -1026,18 +1059,18 @@ class CompetitiveIntel(BaseAgent):
 
         sub_specs = [
             SubAgentSpec(
-                question=f"Scrape {competitors[0]} pricing page — extract pricing tiers, features per tier, and any discounts",
+                question=f"Scrape {competitors[0]} pricing page, extract pricing tiers, features per tier, and any discounts",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
                 context={"competitor": competitors[0], "url": self._competitor_urls.get(competitors[0], "")},
             ),
             SubAgentSpec(
-                question=f"Scrape {competitors[1]} pricing page — extract pricing tiers, features per tier, and any discounts",
+                question=f"Scrape {competitors[1]} pricing page, extract pricing tiers, features per tier, and any discounts",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1046,7 +1079,7 @@ class CompetitiveIntel(BaseAgent):
             SubAgentSpec(
                 question=f"Find {competitors[2]} funding stage, total raised, headcount, and key investors",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1091,7 +1124,7 @@ class CompetitiveIntel(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 8-step methodology
+    # Main execution, the 8-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1116,7 +1149,7 @@ class CompetitiveIntel(BaseAgent):
         self._engagement_id = engagement_id or self._engagement_id
         self._context = context or self._context
 
-        # Subscribe to bus — specialists need findings + requests
+        # Subscribe to bus, specialists need findings + requests
         self.subscribe_to_bus()
 
         await self._transition(
@@ -1130,14 +1163,14 @@ class CompetitiveIntel(BaseAgent):
 
         if not self._competitor_names:
             await self._escalate(
-                issue="No competitors identified from search — publishing gap finding",
+                issue="No competitors identified from search, publishing gap finding",
                 suggested_action="Proceed with degraded analysis; flag data gap in report",
             )
             gap_finding = KeyFinding(
                 id=f"finding_{uuid.uuid4().hex[:8]}",
                 agent=self.name.value,
                 finding_type="competitive_gap",
-                title="Competitive analysis gap — no competitors identified",
+                title="Competitive analysis gap, no competitors identified",
                 content=(
                     f"No competitors could be identified for the question: "
                     f"'{self._question[:120]}'. This is a data-availability gap. "
@@ -1218,7 +1251,7 @@ class CompetitiveIntel(BaseAgent):
                 id=f"finding_{uuid.uuid4().hex[:8]}",
                 agent=self.name.value,
                 finding_type="competitor_profile",
-                title=f"Competitor Profile — {comp}",
+                title=f"Competitor Profile, {comp}",
                 content=(
                     f"Features: {matrix_data.get('product_features', 'Unknown')}. "
                     f"Pricing: {matrix_data.get('pricing', 'Unknown')}. "

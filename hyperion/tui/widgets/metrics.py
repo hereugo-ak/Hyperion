@@ -26,10 +26,13 @@ from __future__ import annotations
 import contextlib
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
+from textual.content import Content
+from textual.timer import Timer
 from textual.widgets import Static
 
-from hyperion.tui.content import build, line, span
+from hyperion.tui.content import Line, build, line, span
 from hyperion.tui.motion.indicators import spinner_span
 from hyperion.tui.theme import (
     CLAY,
@@ -107,12 +110,12 @@ class MetricsRail(Static):
     }
     """
 
-    def __init__(self, compact: bool = False, **kwargs) -> None:
+    def __init__(self, compact: bool = False, **kwargs: Any) -> None:
         self.tel = Telemetry()
         self._frame = 0
-        self._timer = None
+        self._timer: Timer | None = None
         self._compact = compact
-        super().__init__(self._render_content(), **kwargs)
+        super().__init__(self._compose_content(), **kwargs)
         if compact:
             self.add_class("bar")
 
@@ -180,12 +183,12 @@ class MetricsRail(Static):
 
     def _repaint(self) -> None:
         with contextlib.suppress(Exception):
-            self.update(self._render_content())
+            self.update(self._compose_content())
 
-    def _render_content(self):
+    def _compose_content(self) -> Content:
         return self._build_bar() if self._compact else self._build()
 
-    def _build_bar(self):
+    def _build_bar(self) -> Content:
         """Single-line status strip: status · elapsed · phase · agents · tools · tokens · providers."""
         t = self.tel
         status_style = {
@@ -201,7 +204,7 @@ class MetricsRail(Static):
         provs = " · ".join(sorted(t.providers)) if t.providers else "—"
 
         sep = span("  ·  ", TEXT_GHOST)
-        spans: list = []
+        spans: Line = []
         if t.status == "running" or active:
             spans.append(span(*spinner_span(self._frame)))
             spans.append(span(" ", ""))
@@ -216,19 +219,19 @@ class MetricsRail(Static):
 
     # ── build ─────────────────────────────────────────────────────────────────
 
-    def _section(self, title: str, right: str = "") -> list:
+    def _section(self, title: str, right: str = "") -> Line:
         spans = [span("▍ ", CLAY), span(title, f"bold {TEXT_SECONDARY}")]
         if right:
             spans.append(span("   ", ""))
             spans.append(span(right, TEXT_DIM))
         return spans
 
-    def _kv(self, key: str, value: str, vstyle: str = TEXT_PRIMARY) -> list:
+    def _kv(self, key: str, value: str, vstyle: str = TEXT_PRIMARY) -> Line:
         return [span("  " + key.ljust(11), TEXT_DIM), span(value, vstyle)]
 
-    def _build(self):
+    def _build(self) -> Content:
         t = self.tel
-        lines: list = []
+        lines: list[Line] = []
 
         status_style = {
             "idle": TEXT_DIM,

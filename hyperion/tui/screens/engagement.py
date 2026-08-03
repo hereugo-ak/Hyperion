@@ -70,7 +70,7 @@ from hyperion.tui.widgets.tpm_bar import TPMBar
 logger = logging.getLogger(__name__)
 
 
-class EngagementScreen(Screen):
+class EngagementScreen(Screen[None]):
     """Main HYPERION engagement room — 3-panel layout per architecture spec.
 
     Left panel:  AgentGrid (live agent status)
@@ -135,7 +135,7 @@ class EngagementScreen(Screen):
         super().__init__(**kwargs)
         self._reduced = reduced_motion
         self._demo = demo
-        self._engagement_task: asyncio.Task | None = None
+        self._engagement_task: asyncio.Task[None] | None = None
         self._bus_sub_id = "tui_engagement"
 
     def compose(self) -> ComposeResult:

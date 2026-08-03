@@ -88,3 +88,6 @@ test_render*
 *.sqlite-wal
 
 /output/
+
+# Second Brain vector store, created at runtime by vector_brain.py
+vault/.embeddings.db

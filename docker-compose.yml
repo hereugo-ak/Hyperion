@@ -1,48 +1,113 @@
-#
-# The image tags here MUST match hyperion/infra/services.py. A test asserts it.
-#
-# NOTE ON PINNING. The previous pin, `searxng/searxng:2024.12.10-a4d2a5f68`, was
-# chosen for reproducibility but SearxNG's registry keeps only a rolling window
-# of date-stamped tags. The tag was reaped, so `docker run` failed with
-# "Unable to find image" and SearxNG never started — the pin guaranteed the
-# failure it was meant to prevent. `hyperion shell` therefore resolves images
-# through hyperion/infra/services.py, which falls back to a second pin and
-# finally to `latest` when a pin has aged out, and reports which tag it used.
-#
-# This compose file is the manual path (`docker compose up`); it has no fallback
-# logic, so if a pin here stops resolving, refresh both files together.
-#
+# HYPERION W-12 retrieval stack.
+# Image pins MUST match hyperion/infra/services.py; tests enforce this contract.
+# Three replicas share one public IP, so their engine sets are deliberately
+# disjoint. Replicas add capacity and fault isolation, not IP-ban evasion.
+
+x-searxng-common: &searxng-common
+  image: searxng/searxng:2026.7.19-6da6eee26
+  restart: unless-stopped
+  mem_limit: 512m
+  cpus: 2.0
+  cap_drop: [ALL]
+  cap_add: [CHOWN, SETGID, SETUID]
+  security_opt: [no-new-privileges:true]
+  read_only: true
+  tmpfs: [/tmp]
+  depends_on:
+    valkey:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 20s
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
 services:
-  searxng:
-    image: searxng/searxng:2026.7.19-6da6eee26
-    container_name: searxng
-    ports:
-      - "8888:8080"
-    volumes:
-      - ./searxng_settings.yml:/etc/searxng/settings.yml:ro
-      - ./searxng-limiter.toml:/etc/searxng/limiter.toml:ro
-    environment:
-      - SEARXNG_BASE_URL=http://localhost:8888/
+  valkey:
+    image: valkey/valkey:8.1.3-alpine
+    container_name: hyperion-valkey
+    command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning"]
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes: [hyperion-valkey-data:/data]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  searxng-scholar:
+    <<: *searxng-common
+    container_name: hyperion-searxng-scholar
+    ports: ["127.0.0.1:8888:8080"]
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8888/
+      SEARXNG_SECRET: ${SEARXNG_SCHOLAR_SECRET:?set SEARXNG_SCHOLAR_SECRET}
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+    volumes:
+      - ./searxng_settings.scholar.yml:/etc/searxng/settings.yml:ro
+      - ./searxng-limiter.toml:/etc/searxng/limiter.toml:ro
+      - hyperion-searxng-scholar-data:/var/cache/searxng
+
+  searxng-reference:
+    <<: *searxng-common
+    container_name: hyperion-searxng-reference
+    ports: ["127.0.0.1:8889:8080"]
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8889/
+      SEARXNG_SECRET: ${SEARXNG_REFERENCE_SECRET:?set SEARXNG_REFERENCE_SECRET}
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+    volumes:
+      - ./searxng_settings.reference.yml:/etc/searxng/settings.yml:ro
+      - ./searxng-limiter.toml:/etc/searxng/limiter.toml:ro
+      - hyperion-searxng-reference-data:/var/cache/searxng
+
+  searxng-web:
+    <<: *searxng-common
+    container_name: hyperion-searxng-web
+    ports: ["127.0.0.1:8890:8080"]
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8890/
+      SEARXNG_SECRET: ${SEARXNG_WEB_SECRET:?set SEARXNG_WEB_SECRET}
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+    volumes:
+      - ./searxng_settings.web.yml:/etc/searxng/settings.yml:ro
+      - ./searxng-limiter.toml:/etc/searxng/limiter.toml:ro
+      - hyperion-searxng-web-data:/var/cache/searxng
 
   flaresolverr:
-    # CAPTCHA-only fallback, not the primary SERP source.
+    profiles: [investigation]
     image: flaresolverr/flaresolverr:v3.3.21
     container_name: flaresolverr
-    ports:
-      - "8191:8191"
-    environment:
-      - LOG_LEVEL=info
+    ports: ["127.0.0.1:8191:8191"]
+    environment: {LOG_LEVEL: info}
     restart: unless-stopped
+    mem_limit: 1024m
+    cpus: 2.0
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8191/health"]
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  hyperion-valkey-data:
+  hyperion-searxng-scholar-data:
+  hyperion-searxng-reference-data:
+  hyperion-searxng-web-data:

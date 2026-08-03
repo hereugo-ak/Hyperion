@@ -18,7 +18,10 @@ from __future__ import annotations
 import contextlib
 import math
 from enum import Enum
+from typing import Any, TypedDict
 
+from textual.content import Content
+from textual.timer import Timer
 from textual.widgets import Static
 
 from hyperion.tui.content import build_line, span
@@ -39,8 +42,14 @@ class MarkState(str, Enum):
     BLOCKED = "blocked"
 
 
+class _MarkConfig(TypedDict):
+    cycle_s: float
+    color: str
+    mode: str
+
+
 # Per-state animation parameters
-_STATE_CONFIG = {
+_STATE_CONFIG: dict[MarkState, _MarkConfig] = {
     MarkState.DORMANT: {
         "cycle_s": 3.0,
         "color": CLAY_SOFT,
@@ -62,7 +71,7 @@ _STATE_CONFIG = {
         "mode": "converge",
     },
     MarkState.DELIVERED: {
-        "cycle_s": 0,
+        "cycle_s": 0.0,
         "color": SIG_SUCCESS,
         "mode": "solid",
     },
@@ -85,10 +94,10 @@ class Mark(Static):
     }
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         self._state: MarkState = MarkState.DORMANT
         self._frame = 0
-        self._timer = None
+        self._timer: Timer | None = None
         super().__init__(self._render(), **kwargs)
 
     def on_mount(self) -> None:
@@ -128,7 +137,7 @@ class Mark(Static):
 
     # ── render ────────────────────────────────────────────────────────────────
 
-    def _render(self):
+    def _render(self) -> Content:
         cfg = _STATE_CONFIG.get(self._state, _STATE_CONFIG[MarkState.DORMANT])
         color = cfg["color"]
         mode = cfg["mode"]

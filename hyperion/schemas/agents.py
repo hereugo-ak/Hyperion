@@ -204,7 +204,7 @@ class SubAgentSpec(BaseModel):
 
     Rules (§4.7):
     - Max 3 sub-agents per specialist per engagement
-    - Sub-agents use MICRO or FAST tier only
+    - Sub-agents use STANDARD or higher tier for adequate research context
     - Sub-agent findings are structured (Pydantic model), not free text
     - Sub-agents have 5-minute timeout
     - Sub-agents have access to a subset of parent's tools
@@ -214,7 +214,7 @@ class SubAgentSpec(BaseModel):
     question: str = Field(description="The focused sub-question to research")
     parent_agent: AgentName = Field(description="Which specialist spawned this sub-agent")
     model_tier: ModelTier = Field(
-        description="Must be MICRO or FAST — don't burn STRONG/DEEP quota"
+        description="Must be STANDARD or higher to preserve the research evidence context"
     )
     tools: list[ToolName] = Field(
         description="Subset of parent's tools needed for this sub-question"

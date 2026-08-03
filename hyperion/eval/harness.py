@@ -4,14 +4,13 @@ HYPERION Offline Evaluation Harness — make "McKinsey-grade" measurable.
 This module implements the offline eval harness from IV.1.3 / P11:
 
 1. **Golden set** of representative queries spanning all workflow types.
-2. **Deterministic checks** per report: ≥N sections, ≥M cited sources,
-   every KeyFinding has a source, no empty sections, no template artifacts
-   (``&lt;``, ``C:\\``, unrendered ``{{ }}``), PDF renders, charts present.
-3. **LLM-as-judge rubric** (scored 1–5) on: evidence density, analytical
-   depth, structure, actionability — with the same rubric the runtime
-   quality-gate uses, so runtime and offline agree.
-4. **Regression gate:** CI fails if golden-set mean score drops > threshold
-   vs the last release.
+2. **Deterministic checks** per report and rendered PDF: structural report
+   requirements, the production ``audit_pdf`` gate, authoritative text-integrity
+   scanning, and images embedded in the client artifact.
+3. **Truthfully named deterministic quality score** derived only from those
+   checks. The harness does not claim that this score came from an LLM judge.
+4. **Regression gate:** CI fails if either golden-set mean score or pass rate
+   drops versus the last release, with per-query and per-check attribution.
 
 Usage::
 
@@ -27,10 +26,18 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+import fitz
+
+from hyperion.output.page_audit import (
+    BANNED_SUBSTRINGS,
+    audit_pdf,
+    extract_pdf_text,
+    scan_text_integrity,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Golden Set — representative queries across all workflow types
@@ -92,24 +99,23 @@ GOLDEN_SET: list[GoldenQuery] = [
         min_sources=4,
         min_findings=3,
     ),
+    GoldenQuery(
+        id="gq_006",
+        question=(
+            "How should Singapore strengthen national semiconductor resilience "
+            "through 2035?"
+        ),
+        question_type="NATION_OR_REGION",
+        min_sections=3,
+        min_sources=5,
+        min_findings=3,
+    ),
 ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Deterministic Checks — structural quality validation
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-# Template artifacts that should never appear in a final report
-_TEMPLATE_ARTIFACTS = [
-    re.compile(r"&lt;"),       # Unescaped HTML entities
-    re.compile(r"C:\\", re.IGNORECASE),  # Windows file paths
-    re.compile(r"{{\s*\w+"),   # Unrendered Jinja2 templates
-    re.compile(r"\{\{"),       # Literal Jinja2 braces
-    re.compile(r"\}\}"),       # Literal Jinja2 braces
-    re.compile(r"\bNone\b"),   # Python None leaking into text
-    re.compile(r"<template>", re.IGNORECASE),  # Template tags
-]
 
 
 @dataclass
@@ -128,8 +134,9 @@ def run_deterministic_checks(
 ) -> list[CheckResult]:
     """Run deterministic structural checks on a final report.
 
-    These are fast, non-LLM checks that validate the report's structural
-    integrity — not its analytical quality (that's the LLM judge's job).
+    These are non-LLM checks that validate both report structure and the
+    rendered client artifact. PDF checks fail closed when bytes cannot be
+    opened or the production page audit reports a violation.
     """
     results: list[CheckResult] = []
     g = golden or GOLDEN_SET[0]
@@ -182,37 +189,62 @@ def run_deterministic_checks(
         detail=f"Missing sources: {findings_without_sources}" if findings_without_sources else "All findings have sources",
     ))
 
-    # Check 6: No template artifacts in text
-    full_text = json.dumps(report, default=str)
-    artifacts_found = []
-    for pattern in _TEMPLATE_ARTIFACTS:
-        match = pattern.search(full_text)
-        if match:
-            artifacts_found.append(match.group())
+    # Checks 6-8: inspect the rendered client artifact, never the report model.
+    pdf_exists = bool(pdf_path and os.path.exists(pdf_path))
+    integrity_hits: list[str] = []
+    page_audit_violations: list[str] = []
+    images_count = 0
+    if pdf_exists:
+        try:
+            extracted_text = extract_pdf_text(pdf_path)
+            # This direct call intentionally shares BANNED_SUBSTRINGS with the
+            # production renderer gate; there is no harness-local weaker list.
+            integrity_hits = scan_text_integrity(extracted_text)
+            page_audit = audit_pdf(pdf_path, fail_closed=False)
+            page_audit_violations = page_audit.violations
+            images_count = _count_pdf_images(pdf_path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            page_audit_violations = [f"PDF inspection failed: {exc}"]
+
     results.append(CheckResult(
         name="no_template_artifacts",
-        passed=len(artifacts_found) == 0,
-        detail=f"Artifacts: {artifacts_found}" if artifacts_found else "Clean",
+        passed=pdf_exists and not integrity_hits,
+        detail=(
+            f"Integrity violations: {integrity_hits}"
+            if integrity_hits
+            else (
+                f"Clean against {len(BANNED_SUBSTRINGS)} authoritative bans"
+                if pdf_exists
+                else "PDF not found — client text not inspected"
+            )
+        ),
     ))
 
-    # Check 7: PDF exists (if expected)
     if g.expect_pdf:
-        pdf_exists = bool(pdf_path and os.path.exists(pdf_path))
         results.append(CheckResult(
             name="pdf_renders",
-            passed=pdf_exists,
-            detail=pdf_path if pdf_exists else "PDF not found",
+            passed=pdf_exists and not page_audit_violations,
+            detail=(
+                "; ".join(page_audit_violations[:3])
+                if page_audit_violations
+                else (pdf_path if pdf_exists else "PDF not found")
+            ),
+        ))
+        results.append(CheckResult(
+            name="production_pdf_audit",
+            passed=pdf_exists and not page_audit_violations,
+            detail=(
+                "; ".join(page_audit_violations[:3])
+                if page_audit_violations
+                else "Production audit passed"
+            ),
         ))
 
-    # Check 8: Charts present (if expected)
     if g.expect_charts:
-        charts_count = sum(
-            len(s.get("charts", [])) for s in sections
-        )
         results.append(CheckResult(
             name="charts_present",
-            passed=charts_count > 0,
-            detail=f"{charts_count} charts found",
+            passed=pdf_exists and images_count > 0,
+            detail=f"{images_count} images embedded in rendered PDF",
         ))
 
     # Check 9: Executive summary is non-trivial
@@ -309,6 +341,12 @@ def run_deterministic_checks(
     return results
 
 
+def _count_pdf_images(pdf_path: str) -> int:
+    """Count images embedded in the actual rendered PDF bytes."""
+    with fitz.open(pdf_path) as doc:
+        return sum(len(page.get_image_info()) for page in doc)
+
+
 def _check_fonts_embedded(pdf_path: str) -> list[str]:
     """Check which fonts are embedded in the PDF using PyMuPDF."""
     try:
@@ -329,62 +367,11 @@ def _get_pdf_page_count(pdf_path: str) -> int | None:
     try:
         import fitz
         doc = fitz.open(pdf_path)
-        count = doc.page_count
+        count = int(doc.page_count)
         doc.close()
         return count
     except (ImportError, OSError, ValueError):
         return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LLM-as-Judge Rubric — analytical quality scoring (shared with runtime gate)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-JUDGE_RUBRIC = {
-    "evidence_density": {
-        "description": "Every claim is backed by specific, cited evidence. No hand-waving.",
-        "weight": 1.0,
-    },
-    "analytical_depth": {
-        "description": "Goes beyond surface description to causal analysis and synthesis.",
-        "weight": 1.0,
-    },
-    "structure": {
-        "description": "Logical flow, clear sections, executive summary stands alone.",
-        "weight": 0.8,
-    },
-    "actionability": {
-        "description": "Recommendation is specific, actionable, and supported by evidence.",
-        "weight": 1.0,
-    },
-    "boardroom_register": {
-        "description": "Professional tone, no technical jargon, suitable for S&P-500 executives.",
-        "weight": 0.6,
-    },
-}
-
-
-JUDGE_PROMPT = """You are an expert evaluator for McKinsey-grade business reports.
-Score the following report on a 1-5 scale across 5 dimensions.
-
-For each dimension, provide:
-- score: integer 1-5 (5 = best-in-class, 1 = unacceptable)
-- reasoning: one sentence explaining the score
-
-Dimensions:
-1. evidence_density: Every claim backed by specific, cited evidence.
-2. analytical_depth: Goes beyond description to causal analysis and synthesis.
-3. structure: Logical flow, clear sections, executive summary stands alone.
-4. actionability: Recommendation is specific, actionable, evidence-supported.
-5. boardroom_register: Professional tone, no jargon, suitable for executives.
-
-Report to evaluate:
-{report_text}
-
-Return JSON:
-{{"scores": {{"evidence_density": {{"score": N, "reasoning": "..."}}, ...}}, "overall": N}}
-"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -399,7 +386,7 @@ class QueryEvalResult:
     query_id: str
     question: str
     deterministic_checks: list[CheckResult] = field(default_factory=list)
-    judge_scores: dict[str, int] = field(default_factory=dict)
+    deterministic_score: float = 0.0
     overall_score: float = 0.0
     pdf_path: str = ""
     success: bool = False
@@ -417,20 +404,25 @@ class EvalResults:
     results: list[QueryEvalResult] = field(default_factory=list)
     mean_score: float = 0.0
     baseline_score: float = 0.0
+    baseline_pass_rate: float = 0.0
     regression_detected: bool = False
+    regression_reasons: list[str] = field(default_factory=list)
     pass_rate: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "mean_score": self.mean_score,
             "baseline_score": self.baseline_score,
+            "baseline_pass_rate": self.baseline_pass_rate,
             "regression_detected": self.regression_detected,
+            "regression_reasons": self.regression_reasons,
             "pass_rate": self.pass_rate,
             "results": [
                 {
                     "query_id": r.query_id,
                     "question": r.question,
                     "overall_score": r.overall_score,
+                    "deterministic_score": r.deterministic_score,
                     "all_checks_passed": r.all_checks_passed,
                     "success": r.success,
                     "error": r.error,
@@ -447,35 +439,67 @@ class EvalResults:
 class EvalHarness:
     """Offline evaluation harness for HYPERION report quality.
 
-    Runs the golden set through the full pipeline, applies deterministic
-    checks + LLM-as-judge rubric, and detects quality regressions vs a
-    stored baseline.
+    Runs the golden set through the full proprietary consulting pipeline,
+    applies deterministic report and rendered-artifact checks, and detects
+    attributable quality regressions against a stored baseline.
     """
 
     BASELINE_PATH = "eval/baseline.json"
     RESULTS_PATH = "eval/results.json"
     REGRESSION_THRESHOLD = 0.3  # Fail if mean drops > 0.3 below baseline
+    PASS_RATE_REGRESSION_THRESHOLD = 0.0  # Any pass-rate drop is a regression
 
     def __init__(self, baseline_path: str | None = None) -> None:
         self.baseline_path = baseline_path or self.BASELINE_PATH
         self.golden_set = list(GOLDEN_SET)
 
-    def _load_baseline(self) -> float:
-        """Load the stored baseline score. Returns 0.0 if no baseline exists."""
+    def _load_baseline(self) -> dict[str, Any]:
+        """Load an attributable baseline; return an empty schema if unavailable."""
+        empty: dict[str, Any] = {
+            "mean_score": 0.0,
+            "pass_rate": 0.0,
+            "queries": {},
+        }
         if not os.path.exists(self.baseline_path):
-            return 0.0
+            return empty
         try:
             with open(self.baseline_path, encoding="utf-8") as f:
                 data = json.load(f)
-            return data.get("mean_score", 0.0)
-        except (json.JSONDecodeError, OSError):
-            return 0.0
+            if not isinstance(data, dict):
+                return empty
+            return {
+                "mean_score": float(data.get("mean_score", 0.0)),
+                "pass_rate": float(data.get("pass_rate", 0.0)),
+                "queries": data.get("queries", {}),
+            }
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+            return empty
 
-    def _save_baseline(self, score: float) -> None:
-        """Save a new baseline score."""
-        os.makedirs(os.path.dirname(self.baseline_path), exist_ok=True)
+    def _save_baseline(self, results: EvalResults) -> None:
+        """Persist aggregate, per-query, and per-check baseline outcomes."""
+        directory = os.path.dirname(self.baseline_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        queries = {
+            result.query_id: {
+                "overall_score": result.overall_score,
+                "success": result.success,
+                "checks": {
+                    check.name: check.passed
+                    for check in result.deterministic_checks
+                },
+            }
+            for result in results.results
+        }
+        payload = {
+            "schema_version": 2,
+            "mean_score": results.mean_score,
+            "pass_rate": results.pass_rate,
+            "queries": queries,
+            "ts": time.time(),
+        }
         with open(self.baseline_path, "w", encoding="utf-8") as f:
-            json.dump({"mean_score": score, "ts": time.time()}, f, indent=2)
+            json.dump(payload, f, indent=2, sort_keys=True)
 
     def _save_results(self, results: EvalResults) -> str:
         """Save evaluation results to disk."""
@@ -510,11 +534,13 @@ class EvalHarness:
                     golden=golden,
                 )
 
-                # LLM-as-judge (optional — requires router)
-                # For now, compute a heuristic score from deterministic checks
+                # Truthful deterministic score: no LLM judge is invoked here.
                 passed = sum(1 for c in result.deterministic_checks if c.passed)
                 total = len(result.deterministic_checks)
-                result.overall_score = (passed / total) * 5.0 if total > 0 else 0.0
+                result.deterministic_score = (
+                    (passed / total) * 5.0 if total > 0 else 0.0
+                )
+                result.overall_score = result.deterministic_score
 
         except Exception as e:  # noqa: BLE001 - failure is recorded in the result
             result.success = False
@@ -529,29 +555,49 @@ class EvalHarness:
             save_baseline: If True, store the mean score as the new baseline.
         """
         results = EvalResults()
-        results.baseline_score = self._load_baseline()
+        baseline = self._load_baseline()
+        results.baseline_score = baseline["mean_score"]
+        results.baseline_pass_rate = baseline["pass_rate"]
 
         for golden in self.golden_set:
             qr = await self._run_single_query(golden)
             results.results.append(qr)
 
-        # Compute aggregates
-        scores = [r.overall_score for r in results.results if r.success]
+        # Every query remains in the denominator. A crash is explicitly zero.
+        for result in results.results:
+            if not result.success:
+                result.overall_score = 0.0
+                result.deterministic_score = 0.0
+        scores = [result.overall_score for result in results.results]
         results.mean_score = sum(scores) / len(scores) if scores else 0.0
-        passed = sum(1 for r in results.results if r.success and r.all_checks_passed)
+        passed = sum(
+            1
+            for result in results.results
+            if result.success and result.all_checks_passed
+        )
         results.pass_rate = passed / len(results.results) if results.results else 0.0
 
-        # Regression detection
-        if results.baseline_score > 0:
-            results.regression_detected = (
-                results.mean_score < results.baseline_score - self.REGRESSION_THRESHOLD
+        if results.baseline_score > 0 and (
+            results.mean_score
+            < results.baseline_score - self.REGRESSION_THRESHOLD
+        ):
+            results.regression_reasons.append(
+                "mean score dropped below the permitted baseline threshold"
             )
+        if results.baseline_pass_rate > 0 and (
+            results.pass_rate
+            < results.baseline_pass_rate - self.PASS_RATE_REGRESSION_THRESHOLD
+        ):
+            results.regression_reasons.append(
+                "pass rate dropped below baseline"
+            )
+        results.regression_detected = bool(results.regression_reasons)
 
         # Save results
         self._save_results(results)
 
         if save_baseline:
-            self._save_baseline(results.mean_score)
+            self._save_baseline(results)
 
         return results
 

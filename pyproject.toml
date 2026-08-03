@@ -18,6 +18,7 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
     "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
 
     # Search + extraction
     "duckduckgo-search>=6.0.0",
@@ -49,7 +50,9 @@ dependencies = [
     "kaleido>=0.2.1,<1.0",  # D26: pin to static engine (v1.x needs Chrome)
     "matplotlib>=3.8.0",  # D26: chart fallback when kaleido fails
     "pillow>=10.4.0",
+    "fonttools>=4.53.0",  # D-15: subset embedded fonts to the report glyph budget
     "pymupdf>=1.24.0",  # fitz: PDF page-count + blank-page + font-embed verification
+    "playwright>=1.46.0",  # Chromium PDF fallback when WeasyPrint native libs are unavailable
 
     # TUI — Textual + Rich + Typer
     "textual>=0.70.0",
@@ -198,104 +201,21 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 
-# 5.1f staged allowlist — the process fix for the original P0.
-# 342 errors in 68 files at baseline (174 in hyperion/tui). Every NEW module
-# is checked strict by default; the backlog modules below are quarantined
-# with ignore_errors and must be removed one by one as they are annotated.
-# Third-party packages without stubs get ignore_missing_imports only — the
-# code that imports them is still checked.
+# Strict typing applies to every project module. Third-party packages without
+# stubs get ignore_missing_imports only; the code that imports them remains
+# fully checked.
 [[tool.mypy.overrides]]
-# Only packages actually imported by modules NOT in the backlog quarantine
-# appear here (warn_unused_configs flags the rest). When a quarantined module
-# leaves the list below, its third-party imports may need re-adding here —
-# e.g. duckduckgo_search, fredpy, alpha_vantage, kaleido, instructor,
-# tenacity. 5.4 added sqlite_vec / sentence_transformers (optional
-# production backends for hyperion/tools/vector_brain.py; the deterministic
-# hashing fallback needs neither). 5.5 added yfinance (lazy-imported by
-# hyperion/tools/market_data.py). 5.6 added pikepdf (lazy-imported by
-# hyperion/output/pdf_postprocess.py).
+# Optional and untyped third-party packages imported by checked modules.
+# warn_unused_configs ensures obsolete patterns are removed as dependencies
+# gain type information or imports disappear.
 module = [
     "textual.*", "trafilatura", "weasyprint", "transformers", "plotly.*",
     "matplotlib.*", "PIL.*", "fitz", "pdfplumber",
-    "crawl4ai", "curl_cffi", "praw",
-    "nodriver", "camoufox", "playwright.*", "aiohttp",
+    "crawl4ai", "curl_cffi", "curl_cffi.*", "praw", "pytrends.*", "scrapling.*",
+    "nodriver", "camoufox", "camoufox.*", "playwright.*", "playwright_stealth", "aiohttp",
     "websockets", "jinja2", "markupsafe", "openai", "httpx",
     "rich.*", "typer", "PyPDF2", "yaml",
     "sqlite_vec", "sentence_transformers",
-    "yfinance", "pikepdf",
+    "yfinance", "pikepdf", "fontTools", "fontTools.*",
 ]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-# Backlog quarantine — 68 files with strict errors at the 5.1f baseline.
-# Shrink this list; never grow it.
-module = [
-    "hyperion.agents.base",
-    "hyperion.agents.bus",
-    "hyperion.agents.delivery.presentation_designer",
-    "hyperion.agents.delivery.render_engine",
-    "hyperion.agents.engagement_director",
-    "hyperion.agents.specialists.competitive_intel",
-    "hyperion.agents.specialists.market_analyst",
-    "hyperion.agents.specialists.risk_analyst",
-    "hyperion.agents.support.data_visualizer",
-    "hyperion.agents.synthesis_lead",
-    "hyperion.eval.ci_gate",
-    "hyperion.eval.harness",
-    "hyperion.infra.services",
-    "hyperion.obs.health",
-    "hyperion.orchestrator",
-    "hyperion.output.chart_specs",
-    "hyperion.output.charts",
-    "hyperion.output.images",
-    "hyperion.output.markdown",
-    "hyperion.output.render",
-    "hyperion.router.providers.base",
-    "hyperion.router.router",
-    "hyperion.router.speculative_racer",
-    "hyperion.router.structured_validator",
-    "hyperion.tools.alpha_vantage",
-    "hyperion.tools.camoufox_client",
-    "hyperion.tools.curl_cffi_client",
-    "hyperion.tools.deep_search",
-    "hyperion.tools.flaresolverr",
-    "hyperion.tools.fred",
-    "hyperion.tools.google_trends",
-    "hyperion.tools.hackernews",
-    "hyperion.tools.http_extract",
-    "hyperion.tools.jina",
-    "hyperion.tools.nodriver_client",
-    "hyperion.tools.obscura",
-    "hyperion.tools.openalex",
-    "hyperion.tools.reddit",
-    "hyperion.tools.scrapling",
-    "hyperion.tools.searxng",
-    "hyperion.tools.sec_edgar",
-    "hyperion.tools.second_brain",
-    "hyperion.tools.semantic_scholar",
-    "hyperion.tools.stealth_search",
-    "hyperion.tools.unified_extract",
-    "hyperion.tools.unified_search",
-    "hyperion.tools.world_bank",
-    "hyperion.tui.app",
-    "hyperion.tui.banner",
-    "hyperion.tui.boot",
-    "hyperion.tui.content",
-    "hyperion.tui.motion.easing",
-    "hyperion.tui.motion.indicators",
-    "hyperion.tui.screens.deliverable",
-    "hyperion.tui.screens.engagement",
-    "hyperion.tui.screens.session",
-    "hyperion.tui.screens.splash",
-    "hyperion.tui.widgets.agent_grid",
-    "hyperion.tui.widgets.deliverable",
-    "hyperion.tui.widgets.findings_stream",
-    "hyperion.tui.widgets.header",
-    "hyperion.tui.widgets.mark",
-    "hyperion.tui.widgets.metrics",
-    "hyperion.tui.widgets.prompt",
-    "hyperion.tui.widgets.rule",
-    "hyperion.tui.widgets.tpm_bar",
-    "hyperion.tui.widgets.transcript",
-]
-ignore_errors = true

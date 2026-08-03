@@ -72,9 +72,12 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from aiohttp import ClientSession
 
 from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
 
@@ -194,7 +197,7 @@ class ObscuraClient:
         self._obscura_path = "obscura"
         if settings:
             self._obscura_path = getattr(settings, "obscura_path", "") or "obscura"
-        self._cdp_client: httpx.AsyncClient | None = None
+        self._cdp_client: ClientSession | None = None
         self._cdp_ws: Any = None
         self._cdp_port: int = self.DEFAULT_PORT
         self._command_id: int = 0
@@ -989,8 +992,8 @@ class ObscuraClient:
                 await self._cdp_ws.close()
             self._cdp_ws = None
 
-        if self._cdp_client and not self._cdp_client.is_closed:
-            await self._cdp_client.aclose()
+        if self._cdp_client and not self._cdp_client.closed:
+            await self._cdp_client.close()
             self._cdp_client = None
 
     async def close(self) -> None:

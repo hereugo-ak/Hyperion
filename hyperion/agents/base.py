@@ -1,13 +1,12 @@
 """
-HYPERION BaseAgent — the foundation class for all 20 agents.
+HYPERION BaseAgent, the foundation class for all 20 agents.
 
 This is NOT a generic agent base class. It is the contract that every
-HYPERION agent — from the Engagement Director to the Render Engine —
-must fulfill. Every agent has:
+HYPERION agent, from the Engagement Director to the Render Engine, must fulfill. Every agent has:
 
 - Identity: AgentName + AgentRole (who they are)
 - Intelligence: ModelTier (what level they operate at)
-- Tools: ToolName list (what they can actually use — not decorative)
+- Tools: ToolName list (what they can actually use, not decorative)
 - Skills: SkillSpec list (proprietary analytical frameworks)
 - System prompt: their expertise, voice, methodology (not generic)
 - AgentBus subscription: for inter-agent communication (§4.8)
@@ -15,12 +14,12 @@ must fulfill. Every agent has:
 - Structured output: produces Pydantic models, not free text (§0.1)
 
 The BaseAgent provides:
-1. Bus integration — publish findings, status, escalations, handoffs
-2. Router integration — request LLM completions by tier (agents don't know providers)
-3. Tool access — lazy-initialized tool instances, only available if in spec
-4. Sub-agent spawning — delegates to SubAgentRunner with 5-min timeout
-5. State management — transitions published to bus for TUI display
-6. Error handling — BLOCKED state on failure, escalation to Director
+1. Bus integration, publish findings, status, escalations, handoffs
+2. Router integration, request LLM completions by tier (agents don't know providers)
+3. Tool access, lazy-initialized tool instances, only available if in spec
+4. Sub-agent spawning, delegates to SubAgentRunner with 5-min timeout
+5. State management, transitions published to bus for TUI display
+6. Error handling, BLOCKED state on failure, escalation to Director
 
 Agents override `run()` with their proprietary methodology.
 The `run()` method is where the agent's skills are applied.
@@ -39,7 +38,8 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from hyperion.agents.bus import AgentBus, Channel, MessageType, get_bus
-from hyperion.config import ModelTier, get_settings
+from hyperion.agents.prompt_contract import compose_agent_prompt
+from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier, get_settings
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import LLMRouter, get_router
@@ -54,7 +54,6 @@ from hyperion.schemas.agents import (
     SubAgentSpec,
     ToolName,
 )
-from hyperion.output.typography import PROMPT_TYPOGRAPHY_RULE
 from hyperion.schemas.models import KeyFinding
 
 logger = logging.getLogger(__name__)
@@ -75,10 +74,10 @@ class BaseAgent(ABC):
     - Structured output (Pydantic models, not free text per §0.1)
 
     Agents override `run()` with their proprietary methodology.
-    The system prompt is loaded from the AgentSpec — it is the agent's
+    The system prompt is loaded from the AgentSpec, it is the agent's
     expertise, voice, and methodology, not a generic instruction.
 
-    This class is NOT instantiable directly — it is abstract.
+    This class is NOT instantiable directly, it is abstract.
     Each of the 20 agents has its own class with a specific spec
     and a run() method that applies that agent's proprietary skills.
     """
@@ -94,7 +93,7 @@ class BaseAgent(ABC):
         self.router = router or get_router()
         self.settings = get_settings()
 
-        # Runtime state — published to bus for TUI agent grid (§8.5)
+        # Runtime state, published to bus for TUI agent grid (§8.5)
         self.state = AgentRuntimeState(
             agent_name=spec.name,
             state=AgentState.IDLE,
@@ -102,7 +101,7 @@ class BaseAgent(ABC):
             last_state_change=time.time(),
         )
 
-        # Tool instances — lazy initialized, only for tools in spec
+        # Tool instances, lazy initialized, only for tools in spec
         self._tools: dict[ToolName, Any] = {}
 
         # Findings collected by this agent
@@ -160,7 +159,7 @@ class BaseAgent(ABC):
         return self.spec.system_prompt
 
     # ─────────────────────────────────────────────────────────────────────
-    # Context Enrichment — MICRO LLM classifier (P7 GAP-2)
+    # Context Enrichment, MICRO LLM classifier (P7 GAP-2)
     # Replaces brittle regex keyword matching with a fast LLM classification
     # call that returns structured intent: industry, geography, sector,
     # technology, company, etc.  Falls back to regex if the LLM call fails.
@@ -200,7 +199,7 @@ class BaseAgent(ABC):
         the LLM call fails or the router is unavailable.
 
         Specialists expect context keys like 'industry', 'geography', 'space',
-        'technology', 'company' — but the orchestrator only passes prior agent
+        'technology', 'company', but the orchestrator only passes prior agent
         outputs keyed by agent name. This method populates those keys so
         search queries are never empty.
         """
@@ -230,7 +229,11 @@ class BaseAgent(ABC):
         if not response.success or not response.content:
             return {}
 
-        data = json.loads(response.content)
+        parsed = json.loads(response.content)
+        if not isinstance(parsed, dict):
+            logger.warning("Context classifier returned non-object JSON")
+            return {}
+        data: dict[str, Any] = {str(key): value for key, value in parsed.items()}
         # Normalize: ensure geography-derived fields are consistent
         geo = data.get("geography")
         if geo and "jurisdiction" not in data:
@@ -262,7 +265,7 @@ class BaseAgent(ABC):
             ctx["jurisdiction"] = ctx["geography"]
             ctx["jurisdictions"] = [ctx["geography"]]
 
-        # Industry/sector detection — common industries
+        # Industry/sector detection, common industries
         industries = [
             "saas", "fintech", "healthcare", "biotech", "pharmaceutical",
             "automotive", "retail", "e-commerce", "ecommerce", "logistics",
@@ -287,7 +290,7 @@ class BaseAgent(ABC):
             ctx["technology"] = found_techs[0]
             ctx["technology_category"] = found_techs[0]
 
-        # Company detection — look for capitalized words near "company" or "startup"
+        # Company detection, look for capitalized words near "company" or "startup"
         company_match = re.search(r'(?:company|startup|firm|corporation|inc|ltd)\s+([A-Z][a-zA-Z]+)', question)
         if company_match:
             ctx["company"] = company_match.group(1)
@@ -295,7 +298,7 @@ class BaseAgent(ABC):
         return ctx
 
     # ─────────────────────────────────────────────────────────────────────
-    # State Management — published to bus for TUI (§8.5)
+    # State Management, published to bus for TUI (§8.5)
     # ─────────────────────────────────────────────────────────────────────
 
     async def _transition(self, new_state: AgentState, detail: str = "") -> None:
@@ -315,7 +318,7 @@ class BaseAgent(ABC):
         )
 
     async def _set_active_tools(self, tools: list[ToolName]) -> None:
-        """Update which tools are currently active — for TUI display."""
+        """Update which tools are currently active, for TUI display."""
         self.state.active_tools = tools
         await self.bus.publish_status(
             agent=self.name,
@@ -373,7 +376,7 @@ class BaseAgent(ABC):
         Subclasses that DO care about push delivery override this.
         """
         # P2-17: a verify_claims request addressed to this agent is handled
-        # by EVERY agent via the shared base handler — it is the Fact
+        # by EVERY agent via the shared base handler, it is the Fact
         # Checker's Step 6 feedback path, and it must never be dropped.
         payload = getattr(msg, "payload", None) or {}
         if (
@@ -388,7 +391,7 @@ class BaseAgent(ABC):
         # the subscribing agent declared interest in a channel but has no
         # handler, which is nearly always a wiring bug (§4.8).
         logger.debug(
-            "%s received bus message with no handler override (msg=%r) — dropping",
+            "%s received bus message with no handler override (msg=%r), dropping",
             self.name,
             getattr(msg, "message_type", msg),
         )
@@ -396,8 +399,8 @@ class BaseAgent(ABC):
     async def _handle_verify_claims(self, payload: dict[str, Any]) -> None:
         """Shared handler for the Fact Checker's verify_claims requests (P2-17).
 
-        The request is recorded for the agent's next run() — or the
-        GAP_CLOSURE re-dispatch (P2-18) — to act on, and acknowledged on the
+        The request is recorded for the agent's next run(), or the
+        GAP_CLOSURE re-dispatch (P2-18), to act on, and acknowledged on the
         bus so the Fact Checker knows a live specialist received it. Before
         this handler existed, every specialist matched request_type against
         its own literals (tam_number, moat_assessment, ...) and the
@@ -442,7 +445,7 @@ class BaseAgent(ABC):
     ) -> None:
         """Publish a tool-use event to the TUI channel for live display.
 
-        This is NOT a bus channel for agent communication — it's a one-way
+        This is NOT a bus channel for agent communication, it's a one-way
         telemetry feed the TUI subscribes to so the user can see exactly
         what each agent is doing in real time (§8.7 findings stream).
 
@@ -471,7 +474,7 @@ class BaseAgent(ABC):
         CRITICAL: several agents (notably RenderEngine) call `self._log()` from
         inside `except` blocks. Before this method existed, that call raised
         AttributeError *while handling another error*, masking the real failure
-        and aborting the delivery stage — which is exactly how an engagement
+        and aborting the delivery stage, which is exactly how an engagement
         could finish with a stray `report.css` and no PDF. This is therefore a
         deliberately bulletproof, non-async, exception-swallowing shim: logging
         must NEVER be able to break the pipeline.
@@ -494,7 +497,7 @@ class BaseAgent(ABC):
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                # No running loop — nothing is listening; drop the message.
+                # No running loop, nothing is listening; drop the message.
                 coro.close()
                 return
             task = loop.create_task(coro)
@@ -520,7 +523,7 @@ class BaseAgent(ABC):
         call to evaluate. An agent in a loop (e.g. Synthesis Lead iterating
         over N contradictions, each hitting the same sub-agent cap) used to
         emit the identical escalation N times, and each one triggered a fresh
-        Director evaluation — an escalation storm that burned STRONG quota and
+        Director evaluation, an escalation storm that burned STRONG quota and
         wall-clock time while producing zero new information. The same issue
         text from the same agent is therefore only escalated once per
         engagement; repeats are logged and dropped.
@@ -577,7 +580,7 @@ class BaseAgent(ABC):
         )
 
     # ─────────────────────────────────────────────────────────────────────
-    # Router Integration (§3.1) — agents don't know providers
+    # Router Integration (§3.1), agents don't know providers
     # ─────────────────────────────────────────────────────────────────────
 
     async def _llm_complete(
@@ -592,18 +595,21 @@ class BaseAgent(ABC):
     ) -> RouterResponse:
         """Request an LLM completion at this agent's model tier.
 
-        Agents don't know which provider they're using — they request a
+        Agents don't know which provider they're using, they request a
         tier and the router decides. This is the core abstraction that
         decouples agent intelligence from infrastructure. (§9)
 
         The agent's system prompt is always prepended. If
         system_prompt_override is provided, it replaces the default.
         """
-        # P2-32 generation layer: the shared typography rule is prepended to
-        # EVERY dispatched prompt (base prompt and overrides alike), so the
-        # em/en dash ban is stated once here, not 20 times across specs.
+        # W-16 (extends P2-32): the shared, versioned agent contract is
+        # prepended to EVERY dispatched prompt (base prompt and overrides
+        # alike). Clause 8 subsumes the old PROMPT_TYPOGRAPHY_RULE, so all
+        # eight quality clauses (subject fit / abstain / no fabrication /
+        # evidence binding / units / uncertainty / conflict / typography)
+        # are stated once here, not 20 times across specs.
         base_prompt = system_prompt_override or self.system_prompt
-        system = f"{PROMPT_TYPOGRAPHY_RULE}\n\n{base_prompt}"
+        system = compose_agent_prompt(base_prompt)
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         if conversation_history:
@@ -615,13 +621,20 @@ class BaseAgent(ABC):
             f"Requesting {self.model_tier.value} tier completion",
         )
 
+        # D-17: every agent call owns an explicit output ceiling. Leaving this
+        # as None delegates length to provider defaults, which are often only a
+        # few hundred tokens and silently cap substantive analysis.
+        resolved_max_tokens = max_tokens or TIER_OUTPUT_BUDGET.get(self.model_tier, 4_000)
+        if resolved_max_tokens <= 0:
+            resolved_max_tokens = 4_000
+
         response = await self.router.complete(
             tier=self.model_tier,
             messages=messages,
             agent_name=self.name.value,
             urgency=urgency,
             temperature=temperature,
-            max_tokens=max_tokens,
+            max_tokens=resolved_max_tokens,
             response_format=response_format,
         )
 
@@ -678,7 +691,7 @@ class BaseAgent(ABC):
         #
         # It is also not conditional on `response_format` any more. 5 of the 78
         # `_llm_complete` call sites omit that kwarg yet still json.loads the
-        # result, and several providers ignore the field entirely — so keying
+        # result, and several providers ignore the field entirely, so keying
         # the repair off the *request* rather than the *response* was wrong.
         # Normalization is now attempted whenever the body looks like it
         # contains JSON, and is a strict no-op otherwise.
@@ -723,7 +736,7 @@ class BaseAgent(ABC):
         try:
             json.loads(candidate)
         except (json.JSONDecodeError, TypeError):
-            # Extraction produced something unparseable — return the original
+            # Extraction produced something unparseable, return the original
             # so the caller's own error path sees the true response, not a
             # fragment we invented.
             return content
@@ -753,7 +766,7 @@ class BaseAgent(ABC):
         escalates.
 
         The temperature is lower (0.3) for structured output to reduce
-        randomness — we want deterministic, typed results.
+        randomness, we want deterministic, typed results.
         """
         import json
 
@@ -784,7 +797,7 @@ class BaseAgent(ABC):
             return None
 
     # ─────────────────────────────────────────────────────────────────────
-    # Tool Access (§5.1) — only tools in the agent's spec
+    # Tool Access (§5.1), only tools in the agent's spec
     # ─────────────────────────────────────────────────────────────────────
 
     def get_tool(self, tool: ToolName) -> Any:
@@ -810,7 +823,7 @@ class BaseAgent(ABC):
 
         If the tool is unavailable (not in spec, or instantiation fails),
         publishes an ESCALATION so the director can adapt. Returns None
-        on failure — callers must check and degrade gracefully.
+        on failure, callers must check and degrade gracefully.
         """
         try:
             return self.get_tool(tool)
@@ -912,7 +925,7 @@ class BaseAgent(ABC):
 
         Sub-agents handle context isolation (§4.7):
         - Max 3 per specialist per engagement
-        - MICRO or FAST tier only (don't burn STRONG/DEEP quota)
+        - STANDARD or higher tier (research needs a large context window)
         - 5-minute timeout
         - Returns structured KeyFinding objects, not free text
         - Cannot spawn their own sub-agents (no recursive spawning)
@@ -925,7 +938,7 @@ class BaseAgent(ABC):
 
         if len(self._sub_agent_specs) >= self.max_sub_agents:
             # Budget exhaustion is a NORMAL, expected outcome of a bounded
-            # resource — not an anomaly the Director needs to reason about.
+            # resource, not an anomaly the Director needs to reason about.
             # This used to call _escalate(), so an agent looping over N items
             # (e.g. Synthesis Lead resolving N contradictions with
             # max_sub_agents=1) fired N escalations, each costing the Director
@@ -939,10 +952,14 @@ class BaseAgent(ABC):
             )
             return []
 
-        # Validate tier — sub-agents must use MICRO or FAST (§4.7)
-        if spec.model_tier not in (ModelTier.MICRO, ModelTier.FAST):
+        # Research sub-agents need the context capacity of STANDARD or higher.
+        if spec.model_tier not in (
+            ModelTier.STANDARD,
+            ModelTier.STRONG,
+            ModelTier.DEEP,
+        ):
             raise ValueError(
-                f"Sub-agent tier must be MICRO or FAST, got {spec.model_tier.value}"
+                f"Sub-agent tier must be STANDARD or higher, got {spec.model_tier.value}"
             )
 
         self._sub_agent_specs.append(spec)
@@ -983,7 +1000,7 @@ class BaseAgent(ABC):
     # ─────────────────────────────────────────────────────────────────────
 
     async def initialize(self) -> None:
-        """Initialize the agent — subscribe to bus, set state to IDLE."""
+        """Initialize the agent, subscribe to bus, set state to IDLE."""
         self.subscribe_to_bus()
         await self._transition(AgentState.IDLE, "Initialized")
 
@@ -992,11 +1009,11 @@ class BaseAgent(ABC):
 
         This wraps run() with:
         1. State transition to WORKING
-        2. Error handling — BLOCKED on failure
+        2. Error handling, BLOCKED on failure
         3. State transition to DONE on success
         4. Bus status updates throughout
 
-        Agents should NOT override this method — override run() instead.
+        Agents should NOT override this method, override run() instead.
         """
         await self._transition(AgentState.WORKING, "Starting execution")
 
@@ -1030,7 +1047,7 @@ class BaseAgent(ABC):
         ...
 
     async def cleanup(self) -> None:
-        """Cleanup after execution — unsubscribe from bus."""
+        """Cleanup after execution, unsubscribe from bus."""
         self.bus.unsubscribe(self._sub_id)
 
     async def close(self) -> None:
@@ -1057,11 +1074,11 @@ class BaseAgent(ABC):
                 if asyncio.iscoroutine(result):
                     await result
             except asyncio.CancelledError:
-                # Cancellation is control flow, not an error — never absorb it.
+                # Cancellation is control flow, not an error, never absorb it.
                 raise
             except (RuntimeError, OSError, AttributeError, TypeError, ValueError):
                 logger.warning(
-                    "%s: tool %r failed to close — resource may be leaked",
+                    "%s: tool %r failed to close, resource may be leaked",
                     self.name,
                     tool_name,
                     exc_info=True,

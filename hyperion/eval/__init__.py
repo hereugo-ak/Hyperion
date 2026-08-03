@@ -2,7 +2,6 @@
 
 from hyperion.eval.harness import (
     GOLDEN_SET,
-    JUDGE_RUBRIC,
     CheckResult,
     EvalHarness,
     EvalResults,
@@ -17,7 +16,6 @@ __all__ = [
     "EvalResults",
     "GoldenQuery",
     "GOLDEN_SET",
-    "JUDGE_RUBRIC",
     "QueryEvalResult",
     "run_deterministic_checks",
 ]

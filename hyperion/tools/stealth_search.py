@@ -22,7 +22,7 @@ import asyncio
 import logging
 import random
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from hyperion.tools.query_utils import grounded_search_or_empty
 
@@ -71,8 +71,9 @@ class StealthSearchClient:
         # host it would fail outright. Callers that genuinely want to watch the
         # browser can still pass headless=False.
         self.headless = headless
-        self._browser = None
-        self._playwright = None
+        self._browser: Any = None
+        self._playwright: Any = None
+        self._stealth_async: Any = None
         self._available: bool | None = None
 
         # P8 GAP-3: Stealth Layer 3 — config-gated proxy/UA rotation
@@ -103,7 +104,7 @@ class StealthSearchClient:
             self._available = False
         return self._available
 
-    async def _launch_browser(self):
+    async def _launch_browser(self) -> Any:
         """Launch Chromium with stealth patches."""
         from playwright.async_api import async_playwright
 
@@ -164,7 +165,7 @@ class StealthSearchClient:
 
         return page
 
-    async def _new_page(self):
+    async def _new_page(self) -> Any:
         """Create a new page on the existing browser with stealth patches."""
         if not self._browser:
             return await self._launch_browser()
@@ -232,7 +233,7 @@ class StealthSearchClient:
             tool_name="Stealth",
         )
         if empty is not None:
-            return empty
+            return cast("list[StealthSearchResult]", empty)
         query = grounded
 
         page = None
@@ -266,7 +267,12 @@ class StealthSearchClient:
         finally:
             await self.close()
 
-    async def _search_ddg(self, page, query: str, num_results: int) -> list[StealthSearchResult]:
+    async def _search_ddg(
+        self,
+        page: Any,
+        query: str,
+        num_results: int,
+    ) -> list[StealthSearchResult]:
         """Search DuckDuckGo HTML via stealth browser."""
         try:
             url = self.DDG_URL.format(query=query.replace(" ", "+"))
@@ -283,7 +289,12 @@ class StealthSearchClient:
             logger.warning("Stealth DDG failed: %s", e)
             return []
 
-    async def _search_bing(self, page, query: str, num_results: int) -> list[StealthSearchResult]:
+    async def _search_bing(
+        self,
+        page: Any,
+        query: str,
+        num_results: int,
+    ) -> list[StealthSearchResult]:
         """Search Bing via stealth browser."""
         try:
             url = self.BING_URL.format(query=query.replace(" ", "+"), num=min(num_results, 20))
@@ -301,7 +312,12 @@ class StealthSearchClient:
             logger.warning("Stealth Bing failed: %s", e)
             return []
 
-    async def _search_google(self, page, query: str, num_results: int) -> list[StealthSearchResult]:
+    async def _search_google(
+        self,
+        page: Any,
+        query: str,
+        num_results: int,
+    ) -> list[StealthSearchResult]:
         """Search Google lite via stealth browser (last resort)."""
         try:
             url = self.GOOGLE_LITE_URL.format(
@@ -321,7 +337,11 @@ class StealthSearchClient:
             logger.warning("Stealth Google failed: %s", e)
             return []
 
-    async def _parse_google_dom(self, page, max_results: int) -> list[StealthSearchResult]:
+    async def _parse_google_dom(
+        self,
+        page: Any,
+        max_results: int,
+    ) -> list[StealthSearchResult]:
         """Parse Google search results from the Playwright page DOM."""
         results: list[StealthSearchResult] = []
 
@@ -411,7 +431,11 @@ class StealthSearchClient:
 
         return results
 
-    async def _parse_ddg_dom(self, page, max_results: int) -> list[StealthSearchResult]:
+    async def _parse_ddg_dom(
+        self,
+        page: Any,
+        max_results: int,
+    ) -> list[StealthSearchResult]:
         """Parse DuckDuckGo HTML search results from the DOM."""
         results: list[StealthSearchResult] = []
 
@@ -471,7 +495,11 @@ class StealthSearchClient:
 
         return results
 
-    async def _parse_bing_dom(self, page, max_results: int) -> list[StealthSearchResult]:
+    async def _parse_bing_dom(
+        self,
+        page: Any,
+        max_results: int,
+    ) -> list[StealthSearchResult]:
         """Parse Bing search results from the DOM."""
         results: list[StealthSearchResult] = []
 

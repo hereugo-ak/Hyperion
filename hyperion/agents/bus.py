@@ -1,8 +1,8 @@
 """
-HYPERION AgentBus — in-memory async pub/sub system for inter-agent communication.
+HYPERION AgentBus, in-memory async pub/sub system for inter-agent communication.
 
 This is NOT a generic message queue. This is the nervous system of the
-multi-agent consulting model. Built on asyncio.Queue — lightweight, fast,
+multi-agent consulting model. Built on asyncio.Queue, lightweight, fast,
 zero dependencies. No external broker (no Redis, no RabbitMQ). (§4.8)
 
 Channels:
@@ -74,7 +74,7 @@ class MessageType(str, Enum):
 class BusMessage:
     """A single message on the AgentBus.
 
-    All messages share this structure — the channel determines routing,
+    All messages share this structure, the channel determines routing,
     the type determines semantics, and the payload carries the data.
 
     The timestamp is set at creation time and used by the TUI to display
@@ -89,41 +89,47 @@ class BusMessage:
 
     # Convenience accessors for common payload fields
 
+    def _string_field(self, key: str, default: str = "") -> str:
+        """Return a payload field only when it satisfies the string contract."""
+        value = self.payload.get(key, default)
+        return value if isinstance(value, str) else default
+
     @property
     def agent(self) -> str:
-        return self.payload.get("agent", self.sender.value)
+        return self._string_field("agent", self.sender.value)
 
     @property
     def state(self) -> str:
-        return self.payload.get("state", "")
+        return self._string_field("state")
 
     @property
     def detail(self) -> str:
-        return self.payload.get("detail", "")
+        return self._string_field("detail")
 
     @property
     def finding(self) -> KeyFinding | None:
-        return self.payload.get("finding")
+        finding = self.payload.get("finding")
+        return finding if isinstance(finding, KeyFinding) else None
 
     @property
     def to_agent(self) -> str:
-        return self.payload.get("to_agent", "")
+        return self._string_field("to_agent")
 
     @property
     def from_agent(self) -> str:
-        return self.payload.get("from_agent", self.sender.value)
+        return self._string_field("from_agent", self.sender.value)
 
     @property
     def issue(self) -> str:
-        return self.payload.get("issue", "")
+        return self._string_field("issue")
 
     @property
     def suggested_action(self) -> str:
-        return self.payload.get("suggested_action", "")
+        return self._string_field("suggested_action")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Subscription — a typed subscriber callback
+# Subscription, a typed subscriber callback
 # ─────────────────────────────────────────────────────────────────────────────
 
 # A subscriber is an async callable that receives a BusMessage
@@ -146,18 +152,18 @@ class Subscription:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AgentBus — the in-memory async pub/sub system
+# AgentBus, the in-memory async pub/sub system
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class AgentBus:
     """In-memory async pub/sub system for inter-agent communication.
 
-    No external broker. Built on asyncio.Queue — one queue per channel.
+    No external broker. Built on asyncio.Queue, one queue per channel.
     Agents publish messages; subscribers consume them asynchronously.
 
     The bus is the ONLY communication mechanism between agents. Agents
-    never call each other directly — they publish to the bus and let
+    never call each other directly, they publish to the bus and let
     the subscription pattern handle routing. This decouples agents and
     makes the system extensible (new agents just subscribe to channels).
 
@@ -170,7 +176,7 @@ class AgentBus:
     """
 
     def __init__(self) -> None:
-        # Per-channel queues — each channel is an independent async queue
+        # Per-channel queues, each channel is an independent async queue
         self._queues: dict[Channel, asyncio.Queue[BusMessage]] = {
             ch: asyncio.Queue() for ch in Channel
         }
@@ -178,7 +184,7 @@ class AgentBus:
         # Subscriptions registry
         self._subscriptions: dict[str, Subscription] = {}
 
-        # Dispatch tasks — one per channel, running concurrently
+        # Dispatch tasks, one per channel, running concurrently
         self._dispatch_tasks: dict[Channel, asyncio.Task[None]] = {}
         self._running = False
 
@@ -189,14 +195,14 @@ class AgentBus:
         # Per-agent state cache (for TUI agent grid display)
         self._agent_states: dict[AgentName, AgentState] = {}
 
-        # Retained findings — survives until explicitly cleared.
+        # Retained findings, survives until explicitly cleared.
         # Late subscribers (Synthesis Lead, Fact Checker) are instantiated
         # after specialists have already published. Without retention,
         # those findings are lost forever (pub/sub is fire-and-forget).
         self._retained_findings: list[BusMessage] = []
 
     async def start(self) -> None:
-        """Start the dispatch tasks — one per channel."""
+        """Start the dispatch tasks, one per channel."""
         if self._running:
             return
         self._running = True
@@ -232,7 +238,7 @@ class AgentBus:
                         await sub.callback(msg)
                     except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                         # Subscriber errors don't crash the bus, but they
-                        # must not vanish either — a dead subscriber that
+                        # must not vanish either, a dead subscriber that
                         # nobody notices is the exact silent-failure class
                         # behind the original P0.
                         logger.warning(
@@ -340,7 +346,7 @@ class AgentBus:
             if not matching:
                 logger.error(
                     "BUS: addressed escalation with no matching subscriber: "
-                    "channel=%s request_type=%r to_agent=%s from=%s — the "
+                    "channel=%s request_type=%r to_agent=%s from=%s, the "
                     "message will be silently dropped. Register a handler or "
                     "remove the publish site.",
                     channel.value, request_type, payload.get("to_agent"),
@@ -358,7 +364,7 @@ class AgentBus:
         detail: str = "",
         **extra: Any,
     ) -> None:
-        """Publish a status change — broadcast to all subscribers of STATUS."""
+        """Publish a status change, broadcast to all subscribers of STATUS."""
         payload: dict[str, Any] = {
             "agent": agent.value,
             "state": state.value,
@@ -372,7 +378,7 @@ class AgentBus:
         agent: AgentName,
         finding: KeyFinding,
     ) -> None:
-        """Publish a completed finding — consumed by Synthesis Lead, Fact Checker, TUI."""
+        """Publish a completed finding, consumed by Synthesis Lead, Fact Checker, TUI."""
         await self.publish(
             Channel.FINDINGS,
             MessageType.FINDING,
@@ -453,7 +459,7 @@ class AgentBus:
     # ── Query methods for TUI and debugging ──
 
     def get_agent_states(self) -> dict[AgentName, AgentState]:
-        """Get current state of all agents — for TUI agent grid (§8.5)."""
+        """Get current state of all agents, for TUI agent grid (§8.5)."""
         return dict(self._agent_states)
 
     def get_history(
@@ -461,14 +467,14 @@ class AgentBus:
         channel: Channel | None = None,
         limit: int = 100,
     ) -> list[BusMessage]:
-        """Get message history — for TUI scrollback and debugging."""
+        """Get message history, for TUI scrollback and debugging."""
         msgs = self._history
         if channel is not None:
             msgs = [m for m in msgs if m.channel == channel]
         return msgs[-limit:]
 
     def get_findings_count(self, agent: AgentName | None = None) -> int:
-        """Count published findings — for TUI findings count display (§8.5)."""
+        """Count published findings, for TUI findings count display (§8.5)."""
         count = 0
         for msg in self._history:
             if msg.channel != Channel.FINDINGS:
@@ -479,7 +485,7 @@ class AgentBus:
         return count
 
     def get_retained_findings(self) -> list[BusMessage]:
-        """Get all retained FINDING messages — for explicit handoff.
+        """Get all retained FINDING messages, for explicit handoff.
 
         Used by the orchestrator to inject findings into agents that
         were instantiated after specialists published (D4 fix).
@@ -487,7 +493,7 @@ class AgentBus:
         return list(self._retained_findings)
 
     def clear_retained_findings(self) -> None:
-        """Clear retained findings — called at the start of a new engagement."""
+        """Clear retained findings, called at the start of a new engagement."""
         self._retained_findings.clear()
 
 
@@ -507,6 +513,6 @@ def get_bus() -> AgentBus:
 
 
 def reset_bus() -> None:
-    """Reset the singleton — useful for testing."""
+    """Reset the singleton, useful for testing."""
     global _bus
     _bus = None

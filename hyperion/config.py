@@ -32,7 +32,7 @@ class ModelTier(str, Enum):
     budget for estimation, and the priority for daily budget allocation.
     """
 
-    MICRO = "micro"      # High RPD workhorse — query gen, fact-check snippets, sub-agent quick tasks
+    MICRO = "micro"      # High RPD workhorse — query generation, snippet checks, extraction
     FAST = "fast"        # Speed-critical — real-time extraction validation, inline fact verification
     STANDARD = "standard"  # Research & analysis — specialist analysis, structured Pydantic output
     STRONG = "strong"    # Planning & writing — engagement planning, synthesis, quality gate
@@ -124,8 +124,13 @@ GOOGLE_MODELS: list[ModelSpec] = [
         tpm=16_000,
         rpd=14_400,
         tier=ModelTier.MICRO,
-        roles=["query "
-            "generation", "fact-check snippets", "simple extraction", "sub-agent quick tasks", "keyword expansion", "tag generation"],
+        roles=[
+            "query generation",
+            "fact-check snippets",
+            "simple extraction",
+            "keyword expansion",
+            "tag generation",
+        ],
     ),
     ModelSpec(
         name="gemma-4-26b",
@@ -729,6 +734,16 @@ class Settings(BaseSettings):
 
     # ── Provider Base URLs ──
     google_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    # W-14: native Gemini grounding is intentionally separate from Google's
+    # OpenAI-compatible completion endpoint. Quota units are provider-issued
+    # search queries for Gemini 3 models, not ordinary completion requests.
+    google_grounding_enabled: bool = True
+    google_grounding_model: str = "gemini-3.1-flash-lite"
+    google_grounding_daily_limit: int = 500
+    google_grounding_monthly_limit: int = 15_000
+    google_grounding_reserve_fraction: float = 0.10
+    google_grounding_max_queries_per_call: int = 4
+    google_grounding_ledger_path: Path = Path("./vault/grounding_quota.json")
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     cerebras_base_url: str = "https://api.cerebras.ai/v1"
     groq_base_url: str = "https://api.groq.com/openai/v1"
@@ -741,8 +756,17 @@ class Settings(BaseSettings):
 
     # ── Quality Gate ──
     quality_threshold: float = 4.0
-    max_quality_iterations: int = 2  # P7: capped at ≤2 (was 3)
+    max_quality_iterations: int = 4  # W-08: raised from 2, bounded by the wall-clock budget below
+    quality_iteration_wall_clock_seconds: int = 900  # W-08: the loop cannot run away
     quality_source_floor: int = 3   # P7: stop iterating if sources < floor
+    # W-08: score below this floor is BLOCKED even with zero hard blockers.
+    # The run under audit scored 2.15 with five critical dimensions failing;
+    # any sane floor blocks that.
+    quality_ship_floor: float = 3.0
+    # W-08: SHIP_WITH_CAVEAT is off by default. When enabled, a score in
+    # [quality_ship_floor, quality_threshold) with no hard blockers may
+    # ship, but only with a prominent limitations page.
+    allow_ship_with_caveat: bool = False
 
     # ── Sub-Agent ──
     sub_agent_timeout: int = 300
@@ -756,6 +780,14 @@ class Settings(BaseSettings):
 
     # ── Engagement ──
     max_engagement_duration: int = 900
+
+    # W-01: build provenance strictness at shell boot (RC-1). When True
+    # (default), the shell refuses to boot from a site-packages copy that
+    # shadows a git checkout on sys.path, or with stale .pyc bytecode under
+    # the package directory — the two configurations that served pre-fix
+    # output for fifteen correct commits. Set HYPERION_PROVENANCE_STRICT=false
+    # only for packaged installs where neither case can occur.
+    provenance_strict: bool = True
 
     # ── Stealth Layer 3 (P8 GAP-3): proxy/UA rotation, off by default ──
     stealth_proxy_enabled: bool = False
@@ -906,7 +938,13 @@ class Settings(BaseSettings):
     def flaresolverr_host(self) -> str:
         return _host_from_url(self.flaresolverr_url, default="localhost")
 
-    @field_validator("vault_path", "reports_dir", "assets_dir", mode="before")
+    @field_validator(
+        "vault_path",
+        "reports_dir",
+        "assets_dir",
+        "google_grounding_ledger_path",
+        mode="before",
+    )
     @classmethod
     def validate_paths(cls, v: Any) -> Path:
         """Coerce to an absolute Path anchored at the project root.

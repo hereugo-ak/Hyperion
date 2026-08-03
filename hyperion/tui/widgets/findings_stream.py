@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from hyperion.tui.content import build, span
 from hyperion.tui.theme import (
@@ -73,7 +74,7 @@ class FindingsStream(Transcript):
     }
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         # Transcript owns its own line buffer and wrapping, so the RichLog-only
         # knobs (markup / highlight / wrap) no longer mean anything and must not
         # be forwarded — passing them through would raise TypeError. They are
@@ -106,7 +107,7 @@ class FindingsStream(Transcript):
         self._findings.append(entry)
         self._write_finding(entry)
 
-    def clear(self) -> FindingsStream:  # type: ignore[override]
+    def clear(self) -> FindingsStream:
         self._findings.clear()
         super().clear()
         return self
@@ -128,7 +129,7 @@ class FindingsStream(Transcript):
             spans.append(span(f" — {entry.snippet}", TEXT_DIM))
 
         # Detail line
-        detail_parts = []
+        detail_parts: list[str] = []
         if entry.sources > 0:
             detail_parts.append(f"sources: {entry.sources}")
         if entry.confidence:

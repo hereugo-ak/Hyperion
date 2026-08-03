@@ -21,16 +21,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from pathlib import Path
 from typing import Any
 
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.content import Content
 from textual.screen import Screen
 from textual.widgets import Static
 
 from hyperion.tui.banner import TAGLINE, WORDMARK
-from hyperion.tui.content import build, build_line, line, span
+from hyperion.tui.content import Line, build, build_line, line, span
 from hyperion.tui.motion.color import ramp
 from hyperion.tui.theme import (
     LOGO_STOPS,
@@ -49,11 +52,11 @@ logger = logging.getLogger(__name__)
 _LOGO_WIDTH = max(len(s) for s in WORDMARK)
 
 
-def _wordmark_content():
+def _wordmark_content() -> Content:
     """Gradient wordmark as Content spans."""
-    lines: list = []
+    lines: list[Line] = []
     for s in WORDMARK:
-        row = []
+        row: Line = []
         for x, ch in enumerate(s):
             if ch == " ":
                 row.append(span(" ", ""))
@@ -70,7 +73,7 @@ def _wordmark_content():
 class SplashStatus(Static):
     """Status line for one boot component."""
 
-    def __init__(self, label: str, **kwargs) -> None:
+    def __init__(self, label: str, **kwargs: Any) -> None:
         self._label = label
         self._status: str = "checking…"
         self._ok: bool | None = None
@@ -81,7 +84,7 @@ class SplashStatus(Static):
         self._ok = ok
         self.update(self._build())
 
-    def _build(self):
+    def _build(self) -> Content:
         if self._ok is True:
             icon, color = "●", SIG_SUCCESS
         elif self._ok is False:
@@ -95,7 +98,7 @@ class SplashStatus(Static):
         )
 
 
-class SplashScreen(Screen):
+class SplashScreen(Screen[None]):
     """HYPERION splash — wordmark, tagline, Mark, system status, press any key."""
 
     DEFAULT_CSS = """
@@ -138,7 +141,7 @@ class SplashScreen(Screen):
         super().__init__(**kwargs)
         self._reduced = reduced_motion
         self._boot_done = False
-        self._boot_task: asyncio.Task | None = None
+        self._boot_task: asyncio.Task[None] | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(_wordmark_content(), id="splash-logo")
@@ -189,11 +192,10 @@ class SplashScreen(Screen):
         # ── Vault ───────────────────────────────────────────────────────────────
         vault = self.query_one("#stat-vault", SplashStatus)
         try:
-            from pathlib import Path
-
             from hyperion.config import get_settings
+
             settings = get_settings()
-            vault_path = getattr(settings, "second_brain_vault", None)
+            vault_path = settings.vault_path
             if vault_path and Path(vault_path).exists():
                 vault.set_status(f"connected · {vault_path}", ok=True)
             else:
@@ -210,7 +212,7 @@ class SplashScreen(Screen):
         searx = self.query_one("#stat-searxng", SplashStatus)
         try:
             from hyperion.infra.services import (
-                SEARXNG_PORT,
+                SEARXNG_REPLICAS,
                 docker_available,
                 docker_engine_version,
                 run_command,
@@ -230,8 +232,12 @@ class SplashScreen(Screen):
                         ["docker", "ps", "--filter", "name=searxng", "--format", "{{.Status}}"],
                         timeout=8,
                     )
-                    if rc == 0 and "Up" in out:
-                        searx.set_status(f"running · localhost:{SEARXNG_PORT}", ok=True)
+                    running = sum(replica.name in out for replica in SEARXNG_REPLICAS)
+                    if rc == 0 and running == len(SEARXNG_REPLICAS):
+                        ports = ",".join(str(replica.port) for replica in SEARXNG_REPLICAS)
+                        searx.set_status(f"3 replicas running · localhost:{ports}", ok=True)
+                    elif rc == 0 and running:
+                        searx.set_status(f"partial retrieval stack · {running}/3 running", ok=None)
                     else:
                         searx.set_status("container stopped — will auto-start", ok=None)
         except Exception:  # noqa: BLE001 - best-effort, failure must not propagate
@@ -276,7 +282,7 @@ class SplashScreen(Screen):
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.debug("%s: %s", "_run_boot", exc)
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         """Any key transitions to the engagement screen."""
         if self._boot_task and not self._boot_task.done():
             self._boot_task.cancel()

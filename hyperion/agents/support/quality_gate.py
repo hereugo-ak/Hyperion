@@ -90,7 +90,7 @@ from hyperion.schemas.models import (
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dimension metadata — names, descriptions, and scoring criteria
+# Dimension metadata, names, descriptions, and scoring criteria
 # ─────────────────────────────────────────────────────────────────────────────
 
 DIMENSION_META: dict[QualityDimensionName, dict[str, str]] = {
@@ -217,7 +217,7 @@ QUALITY_GATE_SPEC = AgentSpec(
     display_name="Quality Gate",
     model_tier=ModelTier.STRONG,
     tools=[
-        # Reviewer — needs search for spot-checking claims, SECOND_BRAIN for prior research
+        # Reviewer, needs search for spot-checking claims, SECOND_BRAIN for prior research
         ToolName.SECOND_BRAIN,
         ToolName.DEEP_SEARCH,
     ],
@@ -375,7 +375,7 @@ class QualityGate(BaseAgent):
     """
 
     APPROVAL_THRESHOLD = 4.0
-    MAX_ITERATIONS = 2  # P7: capped at ≤2 (was 3) — content-aware quality gate
+    MAX_ITERATIONS = 2  # P7: capped at ≤2 (was 3), content-aware quality gate
     CRITICAL_THRESHOLD = 3  # Scores below this are critical
 
     def __init__(
@@ -493,7 +493,7 @@ class QualityGate(BaseAgent):
             fix_parts.append("Add specialist analysis sections (Market, Competitive, Financial, "
                 "etc.).")
         else:
-            # Check section count — a standard engagement should have 4-8 sections
+            # Check section count, a standard engagement should have 4-8 sections
             section_count = len(report.sections)
             if section_count < 3:
                 score = min(score, 2)
@@ -567,6 +567,36 @@ class QualityGate(BaseAgent):
             score = min(score, 3 if single_source_sections > 2 else 4)
             feedback_parts.append(f"{single_source_sections} section(s) have only 1 source, key claims need ≥2.")
             fix_parts.append(f"Add additional independent sources to {single_source_sections} section(s).")
+
+        # W-11: retrieval health is evidence-quality input, not hidden operator
+        # telemetry. A collapsed engine pool caps evidence sufficiency until the
+        # report is rerun or explicitly caveated with the narrower corpus.
+        from hyperion.tools.engine_health import get_engine_health
+
+        retrieval_events = get_engine_health().degradation_events()
+        if retrieval_events:
+            latest = retrieval_events[-1]
+
+            def _event_int(key: str, default: int) -> int:
+                value = latest.get(key, default)
+                if isinstance(value, (str, bytes, bytearray, int, float)):
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        return default
+                return default
+
+            healthy = _event_int("healthy", 0)
+            required = _event_int("required", 4)
+            score = min(score, 3)
+            feedback_parts.append(
+                f"Retrieval pool degraded to {healthy} healthy engines "
+                f"(required floor: {required}); corpus coverage is constrained."
+            )
+            fix_parts.append(
+                "Restore the retrieval engine floor and rerun evidence collection, "
+                "or disclose the constrained corpus in the client methodology."
+            )
 
         # Cross-reference with Fact Checker
         if self._fact_check_report:
@@ -864,7 +894,7 @@ class QualityGate(BaseAgent):
             score = min(score, 1)
             feedback_parts.append("No analysis sections present.")
         else:
-            # Check section ordering — sections should have sequential IDs
+            # Check section ordering, sections should have sequential IDs
             section_ids = [s.id for s in report.sections]
             for i, sid in enumerate(section_ids):
                 if not sid:
@@ -1217,11 +1247,11 @@ class QualityGate(BaseAgent):
             report.executive_summary or "",
             report.recommendation_rationale or "",
         ]
+        url_parts: list[str] = []
         for kf in report.key_findings:
             text_parts.append(f"{kf.title} {kf.content} {kf.implications or ''}")
             for src in kf.sources:
                 url_parts.append(src.url or "")
-        url_parts: list[str] = []
         for sec in report.sections:
             text_parts.append(f"{sec.title} {sec.key_insight} {sec.body} {sec.implications or ''}")
             for src in sec.sources:
@@ -1268,7 +1298,7 @@ class QualityGate(BaseAgent):
                 )
                 break
 
-        # 5. Verdict consistency — the recommendation enum is the single source
+        # 5. Verdict consistency, the recommendation enum is the single source
         #    of truth; the exec summary and rationale must not assert a
         #    different verdict.
         rec = report.recommendation.value.replace("_", " ").lower()  # e.g. "no go"
@@ -1289,7 +1319,7 @@ class QualityGate(BaseAgent):
                 )
                 break
 
-        # 6. Honest confidence — a report with evidence voids cannot claim HIGH
+        # 6. Honest confidence, a report with evidence voids cannot claim HIGH
         #    confidence (Layer 4). Count sections with no sources.
         unsourced = sum(1 for sec in report.sections if not sec.sources)
         total_sections = len(report.sections) or 1
@@ -1423,7 +1453,7 @@ class QualityGate(BaseAgent):
         return "\n".join(report_parts)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 7-step methodology
+    # Main execution, the 7-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1490,7 +1520,7 @@ class QualityGate(BaseAgent):
         approved, critical_dims = self._determine_approval(total_score, dimensions)
 
         # Step 5b (Layer 4): hard leak / consistency gate. These are
-        # non-negotiable — a report that leaks internals, ships filler, has
+        # non-negotiable, a report that leaks internals, ships filler, has
         # broken URLs, or contradicts its own verdict is NEVER approved,
         # regardless of the weighted score.
         blockers = self._detect_hard_blockers(report)
@@ -1527,6 +1557,12 @@ class QualityGate(BaseAgent):
                 payload={
                     "to_agent": "engagement_director",
                     "from_agent": self.name.value,
+                    "agent": self.name.value,
+                    "issue": (
+                        f"Quality Gate failed after {iteration} iterations at "
+                        f"{total_score}/{self.APPROVAL_THRESHOLD}"
+                    ),
+                    "suggested_action": "Review critical dimensions and decide whether to replan",
                     "escalation_type": "quality_gate_failed",
                     "iteration": iteration,
                     "total_score": total_score,
@@ -1555,6 +1591,12 @@ class QualityGate(BaseAgent):
                 payload={
                     "to_agent": "synthesis_lead",
                     "from_agent": self.name.value,
+                    "agent": self.name.value,
+                    "issue": (
+                        f"Quality score {total_score}/{self.APPROVAL_THRESHOLD}; "
+                        f"{len(critical_dims)} critical dimensions require revision"
+                    ),
+                    "suggested_action": "Revise the report using gaps and fix_priority",
                     "task": "iterate",
                     "iteration": iteration + 1,
                     "quality_score": {

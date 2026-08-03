@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from hyperion.output.dedup import dedup_paragraphs, normalized_paragraph_hash
 
-
 DUP = (
     "The addressable market remains difficult to size because the entity has "
     "no public footprint and no disclosed revenue figures for the period."

@@ -1,12 +1,12 @@
 """
-HYPERION Consumer Insights Analyst — Agent 11, the customer behavior specialist.
+HYPERION Consumer Insights Analyst, Agent 11, the customer behavior specialist.
 
 This is NOT a generic "research your customers" agent. This is a specialist
 with 6 proprietary analytical frameworks:
 
 - Persona development: Build data-driven customer personas with demographics,
   behaviors, motivations, frustrations, and preferred channels. NOT generic
-  personas — personas grounded in scraped review data and survey responses.
+  personas, personas grounded in scraped review data and survey responses.
   Not "Tech-Savvy Tom, age 25-35." It says "Based on 847 G2 reviews and 234
   Reddit threads, the primary persona is a mid-market IT manager (35-45,
   $80K-$120K budget) whose top frustration is 'integration complexity'
@@ -16,9 +16,9 @@ with 6 proprietary analytical frameworks:
 - Journey mapping: Map the end-to-end customer journey from awareness to
   advocacy. Identify friction points, drop-off points, and moments of truth.
 - NPS analysis: Analyze Net Promoter Score data and qualitative feedback to
-  identify the drivers of promotion and detraction. Not just a number — the
+  identify the drivers of promotion and detraction. Not just a number, the
   specific reasons behind it with frequency data.
-- Segmentation: Segment customers using three approaches — demographic (age,
+- Segmentation: Segment customers using three approaches, demographic (age,
   income, geography, company size), behavioral (usage patterns, purchase
   frequency, feature adoption), psychographic (values, motivations, attitudes).
   Identify which segmentation approach is most predictive of purchase behavior.
@@ -26,7 +26,7 @@ with 6 proprietary analytical frameworks:
   conjoint analysis proxies, and price elasticity estimation from market data.
 - Willingness-to-pay analysis: Estimate the price point that maximizes revenue
   using Van Westendorp price sensitivity meter methodology. Not just 'charge
-  $50' — identifies optimal price point, too-cheap price, too-expensive price,
+  $50', identifies optimal price point, too-cheap price, too-expensive price,
   and the range of acceptable prices.
 
 It builds personas from real scraped data, not from imagination. It doesn't
@@ -39,7 +39,7 @@ recommendation from a similar company' (mentioned in 41% of positive reviews)."
 
 Model Tier: STANDARD
 Tools: SearxNG, Jina, Obscura
-Sub-agents: Max 3 — review scraping, consumer survey data, WTP studies
+Sub-agents: Max 3, review scraping, consumer survey data, WTP studies
 Output: ConsumerInsights (personas, journey map, NPS, segments, demand, WTP)
 
 Methodology (§4.4, Agent 11):
@@ -113,7 +113,7 @@ CONSUMER_INSIGHTS_SPEC = AgentSpec(
             description=(
                 "Build data-driven customer personas with demographics, behaviors, "
                 "motivations, frustrations, and preferred channels. NOT generic "
-                "personas — personas grounded in scraped review data and survey "
+                "personas, personas grounded in scraped review data and survey "
                 "responses. Not 'Tech-Savvy Tom, age 25-35.' It says 'Based on 847 "
                 "G2 reviews and 234 Reddit threads, the primary persona is a "
                 "mid-market IT manager (35-45, $80K-$120K budget) whose top "
@@ -133,7 +133,7 @@ CONSUMER_INSIGHTS_SPEC = AgentSpec(
                 "Identify friction points, drop-off points, and moments of truth. "
                 "Each stage has touchpoints, friction points, drop-off rate, "
                 "whether it's a moment of truth, and a specific improvement "
-                "opportunity. Not just 'customers find us and buy' — 'at the "
+                "opportunity. Not just 'customers find us and buy''at the "
                 "consideration stage, 45% drop off due to lack of pricing "
                 "transparency; moment of truth is the demo call where 78% of "
                 "conversions happen.'"
@@ -146,7 +146,7 @@ CONSUMER_INSIGHTS_SPEC = AgentSpec(
             description=(
                 "Analyze Net Promoter Score data and qualitative feedback to "
                 "identify the drivers of promotion and detraction. Not just a "
-                "number — the specific reasons behind it with frequency data. "
+                "number, the specific reasons behind it with frequency data. "
                 "'NPS = +42, with 62% promoters, 20% passives, 18% detractors. "
                 "Top promotion driver: ease of integration (mentioned in 71% of "
                 "promoter comments). Top detraction driver: poor customer support "
@@ -175,7 +175,7 @@ CONSUMER_INSIGHTS_SPEC = AgentSpec(
                 "analysis proxies, and price elasticity estimation from market "
                 "data. Calculate TAM, SAM, SOM, price elasticity of demand, "
                 "demand at current vs optimal price, and revenue forecast. Not "
-                "just 'market is big' — 'TAM $2.3B, SAM $450M, SOM 8% = $36M, "
+                "just 'market is big''TAM $2.3B, SAM $450M, SOM 8% = $36M, "
                 "price elasticity -1.5, demand at optimal price ($75) = 480K "
                 "units, revenue forecast $36M/yr.'"
             ),
@@ -187,7 +187,7 @@ CONSUMER_INSIGHTS_SPEC = AgentSpec(
             description=(
                 "Estimate the price point that maximizes revenue using Van "
                 "Westendorp price sensitivity meter methodology. Not just "
-                "'charge $50' — identifies the optimal price point, too-cheap "
+                "'charge $50', identifies the optimal price point, too-cheap "
                 "price (below which customers question quality), too-expensive "
                 "price (above which customers won't buy), and the range of "
                 "acceptable prices. Calculates revenue at the optimal price point."
@@ -197,7 +197,7 @@ CONSUMER_INSIGHTS_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Consumer Insights Analyst — the specialist who "
+        "You are the HYPERION Consumer Insights Analyst, the specialist who "
         "analyzes customer behavior, develops personas, maps customer journeys, "
         "and estimates demand.\n\n"
         "Your proprietary frameworks:\n"
@@ -211,11 +211,11 @@ CONSUMER_INSIGHTS_SPEC = AgentSpec(
         "2. Journey mapping: End-to-end journey from awareness to advocacy. "
         "Friction points, drop-off rates, moments of truth, improvement "
         "opportunities at each stage.\n"
-        "3. NPS analysis: Not just a number — the specific drivers of promotion "
+        "3. NPS analysis: Not just a number, the specific drivers of promotion "
         "and detraction with frequency data. 'Top promotion driver: ease of "
         "integration (71% of promoter comments). Top detraction driver: poor "
         "support (58% of detractor comments).'\n"
-        "4. Segmentation: Three approaches — demographic, behavioral, "
+        "4. Segmentation: Three approaches, demographic, behavioral, "
         "psychographic. Identify which is MOST PREDICTIVE of purchase behavior.\n"
         "5. Demand estimation: TAM, SAM, SOM, price elasticity, demand at "
         "current vs optimal price, revenue forecast.\n"
@@ -232,7 +232,7 @@ CONSUMER_INSIGHTS_SPEC = AgentSpec(
         "- NPS MUST HAVE DRIVERS, NOT JUST A SCORE. What specifically drives "
         "promotion and detraction, with % from feedback.\n"
         "- SEGMENTATION MUST IDENTIFY THE MOST PREDICTIVE APPROACH. Not just "
-        "three sets of segments — which one predicts purchase behavior best.\n"
+        "three sets of segments, which one predicts purchase behavior best.\n"
         "- WTP MUST USE VAN WESTENDORP METHODOLOGY. Optimal, too-cheap, too-"
         "expensive, acceptable range, revenue at optimal.\n\n"
         "You can spawn up to 3 sub-agents for parallel data collection:\n"
@@ -240,7 +240,7 @@ CONSUMER_INSIGHTS_SPEC = AgentSpec(
         "- Sub-agent B: Find consumer survey data for [segment] (MICRO, SearxNG)\n"
         "- Sub-agent C: Find willingness-to-pay studies for [product category] "
         "(FAST, SearxNG + Jina)\n\n"
-        "Your output is a ConsumerInsights Pydantic model — structured, not free text."
+        "Your output is a ConsumerInsights Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves customer behavior, "
                      "personas, customer journey, NPS, segmentation, demand "
@@ -269,7 +269,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
     Lifecycle:
     1. Receives task from Engagement Director via AgentBus HANDOFF
     2. Searches for consumer research (SearxNG + Jina)
-    3. Scrapes review sites and forums (Obscura — G2, Capterra, Trustpilot)
+    3. Scrapes review sites and forums (Obscura, G2, Capterra, Trustpilot)
     4. Builds personas from scraped data, maps journey, segments market
     5. Estimates demand and willingness-to-pay
     6. Produces ConsumerInsights model and publishes to bus
@@ -475,10 +475,10 @@ class ConsumerInsightsAnalyst(BaseAgent):
                         })
                         self._sources.append(Source(
                             id=f"src_{len(self._sources):03d}",
-                            title=f"Review site — {url.split('/')[2]}",
+                            title=f"Review site, {url.split('/')[2]}",
                             url=url,
                             credibility=SourceCredibility.NEWS,
-                            key_data=f"Customer reviews from {url.split('/')[2]}",
+                            key_data=page_data["content"][:500],
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue
@@ -522,7 +522,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
     ) -> list[Persona]:
         """Build data-driven customer personas grounded in scraped review data.
 
-        NOT generic — personas grounded in scraped review data and survey
+        NOT generic, personas grounded in scraped review data and survey
         responses. Each persona has data_basis citing the specific reviews/
         threads/surveys it's built from. Frustrations and buying triggers
         have frequency data from review analysis.
@@ -699,7 +699,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
         approach is most predictive of purchase behavior.
 
         NPS: Analyzes NPS data and qualitative feedback to identify drivers of
-        promotion and detraction. Not just a number — specific reasons with
+        promotion and detraction. Not just a number, specific reasons with
         frequency data.
 
         Returns (segments, most_predictive_segmentation, nps_analysis).
@@ -713,7 +713,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
             "You are the HYPERION Consumer Insights Analyst doing segmentation + NPS.\n\n"
             f"Question: {question}\n\n"
             f"Consumer research:\n{search_summary}\n\n"
-            "SEGMENTATION — segment customers using THREE approaches:\n"
+            "SEGMENTATION, segment customers using THREE approaches:\n"
             "1. Demographic (age, income, geography, company size)\n"
             "2. Behavioral (usage patterns, purchase frequency, feature adoption)\n"
             "3. Psychographic (values, motivations, attitudes)\n\n"
@@ -726,7 +726,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
             "- value: customer lifetime value ($)\n"
             "- is_most_predictive: is this the most predictive for purchase?\n\n"
             "IDENTIFY which approach is MOST PREDICTIVE of purchase behavior.\n\n"
-            "NPS ANALYSIS — analyze Net Promoter Score:\n"
+            "NPS ANALYSIS, analyze Net Promoter Score:\n"
             "- nps_score: the score (e.g., '+42')\n"
             "- promoter_percentage: % promoters (9-10)\n"
             "- passive_percentage: % passives (7-8)\n"
@@ -827,7 +827,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
         Demand: TAM, SAM, SOM, price elasticity, demand at current vs optimal
         price, revenue forecast.
 
-        WTP: Van Westendorp price sensitivity meter — optimal price point,
+        WTP: Van Westendorp price sensitivity meter, optimal price point,
         too-cheap, too-expensive, acceptable range, revenue at optimal.
 
         Returns (demand_estimate, willingness_to_pay).
@@ -941,27 +941,27 @@ class ConsumerInsightsAnalyst(BaseAgent):
         """
         sub_specs = [
             SubAgentSpec(
-                question=f"Scrape reviews from G2, Capterra, Trustpilot for {company} — extract sentiment, pain points, buying triggers with frequency data",
+                question=f"Scrape reviews from G2, Capterra, Trustpilot for {company}, extract sentiment, pain points, buying triggers with frequency data",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
                 context={"company": company, "sector": sector},
             ),
             SubAgentSpec(
-                question=f"Find consumer survey data for {segment} in {sector} — demographics, behaviors, psychographics, purchase intent",
+                question=f"Find consumer survey data for {segment} in {sector}, demographics, behaviors, psychographics, purchase intent",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
                 context={"segment": segment, "sector": sector},
             ),
             SubAgentSpec(
-                question=f"Find willingness-to-pay studies for {product_category} — Van Westendorp, conjoint analysis, price elasticity data",
+                question=f"Find willingness-to-pay studies for {product_category}, Van Westendorp, conjoint analysis, price elasticity data",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1014,7 +1014,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 7-step methodology
+    # Main execution, the 7-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1144,7 +1144,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
                 finding_type="primary_persona",
                 title=f"Primary Persona: {primary_persona.name}",
                 content=(
-                    f"{primary_persona.name} — {primary_persona.demographics}. "
+                    f"{primary_persona.name}, {primary_persona.demographics}. "
                     f"Top frustration: {primary_persona.frustrations[0] if primary_persona.frustrations else 'N/A'}. "
                     f"Buying trigger: {primary_persona.buying_triggers[0] if primary_persona.buying_triggers else 'N/A'}. "
                     f"Data basis: {primary_persona.data_basis}"

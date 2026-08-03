@@ -149,6 +149,19 @@ class TestRenderedTwoColumnMeasure:
                 env=env,
             )
 
+        # The parent's OWN high-water mark, sampled either side of the two
+        # child phases. RUSAGE_SELF excludes children, so this delta is the
+        # amount the render pushed THIS interpreter's peak up: near zero while
+        # the work stays in a subprocess, ~400 MB the moment anyone inlines it.
+        # test_render_stays_within_a_child_process_memory_budget asserts on the
+        # delta rather than on the absolute peak, because the absolute peak of
+        # a full-suite run also carries plotly, kaleido, matplotlib and pymupdf
+        # imported by 37 other modules and is therefore not attributable to
+        # anything this class does.
+        import resource
+
+        rss_before_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
         # Drive the two phases from here rather than letting the script fan out,
         # so the parent pytest process never has two heavyweight children alive
         # at the same time. rc=-9 means the CHILD was OOM-killed, which is a
@@ -179,6 +192,9 @@ class TestRenderedTwoColumnMeasure:
             f"produced no measurable prose, so the numbers below are vacuous"
         )
         assert data["pages"] > 0
+        rss_after_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        data["parent_rss_growth_mb"] = max(0, rss_after_kb - rss_before_kb) // 1024
+        data["parent_rss_peak_mb"] = rss_after_kb // 1024
         return data
 
     def test_two_column_bands(self, metrics: dict[str, float]) -> None:
@@ -203,15 +219,32 @@ class TestRenderedTwoColumnMeasure:
 
         If someone inlines the render back into this interpreter, the parent's
         peak RSS jumps from ~17 MB to ~414 MB and the single-process suite is
-        OOM-killed again on a 985 MB host. Asserting on the parent's own peak
-        is what makes that regression visible here rather than as an
-        unexplained rc=137 in CI 37 modules later.
-        """
-        import resource
+        OOM-killed again on a 985 MB host. Making that regression visible here,
+        rather than as an unexplained rc=137 in CI 37 modules later, is the
+        point of this test.
 
-        peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
-        assert peak_mb < 300, (
-            f"this test process peaked at {peak_mb} MB — the WeasyPrint/fitz "
-            f"render appears to have moved back in-process; keep it in "
-            f"tools/measure_two_column.py"
+        MEASUREMENT CORRECTED. The previous form asserted
+        ``getrusage(RUSAGE_SELF).ru_maxrss < 300 MB``, i.e. the ABSOLUTE peak of
+        the whole pytest interpreter. ``ru_maxrss`` is a high-water mark for the
+        entire process lifetime, so in a full-suite run it also carries plotly,
+        kaleido, matplotlib and pymupdf imported by other test modules: the run
+        peaked at 351 MB and this test failed while the render was still
+        correctly isolated in a child process. It reported a defect that did not
+        exist, and — worse — would have kept failing for the wrong reason if the
+        render HAD been inlined, so the signal was lost either way.
+
+        The attributable figure is the DELTA in the parent's own high-water mark
+        across the two child phases, sampled in the fixture. ``RUSAGE_SELF``
+        excludes children, so subprocess work moves it barely at all, while an
+        inlined WeasyPrint/fitz render moves it by hundreds of megabytes. The
+        ceiling is set at 120 MB: comfortably above the tens of megabytes of
+        parent-side JSON and fixture overhead, and far below the ~400 MB an
+        in-process render would add.
+        """
+        growth_mb = metrics["parent_rss_growth_mb"]
+        assert growth_mb < 120, (
+            f"this test process's own peak RSS grew by {growth_mb} MB across "
+            f"the render (absolute peak {metrics['parent_rss_peak_mb']} MB) — "
+            f"the WeasyPrint/fitz render appears to have moved back "
+            f"in-process; keep it in tools/measure_two_column.py"
         )

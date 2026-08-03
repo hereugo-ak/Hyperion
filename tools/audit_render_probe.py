@@ -192,8 +192,34 @@ def build_payload() -> dict:
     from datetime import datetime
     from types import SimpleNamespace
 
-    def V(v):  # enum-ish shim: template does `.value`
-        return SimpleNamespace(value=v)
+    def V(v):
+        """The REAL schema enum for `v`, not a namespace shim.
+
+        The probe used `SimpleNamespace(value=v)`. `.value` worked, so every
+        template expression written `{{ x.value }}` looked fine — but the
+        template also formats these enums directly (`{{ report.recommendation |
+        upper }}` on the cover at presentation_designer.py:1169 and in the
+        at-a-glance block at :1279), and Jinja's `soft_str` on a
+        `SimpleNamespace` yields `namespace(value='conditional')`. The cover and
+        executive-summary pages of every golden render therefore carried
+        `NAMESPACE(VALUE='CONDITIONAL')`: a template leak that exists only in
+        the FIXTURE. `Recommendation` and `ConfidenceLevel` are `str` mixins
+        (models.py:2469, :150), so the shipping path renders the bare value and
+        cannot produce that string. Using the real enums also type-checks the
+        payload: `confidence=V("moderate")` was silently accepted by the shim
+        and is not a `ConfidenceLevel` member at all.
+        """
+        from hyperion.schemas.models import ConfidenceLevel, Recommendation
+
+        for enum in (Recommendation, ConfidenceLevel):
+            try:
+                return enum(v)
+            except ValueError:
+                continue
+        raise ValueError(
+            f"probe payload uses {v!r}, which is not a member of "
+            "Recommendation or ConfidenceLevel"
+        )
 
     body = "\n\n".join(
         [f"**Sub-heading {i}**\n\n" + (LOREM_PARA * 3) for i in range(1, 6)]
@@ -238,7 +264,9 @@ def build_payload() -> dict:
         report=SimpleNamespace(
             question="Should we enter the grid-scale storage market in the target geography?",
             recommendation=V("conditional"),
-            confidence=V("moderate"),
+            # "moderate" is not a ConfidenceLevel member (models.py:159-161 is
+            # HIGH / MEDIUM / LOW); the old namespace shim accepted it anyway.
+            confidence=V("medium"),
             generated_at=datetime.now(),
             engagement_id="AUDIT-PROBE-001",
             executive_summary=(LOREM_PARA * 4),
@@ -378,13 +406,31 @@ def render() -> Path:
     designer = PresentationDesigner.__new__(PresentationDesigner)
     report = payload["report"]
 
+    # W-10: the shipping designer attaches a six-subsection MethodologyRecord to
+    # the report before it crosses into the client view (orchestrator
+    # `_attach_methodology`, with a designer-side rebuild as backstop). A probe
+    # that leaves `methodology` unset renders the template's degraded fallback
+    # branch instead, so the golden baseline would be measured against a page
+    # the production path never emits. Build it here through the real builder.
+    from hyperion.output.methodology import build_methodology
+
+    report.methodology = build_methodology(report)
+
     html = tpl.render(
         css_content=CSS_TEMPLATE,
         palette=PDF_PALETTE,
         risk_analysis_html="<p>No risk analysis available.</p>",
         appendix_sources_html=designer._build_appendix_sources_html(report),
         endnotes_html=designer._build_endnotes_html(report),
-        technical_appendix_html=designer._build_technical_appendix_html(report),
+        # W-09 deleted the technical appendix from client prose (its quality
+        # dimensions, contradictions and fact-check tallies are operator
+        # telemetry, now written to the EngagementTelemetry artifact) and with
+        # it `_build_technical_appendix_html`. The probe kept calling the
+        # deleted method, so this whole probe raised AttributeError and the
+        # live golden-PDF regression has been dead ever since. The metric that
+        # reads `technical_appendix_page` below is correct and stays: a
+        # technical appendix page in the client PDF is now a DEFECT, and the
+        # metric counts down to zero. There is nothing left to pass in.
         **payload,
     )
     (OUT_DIR / "probe.html").write_text(html, encoding="utf-8")
@@ -480,7 +526,11 @@ def measure(pdf_path: Path) -> dict:
     endnotes_idx = _page_index("Endnotes")
     tech_idx = _page_index("Technical Appendix")
 
-    glance_labels = ("RECOMMENDATION", "CONFIDENCE", "EVIDENCE BASE", "ANALYSIS DEPTH")
+    # W-09: the at-a-glance Confidence cell was internal telemetry and is
+    # removed from the client page; the remaining three labels are the
+    # contract. The old 4-label expectation is preserved in the golden file
+    # history, not here.
+    glance_labels = ("RECOMMENDATION", "EVIDENCE BASE", "ANALYSIS DEPTH")
     glance_text = page_texts[glance_idx] if glance_idx >= 0 else ""
     # Labels are uppercased by CSS, so compare uppercase.
     glance_upper = glance_text.upper()
@@ -503,18 +553,24 @@ def measure(pdf_path: Path) -> dict:
         "glance_labels_present": sum(1 for lab in glance_labels if lab in glance_upper),
         "glance_words": len(glance_text.split()),
         "endnote_entries": len(re.findall(r"(?m)^\s*\d{1,3}\.\s+\S", endnote_text)),
-        "technical_appendix_sections": sum(
-            1
-            for heading in (
-                "QUALITY ASSESSMENT",
-                "CONFIDENCE BY DIMENSION",
-                "CONTRADICTIONS",
-                "FACT CHECK",
-                "LIMITATIONS",
+        # W-09: the technical appendix is no longer a client page; its
+        # content moved to the operator telemetry artifact. A technical
+        # appendix page in the client PDF is now a DEFECT, so the metric
+        # counts down (0 = clean).
+        "technical_appendix_sections": (
+            0
+            if tech_idx < 0
+            else sum(
+                1
+                for heading in (
+                    "QUALITY ASSESSMENT",
+                    "CONFIDENCE BY DIMENSION",
+                    "CONTRADICTIONS",
+                    "FACT CHECK",
+                    "LIMITATIONS",
+                )
+                if heading in "\n".join(page_texts[tech_idx : tech_idx + 3]).upper()
             )
-            # The appendix spills onto a second page, so both are searched.
-            if tech_idx >= 0
-            and heading in "\n".join(page_texts[tech_idx : tech_idx + 3]).upper()
         ),
         # At-a-glance must precede the table of contents, as in MGI. Ordering is
         # part of the fix, so it is measured rather than eyeballed.

@@ -25,10 +25,8 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from hyperion.tools.searxng import SearxNGClient
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # P2-26 fix 1: the engine pool is 6+ general-web engines
@@ -207,15 +205,18 @@ class TestReferenceWorkDenial:
 
 class TestClassifySourceType:
     def test_classifier_exists_and_never_defaults_credible(self):
-        from hyperion.tools.source_classifier import classify_source_type
         from hyperion.schemas.models import SourceType
+        from hyperion.tools.source_classifier import classify_source_type
 
         # Unclassifiable host -> UNKNOWN, never a credible default.
-        assert classify_source_type("https://random-blog-xyz.example.com/post") == SourceType.UNKNOWN
+        assert (
+            classify_source_type("https://random-blog-xyz.example.com/post")
+            == SourceType.UNKNOWN
+        )
 
     def test_government_requires_gov_host(self):
-        from hyperion.tools.source_classifier import classify_source_type
         from hyperion.schemas.models import SourceType
+        from hyperion.tools.source_classifier import classify_source_type
 
         assert classify_source_type("https://www.energy.gov/article") == SourceType.GOVERNMENT
         assert classify_source_type("https://www.gov.uk/guidance") == SourceType.GOVERNMENT
@@ -223,16 +224,16 @@ class TestClassifySourceType:
         assert classify_source_type("https://health.harvard.edu/x") != SourceType.GOVERNMENT
 
     def test_reference_works_classified_as_reference(self):
-        from hyperion.tools.source_classifier import classify_source_type
         from hyperion.schemas.models import SourceType
+        from hyperion.tools.source_classifier import classify_source_type
 
         assert classify_source_type(
             "https://www.merriam-webster.com/dictionary/x"
         ) == SourceType.REFERENCE
 
     def test_news_host_classified_news(self):
-        from hyperion.tools.source_classifier import classify_source_type
         from hyperion.schemas.models import SourceType
+        from hyperion.tools.source_classifier import classify_source_type
 
         assert classify_source_type("https://www.reuters.com/markets/x") == SourceType.NEWS
 

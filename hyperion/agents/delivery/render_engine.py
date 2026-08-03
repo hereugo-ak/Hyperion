@@ -1,38 +1,37 @@
 """
-HYPERION Render Engine — Agent 20, the final PDF assembly.
+HYPERION Render Engine, Agent 20, the final PDF assembly.
 
 This is NOT a generic "call weasyprint" agent. This is a specialist with
 5 proprietary skills:
 
 - PDF generation: Convert Jinja2-rendered HTML to PDF with proper page
-  sizing (A4), DPI (300), and font embedding. Not just "render to PDF" —
-  it sets DPI, embeds fonts, controls page breaks, and verifies output.
+  sizing (A4), DPI (300), and font embedding. Not just "render to PDF", it sets DPI, embeds fonts, controls page breaks, and verifies output.
 
 - Image processing: Process all images through the Pillow pipeline:
   resize (never upscale), crop (center-weighted), color-correct (match
   brand warmth), sharpen (unsharp mask), export as PNG (lossless).
-  Every image — whether from Unsplash or Plotly — goes through the same
+  Every image, whether from Unsplash or Plotly, goes through the same
   pipeline. (§6.4)
 
 - Color management: Ensure brand colors render correctly in PDF (CMYK
   fallback for print, exact hex for digital). No blue, no purple, no
-  green — warm premium palette only.
+  green, warm premium palette only.
 
 - Font embedding: Embed Instrument Serif and JetBrains Mono in the PDF
   so it renders identically on any system. Without embedding, the PDF
-  looks different on every machine — that's not premium.
+  looks different on every machine, that's not premium.
 
 - Page break control: Use CSS `page-break-inside: avoid` and
   `page-break-before: always` to control page flow and prevent blank
   pages. Scan the rendered PDF for blank pages and orphaned images.
 
 It runs on CPU tier (no LLM calls) because PDF rendering and image
-processing are deterministic CPU tasks — they don't need reasoning.
+processing are deterministic CPU tasks, they don't need reasoning.
 
-Model Tier: CPU (no LLM — CPU-only tasks: PDF rendering, image processing)
+Model Tier: CPU (no LLM, CPU-only tasks: PDF rendering, image processing)
 Tools: WeasyPrint (HTML/CSS → PDF at 300 DPI),
        Pillow (image processing: resize, crop, color-correct, sharpen)
-Sub-agents: 0 (delivery agent — doesn't spawn sub-agents)
+Sub-agents: 0 (delivery agent, doesn't spawn sub-agents)
 Output: RenderOutput (PDF path, page count, verification results)
 
 Methodology (§4.6, Agent 20):
@@ -46,7 +45,7 @@ Methodology (§4.6, Agent 20):
 
 What makes it the best version of itself:
 It is the last line of defense for quality. It verifies the PDF after
-rendering — checks for blank pages, checks that all images are properly
+rendering, checks for blank pages, checks that all images are properly
 placed, checks that fonts are embedded. If any check fails, it reports
 the issue back to the Presentation Designer for correction. It never
 ships a broken PDF.
@@ -141,7 +140,7 @@ RENDER_ENGINE_SPEC = AgentSpec(
             description=(
                 "Convert Jinja2-rendered HTML to PDF with proper page "
                 "sizing (A4), DPI (300), and font embedding. Not just "
-                "'call weasyprint' — it sets DPI=300, page_size=A4, "
+                "'call weasyprint', it sets DPI=300, page_size=A4, "
                 "embeds Instrument Serif and JetBrains Mono, and "
                 "controls page breaks via CSS page-break-inside: avoid "
                 "and page-break-before: always."
@@ -154,13 +153,13 @@ RENDER_ENGINE_SPEC = AgentSpec(
             description=(
                 "Process all images through the Pillow pipeline (§6.4): "
                 "(1) Open and verify resolution is high enough. "
-                "(2) Resize — downscale only, never upscale, LANCZOS "
-                "interpolation. (3) Crop — center-weighted, preserving "
-                "most interesting region. (4) Color-correct — apply warm "
+                "(2) Resize, downscale only, never upscale, LANCZOS "
+                "interpolation. (3) Crop, center-weighted, preserving "
+                "most interesting region. (4) Color-correct, apply warm "
                 "filter at 5% intensity to match brand warmth. "
-                "(5) Sharpen — unsharp mask (radius=2, percent=150, "
+                "(5) Sharpen, unsharp mask (radius=2, percent=150, "
                 "threshold=3) for print. (6) Export as PNG (lossless) "
-                "at 300 DPI. Every image — Unsplash or Plotly — goes "
+                "at 300 DPI. Every image, Unsplash or Plotly, goes "
                 "through the same pipeline."
             ),
             inputs=["image_paths", "target_dimensions"],
@@ -184,7 +183,7 @@ RENDER_ENGINE_SPEC = AgentSpec(
             description=(
                 "Embed Instrument Serif and JetBrains Mono in the PDF "
                 "so it renders identically on any system. Without "
-                "embedding, the PDF looks different on every machine — "
+                "embedding, the PDF looks different on every machine"
                 "that's not premium. Verify after rendering that both "
                 "fonts are present in the PDF's font dictionary."
             ),
@@ -206,7 +205,7 @@ RENDER_ENGINE_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Render Engine — the final PDF assembly "
+        "You are the HYPERION Render Engine, the final PDF assembly "
         "and the last line of defense for quality.\n\n"
         "Your role:\n"
         "1. RECEIVE HTML from the Presentation Designer.\n"
@@ -216,12 +215,12 @@ RENDER_ENGINE_SPEC = AgentSpec(
         "5. VERIFY: no blank pages, no orphaned images, all fonts embedded.\n"
         "6. SAVE to reports/ directory.\n"
         "7. RETURN PDF path.\n\n"
-        "Pillow Image Pipeline (§6.4 — NON-NEGOTIABLE):\n"
+        "Pillow Image Pipeline (§6.4, NON-NEGOTIABLE):\n"
         "1. Open and verify resolution (raise ImageTooSmallError if too small).\n"
-        "2. Resize — downscale ONLY, never upscale. LANCZOS interpolation.\n"
-        "3. Crop — center-weighted, preserving most interesting region.\n"
-        "4. Color-correct — apply warm filter at 5% intensity.\n"
-        "5. Sharpen — unsharp mask (radius=2, percent=150, threshold=3).\n"
+        "2. Resize, downscale ONLY, never upscale. LANCZOS interpolation.\n"
+        "3. Crop, center-weighted, preserving most interesting region.\n"
+        "4. Color-correct, apply warm filter at 5% intensity.\n"
+        "5. Sharpen, unsharp mask (radius=2, percent=150, threshold=3).\n"
         "6. Export as PNG (lossless) at 300 DPI.\n\n"
         "PDF Requirements:\n"
         "- A4 page size (210mm x 297mm).\n"
@@ -237,7 +236,7 @@ RENDER_ENGINE_SPEC = AgentSpec(
         "- If any check fails, report back to Presentation Designer.\n"
         "- NEVER ship a broken PDF.\n\n"
         "You run on CPU tier (no LLM calls). You do NOT spawn sub-agents.\n"
-        "Your output is a RenderOutput Pydantic model — PDF path, page "
+        "Your output is a RenderOutput Pydantic model, PDF path, page "
         "count, verification results."
     ),
     spawn_condition="Spawned after the Presentation Designer produces the "
@@ -266,11 +265,11 @@ class ImageTooSmallError(Exception):
 
 
 class RenderEngine(BaseAgent):
-    """Agent 20: Final PDF assembly — converts HTML/CSS + images into a 300 DPI PDF.
+    """Agent 20: Final PDF assembly, converts HTML/CSS + images into a 300 DPI PDF.
 
     The Render Engine is the last line of defense for quality. It processes
     all images through the Pillow pipeline, renders the PDF with WeasyPrint
-    at 300 DPI, and verifies the output — no blank pages, no orphaned
+    at 300 DPI, and verifies the output, no blank pages, no orphaned
     images, all fonts embedded. If any check fails, it reports back to the
     Presentation Designer. It never ships a broken PDF.
     (§4.6, Agent 20)
@@ -314,7 +313,7 @@ class RenderEngine(BaseAgent):
         self._verification_issues: list[str] = []
 
         # Fix 4.2: the page budget this report was planned under, used to judge
-        # the rendered page count. Optional — see `_verify_pdf` check 5 for why
+        # the rendered page count. Optional, see `_verify_pdf` check 5 for why
         # a missing budget must still produce a real verdict rather than a skip.
         self._page_budget: Any | None = None
 
@@ -413,7 +412,7 @@ class RenderEngine(BaseAgent):
         part of the image (faces, objects, focal points). (§6.4)
         """
         try:
-            # Availability probe only — the crop below uses img's own methods.
+            # Availability probe only, the crop below uses img's own methods.
             from PIL import Image as _PILImage  # noqa: F401
 
             width, height = img.size
@@ -421,12 +420,12 @@ class RenderEngine(BaseAgent):
             aspect_img = width / height
 
             if aspect_img > aspect_target:
-                # Image is wider than target — crop width
+                # Image is wider than target, crop width
                 new_width = int(height * aspect_target)
                 left = (width - new_width) // 2
                 img = img.crop((left, 0, left + new_width, height))
             elif aspect_img < aspect_target:
-                # Image is taller than target — crop height
+                # Image is taller than target, crop height
                 new_height = int(width / aspect_target)
                 top = (height - new_height) // 2
                 img = img.crop((0, top, width, top + new_height))
@@ -458,7 +457,7 @@ class RenderEngine(BaseAgent):
         try:
             from PIL import Image, ImageFilter
 
-            img = Image.open(image_path)
+            img: Image.Image = Image.open(image_path)
 
             # Convert to RGB if needed (handles RGBA, P, L modes)
             if img.mode not in ("RGB", "RGBA"):
@@ -477,22 +476,25 @@ class RenderEngine(BaseAgent):
                 target_aspect = target_width / target_height
 
                 if img_aspect > target_aspect:
-                    # Image is wider — fit to height
+                    # Image is wider, fit to height
                     new_height = target_height
                     new_width = int(target_height * img_aspect)
                 else:
-                    # Image is taller — fit to width
+                    # Image is taller, fit to width
                     new_width = target_width
                     new_height = int(target_width / img_aspect)
 
-                img = img.resize((new_width, new_height), Image.LANCZOS)
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
             # Step 3: Crop (center-weighted)
             img = self._center_crop(img, target_width, target_height)
 
             # Ensure exact target dimensions
             if img.size != (target_width, target_height):
-                img = img.resize((target_width, target_height), Image.LANCZOS)
+                img = img.resize(
+                    (target_width, target_height),
+                    Image.Resampling.LANCZOS,
+                )
 
             # Step 4: Color-correct (warm filter)
             img = self._apply_warm_filter(img, WARM_FILTER_INTENSITY)
@@ -515,12 +517,12 @@ class RenderEngine(BaseAgent):
             return output_path
 
         except ImportError:
-            # Pillow not available — return original path
+            # Pillow not available, return original path
             return image_path
         except ImageTooSmallError:
             raise
         except (ValueError, OSError, RuntimeError):
-            # Processing failed — return original path
+            # Processing failed, return original path
             return image_path
 
     def _process_all_images(self) -> dict[str, str]:
@@ -538,7 +540,7 @@ class RenderEngine(BaseAgent):
         for i, img_path in enumerate(self._image_paths):
             try:
                 if i == 0 and self._layout_plan and self._layout_plan.cover_image:
-                    # Cover image — full A4
+                    # Cover image, full A4
                     processed_path = self._process_single_image(
                         img_path,
                         target_width=COVER_IMAGE_WIDTH,
@@ -546,7 +548,7 @@ class RenderEngine(BaseAgent):
                         min_resolution=MIN_COVER_RESOLUTION,
                     )
                 else:
-                    # Section image — 40% width
+                    # Section image, 40% width
                     processed_path = self._process_single_image(
                         img_path,
                         target_width=SECTION_IMAGE_WIDTH,
@@ -555,11 +557,11 @@ class RenderEngine(BaseAgent):
                     )
                 processed[img_path] = processed_path
             except ImageTooSmallError as e:
-                # D25: Non-fatal — skip image, don't add to verification issues
+                # D25: Non-fatal, skip image, don't add to verification issues
                 # The report should still render without this photo.
                 #
                 # D5.1: `as e` was captured and never read (ruff F841). That
-                # discarded the *only* record of why an image was rejected —
+                # discarded the *only* record of why an image was rejected,
                 # `ImageTooSmallError` carries `.actual` and `.minimum`, i.e. the
                 # exact measurement. §11 exit criterion 12 requires section
                 # imagery ≥2000 px wide; when a report ships with a small image
@@ -587,7 +589,7 @@ class RenderEngine(BaseAgent):
                 )
                 processed[chart_path] = processed_path
             except ImageTooSmallError as e:
-                # D25: Non-fatal — skip chart image processing.
+                # D25: Non-fatal, skip chart image processing.
                 # D5.1: same discarded-cause defect as the section-image leg
                 # above. A chart below the minimum is a stronger signal than a
                 # photo below it: charts are generated by us, so an undersized
@@ -595,7 +597,7 @@ class RenderEngine(BaseAgent):
                 # data table) rather than a bad stock pick.
                 logger.warning(
                     "Chart image rejected as too small, using unprocessed original: "
-                    "%s is %dx%d, minimum is %dx%d — the chart export tier may have degraded",
+                    "%s is %dx%d, minimum is %dx%d, the chart export tier may have degraded",
                     e.image_path,
                     e.actual[0],
                     e.actual[1],
@@ -632,8 +634,95 @@ class RenderEngine(BaseAgent):
     # Step 4: Convert HTML → PDF with WeasyPrint at 300 DPI
     # ─────────────────────────────────────────────────────────────────────
 
+    # ─────────────────────────────────────────────────────────────────────
+    # W-03: two-pass TOC, page numbers verified against the rendered artifact
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _resolve_toc_page_numbers(self, pdf_path: str) -> dict[str, int]:
+        """Read the real page index of every TOC anchor from the rendered PDF.
+
+        The page number of a heading is not knowable until the document is
+        laid out, so pass 2 does not trust the CSS alone: PyMuPDF resolves
+        the named destinations WeasyPrint emitted for the TOC's in-page
+        links and reports which page each anchor actually landed on.
+
+        Returns ``{anchor_id: 1-based page number}``. Empty when the PDF
+        carries no named destinations (no TOC anchors in the document, or a
+        non-WeasyPrint fallback wrote the file), pass 2 is then skipped.
+
+        ``resolve_names()`` is used directly rather than iterating page
+        links: WeasyPrint emits internal links as LINK_NAMED (kind=4), and
+        the names table already maps every in-document anchor to its page.
+        """
+        import fitz  # PyMuPDF
+
+        resolved: dict[str, int] = {}
+        try:
+            doc = fitz.open(pdf_path)
+            for anchor, dest in doc.resolve_names().items():
+                if (
+                    isinstance(dest, dict)
+                    and isinstance(dest.get("page"), int)
+                    and dest["page"] >= 0
+                ):
+                    resolved[anchor] = dest["page"] + 1  # 0-based -> 1-based
+            doc.close()
+        except Exception as exc:  # noqa: BLE001 - best-effort, empty map = skip pass 2
+            self._log(f"RENDER: TOC pass-1 introspection failed ({type(exc).__name__}: {exc!s:.100})")
+        return resolved
+
+    def _inject_toc_page_numbers(self, html_path: str, resolved: dict[str, int]) -> str:
+        """Write the pass-2 HTML with real page numbers substituted.
+
+        Pass 1 renders the TOC with page cells present but empty; pass 2
+        fills ``<td class="toc-page">`` with the number read back from the
+        rendered artifact and appends a ``data-toc-verified`` marker so the
+        substituted digits are laid out identically to pass 1's
+        ``target-counter`` content (no reflow → page count cannot shift).
+        """
+        import re
+
+        try:
+            with open(html_path, encoding="utf-8") as f:
+                html = f.read()
+        except (OSError, ValueError) as exc:
+            self._log(f"RENDER: cannot read staged HTML for pass 2: {exc!s:.100}")
+            return html_path
+
+        def _fill(match: re.Match[str]) -> str:
+            anchor = match.group("anchor")
+            page = resolved.get(anchor)
+            if page is None:
+                return match.group(0)
+            return (
+                f'{match.group("open")}<td class="toc-page" '
+                f'data-toc-verified="{page}">{page}</td>'
+            )
+
+        updated = re.sub(
+            r'(?P<open><a href="#(?P<anchor>[^"]+)">.*?</a></td>)\s*<td class="toc-page">[^<]*</td>',
+            _fill,
+            html,
+        )
+        if updated == html:
+            return html_path
+        try:
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(updated)
+        except OSError as exc:
+            self._log(f"RENDER: cannot write pass-2 HTML: {exc!s:.100}")
+        return html_path
+
     async def _render_pdf(self, html_path: str) -> str:
         """Convert HTML → PDF with WeasyPrint at 300 DPI.
+
+        W-03 two-pass TOC: pass 1 renders the full document with the TOC
+        present but page cells empty; the real page index of every anchor
+        is read back from the rendered artifact; pass 2 re-renders with the
+        resolved numbers substituted and asserts the page count did not
+        change (the substituted digits occupy the same box as pass 1's
+        target-counter content, so a shift means the document moved and the
+        numbers are stale, fail loudly rather than ship a wrong TOC).
 
         WeasyPrint settings:
         - Page size: A4 (210mm x 297mm)
@@ -672,6 +761,34 @@ class RenderEngine(BaseAgent):
                 if result.warnings:
                     self._log(f"RENDER: PDF generated with warnings: {'; '
                         ''.join(result.warnings[:3])}")
+                # W-03 pass 2: substitute TOC page numbers verified against
+                # the rendered artifact, re-render, assert no reflow.
+                resolved = self._resolve_toc_page_numbers(self._pdf_path)
+                if resolved:
+                    final_html = self._inject_toc_page_numbers(html_path, resolved)
+                    with open(final_html, encoding="utf-8") as final_html_file:
+                        final_html_content = final_html_file.read()
+                    pass1_pages = self._get_page_count(self._pdf_path)
+                    result2 = weasyprint_tool.render_pdf(
+                        html=final_html_content,
+                        output_path=self._pdf_path,
+                    )
+                    if result2 and result2.success:
+                        pass2_pages = self._get_page_count(self._pdf_path)
+                        if pass2_pages != pass1_pages:
+                            self._log(
+                                f"RENDER: TOC pass 2 reflowed the document "
+                                f"({pass1_pages} -> {pass2_pages} pages), "
+                                f"re-rendering to keep numbers consistent"
+                            )
+                            result3 = weasyprint_tool.render_pdf(
+                                html=final_html_content,
+                                output_path=self._pdf_path,
+                            )
+                            if not (result3 and result3.success):
+                                self._log("RENDER: TOC reflow re-render failed; keeping pass-2 output")
+                    else:
+                        self._log("RENDER: TOC pass-2 render failed; keeping pass-1 output")
                 return self._pdf_path
             else:
                 error_msg = ""
@@ -686,7 +803,7 @@ class RenderEngine(BaseAgent):
             # Catch BROADLY on purpose. WeasyPrint on Windows raises OSError /
             # ImportError from missing GTK natives (libgobject-2.0), which the
             # old narrow `(ValueError, AttributeError, RuntimeError)` tuple let
-            # escape — killing the whole delivery stage and leaving only a
+            # escape, killing the whole delivery stage and leaving only a
             # stray .css behind. Rendering must degrade, never explode.
             self._log(f"RENDER: WeasyPrint tool unavailable ({type(e).__name__}: {e!s:.100}), trying direct import")
             # Fallback A: direct weasyprint import
@@ -720,7 +837,7 @@ class RenderEngine(BaseAgent):
             return ""
 
     # ─────────────────────────────────────────────────────────────────────
-    # Step 5: Verify PDF — no blank pages, no orphaned images, fonts embedded
+    # Step 5: Verify PDF, no blank pages, no orphaned images, fonts embedded
     # ─────────────────────────────────────────────────────────────────────
 
     def _verify_no_blank_pages(self, pdf_path: str) -> tuple[bool, list[int]]:
@@ -755,7 +872,7 @@ class RenderEngine(BaseAgent):
                         if i != 0 and i != len(reader.pages) - 1:
                             blank_pages.append(i + 1)
             except ImportError:
-                # No PDF library available — skip check
+                # No PDF library available, skip check
                 pass
 
         return (len(blank_pages) == 0, blank_pages)
@@ -765,7 +882,7 @@ class RenderEngine(BaseAgent):
 
         Checks for Instrument Serif and JetBrains Mono in the PDF's
         font dictionary. Without embedding, the PDF looks different
-        on every system — that's not premium.
+        on every system, that's not premium.
         """
         embedded_fonts: list[str] = []
 
@@ -801,7 +918,7 @@ class RenderEngine(BaseAgent):
             except ImportError:
                 pass
 
-        # Check if required fonts are present (fuzzy match — PDF may prefix/subset)
+        # Check if required fonts are present (fuzzy match, PDF may prefix/subset)
         required_found: list[str] = []
         for required in REQUIRED_FONTS:
             for embedded in embedded_fonts:
@@ -831,7 +948,7 @@ class RenderEngine(BaseAgent):
                 images = page.get_images()
                 text = page.get_text().strip()
 
-                # Page has images but no text — orphaned; don't flag cover
+                # Page has images but no text, orphaned; don't flag cover
                 # (page 0) or back cover (last page)
                 if images and len(text) < 10 and page_num != 0 and page_num != len(doc) - 1:
                     orphaned_pages.append(page_num + 1)
@@ -839,7 +956,7 @@ class RenderEngine(BaseAgent):
             doc.close()
 
         except ImportError:
-            # No PDF library — skip check
+            # No PDF library, skip check
             pass
 
         return (len(orphaned_pages) == 0, orphaned_pages)
@@ -878,7 +995,7 @@ class RenderEngine(BaseAgent):
             return all_300
 
         except ImportError:
-            return True  # Can't verify — assume OK
+            return True  # Can't verify, assume OK
 
     def _get_page_count(self, pdf_path: str) -> int:
         """Get the total page count of the PDF."""
@@ -919,7 +1036,7 @@ class RenderEngine(BaseAgent):
 
         Check 5 is new. The Render Engine's docstring has always claimed it is
         "the last line of defense for quality" and that it "never ships a broken
-        PDF" — but page count was not among the things it could refuse. It was
+        PDF", but page count was not among the things it could refuse. It was
         measured two steps later, in `run()`, purely to put a number in a status
         line. So the agent that owned the page-count contract was structurally
         incapable of enforcing it, which is why a 36-page report against a 20-page
@@ -981,7 +1098,7 @@ class RenderEngine(BaseAgent):
         if not verdict.passed:
             issues.append(verdict.issue)
 
-        # Check 6 (P2-08): render-time page audit — what is ON the pages, not
+        # Check 6 (P2-08): render-time page audit, what is ON the pages, not
         # how many exist. Fail closed: a violation means this agent refuses
         # the PDF, same as any other failed check above. render.py runs the
         # same audit inside render_pdf; this is the agent-level backstop for
@@ -1003,7 +1120,7 @@ class RenderEngine(BaseAgent):
         return (all_passed, issues, details)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 7-step methodology
+    # Main execution, the 7-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1050,8 +1167,8 @@ class RenderEngine(BaseAgent):
             self._layout_plan = layout_plan
             if layout_plan.html_template_path and not self._html_path:
                 self._receive_html(layout_plan.html_template_path, layout_plan.css_path)
-            if layout_plan.pdf_path and not self._pdf_path:
-                self._pdf_path = layout_plan.pdf_path
+            # W-03: LayoutPlan no longer carries pdf_path, the designer
+            # never writes one. The Render Engine is the single PDF writer.
 
         if not self._html_path:
             await self._transition(AgentState.DONE, "No HTML path received")
@@ -1104,7 +1221,7 @@ class RenderEngine(BaseAgent):
         # Step 5: Verify PDF
         await self._transition(
             AgentState.WORKING,
-            "Step 5: Verifying PDF — no blank pages, no orphaned images, "
+            "Step 5: Verifying PDF, no blank pages, no orphaned images, "
             "fonts embedded, page count within contract",
         )
         all_passed, issues, verify_details = self._verify_pdf(pdf_path)
@@ -1126,7 +1243,7 @@ class RenderEngine(BaseAgent):
         # Step 7: Return PDF path
         await self._transition(
             AgentState.WORKING,
-            f"Step 7: Returning PDF path — {page_count} pages, {file_size}MB, "
+            f"Step 7: Returning PDF path, {page_count} pages, {file_size}MB, "
             f"{'verified' if all_passed else 'issues found'}",
         )
 
@@ -1173,6 +1290,12 @@ class RenderEngine(BaseAgent):
                 payload={
                     "to_agent": "presentation_designer",
                     "from_agent": self.name.value,
+                    "agent": self.name.value,
+                    "issue": (
+                        f"PDF verification failed with {len(all_issues)} issue(s): "
+                        f"{'; '.join(all_issues[:3])}"
+                    ),
+                    "suggested_action": "Fix the reported layout issues and regenerate HTML",
                     "task": "fix_layout",
                     "issues": all_issues,
                     "pdf_path": pdf_path,
@@ -1189,7 +1312,7 @@ class RenderEngine(BaseAgent):
             id=f"finding_{hashlib.md5(f'render_engine_{engagement_id}'.encode()).hexdigest()[:8]}",
             agent=self.name.value,
             finding_type="render_complete",
-            title=f"PDF rendered: {page_count} pages, {file_size}MB at 300 DPI — {'VERIFIED' if render_output.verification_passed else 'ISSUES FOUND'}",
+            title=f"PDF rendered: {page_count} pages, {file_size}MB at 300 DPI, {'VERIFIED' if render_output.verification_passed else 'ISSUES FOUND'}",
             content=(
                 f"Final PDF: {pdf_path}. "
                 f"Pages: {page_count}. "

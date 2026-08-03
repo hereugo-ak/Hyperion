@@ -141,7 +141,9 @@ class TestStrongWalkDeduplication:
         router = _fresh_router()
         # Force every provider/tier to fail so the full walk executes.
         monkeypatch.setattr(
-            router, "get_available_providers", lambda tier, urgency=None: set()
+            router,
+            "get_available_providers",
+            lambda tier, urgency=None, estimated_tokens=0: set(),
         )
 
         tried: list[ModelTier] = []

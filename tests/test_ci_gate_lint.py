@@ -143,7 +143,7 @@ class TestStructuralGuards:
     """AST/config guards so the NEXT recurrence of 'gate silently weakened'
     is caught by the suite, not by an audit."""
 
-    def test_pre_commit_config_exists_and_covers_both_tools(self):
+        def test_pre_commit_config_exists_and_covers_both_tools(self):
         cfg = REPO_ROOT / ".pre-commit-config.yaml"
         assert cfg.exists(), (
             ".pre-commit-config.yaml was deleted — the local half of the "
@@ -152,7 +152,17 @@ class TestStructuralGuards:
         text = cfg.read_text(encoding="utf-8")
         assert "ruff" in text and "mypy" in text
 
+    def test_ci_workflow_invokes_the_regression_gate(self):
+        """W-19 requires the gate to run remotely, not just exist as dead code."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "quality-gate.yml"
+        assert workflow.exists(), "quality gate workflow was removed"
+        text = workflow.read_text(encoding="utf-8")
+        assert "pull_request:" in text
+        assert "python -m hyperion.eval.ci_gate --lint" in text
+        assert "tests/test_eval.py" in text
+
     def test_pre_commit_does_not_silently_rewrite_code(self):
+
         """The 5.1e triage proved ruff's autofix can be semantics-changing
         (UP042/TC00x). A hook with --fix rewrites code at commit time with no
         review — the exact surprise class this gate exists to prevent.
@@ -184,22 +194,17 @@ class TestStructuralGuards:
         for family in ("E", "F", "I", "UP", "B", "SIM"):
             assert family in select, f"ruff family {family} was dropped from select"
 
-    def test_mypy_backlog_quarantine_is_explicit_and_shrinkable_only(self):
-        """The staged allowlist exists so NEW modules are strict by default.
-        It must live in pyproject as an explicit ignore_errors list — and it
-        may only ever shrink (a growing quarantine re-creates the P0)."""
+    def test_mypy_backlog_quarantine_is_absent(self):
+        """Every project module stays under strict mypy without quarantine."""
         cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         quarantine = [
-            o for o in cfg["tool"]["mypy"]["overrides"] if o.get("ignore_errors") is True
+            override
+            for override in cfg["tool"]["mypy"]["overrides"]
+            if override.get("ignore_errors") is True
         ]
-        assert quarantine, "the backlog quarantine was removed from pyproject"
-        modules = quarantine[0]["module"]
-        assert isinstance(modules, list) and modules, "quarantine must be a module list"
-        # Baseline: 67 backlog modules at the 5.1f commit. Anything larger
-        # means someone added modules to the quarantine instead of fixing them.
-        assert len(modules) <= 67, (
-            f"backlog quarantine grew to {len(modules)} modules — fix the "
-            "module's types instead of hiding it"
+        assert not quarantine, (
+            "ignore_errors reintroduced a mypy quarantine; fix the module's "
+            "types instead of hiding errors"
         )
 
     def test_run_gate_routes_lint_before_quality_harness(self):

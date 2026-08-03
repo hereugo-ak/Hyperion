@@ -443,11 +443,21 @@ def _render_exhibit(placement: ChartPlacement) -> str:
     away from what actually ships — the exact failure mode the audit found in
     the dead ``.j2`` fork.
     """
+    import re as _re
+
     from jinja2 import BaseLoader, Environment
 
     from hyperion.agents.delivery.presentation_designer import HTML_TEMPLATE
 
-    start = HTML_TEMPLATE.index("{% for chart in section_charts[section.id] %}")
+    # The loop header carries a Jinja filter expression (P2-34 added
+    # ``if chart``); match up to its closing ``%}`` rather than pinning the
+    # exact text, so a legitimate change to the guard cannot turn this locator
+    # into a silent no-match.
+    m = _re.search(
+        r"\{% for chart in section_charts\[section\.id\][^%]*%\}", HTML_TEMPLATE
+    )
+    assert m, "exhibit loop not found in HTML_TEMPLATE — did the markup move?"
+    start = m.start()
     end = HTML_TEMPLATE.index("{% endfor %}", start) + len("{% endfor %}")
     fragment = HTML_TEMPLATE[start:end]
 

@@ -15,8 +15,8 @@ import asyncio
 
 from hyperion.agents.bus import Channel, MessageType, get_bus, reset_bus
 from hyperion.agents.engagement_director import (
+    AGENT_METHODS,
     ENGAGEMENT_DIRECTOR_SPEC,
-    QUESTION_TYPE_AGENTS,
     EngagementDirector,
 )
 from hyperion.agents.synthesis_lead import SYNTHESIS_LEAD_SPEC
@@ -184,8 +184,27 @@ class TestQuestionClassification:
         result = director._classify_question_heuristic("Compare AWS vs Azure vs GCP")
         assert QuestionType.COMPARISON in result
 
-    def test_question_type_agent_map_covers_all_types(self):
-        """Every question type should have at least one agent mapping."""
-        for qt in QuestionType:
-            assert qt in QUESTION_TYPE_AGENTS, f"{qt} missing from agent map"
-            assert len(QUESTION_TYPE_AGENTS[qt]) > 0, f"{qt} has no agents"
+    def test_every_specialist_declares_methods(self):
+        """W-06: the roster is gated by method eligibility, not question type.
+
+        The single-axis QUESTION_TYPE_AGENTS table was deleted — it put
+        FINANCIAL_ANALYST (and its DCF) in all six question types. Every
+        specialist must now declare at least one method with at least one
+        subject class, or it can never be dispatched.
+        """
+        from hyperion.schemas.workflow import SubjectClass
+
+        specialists = [
+            AgentName.MARKET_ANALYST, AgentName.COMPETITIVE_INTEL,
+            AgentName.FINANCIAL_ANALYST, AgentName.RISK_ANALYST,
+            AgentName.TECHNOLOGY_ANALYST, AgentName.OPERATIONS_ANALYST,
+            AgentName.REGULATORY_ANALYST, AgentName.SUSTAINABILITY_ANALYST,
+            AgentName.CONSUMER_INSIGHTS, AgentName.MA_ANALYST,
+            AgentName.INNOVATION_ANALYST, AgentName.STRATEGY_ANALYST,
+        ]
+        for agent in specialists:
+            assert agent in AGENT_METHODS, f"{agent} declares no methods"
+            assert AGENT_METHODS[agent], f"{agent} has an empty method map"
+            for method, classes in AGENT_METHODS[agent].items():
+                assert classes, f"{agent}.{method} applies to no subject class"
+                assert all(isinstance(c, SubjectClass) for c in classes)

@@ -73,17 +73,19 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+pdfplumber: Any
 try:  # Declared dependency since fix 2.3; guard anyway — never-raises contract.
-    import pdfplumber
-
-    PDF_TABLES_AVAILABLE = True
+    import pdfplumber as _pdfplumber
 except ImportError:  # pragma: no cover - exercised only in a broken env
-    pdfplumber = None  # type: ignore[assignment]
+    pdfplumber = None
     PDF_TABLES_AVAILABLE = False
     logger.warning(
         "pdfplumber is not installed — PDF table extraction tier disabled. "
         "Run: pip install pdfplumber"
     )
+else:
+    pdfplumber = _pdfplumber
+    PDF_TABLES_AVAILABLE = True
 
 
 # ── Tunables ─────────────────────────────────────────────────────────────────

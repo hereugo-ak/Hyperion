@@ -33,7 +33,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from hyperion.tools._content_quality import is_quality_content
 from hyperion.tools.content_selector import select_relevant_content
@@ -240,6 +240,8 @@ class _EngagementYield:
         self._lock = threading.Lock()
         self._totals = YieldMetrics()
         self._calls = 0
+        self._backend_queries: dict[str, int] = {}
+        self._retrieval_constraints: list[str] = []
 
     def record(self, metrics: YieldMetrics) -> None:
         with self._lock:
@@ -249,16 +251,32 @@ class _EngagementYield:
             self._totals.chars_retained += metrics.chars_retained
             self._totals.sources_cited += metrics.sources_cited
 
+    def record_backend(self, backend: str, count: int = 1) -> None:
+        if count <= 0:
+            return
+        with self._lock:
+            self._backend_queries[backend] = self._backend_queries.get(backend, 0) + count
+
+    def record_constraints(self, constraints: list[str]) -> None:
+        with self._lock:
+            for constraint in constraints:
+                if constraint and constraint not in self._retrieval_constraints:
+                    self._retrieval_constraints.append(constraint)
+
     def report(self) -> dict[str, Any]:
         with self._lock:
             out = self._totals.to_dict()
             out["search_calls"] = self._calls
+            out["backend_query_counts"] = dict(sorted(self._backend_queries.items()))
+            out["retrieval_constraints"] = list(self._retrieval_constraints)
             return out
 
     def reset(self) -> None:
         with self._lock:
             self._totals = YieldMetrics()
             self._calls = 0
+            self._backend_queries = {}
+            self._retrieval_constraints = []
 
 
 _engagement_yield = _EngagementYield()
@@ -270,10 +288,18 @@ def reset_engagement_yield() -> None:
 
 
 def engagement_yield_report() -> dict[str, Any]:
-    """The run-report surface for fix 2.6: aggregate extraction yield across
-    all deep-search calls since the last reset, including the audit's four
-    named metrics plus derived yield ratio and per-call count."""
+    """The run-report surface for extraction and retrieval-backend telemetry."""
     return _engagement_yield.report()
+
+
+def record_retrieval_backend(backend: str, count: int = 1) -> None:
+    """Record a provider-reported query count outside DeepSearch discovery."""
+    _engagement_yield.record_backend(backend, count)
+
+
+def record_retrieval_constraints(constraints: list[str]) -> None:
+    """Record fail-open quota, safety or provider constraints for methodology."""
+    _engagement_yield.record_constraints(constraints)
 
 
 @dataclass
@@ -388,6 +414,7 @@ class DeepSearchClient:
         self._scrapling: Any | None = None
         self._crawl4ai: Any | None = None
         self._flaresolverr: Any | None = None
+        self._grounded: Any | None = None
         self._evidence_scorer: EvidenceScorer | None = None
         # Fix 2.1: the single extraction ladder. This client no longer owns a
         # copy of the climb — it owns the tier subset and the per-tier calls.
@@ -536,6 +563,13 @@ class DeepSearchClient:
             self._flaresolverr = FlareSolverrClient(solver_url=solver_url)
         return self._flaresolverr
 
+    def _get_grounded(self) -> Any:
+        if self._grounded is None:
+            from hyperion.tools.grounded_search import GroundedSearchClient
+
+            self._grounded = GroundedSearchClient(settings=self.settings)
+        return self._grounded
+
     def _get_evidence_scorer(self) -> EvidenceScorer:
         if self._evidence_scorer is None:
             self._evidence_scorer = EvidenceScorer()
@@ -607,7 +641,7 @@ class DeepSearchClient:
             tool_name="DeepSearch",
         )
         if empty is not None:
-            return empty
+            return cast("DeepSearchResult", empty)
         query = grounded
 
         # Check cache
@@ -831,6 +865,33 @@ class DeepSearchClient:
             elif detail:
                 errors[tool_name or "discovery"] = detail
 
+        # W-14: grounded retrieval is a scarce escalation, never a routine
+        # third fan-out task. It is attempted only when the independent-index
+        # pool is below its healthy-engine floor; all failures remain fail-open.
+        try:
+            from hyperion.tools.grounded_search import (
+                GroundedSearchClient,
+                GroundingReason,
+            )
+
+            if GroundedSearchClient.searxng_is_degraded():
+                grounded = await self._get_grounded().search(
+                    query,
+                    reason=GroundingReason.SEARXNG_DEGRADED,
+                    geography=geography or "",
+                )
+                _engagement_yield.record_backend("gemini", grounded.actual_units)
+                _engagement_yield.record_constraints(grounded.constraints)
+                if grounded.results:
+                    all_urls.extend(item.url for item in grounded.results if item.url)
+                    tools_used.append("grounded-search")
+                elif grounded.constraints:
+                    errors["grounded-search"] = "; ".join(grounded.constraints)
+        except Exception as exc:  # noqa: BLE001 - fail-open to normal discovery
+            detail = f"{type(exc).__name__}: {exc}"
+            errors["grounded-search"] = detail
+            _engagement_yield.record_constraints([detail])
+
         # Deduplicate preserving order
         deduped = list(dict.fromkeys(all_urls))
         return deduped, tools_used, errors
@@ -842,6 +903,7 @@ class DeepSearchClient:
         geography: str | None,
     ) -> tuple[list[str], str, str]:
         """Search via SearxNG. Returns (urls, tool_name, error_detail)."""
+        _engagement_yield.record_backend("searxng")
         try:
             searxng = self._get_searxng()
             language = "en"
@@ -869,6 +931,7 @@ class DeepSearchClient:
         num_results: int,
     ) -> tuple[list[str], str, str]:
         """Search via Jina s.jina.ai. Returns (urls, tool_name, error_detail)."""
+        _engagement_yield.record_backend("jina")
         try:
             jina = self._get_jina()
             response = await jina.search(query=query, num_results=num_results)

@@ -1,4 +1,4 @@
-"""Specialist agents — 12 domain experts with proprietary analytical skills."""
+"""Specialist agents, 12 domain experts with proprietary analytical skills."""
 
 from hyperion.agents.specialists.competitive_intel import COMPETITIVE_INTEL_SPEC, CompetitiveIntel
 from hyperion.agents.specialists.consumer_insights import (

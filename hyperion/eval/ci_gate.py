@@ -30,6 +30,11 @@ import logging
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hyperion.eval.harness import GoldenQuery
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +156,10 @@ async def run_gate(args: argparse.Namespace) -> int:
     return EXIT_PASS
 
 
-def _select_golden(golden_set, golden_id):  # type: ignore[no-untyped-def]
+def _select_golden(
+    golden_set: Sequence[GoldenQuery],
+    golden_id: str | None,
+) -> GoldenQuery | None:
     """Pick the golden query to check a single report against.
 
     Defaults to the first entry to preserve the historical behaviour, but an

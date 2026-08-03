@@ -1,21 +1,21 @@
 """
-HYPERION Agent System — the dynamic consulting team.
+HYPERION Agent System, the dynamic consulting team.
 
 This package contains the 20-agent system that makes HYPERION a
 proprietary consulting model, not a generic LLM wrapper. Every agent
 has proprietary skills, assigned tools, a specific model tier, and
-produces structured Pydantic output — not free text.
+produces structured Pydantic output, not free text.
 
 Architecture (§4):
     agents/
-        base.py              — BaseAgent: bus, router, tools, state, sub-agents
-        bus.py               — AgentBus: in-memory async pub/sub (§4.8)
-        sub_agent.py         — SubAgentRunner: junior agent for context isolation (§4.7)
-        engagement_director.py — Agent 1: decompose, orchestrate, adapt
-        synthesis_lead.py    — Agent 2: reconcile, synthesize, recommend
-        specialists/         — 12 specialist agents (§4.4)
-        support/             — 4 support agents (§4.5)
-        delivery/            — 2 delivery agents (§4.6)
+        base.py, BaseAgent: bus, router, tools, state, sub-agents
+        bus.py, AgentBus: in-memory async pub/sub (§4.8)
+        sub_agent.py, SubAgentRunner: junior agent for context isolation (§4.7)
+        engagement_director.py, Agent 1: decompose, orchestrate, adapt
+        synthesis_lead.py, Agent 2: reconcile, synthesize, recommend
+        specialists/, 12 specialist agents (§4.4)
+        support/, 4 support agents (§4.5)
+        delivery/, 2 delivery agents (§4.6)
 
 No agent is generic. No tool is idle. No skill is decorative. (§4.1)
 """

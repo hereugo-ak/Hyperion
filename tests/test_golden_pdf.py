@@ -20,10 +20,14 @@ Three layers:
   3. Golden integrity — the baseline file must encode all of DoD #7–#12 and
      must never widen (a bound that loosens re-creates the audit).
 
-Calibration note: page_count=36 and chars/line 52–60 are the audit's own
-measurements, reproduced arithmetically in tests/test_page_budget.py. If the
-live test fails on a legitimate template change, re-measure a known-good
-render and update the golden — never edit bounds to fit a broken render.
+Calibration note: chars/line 52–60 is the audit's own measurement. page_count
+was re-measured on 2026-08-01 (36 -> 42) because the probe had been raising
+AttributeError on the technical-appendix builder W-09 deleted, so the bound had
+not been exercised across W-05/W-08/W-09/P2-* or W-10's methodology section.
+The re-measure was taken from a render with blank_pages 0, all four leak
+counters 0 and every other bound already passing. If the live test fails on a
+legitimate template change, re-measure a known-good render and update the
+golden — never edit bounds to fit a broken render.
 """
 
 from __future__ import annotations
@@ -159,9 +163,10 @@ def _synthetic_pdf(tmp_path: Path, *, degraded: bool) -> Path:
 
     Healthy: two-column 10pt body at ~55 chars/line, 7 numbered exhibits with
     Note:/Source:, At-a-Glance before the TOC, a populated technical
-    appendix, zero leaks/blank pages, an embedded non-forbidden font, 36
-    pages. Degraded: same document with the DoD defects reintroduced — a
-    blank page, a DejaVu span, a template leak, one exhibit, single column.
+    appendix, zero leaks/blank pages, an embedded non-forbidden font, and
+    exactly `page_count.exact` pages read from the golden. Degraded: same
+    document with the DoD defects reintroduced — a blank page, a DejaVu span,
+    a template leak, one exhibit, single column.
     """
     import fitz
 
@@ -193,11 +198,11 @@ def _synthetic_pdf(tmp_path: Path, *, degraded: bool) -> Path:
         page_no += 1
         return doc.new_page(width=595.2, height=841.92)
 
-    # Page 1: At a Glance (must precede the TOC) with all four labels. The
-    # probe's _page_index searches for the literal heading "At a Glance".
+    # Page 1: At a Glance (must precede the TOC) with the W-09 label set.
+    # The probe's _page_index searches for the literal heading "At a Glance".
     p = _new()
     p.insert_text((60.0, 40.0), "At a Glance", fontsize=12.0)
-    for i, label in enumerate(("RECOMMENDATION", "CONFIDENCE", "EVIDENCE BASE", "ANALYSIS DEPTH")):
+    for i, label in enumerate(("RECOMMENDATION", "EVIDENCE BASE", "ANALYSIS DEPTH")):
         p.insert_text((60.0, 70.0 + i * 30.0), f"{label}: substantive content here", fontsize=11.0)
     for row in range(25):
         p.insert_text((60.0, 250.0 + row * 20.0), body_line, fontsize=10.0)
@@ -223,8 +228,8 @@ def _synthetic_pdf(tmp_path: Path, *, degraded: bool) -> Path:
                 pix.set_rect(pix.irect, (180, 180, 180))
                 p.insert_image(fitz.Rect(60, 760, 160, 800), pixmap=pix)
 
-    # Remaining body pages up to the front/back-matter block: 36 total means
-    # 2 + 28 section pages so far = 30; endnotes + technical appendix fill 6.
+    # Remaining body pages up to the front/back-matter block: 2 + 28 section
+    # pages so far = 30; endnotes and body filler make up the golden total.
     # Endnotes page.
     p = _new()
     p.insert_text((60.0, 60.0), "Endnotes", fontsize=12.0)
@@ -236,21 +241,20 @@ def _synthetic_pdf(tmp_path: Path, *, degraded: bool) -> Path:
         )
     for row in range(20):
         p.insert_text((60.0, 320.0 + row * 20.0), body_line, fontsize=10.0)
-    # Technical appendix pages with all five section headings.
+    # W-09: no Technical Appendix pages. The two pages it used to occupy are
+    # ordinary body pages now; a technical appendix in the client PDF is a
+    # defect the golden counts DOWN to zero, not a section it counts up.
     p = _new()
-    p.insert_text((60.0, 60.0), "Technical Appendix", fontsize=12.0)
-    headings_1 = ("QUALITY ASSESSMENT", "CONFIDENCE BY DIMENSION", "CONTRADICTIONS")
-    for i, heading in enumerate(headings_1):
-        p.insert_text((60.0, 110.0 + i * 40.0), heading, fontsize=11.0)
-    for row in range(20):
-        p.insert_text((60.0, 280.0 + row * 20.0), body_line, fontsize=10.0)
+    _write_body(p, leaks=False)
     p = _new()
-    for i, heading in enumerate(("FACT CHECK", "LIMITATIONS")):
-        p.insert_text((60.0, 110.0 + i * 40.0), heading, fontsize=11.0)
-    for row in range(26):
-        p.insert_text((60.0, 200.0 + row * 20.0), body_line, fontsize=10.0)
-    # Three filler body pages to reach the golden 36.
-    for _ in range(3):
+    _write_body(p, leaks=False)
+    # Filler body pages to reach the golden page count. The synthetic document
+    # is the comparator's positive control: it must land on whatever the golden
+    # `page_count.exact` bound is, so it is read from the baseline rather than
+    # hardcoded a second time. Hardcoding "3" here is what made a golden
+    # re-measurement break the negative control instead of tracking it.
+    _target = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))["page_count"]["exact"]
+    while page_no < _target:
         p = _new()
         _write_body(p, leaks=False)
 
@@ -301,6 +305,7 @@ class TestInstrumentHonesty:
         metrics["fonts_embedded"] = ["DejaVuSans"]     # DoD #7 fallback font
         metrics["front_back_matter"]["glance_labels_present"] = 1
         metrics["front_back_matter"]["glance_precedes_toc"] = False
+        metrics["front_back_matter"]["technical_appendix_sections"] = 5  # W-09 leak
         failures = compare_against_golden(metrics, golden)
         assert len(failures) >= 8, (
             "negative control: reintroduced DoD defects must fail the golden "

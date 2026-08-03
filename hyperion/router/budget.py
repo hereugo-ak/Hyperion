@@ -1,186 +1,347 @@
-"""
-HYPERION Daily Budget Planner — tracks RPD across all models per provider.
+"""Persistent request, token, and cost controls for HYPERION's LLM router.
 
-This is NOT a generic budget tracker. This is the system that ensures we
-never exhaust a provider's daily quota before the engagement is complete.
-It allocates requests based on urgency, preserves a 20% reserve on every
-provider for critical end-of-engagement tasks, and tracks daily consumption
-in real-time. (§3.5)
-
-Provider daily budgets (total RPD across all models):
-- Google: ~29,460 RPD (Gemma 14.4K + Gemma 14.4K + Gemini 500 + reserves)
-- Groq: ~18,400 RPD (6 models x ~1K-14.4K each)
-- NVIDIA: ~1,000 credits/month -> ~33/day (scarce — reserve for STRONG/DEEP)
-- Cerebras: 1M TPD per model -> effectively unlimited by tokens, but 5 RPM
-
-Allocation strategy:
-- High urgency (quality gate, synthesis): use high-RPD providers first
-  (Google Gemma, Groq Llama 3.1 8B) to preserve NVIDIA credits
-- Normal (research, analysis): balanced selection across all providers
-- Low (background tasks): use NVIDIA sparingly, prefer Google/Groq
-- 20% reserve: preserved on every provider for critical end-of-engagement
-  tasks (Quality Gate scoring, Synthesis Lead reconciliation, final render)
+Daily limits are shared across engagements and process restarts. Usage is stored
+by provider, model, and UTC date in SQLite; candidate reservation is atomic so
+concurrent agents cannot all pass a stale check before dispatch.
 """
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
+import os
+import sqlite3
+import threading
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
+from pathlib import Path
 
 from hyperion.config import ModelSpec, ModelTier, ProviderType
+from hyperion.infra.paths import project_root
 
 
 class TaskUrgency(str, Enum):
-    """Urgency level for budget allocation (§3.5).
-
-    Determines which providers are preferred for the request:
-    - HIGH: quality gate, synthesis, final render — use high-RPD providers
-      first to preserve scarce NVIDIA credits
-    - NORMAL: research, analysis — balanced selection
-    - LOW: background tasks, keyword expansion — use NVIDIA sparingly
-    """
-
     HIGH = "high"
     NORMAL = "normal"
     LOW = "low"
 
 
-# Provider daily budget estimates (§3.5)
-# These are approximate total RPD across all models per provider
 _PROVIDER_DAILY_BUDGETS: dict[ProviderType, int] = {
     ProviderType.GOOGLE: 29_460,
     ProviderType.GROQ: 18_400,
-    ProviderType.NVIDIA: 33,  # ~1,000 credits/month -> ~33/day — scarce
-    ProviderType.CEREBRAS: 10_000,  # Effectively unlimited by RPD (TPD-limited)
-    ProviderType.MISTRAL: 86_400,  # ~60 RPM * 1440 min — most abundant (~1B tokens/month)
+    ProviderType.NVIDIA: 33,
+    # RPD is only a defensive ceiling; BudgetStore.reserve() enforces each
+    # Cerebras model's configured TPD limit as the binding constraint.
+    ProviderType.CEREBRAS: 10_000,
+    ProviderType.MISTRAL: 86_400,
 }
 
-# Scarcity ranking — most scarce providers should be preserved for high-urgency
 _PROVIDER_SCARCITY: dict[ProviderType, int] = {
-    ProviderType.NVIDIA: 0,     # Most scarce — 33/day
-    ProviderType.CEREBRAS: 1,   # 5 RPM limit, but high TPD
-    ProviderType.GROQ: 2,       # 18.4K RPD
-    ProviderType.GOOGLE: 3,     # 29.4K RPD — most abundant
-    ProviderType.MISTRAL: 4,    # ~86.4K RPD — most abundant, ~1B tokens/month
+    ProviderType.NVIDIA: 0,
+    ProviderType.CEREBRAS: 1,
+    ProviderType.GROQ: 2,
+    ProviderType.GOOGLE: 3,
+    ProviderType.MISTRAL: 4,
 }
+
+# USD per million input/output tokens. Pricing snapshot: 2026-08-01.
+# Sources (official provider pricing pages, retrieved 2026-08-01):
+# https://ai.google.dev/gemini-api/docs/pricing
+# https://build.nvidia.com/pricing ; https://www.cerebras.ai/pricing
+# https://groq.com/pricing ; https://mistral.ai/pricing
+# These are planning estimates, not invoices. Exact model rows are preferred;
+# provider defaults keep newly configured models visible rather than cost-free.
+_MODEL_PRICES_PER_MILLION: dict[tuple[ProviderType, str], tuple[float, float]] = {
+    (ProviderType.GOOGLE, "gemma-4-31b"): (0.10, 0.20),
+    (ProviderType.GOOGLE, "gemma-4-26b"): (0.10, 0.20),
+    (ProviderType.GOOGLE, "gemini-3.1-flash-lite"): (0.10, 0.40),
+    (ProviderType.NVIDIA, "nvidia/nemotron-3-super-120b-a12b"): (0.60, 0.60),
+    (ProviderType.NVIDIA, "nvidia/nemotron-3-ultra-550b-a55b"): (1.20, 1.20),
+    (ProviderType.NVIDIA, "nvidia/nemotron-3-nano-30b-a3b"): (0.20, 0.20),
+    (ProviderType.CEREBRAS, "gpt-oss-120b"): (0.85, 0.85),
+    (ProviderType.CEREBRAS, "gemma-4-31b"): (0.60, 0.60),
+    (ProviderType.GROQ, "gpt-oss-120b"): (0.15, 0.60),
+    (ProviderType.GROQ, "llama-3.3-70b-versatile"): (0.59, 0.79),
+    (ProviderType.GROQ, "llama-3.1-8b-instant"): (0.05, 0.08),
+    (ProviderType.GROQ, "llama-4-scout-17b"): (0.11, 0.34),
+    (ProviderType.GROQ, "qwen-3-32b"): (0.29, 0.59),
+    (ProviderType.GROQ, "gpt-oss-20b"): (0.10, 0.50),
+    (ProviderType.MISTRAL, "mistral-large-latest"): (2.00, 6.00),
+    (ProviderType.MISTRAL, "mistral-medium-latest"): (0.40, 2.00),
+    (ProviderType.MISTRAL, "magistral-medium-latest"): (2.00, 5.00),
+    (ProviderType.MISTRAL, "magistral-small-latest"): (0.50, 1.50),
+    (ProviderType.MISTRAL, "mistral-small-latest"): (0.10, 0.30),
+    (ProviderType.MISTRAL, "devstral-latest"): (0.40, 2.00),
+    (ProviderType.MISTRAL, "ministral-3b-latest"): (0.04, 0.04),
+}
+_PROVIDER_DEFAULT_PRICES: dict[ProviderType, tuple[float, float]] = {
+    ProviderType.GOOGLE: (0.10, 0.40),
+    ProviderType.NVIDIA: (0.60, 0.60),
+    ProviderType.CEREBRAS: (0.85, 0.85),
+    ProviderType.GROQ: (0.20, 0.60),
+    ProviderType.MISTRAL: (0.40, 2.00),
+}
+
+
+def _utc_date() -> str:
+    return datetime.now(UTC).date().isoformat()
+
+
+def _default_db_path() -> Path:
+    configured = os.environ.get("HYPERION_BUDGET_DB", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (project_root() / "artifacts" / "shared" / "llm_budget.sqlite").resolve()
+
+
+class BudgetStore:
+    """SQLite-backed shared daily ledger with atomic reservations."""
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = Path(path) if path is not None else _default_db_path()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS daily_usage (
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    utc_date TEXT NOT NULL,
+                    requests INTEGER NOT NULL DEFAULT 0,
+                    reserved_tokens INTEGER NOT NULL DEFAULT 0,
+                    actual_tokens INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cost_usd REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (provider, model, utc_date)
+                )"""
+            )
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.path, timeout=10, isolation_level=None)
+
+    def provider_requests(self, provider: ProviderType) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(requests), 0) FROM daily_usage "
+                "WHERE provider=? AND utc_date=?",
+                (provider.value, _utc_date()),
+            ).fetchone()
+        return int(row[0] if row else 0)
+
+    def model_usage(self, provider: ProviderType, model: str) -> tuple[int, int]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT requests, reserved_tokens + actual_tokens FROM daily_usage "
+                "WHERE provider=? AND model=? AND utc_date=?",
+                (provider.value, model, _utc_date()),
+            ).fetchone()
+        return (int(row[0]), int(row[1])) if row else (0, 0)
+
+    def reserve(
+        self,
+        provider: ProviderType,
+        model: ModelSpec,
+        estimated_tokens: int,
+        total_budget: int,
+        reserve_fraction: float,
+        urgency: TaskUrgency,
+    ) -> bool:
+        """Atomically check RPD/TPD and reserve one dispatch."""
+        estimated_tokens = max(0, int(estimated_tokens))
+        date = _utc_date()
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            provider_requests = int(
+                conn.execute(
+                    "SELECT COALESCE(SUM(requests), 0) FROM daily_usage "
+                    "WHERE provider=? AND utc_date=?",
+                    (provider.value, date),
+                ).fetchone()[0]
+            )
+            ceiling = total_budget
+            if urgency != TaskUrgency.HIGH:
+                ceiling -= int(total_budget * reserve_fraction)
+            model_requests, model_tokens = self._model_usage_in_transaction(
+                conn, provider, model.name, date
+            )
+            allowed = provider_requests < ceiling
+            if model.rpd is not None:
+                allowed = allowed and model_requests < model.rpd
+            if model.tpd is not None:
+                allowed = allowed and model_tokens + estimated_tokens <= model.tpd
+            if not allowed:
+                conn.rollback()
+                return False
+            conn.execute(
+                """INSERT INTO daily_usage
+                   (provider, model, utc_date, requests, reserved_tokens)
+                   VALUES (?, ?, ?, 1, ?)
+                   ON CONFLICT(provider, model, utc_date) DO UPDATE SET
+                     requests=requests+1,
+                     reserved_tokens=reserved_tokens+excluded.reserved_tokens""",
+                (provider.value, model.name, date, estimated_tokens),
+            )
+            conn.commit()
+            return True
+
+    @staticmethod
+    def _model_usage_in_transaction(
+        conn: sqlite3.Connection,
+        provider: ProviderType,
+        model: str,
+        date: str,
+    ) -> tuple[int, int]:
+        row = conn.execute(
+            "SELECT requests, reserved_tokens + actual_tokens FROM daily_usage "
+            "WHERE provider=? AND model=? AND utc_date=?",
+            (provider.value, model, date),
+        ).fetchone()
+        return (int(row[0]), int(row[1])) if row else (0, 0)
+
+    def consume_legacy(self, provider: ProviderType, model: str, count: int = 1) -> None:
+        """Persist the historical request-only API used by external callers."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """INSERT INTO daily_usage(provider, model, utc_date, requests)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(provider, model, utc_date) DO UPDATE SET
+                     requests=requests+excluded.requests""",
+                (provider.value, model, _utc_date(), max(0, count)),
+            )
+
+    def reconcile(
+        self,
+        provider: ProviderType,
+        model: str,
+        estimated_tokens: int,
+        actual_tokens: int,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: float,
+    ) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """UPDATE daily_usage SET
+                     reserved_tokens=MAX(0, reserved_tokens-?),
+                     actual_tokens=actual_tokens+?,
+                     input_tokens=input_tokens+?,
+                     output_tokens=output_tokens+?,
+                     cost_usd=cost_usd+?
+                   WHERE provider=? AND model=? AND utc_date=?""",
+                (
+                    max(0, estimated_tokens),
+                    max(0, actual_tokens),
+                    max(0, input_tokens),
+                    max(0, output_tokens),
+                    max(0.0, cost_usd),
+                    provider.value,
+                    model,
+                    _utc_date(),
+                ),
+            )
+
+    def refund(
+        self,
+        provider: ProviderType,
+        model: str,
+        count: int = 1,
+        estimated_tokens: int = 0,
+    ) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """UPDATE daily_usage SET
+                     requests=MAX(0, requests-?),
+                     reserved_tokens=MAX(0, reserved_tokens-?)
+                   WHERE provider=? AND model=? AND utc_date=?""",
+                (
+                    max(0, count),
+                    max(0, estimated_tokens),
+                    provider.value,
+                    model,
+                    _utc_date(),
+                ),
+            )
+
+    def daily_cost(self) -> float:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM daily_usage WHERE utc_date=?",
+                (_utc_date(),),
+            ).fetchone()
+        return float(row[0] if row else 0.0)
 
 
 @dataclass
 class ProviderBudget:
-    """Daily budget tracking for a single provider.
-
-    Tracks total RPD consumed across all models on this provider and
-    enforces the 20% reserve for critical end-of-engagement tasks.
-    """
-
     provider: ProviderType
     total_budget: int
-    consumed: int = 0
+    store: BudgetStore
     reserve_fraction: float = 0.20
 
-    # Per-model consumption
-    model_consumption: dict[str, int] = field(default_factory=dict)
-
-    _reset_day: int = 0
-
-    def __post_init__(self) -> None:
-        self._reset_day = time.gmtime().tm_yday
-
-    def _check_reset(self) -> None:
-        """Reset daily counters at UTC midnight."""
-        current_day = time.gmtime().tm_yday
-        if current_day != self._reset_day:
-            self.consumed = 0
-            self.model_consumption.clear()
-            self._reset_day = current_day
+    @property
+    def consumed(self) -> int:
+        return self.store.provider_requests(self.provider)
 
     @property
     def available(self) -> int:
-        """Available RPD (total minus consumed, minus reserve)."""
-        self._check_reset()
         reserved = int(self.total_budget * self.reserve_fraction)
         return max(0, self.total_budget - self.consumed - reserved)
 
     @property
     def available_with_reserve(self) -> int:
-        """Available RPD including reserve — only for critical tasks."""
-        self._check_reset()
         return max(0, self.total_budget - self.consumed)
 
     @property
     def usage_percentage(self) -> float:
-        """Current usage as a fraction of total budget (0.0 to 1.0)."""
-        self._check_reset()
-        if self.total_budget == 0:
-            return 0.0
-        return self.consumed / self.total_budget
+        return self.consumed / self.total_budget if self.total_budget else 0.0
 
     @property
     def is_reserve_available(self) -> bool:
-        """Check if we're into the reserve zone."""
-        self._check_reset()
-        reserved = int(self.total_budget * self.reserve_fraction)
-        return (self.total_budget - self.consumed) > reserved
-
-    def can_consume(self, urgency: TaskUrgency = TaskUrgency.NORMAL) -> bool:
-        """Check if this provider has budget for another request.
-
-        HIGH urgency tasks can dip into the reserve.
-        NORMAL and LOW urgency tasks cannot.
-        """
-        self._check_reset()
-        if urgency == TaskUrgency.HIGH:
-            return self.available_with_reserve > 0
         return self.available > 0
 
-    def consume(self, model_name: str, count: int = 1) -> None:
-        """Record consumption of count requests on a model."""
-        self._check_reset()
-        self.consumed += count
-        self.model_consumption[model_name] = (
-            self.model_consumption.get(model_name, 0) + count
+    def can_consume(self, urgency: TaskUrgency = TaskUrgency.NORMAL) -> bool:
+        return (
+            self.available_with_reserve > 0 if urgency == TaskUrgency.HIGH else self.available > 0
         )
 
-    def remaining_for_model(self, model: ModelSpec) -> int | None:
-        """Estimate remaining RPD for a specific model.
+    def consume(self, model_name: str, count: int = 1) -> None:
+        self.store.consume_legacy(self.provider, model_name, count)
 
-        If the model has its own RPD limit, use that. Otherwise, use
-        the provider's total budget.
-        """
-        self._check_reset()
+    def refund(self, model_name: str, count: int = 1, estimated_tokens: int = 0) -> None:
+        self.store.refund(self.provider, model_name, count, estimated_tokens)
+
+    def remaining_for_model(self, model: ModelSpec) -> int | None:
+        requests, _tokens = self.store.model_usage(self.provider, model.name)
         if model.rpd is not None:
-            consumed_for_model = self.model_consumption.get(model.name, 0)
-            return max(0, model.rpd - consumed_for_model)
+            return max(0, model.rpd - requests)
         return self.available
+
+    def remaining_tokens_for_model(self, model: ModelSpec) -> int | None:
+        if model.tpd is None:
+            return None
+        _requests, tokens = self.store.model_usage(self.provider, model.name)
+        return max(0, model.tpd - tokens)
 
 
 class DailyBudgetPlanner:
-    """Daily budget planner — tracks RPD across all providers and ensures
-    the 20% reserve is preserved for critical end-of-engagement tasks.
+    """Persistent daily planner for request, token, and engagement cost limits."""
 
-    The planner is consulted by the router before dispatching a request.
-    It filters out providers that have exhausted their daily budget (or
-    are in the reserve zone for non-critical tasks).
-
-    Allocation strategy (§3.5):
-    - HIGH urgency: prefer abundant providers (Google, Groq) to preserve
-      scarce NVIDIA credits for the most critical tasks
-    - NORMAL: balanced — all providers with available budget are eligible
-    - LOW: prefer abundant providers, use NVIDIA sparingly
-    """
-
-    def __init__(self, reserve_fraction: float = 0.20) -> None:
-        self._budgets: dict[ProviderType, ProviderBudget] = {}
-        for provider, budget in _PROVIDER_DAILY_BUDGETS.items():
-            self._budgets[provider] = ProviderBudget(
-                provider=provider,
-                total_budget=budget,
-                reserve_fraction=reserve_fraction,
-            )
+    def __init__(
+        self,
+        reserve_fraction: float = 0.20,
+        db_path: str | Path | None = None,
+    ) -> None:
+        self.store = BudgetStore(db_path)
+        self._lock = threading.RLock()
+        self._engagement_cost_usd = 0.0
+        self._budgets = {
+            provider: ProviderBudget(provider, budget, self.store, reserve_fraction)
+            for provider, budget in _PROVIDER_DAILY_BUDGETS.items()
+        }
 
     def get_budget(self, provider: ProviderType) -> ProviderBudget:
-        """Get the budget tracker for a provider."""
         return self._budgets[provider]
 
     def can_serve(
@@ -188,20 +349,33 @@ class DailyBudgetPlanner:
         provider: ProviderType,
         model: ModelSpec,
         urgency: TaskUrgency = TaskUrgency.NORMAL,
+        estimated_tokens: int = 0,
     ) -> bool:
-        """Check if a provider has budget for a request on a specific model.
-
-        Checks both the provider-level budget and the model-level RPD limit.
-        """
         budget = self._budgets[provider]
-
-        # Check provider-level budget
         if not budget.can_consume(urgency):
             return False
+        remaining_requests = budget.remaining_for_model(model)
+        if remaining_requests is not None and remaining_requests < 1:
+            return False
+        remaining_tokens = budget.remaining_tokens_for_model(model)
+        return remaining_tokens is None or remaining_tokens >= max(0, estimated_tokens)
 
-        # Check model-level RPD limit
-        model_remaining = budget.remaining_for_model(model)
-        return model_remaining is None or model_remaining >= 1
+    def reserve(
+        self,
+        provider: ProviderType,
+        model: ModelSpec,
+        estimated_tokens: int,
+        urgency: TaskUrgency = TaskUrgency.NORMAL,
+    ) -> bool:
+        budget = self._budgets[provider]
+        return self.store.reserve(
+            provider,
+            model,
+            estimated_tokens,
+            budget.total_budget,
+            budget.reserve_fraction,
+            urgency,
+        )
 
     def consume(
         self,
@@ -209,48 +383,88 @@ class DailyBudgetPlanner:
         model_name: str,
         urgency: TaskUrgency = TaskUrgency.NORMAL,
     ) -> None:
-        """Record that a request has been dispatched to a provider+model."""
+        del urgency
         self._budgets[provider].consume(model_name)
+
+    def reconcile_actual(
+        self,
+        provider: ProviderType,
+        model_name: str,
+        estimated_tokens: int,
+        input_tokens: int,
+        output_tokens: int,
+        actual_tokens: int,
+    ) -> float:
+        actual = max(0, actual_tokens) or max(0, estimated_tokens)
+        input_count = max(0, input_tokens)
+        output_count = max(0, output_tokens)
+        if input_count + output_count == 0:
+            input_count = actual
+        input_price, output_price = _MODEL_PRICES_PER_MILLION.get(
+            (provider, model_name), _PROVIDER_DEFAULT_PRICES[provider]
+        )
+        cost = (input_count * input_price + output_count * output_price) / 1_000_000
+        self.store.reconcile(
+            provider,
+            model_name,
+            estimated_tokens,
+            actual,
+            input_count,
+            output_count,
+            cost,
+        )
+        with self._lock:
+            self._engagement_cost_usd += cost
+        return cost
+
+    def refund(
+        self,
+        provider: ProviderType,
+        model_name: str,
+        estimated_tokens: int = 0,
+    ) -> None:
+        self._budgets[provider].refund(model_name, estimated_tokens=estimated_tokens)
 
     def filter_available_providers(
         self,
         tier: ModelTier,
         models_by_provider: dict[ProviderType, list[ModelSpec]],
         urgency: TaskUrgency = TaskUrgency.NORMAL,
+        estimated_tokens: int = 0,
     ) -> set[ProviderType]:
-        """Filter to providers that have budget for the given tier and urgency.
-
-        Returns a set of provider types that:
-        1. Have at least one non-deprecated model for the tier
-        2. Have remaining daily budget (respecting reserve for non-HIGH urgency)
-        3. The specific model has remaining RPD (if applicable)
-        """
         available: set[ProviderType] = set()
-
         for provider, models in models_by_provider.items():
-            tier_models = [m for m in models if m.tier == tier and not m.deprecated]
-            if not tier_models:
-                continue
-
-            for model in tier_models:
-                if self.can_serve(provider, model, urgency):
+            for model in models:
+                if (
+                    model.tier == tier
+                    and not model.deprecated
+                    and self.can_serve(provider, model, urgency, estimated_tokens)
+                ):
                     available.add(provider)
                     break
-
         return available
 
-    def get_usage_summary(self) -> dict[ProviderType, dict[str, float]]:
-        """Get a usage summary for TUI display (§8.6).
+    def reset_engagement_cost(self) -> None:
+        with self._lock:
+            self._engagement_cost_usd = 0.0
 
-        Returns {provider: {usage_pct, available, total, in_reserve}}.
-        """
+    @property
+    def engagement_cost_usd(self) -> float:
+        with self._lock:
+            return self._engagement_cost_usd
+
+    def get_usage_summary(self) -> dict[ProviderType, dict[str, float]]:
         summary: dict[ProviderType, dict[str, float]] = {}
+        daily_cost = self.store.daily_cost()
         for provider, budget in self._budgets.items():
             summary[provider] = {
                 "usage_pct": budget.usage_percentage,
+                "percentage": budget.usage_percentage * 100.0,
                 "available": float(budget.available),
                 "total": float(budget.total_budget),
-                "in_reserve": not budget.is_reserve_available,
+                "in_reserve": float(not budget.is_reserve_available),
+                "engagement_cost_usd": self.engagement_cost_usd,
+                "daily_cost_usd": daily_cost,
             }
         return summary
 
@@ -259,31 +473,10 @@ class DailyBudgetPlanner:
         urgency: TaskUrgency,
         available: set[ProviderType],
     ) -> list[ProviderType]:
-        """Get the priority order for provider selection based on urgency.
-
-        HIGH urgency: prefer abundant providers (Google, Groq) to preserve
-          scarce NVIDIA credits for the most critical tasks.
-        NORMAL: balanced — order by remaining capacity.
-        LOW: prefer abundant providers, use NVIDIA sparingly.
-        """
-        if urgency == TaskUrgency.HIGH:
-            # Prefer abundant providers — reverse scarcity (most abundant first)
+        if urgency in (TaskUrgency.HIGH, TaskUrgency.LOW):
             return sorted(
                 available,
                 key=lambda p: _PROVIDER_SCARCITY.get(p, 99),
                 reverse=True,
             )
-        elif urgency == TaskUrgency.LOW:
-            # Same as HIGH — preserve scarce providers
-            return sorted(
-                available,
-                key=lambda p: _PROVIDER_SCARCITY.get(p, 99),
-                reverse=True,
-            )
-        else:
-            # NORMAL — order by remaining capacity (most available first)
-            return sorted(
-                available,
-                key=lambda p: self._budgets[p].available,
-                reverse=True,
-            )
+        return sorted(available, key=lambda p: self._budgets[p].available, reverse=True)

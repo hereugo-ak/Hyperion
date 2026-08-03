@@ -197,7 +197,7 @@ def _label_for(text: str, m: re.Match[str], ordinal: int) -> str:
         # Only trust a backward year if it is close to the number.
         idx = head.rfind(back_year[-1])
         if idx != -1 and len(head) - idx <= 28:
-            return back_year[-1].replace(" ", "")
+            return str(back_year[-1]).replace(" ", "")
 
     # Rule 2: categorical — trailing noun phrase before the number.
     # Cut at the last connective so we keep only this item's own name.

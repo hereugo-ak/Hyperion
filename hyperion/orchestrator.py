@@ -28,11 +28,16 @@ Architecture reference: §4.9 Dynamic Workflow Engine, §10.2 Adaptive Replannin
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel
 
 from hyperion.agents.bus import Channel, MessageType, get_bus, reset_bus
 from hyperion.agents.engagement_director import EngagementDirector
@@ -45,6 +50,7 @@ from hyperion.schemas.models import (
     FinalReport,
     LayoutPlan,
     QualityScore,
+    QualityTerminalState,
     RenderOutput,
     VisualizationOutput,
 )
@@ -62,6 +68,73 @@ from hyperion.tools.query_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class DeliveryFailureError(RuntimeError):
+    """W-04: a required delivery stage failed — the engagement fails closed.
+
+    Raised from the delivery loop when any of DATA_VISUALIZER,
+    PRESENTATION_DESIGNER, or RENDER_ENGINE raises or cannot run. There are
+    no optional delivery tasks: a report without its charts, or without the
+    render engine's audited PDF, is wrong — not merely plainer. The
+    pre-W-04 `except Exception: log; continue` converted exactly such a
+    crash into a silent success (a 34-page report with zero charts).
+
+    Carries the agent name, the original exception type, and the full
+    traceback so the failure is attributable without re-running.
+
+    Subclasses RuntimeError so the outer run_engagement handler converts it
+    into a failed EngagementResult (success=False, error=<traceback>)
+    through the existing loud path rather than an unhandled crash.
+    """
+
+    def __init__(self, agent: str, exc_type: str, message: str, tb: str = "") -> None:
+        self.agent = agent
+        self.exc_type = exc_type
+        self.traceback = tb
+        super().__init__(f"DeliveryFailure[{agent}]: {exc_type}: {message}")
+
+
+# Backward-compatible public name retained for existing integrations.
+DeliveryFailure = DeliveryFailureError
+
+
+class MissingDependencyOutputError(RuntimeError):
+    """W-20: A DAG task declared a dependency that produced no output.
+
+    Raised from ``_execute_task`` when a required dependency is FAILED (or
+    otherwise absent from ``_task_outputs``). The pre-W-20 behaviour silently
+    skipped the missing entry, so the dependent agent ran with a partial
+    context and produced analysis that never knew an input was missing.
+
+    Raised BEFORE the agent-dispatch try block, so it propagates to
+    ``_execute_wave``, which marks the dependent task FAILED with this
+    exception's message — loud and attributable, never a silent partial run.
+    """
+
+
+# Backward-compatible public name retained for existing integrations.
+MissingDependencyOutput = MissingDependencyOutputError
+
+
+def derive_run_id(question: str, engagement_key: str = "") -> str:
+    """W-20: deterministic engagement id from the engagement's inputs.
+
+    The durable-execution journal (P10) keys on ``run_id``. Seeding it from a
+    random UUID made every engagement a brand-new run id, so the cache-hit
+    machinery was structurally inert — a resumed run could never match a
+    prior run's journal. Deriving the id deterministically means re-invoking
+    the same question re-opens the same journal and replays completed steps.
+
+    The question is NORMALISED (lowercase, whitespace-collapsed) before
+    hashing so trivial rephrasing ("Market X?" vs "market   x ?") does not
+    defeat resumption; a genuinely different question still gets its own id.
+    ``engagement_key`` lets a caller namespace two runs of the same question.
+    """
+    normalized = " ".join((question or "").split()).lower()
+    key_part = " ".join((engagement_key or "").split()).lower()
+    digest = hashlib.sha256(f"{normalized}\x00{key_part}".encode()).hexdigest()
+    return f"eng_{digest[:12]}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -172,6 +245,11 @@ class EngagementResult:
     dag: WorkflowDAG | None = None
     success: bool = False
     error: str = ""
+    # W-04: machine-readable failure attribution. "delivery" when a required
+    # delivery task failed, "" otherwise. The zero-evidence hard-fail path
+    # sets error text directly; this field lets a caller distinguish a
+    # delivery failure from a research-stack failure without parsing strings.
+    failure_reason: str = ""
     duration_seconds: float = 0.0
     adaptation_count: int = 0
     escalation_count: int = 0
@@ -179,6 +257,9 @@ class EngagementResult:
     # Fix 2.6 (audit §6 Phase 2): per-engagement extraction-yield metrics,
     # populated at engagement completion from engagement_yield_report().
     extraction_yield: dict[str, Any] = field(default_factory=dict)
+    # W-18: actual provider-reported tokens priced with the dated planning
+    # table in router/budget.py. This is an estimate, never presented as an invoice.
+    estimated_llm_cost_usd: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -193,6 +274,7 @@ class EngagementResult:
             "escalation_count": self.escalation_count,
             "quality_iterations": self.quality_iterations,
             "extraction_yield": self.extraction_yield,
+            "estimated_llm_cost_usd": self.estimated_llm_cost_usd,
             "quality_score": self.quality_score.model_dump() if self.quality_score else None,
             "final_report": self.final_report.model_dump() if self.final_report else None,
             "metadata": self.metadata.model_dump() if self.metadata else None,
@@ -236,7 +318,10 @@ class WorkflowEngine:
             print(f"PDF: {result.pdf_path}")
     """
 
-    MAX_QUALITY_ITERATIONS = 2  # P7: capped at ≤2 (was 3) — content-aware quality gate
+    # W-08: the class-level cap is a fallback only; the authoritative value
+    # is settings.max_quality_iterations (now 4) so the operator can tune it
+    # without a code change. The wall-clock budget below is the real bound.
+    MAX_QUALITY_ITERATIONS = 4  # W-08: raised from 2 (was 3, then P7 cap 2)
     TASK_TIMEOUT_SECONDS = 600  # 10 minutes — default for most agents
     SPECIALIST_TIMEOUT_SECONDS = 1200  # 20 minutes — specialists spawn up to 3 sub-agents
     # Each sub-agent does SearxNG search + Jina read + LLM analysis.
@@ -261,6 +346,14 @@ class WorkflowEngine:
         self._journal: RunJournal | None = None
         self._artifacts: ArtifactStore | None = None
         self._manifest: RunManifest | None = None
+        # W-20: guard every mutation of ``_all_findings`` from gathered tasks.
+        # ``_execute_wave`` runs tasks via ``asyncio.gather`` and two sites
+        # (the cache-hit replay and the live-run collector) extend this list
+        # from inside those coroutines. The lock converts the previously
+        # unstated single-event-loop invariant into an enforced one, so a
+        # future move to threads or subprocesses cannot silently corrupt the
+        # findings corpus.
+        self._findings_lock = asyncio.Lock()
 
     def _log(self, message: str) -> None:
         """Publish a log message to the TUI via Channel.TUI."""
@@ -549,7 +642,9 @@ class WorkflowEngine:
                         self._publish_task_update(task)
                         # Re-collect findings from cached specialist outputs
                         if hasattr(cached_obj, "_findings"):
-                            self._all_findings.extend(cached_obj._findings)
+                            # W-20: gathered-wave mutation — under the lock.
+                            async with self._findings_lock:
+                                self._all_findings.extend(cached_obj._findings)
                         return cached_obj
 
         agent = self._get_agent(task.agent)
@@ -557,7 +652,14 @@ class WorkflowEngine:
         task.started_at = time.time()
         self._publish_task_update(task)
 
-        # Build context from dependency outputs
+        # Build context from dependency outputs.
+        #
+        # W-20: a declared dependency that produced no output is a LOUD
+        # failure, not a skipped dict entry. The pre-W-20 code simply omitted
+        # the missing dep from ``context``, so the dependent agent ran on a
+        # partial context and its output never indicated an input was missing.
+        # Now the dependent raises ``MissingDependencyOutput`` before any agent
+        # dispatch; ``_execute_wave`` marks it FAILED with that reason.
         context: dict[str, Any] = {}
         for dep_id in task.dependencies:
             if dep_id in self._task_outputs:
@@ -565,6 +667,14 @@ class WorkflowEngine:
                 dep_task = dag.get_task(dep_id)
                 if dep_task:
                     context[dep_task.agent.value] = dep_output
+            else:
+                dep_task = dag.get_task(dep_id)
+                dep_status = dep_task.status.value if dep_task else "missing"
+                raise MissingDependencyOutput(
+                    f"task '{task.id}' ({task.agent.value}) depends on "
+                    f"'{dep_id}' which has no output (status={dep_status}) — "
+                    f"refusing to run with a partial context"
+                )
 
         try:
             # Call the agent's run() method with the right arguments
@@ -801,7 +911,11 @@ class WorkflowEngine:
             else:
                 task.status = TaskStatus.COMPLETED
             task.completed_at = time.time()
-            task.output = result.model_dump() if hasattr(result, "model_dump") else str(result)
+            task.output = (
+                result.model_dump()
+                if isinstance(result, BaseModel)
+                else {"result": str(result)}
+            )
             self._task_outputs[task.id] = result
             self._publish_task_update(task)
 
@@ -817,7 +931,9 @@ class WorkflowEngine:
             # Collect findings for Fact Checker and Synthesis Lead
             if hasattr(agent, "_findings"):
                 findings_count = len(agent._findings)
-                self._all_findings.extend(agent._findings)
+                # W-20: gathered-wave mutation — under the lock.
+                async with self._findings_lock:
+                    self._all_findings.extend(agent._findings)
                 self._log(
                     f"{task.agent.value}: completed with {findings_count} findings "
                     f"(total collected: {len(self._all_findings)})"
@@ -1043,68 +1159,135 @@ class WorkflowEngine:
         dag: WorkflowDAG,
         gaps: list[AnalysisGap] | None = None,
     ) -> list[AnalysisGap]:
-        """Run the GAP_CLOSURE phase (P2-16/P2-18, owned by the Director).
+        """Run the W-07 evidence-insufficiency ladder (owned by the Director).
 
-        Each unresolved gap walks a 3-round ladder: round 1 re-dispatches
-        the originating specialist (still alive in AWAITING_FOLLOWUP) one
-        tier up with urgency HIGH; round 2 sends a reformulated cross-check
-        to a different specialist; round 3 escalates to the synthesis lead
-        at STRONG tier or above. The first truthy run() result resolves
-        the gap; a gap that survives all three rounds stays unresolved and
-        is declared via _record_unresolved_gaps. After all rounds,
-        specialist tasks are finalized to COMPLETED and the closure task
-        itself is marked COMPLETED so the quality gate can proceed.
+        Each unresolved gap walks a budgeted ladder that ends in one of four
+        named outcomes (``hyperion.agents.insufficiency``):
+
+        - up to 3 ``RETRY_STRATEGY`` rounds, each changing the concrete
+          ``(query_form, engine_set, window, locale)`` triple and never
+          repeating a triple that already returned zero;
+        - then up to 2 ``RETRY_SCOPE`` rounds, broadening period/entity/
+          geography and recording the scope change;
+        - then classification as ``OUT_OF_SCOPE`` (subject-class mismatch —
+          the section is suppressed) or ``DECLARED_GAP`` (thin public record
+          — the specific gap is declared).
+
+        The first truthy agent result resolves the gap. Resolutions are
+        collected on ``self._insufficiency_resolutions`` for the scope note
+        and the declared-gap statements. After all rounds, specialist tasks
+        are finalized to COMPLETED and the closure task itself is marked
+        COMPLETED so the quality gate can proceed.
         """
-        from hyperion.config import ModelTier as _Tier
-        from hyperion.router.budget import TaskUrgency
+        from hyperion.agents.insufficiency import (
+            InsufficiencyLadder,
+            classify_gap,
+        )
 
         gaps = list(gaps or [])
+        self._insufficiency_resolutions: list[Any] = []
         closure = dag.get_task(self._GAP_CLOSURE_TASK_ID)
         if closure is not None:
             closure.status = TaskStatus.RUNNING
             closure.started_at = time.time()
             self._publish_task_update(closure)
 
-        tier_ladder = [
-            _Tier.MICRO, _Tier.FAST, _Tier.STANDARD, _Tier.STRONG, _Tier.DEEP,
-        ]
+        engagement_context = getattr(self, "_engagement_context", None) or {}
 
         for gap in gaps:
             if gap.resolved:
                 continue
-            for round_no in (1, 2, 3):
-                if gap.resolved:
+            ladder = InsufficiencyLadder(
+                gap_id=gap.id, question=gap.question, section_id=gap.section_id
+            )
+            # Phase 1: RETRY_STRATEGY — concrete, non-repeating triples.
+            while not gap.resolved:
+                triple = ladder.next_strategy_round()
+                if triple is None:
                     break
                 gap.attempts += 1
-                target, question = self._gap_closure_round(
-                    dag, gap, round_no, tier_ladder
+                evidence = await self._dispatch_gap_round(
+                    dag, gap, triple.describe(), round_kind="strategy"
                 )
-                agent = self._resolve_gap_agent(target)
-                if agent is None:
-                    continue
-                try:
-                    result = await agent.run(
-                        question=question,
-                        engagement_id=self._engagement_id,
-                        urgency=TaskUrgency.HIGH,
-                    )
-                except TypeError:
-                    # Specialist run() signatures that take no urgency kwarg
-                    # still get the re-dispatch; the tier/urgency intent is
-                    # in the question text.
-                    result = await agent.run(
-                        question=question,
-                        engagement_id=self._engagement_id,
-                    )
-                except Exception as exc:  # noqa: BLE001 - logged, gap stays open
-                    logger.warning(
-                        "gap_closure: round-%d dispatch for gap %s failed: %s",
-                        round_no, gap.id, exc,
-                    )
-                    continue
-                if result:
+                ladder.record_attempt(triple, produced_evidence=evidence)
+                if evidence:
                     gap.resolved = True
-                    gap.resolution = str(result)
+                    gap.resolution = f"resolved via {triple.describe()}"
+            # Phase 2: RETRY_SCOPE — broaden period/entity/geography.
+            while not gap.resolved:
+                planned = ladder.next_scope_round()
+                if planned is None:
+                    break
+                triple, scope_change = planned
+                gap.attempts += 1
+                ladder.resolution.scope_change = scope_change
+                evidence = await self._dispatch_gap_round(
+                    dag,
+                    gap,
+                    f"{triple.describe()} — scope change: {scope_change}",
+                    round_kind="scope",
+                )
+                ladder.record_attempt(triple, produced_evidence=evidence)
+                if evidence:
+                    gap.resolved = True
+                    gap.resolution = (
+                        f"resolved after scope change ({scope_change}) "
+                        f"via {triple.describe()}"
+                    )
+            # Phase 3: one scarce, independently failed grounded-search attempt
+            # after the W-07 strategies are exhausted and before declaring a gap.
+            if not gap.resolved and ladder.budget_exhausted():
+                try:
+                    from hyperion.tools.deep_search import (
+                        record_retrieval_backend,
+                        record_retrieval_constraints,
+                    )
+                    from hyperion.tools.grounded_search import (
+                        GroundedSearchClient,
+                        GroundingReason,
+                    )
+
+                    grounded = await GroundedSearchClient().search(
+                        gap.question,
+                        engagement_id=self._engagement_id,
+                        reason=GroundingReason.RETRY_EXHAUSTED,
+                    )
+                    record_retrieval_backend("gemini", grounded.actual_units)
+                    record_retrieval_constraints(grounded.constraints)
+                    # This scarce authority lookup is an escalation after the
+                    # declared 3-strategy + 2-scope closure ladder, not a sixth
+                    # ladder round. ``gap.attempts`` intentionally remains the
+                    # number of specialist closure dispatches (maximum five).
+                    if grounded.results:
+                        gap.resolved = True
+                        authorities = ", ".join(
+                            result.url for result in grounded.results[:3]
+                        )
+                        gap.resolution = (
+                            "resolved by grounded authority retrieval: "
+                            f"{authorities}"
+                        )
+                except Exception as exc:  # noqa: BLE001 - gap classification continues
+                    logger.warning(
+                        "gap_closure: grounded escalation for %s failed open: %s",
+                        gap.id,
+                        exc,
+                    )
+            # Phase 4: classify the survivors.
+            if not gap.resolved:
+                outcome, justification = classify_gap(
+                    gap.question,
+                    gap.section_id,
+                    engagement_context,
+                    ladder.tried_triples,
+                )
+                ladder.resolution.outcome = outcome
+                ladder.resolution.justification = justification
+                self._insufficiency_resolutions.append(ladder.resolution)
+                self._log(
+                    f"GAP_CLOSURE: gap '{gap.id}' -> {outcome.value} "
+                    f"after {len(ladder.tried_triples)} strategy attempts"
+                )
 
         # Finalize: specialists leave AWAITING_FOLLOWUP, the phase completes.
         for task in dag.tasks:
@@ -1121,60 +1304,60 @@ class WorkflowEngine:
             self._publish_task_update(closure)
         return gaps
 
-    def _gap_closure_round(
+    async def _dispatch_gap_round(
         self,
         dag: WorkflowDAG,
         gap: AnalysisGap,
-        round_no: int,
-        tier_ladder: list[Any],
-    ) -> tuple[AgentName, str]:
-        """Select the target agent and question text for one closure round.
+        strategy_description: str,
+        round_kind: str,
+    ) -> bool:
+        """Dispatch one W-07 ladder round to a live specialist.
 
-        Round 1: the originating specialist, one tier up. Round 2: a
-        different specialist with a reformulated cross-check query.
-        Round 3: the synthesis lead at STRONG tier or above, with the
-        full gap context.
+        Strategy rounds re-dispatch the ORIGINATING specialist: the section
+        owner retries the same question with a different concrete query
+        construction (W-07 RETRY_STRATEGY semantics). Scope rounds prefer a
+        DIFFERENT live specialist: broadening entity/period/geography is a
+        cross-domain ask (W-07 RETRY_SCOPE semantics). The strategy
+        description is embedded in the question so the agent's query
+        construction changes observably. Returns True when the agent
+        produced evidence.
         """
-        if round_no == 1:
-            task = next((t for t in dag.tasks if t.agent == gap.agent), None)
-            base_tier = task.model_tier if task else tier_ladder[2]
-            try:
-                idx = tier_ladder.index(base_tier)
-            except ValueError:
-                idx = 2  # STANDARD
-            bumped = tier_ladder[min(idx + 1, len(tier_ladder) - 1)]
-            question = (
-                f"GAP_CLOSURE round 1 (tier {bumped.value}, urgency HIGH): "
-                f"answer this specific unresolved question for section "
-                f"'{gap.section_id}' field '{gap.field}': {gap.question}"
-            )
-            return gap.agent, question
-        if round_no == 2:
-            candidates = sorted(
-                self._SPECIALIST_AGENTS - {gap.agent}, key=lambda a: a.value
-            )
-            live = getattr(self, "_agents", None)
-            cross = candidates[0]
-            if live:
-                for cand in candidates:
-                    if cand in live:
-                        cross = cand
-                        break
-            question = (
-                "GAP_CLOSURE round 2 (cross-check, urgency HIGH): the "
-                f"originating specialist for section '{gap.section_id}' "
-                f"could not resolve field '{gap.field}'. Reformulated "
-                f"question for your domain: {gap.question}"
-            )
-            return cross, question
-        question = (
-            "GAP_CLOSURE round 3 (synthesis escalation, tier STRONG+): two "
-            f"specialists could not resolve this gap for section "
-            f"'{gap.section_id}' field '{gap.field}'; decide the answer "
-            f"from the assembled evidence or confirm it is unknowable: "
-            f"{gap.question}"
+        from hyperion.router.budget import TaskUrgency
+
+        origin = gap.agent
+        others = sorted(self._SPECIALIST_AGENTS - {origin}, key=lambda a: a.value)
+        candidates = (others + [origin]) if round_kind == "scope" else ([origin] + others)
+        live = getattr(self, "_agents", None) or {}
+        target = next(
+            (c for c in candidates if c in live), candidates[0]
         )
-        return AgentName.SYNTHESIS_LEAD, question
+        agent = self._resolve_gap_agent(target)
+        if agent is None:
+            return False
+        question = (
+            f"GAP_CLOSURE {round_kind} retry (urgency HIGH) for section "
+            f"'{gap.section_id}' field '{gap.field}' — retrieval strategy: "
+            f"{strategy_description}. Answer this specific unresolved "
+            f"question: {gap.question}"
+        )
+        try:
+            result = await agent.run(
+                question=question,
+                engagement_id=self._engagement_id,
+                urgency=TaskUrgency.HIGH,
+            )
+        except TypeError:
+            result = await agent.run(
+                question=question,
+                engagement_id=self._engagement_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - logged, round fails
+            logger.warning(
+                "gap_closure: %s round for gap %s failed: %s",
+                round_kind, gap.id, exc,
+            )
+            return False
+        return bool(result)
 
     def _resolve_gap_agent(self, agent_name: AgentName) -> Any | None:
         """Locate a live agent for a closure dispatch (None if unreachable)."""
@@ -1193,22 +1376,56 @@ class WorkflowEngine:
     def _record_unresolved_gaps(
         self, report: Any, gaps: list[AnalysisGap] | None
     ) -> None:
-        """Declare gaps that survived the closure ladder in the report.
+        """Write the W-07 outcomes of survived gaps into the report.
 
-        P2-16 sub-fix 5.6: an unresolvable gap omits its field from the
-        client content, and its specific question is recorded in
-        FinalReport.limitations so the omission is honest and visible.
+        - ``OUT_OF_SCOPE``: the section is suppressed entirely (no heading,
+          no placeholder, no TOC entry) and one consolidated line is added
+          to the scope note.
+        - ``DECLARED_GAP``: the section is retained and a SPECIFIC gap is
+          declared — the question, the strategies attempted, and what source
+          would resolve it. The banned filler phrasings ("Insufficient
+          evidence", "requires additional research") are structurally
+          unconstructible here.
+
+        Any gap with no recorded resolution (defensive: resolved or
+        unclassified) is omitted without filler prose.
         """
+        from hyperion.agents.insufficiency import (
+            InsufficiencyOutcome,
+            suppress_out_of_scope_sections,
+        )
+
         limitations = getattr(report, "limitations", None)
         if limitations is None:
             return
+
+        resolutions = list(getattr(self, "_insufficiency_resolutions", []) or [])
+
+        # OUT_OF_SCOPE: suppress sections, collect the consolidated scope note.
+        scope_note_lines = suppress_out_of_scope_sections(report, resolutions)
+        for line in scope_note_lines:
+            if line not in limitations:
+                limitations.append(line)
+
+        # DECLARED_GAP: specific statements, never filler.
+        for resolution in resolutions:
+            if resolution.outcome != InsufficiencyOutcome.DECLARED_GAP:
+                continue
+            statement = resolution.declared_gap_statement()
+            if not any(resolution.question in existing for existing in limitations):
+                limitations.append(statement)
+
+        # Defensive: a gap that survived with no classification is still
+        # declared specifically, with its real attempt count.
+        classified_ids = {r.gap_id for r in resolutions}
         for gap in gaps or []:
-            if gap.resolved:
+            if gap.resolved or gap.id in classified_ids:
                 continue
             entry = (
-                f"Unresolved research gap in section '{gap.section_id}' "
+                f"Declared research gap in section '{gap.section_id}' "
                 f"({gap.field}), unanswered after {gap.attempts} closure "
-                f"rounds: {gap.question}"
+                f"rounds: {gap.question}. A primary source naming this "
+                f"entity and period directly would resolve it."
             )
             if not any(gap.question in existing for existing in limitations):
                 limitations.append(entry)
@@ -1257,9 +1474,7 @@ class WorkflowEngine:
             from hyperion.tools.query_utils import get_engagement_focus
             from hyperion.tools.searxng import SearxNGClient
 
-            focus = get_engagement_focus() or {}
-            subject = focus.get("subject", "")
-            geography = focus.get("geography", "")
+            _, subject, geography = get_engagement_focus()
             if not subject:
                 return 0
             client = SearxNGClient()
@@ -1374,6 +1589,20 @@ class WorkflowEngine:
         # Get visualization output for visual quality scoring (Dimension 10)
         viz_output = self._get_output_by_agent(dag, AgentName.DATA_VISUALIZER)
 
+        # W-08: the iteration cap is settings-driven (default 4, was 2) and
+        # the loop is bounded by a wall-clock budget so a raised cap cannot
+        # turn a 34-minute engagement into a two-hour one.
+        try:
+            from hyperion.config import get_settings as _get_quality_settings
+            _qs = _get_quality_settings()
+            max_iterations = int(getattr(_qs, "max_quality_iterations", self.MAX_QUALITY_ITERATIONS))
+            wall_clock = float(getattr(_qs, "quality_iteration_wall_clock_seconds", 900))
+        except Exception:  # noqa: BLE001 - fall back to class constants
+            max_iterations = self.MAX_QUALITY_ITERATIONS
+            wall_clock = 900.0
+        loop_started = time.time()
+        prev_total: float | None = None
+
         # P7: Content-aware source-count floor — if the report has fewer
         # sources than this, stop iterating because more passes won't fix
         # thin evidence; the problem is insufficient data, not insufficient
@@ -1386,8 +1615,20 @@ class WorkflowEngine:
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("%s: %s", "_quality_iteration_loop", exc)
 
-        for iteration in range(1, self.MAX_QUALITY_ITERATIONS + 1):
+        for iteration in range(1, max_iterations + 1):
             iterations = iteration
+
+            # W-08: wall-clock budget. Running out of time is NOT approval;
+            # it ends the loop and the terminal-state computation below
+            # decides the outcome from the last real score.
+            if time.time() - loop_started > wall_clock:
+                self._log(
+                    f"QUALITY: wall-clock budget ({wall_clock:.0f}s) exhausted "
+                    f"after {iteration - 1} iteration(s) — stopping loop"
+                )
+                if current_score is not None:
+                    current_score.max_iterations_reached = True
+                break
 
             # Score the report
             current_score = await asyncio.wait_for(
@@ -1402,16 +1643,17 @@ class WorkflowEngine:
                 timeout=self.SPECIALIST_TIMEOUT_SECONDS,
             )
 
+            if current_score is None:
+                self._log(f"QUALITY iteration {iteration}: no score returned")
+                break
+
             self._log(
-                f"QUALITY iteration {iteration}/{self.MAX_QUALITY_ITERATIONS}: "
+                f"QUALITY iteration {iteration}/{max_iterations}: "
                 f"score={current_score.total_score:.1f}/{current_score.threshold:.1f} "
                 f"approved={current_score.approved} "
                 f"critical={len(current_score.critical_dimensions)} "
                 f"gaps={len(current_score.gaps)}"
             )
-
-            if current_score is None:
-                break
 
             # P2-22: exit the loop only on the authoritative `approved` flag,
             # not on the weighted score alone. `approved` already folds in
@@ -1423,6 +1665,20 @@ class WorkflowEngine:
             if current_score.approved:
                 self._log(f"QUALITY: approved at iteration {iteration}")
                 break  # Quality gate approved
+
+            # W-08: an iteration that produced no score change on any
+            # dimension terminates the loop early. Looping without
+            # improvement is the signal that the input is the problem, not
+            # the polish — more passes will not fix it.
+            if prev_total is not None and abs(current_score.total_score - prev_total) < 1e-9:
+                self._log(
+                    f"QUALITY: iteration {iteration} produced no score change "
+                    f"({current_score.total_score:.2f}) — terminating early; "
+                    "the input, not the polish, is the problem"
+                )
+                current_score.max_iterations_reached = True
+                break
+            prev_total = current_score.total_score
 
             # P2-25: thin evidence triggers retrieval escalation, not a stop.
             # The old content-aware stop broke here; now a below-floor source
@@ -1446,7 +1702,7 @@ class WorkflowEngine:
                 )
 
             # Score below threshold — iterate with targeted fixes
-            if iteration < self.MAX_QUALITY_ITERATIONS:
+            if iteration < max_iterations:
                 # Synthesis Lead applies targeted fixes to the specific
                 # dimensions that scored below 4 (not a full re-synthesis)
                 self._log(
@@ -1463,12 +1719,35 @@ class WorkflowEngine:
                 else:
                     self._log(f"SYNTHESIS: iteration {iteration + 1} returned None — using unchanged report")
             else:
-                self._log(f"QUALITY: max iterations ({self.MAX_QUALITY_ITERATIONS}) reached — proceeding with best available")
+                self._log(f"QUALITY: max iterations ({max_iterations}) reached — loop ends")
 
-        # If we exhausted all iterations without approval, mark it so
-        # delivery agents know to proceed with the best available report
-        if current_score and not current_score.approved and iterations >= self.MAX_QUALITY_ITERATIONS:
+        # W-08: iteration exhaustion is recorded for DIAGNOSTICS ONLY. It is
+        # never read in a ship condition — the terminal-state computation
+        # below is the single ship/no-ship decision point, and it does not
+        # reference max_iterations_reached.
+        if current_score and not current_score.approved and iterations >= max_iterations:
             current_score.max_iterations_reached = True
+
+        # W-08: three terminal states, computed here and only here.
+        if current_score is not None:
+            self._compute_quality_terminal_state(current_score)
+            self._log(
+                f"QUALITY: terminal state = {current_score.terminal_state.value} "
+                f"(score={current_score.total_score:.2f}, "
+                f"blockers={len(current_score.integrity_blockers)})"
+            )
+
+        final_score = current_score or QualityScore(
+            dimensions=[],
+            total_score=0.0,
+            approved=False,
+            iteration=max(iterations, 1),
+            gaps=["Quality Gate did not produce a score"],
+            critical_dimensions=[],
+            max_iterations_reached=True,
+            terminal_state=QualityTerminalState.BLOCKED,
+            blocked_reason="Quality Gate did not produce a score",
+        )
 
         # Mark the quality_gate task as COMPLETED in the DAG so that
         # delivery tasks (presentation_designer, etc.) that depend on
@@ -1477,20 +1756,186 @@ class WorkflowEngine:
             if task.agent == AgentName.QUALITY_GATE and task.status != TaskStatus.COMPLETED:
                 task.status = TaskStatus.COMPLETED
                 task.completed_at = time.time()
-                task.output = current_score.model_dump() if hasattr(current_score, "model_dump") else str(current_score)
-                self._task_outputs[task.id] = current_score
+                task.output = final_score.model_dump()
+                self._task_outputs[task.id] = final_score
                 self._publish_task_update(task)
                 break
 
-        return current_report, current_score or QualityScore(
-            dimensions=[],
-            total_score=0.0,
-            approved=False,
-            iteration=iterations,
-            gaps=["Quality Gate did not produce a score"],
-            critical_dimensions=[],
-            max_iterations_reached=True,
-        ), iterations
+        return current_report, final_score, iterations
+
+    def _compute_quality_terminal_state(self, score: QualityScore) -> None:
+        """W-08: compute the Quality Gate terminal state. The ONLY ship/no-ship decision point.
+
+        Mutates ``score.terminal_state`` (and ``score.blocked_reason`` when
+        BLOCKED) in place. Called once by ``_quality_iteration_loop`` after the
+        iteration loop ends, and read once by ``run_engagement`` to decide
+        whether Stage 5 (delivery) runs.
+
+        Derivation, in order:
+        - BLOCKED: any integrity blocker (leaked object, banned filler, verdict
+          contradiction, dishonest confidence, broken URL), OR total score below
+          the configured ship floor (``quality_ship_floor``, default 3.0).
+        - APPROVED: the gate's authoritative ``approved`` flag (score >=
+          threshold AND no hard blockers, per QualityGate._determine_approval).
+        - otherwise SHIP_WITH_CAVEAT, but only when the operator has explicitly
+          set ``allow_ship_with_caveat``; without that setting the run is
+          BLOCKED, because silent degradation is the failure mode this item
+          exists to remove.
+
+        ``max_iterations_reached`` is deliberately NOT read here. Iteration
+        exhaustion is a diagnostic, never a ship condition.
+        """
+        try:
+            from hyperion.config import get_settings
+
+            _s = get_settings()
+            ship_floor = float(getattr(_s, "quality_ship_floor", 3.0))
+            allow_caveat = bool(getattr(_s, "allow_ship_with_caveat", False))
+        except Exception:  # noqa: BLE001 - fall back to spec defaults
+            ship_floor = 3.0
+            allow_caveat = False
+
+        blockers = list(score.integrity_blockers or [])
+        if blockers or score.total_score < ship_floor:
+            score.terminal_state = QualityTerminalState.BLOCKED
+            reasons: list[str] = []
+            if blockers:
+                reasons.append(
+                    f"{len(blockers)} integrity blocker(s): " + "; ".join(blockers[:5])
+                )
+            if score.total_score < ship_floor:
+                critical_names = [
+                    d.value if hasattr(d, "value") else str(d)
+                    for d in (score.critical_dimensions or [])
+                ]
+                reasons.append(
+                    f"score {score.total_score:.2f} below ship floor {ship_floor:.2f}"
+                )
+                if critical_names:
+                    reasons.append(
+                        f"critical dimensions failing: {', '.join(critical_names)}"
+                    )
+            score.blocked_reason = " | ".join(reasons)
+            return
+
+        if score.approved:
+            score.terminal_state = QualityTerminalState.APPROVED
+            return
+
+        if allow_caveat:
+            score.terminal_state = QualityTerminalState.SHIP_WITH_CAVEAT
+            return
+
+        score.terminal_state = QualityTerminalState.BLOCKED
+        score.blocked_reason = (
+            f"score {score.total_score:.2f} below approval threshold "
+            f"{score.threshold:.2f} and allow_ship_with_caveat is disabled"
+        )
+
+    def _attach_methodology(self, report: Any, dag: Any) -> None:
+        """W-10: attach the six-subsection methodology record to the report.
+
+        Built from recorded structures only (the DAG's W-06 roster decisions,
+        the W-07 insufficiency resolutions, the fact checker's counters and the
+        Source corpus), never from an LLM prompt: a prompt asked to "describe
+        the methodology" will describe research that did not happen, which is
+        precisely W-10's third failure mode.
+
+        A failure here must not take the engagement down. The methodology page
+        is important but it is not the answer, and the designer carries a
+        report-only fallback plus a template branch that says so honestly. The
+        exception types are enumerated rather than blanket-caught (ruff BLE001):
+        ``ValueError`` covers a ClientProse rejection inside the record,
+        ``TypeError``/``AttributeError`` cover a malformed report or DAG.
+        """
+        from hyperion.output.methodology import build_methodology
+        from hyperion.tools.deep_search import engagement_yield_report
+
+        try:
+            retrieval = engagement_yield_report()
+            report.methodology = build_methodology(
+                report,
+                dag=dag,
+                resolutions=list(getattr(self, "_insufficiency_resolutions", []) or []),
+                backend_query_counts=retrieval.get("backend_query_counts", {}),
+                retrieval_constraints=retrieval.get("retrieval_constraints", []),
+            )
+            n = len(report.methodology.subsections)
+            self._log(f"METHODOLOGY: {n} subsections built from recorded structures")
+        except (ValueError, TypeError, AttributeError) as exc:
+            logger.warning("W-10: methodology build failed: %s", exc)
+            self._log(f"METHODOLOGY: build failed ({exc})")
+
+    def _write_blocked_diagnostic(self, score: QualityScore) -> str:
+        """W-08: write the machine-readable operator diagnostic for a BLOCKED run.
+
+        Contains dimension scores, hard blockers, open gaps, corpus statistics
+        and roster decisions, so a blocked run is actionable instead of merely
+        disappointing. Written under ``<reports_dir>/diagnostics/`` and NEVER
+        to the deliverable path — a blocked run produces no client artifact.
+
+        Returns the diagnostic file path ("" if writing failed; the failure is
+        logged, never raised — the block decision itself must not fail).
+        """
+        import json as _json
+
+        try:
+            from hyperion.config import get_settings
+
+            reports_dir = get_settings().reports_dir
+        except Exception:  # noqa: BLE001 - settings may be unconfigured on a
+            # blocked run; the diagnostic must still be written, so fall back
+            # to the conventional ./reports directory rather than raise.
+            reports_dir = Path("./reports")
+
+        try:
+            diag_dir = reports_dir / "diagnostics"
+            diag_dir.mkdir(parents=True, exist_ok=True)
+            path = diag_dir / f"blocked_{self._engagement_id or 'unknown'}.json"
+
+            dimensions = [
+                {
+                    "dimension": d.dimension_id.value,
+                    "score": d.score,
+                    "rationale": d.feedback[:500],
+                }
+                for d in (score.dimensions or [])
+            ]
+            roster_decisions = []
+            if self._director is not None:
+                roster_decisions = list(
+                    getattr(self._director, "roster_decisions", []) or []
+                )
+            diagnostic = {
+                "engagement_id": self._engagement_id,
+                "terminal_state": score.terminal_state.value,
+                "blocked_reason": score.blocked_reason or "",
+                "total_score": score.total_score,
+                "threshold": score.threshold,
+                "iteration": score.iteration,
+                "max_iterations_reached": score.max_iterations_reached,
+                "integrity_blockers": list(score.integrity_blockers or []),
+                "critical_dimensions": [
+                    d.value if hasattr(d, "value") else str(d)
+                    for d in (score.critical_dimensions or [])
+                ],
+                "dimension_scores": dimensions,
+                "open_gaps": list(score.gaps or []),
+                "fix_priority": list(score.fix_priority or []),
+                "corpus_stats": {
+                    "findings_collected": len(self._all_findings),
+                    "task_outputs": len(self._task_outputs),
+                },
+                "roster_decisions": [
+                    str(r) for r in roster_decisions
+                ],
+            }
+            path.write_text(_json.dumps(diagnostic, indent=2, default=str))
+            self._log(f"QUALITY: operator diagnostic written to {path}")
+            return str(path)
+        except Exception as exc:  # noqa: BLE001 - logged, never raised
+            logger.warning("_write_blocked_diagnostic: %s", exc)
+            return ""
 
     def _build_floor_report(self, question: str) -> FinalReport | None:
         """Build a minimal floor-report from collected findings (D13 fix).
@@ -1603,7 +2048,7 @@ class WorkflowEngine:
         This makes the system smarter over time — future engagements on
         similar topics can retrieve this context via the Second Brain.
         """
-        if not result.final_report or not result.metadata:
+        if not result.final_report or not result.metadata or result.quality_score is None:
             return
 
         try:
@@ -1676,6 +2121,7 @@ class WorkflowEngine:
         self,
         question: str,
         conversation_context: str = "",
+        fresh: bool = False,
     ) -> EngagementResult:
         """Run a complete HYPERION engagement from question to PDF.
 
@@ -1690,7 +2136,20 @@ class WorkflowEngine:
         Returns an EngagementResult with the PDF path and all metadata.
         """
         self._start_time = time.time()
-        self._engagement_id = f"eng_{uuid.uuid4().hex[:12]}"
+        # W-18: the router singleton can serve multiple consultations in one
+        # shell; reset only the engagement cost accumulator, never daily usage.
+        # WorkflowEngine intentionally permits router=None for deterministic
+        # offline quality-gate runs, which accrue no LLM cost.
+        if self.router is not None:
+            self.router.budget_planner.reset_engagement_cost()
+        # W-20: deterministic run id — the durable-execution journal below
+        # only resumes a crashed engagement if a re-run of the same question
+        # lands on the SAME run_id. ``fresh=True`` forces a random id for a
+        # genuine from-zero re-run (the CLI's ``--fresh`` flag).
+        if fresh:
+            self._engagement_id = f"eng_{uuid.uuid4().hex[:12]}"
+        else:
+            self._engagement_id = derive_run_id(question)
         # Reset per-engagement question classification so a new question can
         # never inherit the previous engagement's industry/geography.
         self._engagement_context = None
@@ -1699,8 +2158,10 @@ class WorkflowEngine:
         # so engagement_yield_report() covers THIS engagement only.
         try:
             from hyperion.tools.deep_search import reset_engagement_yield
+            from hyperion.tools.grounded_search import set_grounding_engagement_id
 
             reset_engagement_yield()
+            set_grounding_engagement_id(self._engagement_id)
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.warning("%s: %s", "run_engagement", exc)
         # Seed the search anchor from the raw question immediately, so any
@@ -1773,6 +2234,36 @@ class WorkflowEngine:
             from hyperion.infra.preflight import assert_research_stack_usable
 
             assert_research_stack_usable(_settings)
+
+        # W-20: resume detection. If this deterministic run_id already has a
+        # journal on disk, this invocation is a RESUME of a crashed run, not a
+        # fresh engagement. The existing P10 cache-hit path in ``_execute_task``
+        # (journal ``get_cached`` -> artifact load -> skip dispatch) does the
+        # actual replay; here we surface that fact loudly so an operator can
+        # tell a resume from a fresh run and see the frontier being skipped.
+        _prior_journal = os.path.join(
+            "artifacts", self._engagement_id, "journal.sqlite"
+        )
+        if os.path.exists(_prior_journal):
+            _prior = RunJournal(self._engagement_id)
+            _prior.open()
+            try:
+                _done = _prior.get_completed_steps()
+                _failed = _prior.get_failed_steps()
+            finally:
+                _prior.close()
+            self._log(
+                f"RESUME: journal found for {self._engagement_id} — "
+                f"{len(_done)} completed step(s) will replay from cache, "
+                f"{len(_failed)} previously-failed step(s) will re-run"
+            )
+            trace(
+                "durable",
+                run_id=self._engagement_id,
+                status="resume_detected",
+                completed=len(_done),
+                failed=len(_failed),
+            )
 
         # P10: Durable execution — open journal, artifact store, manifest
         self._journal = RunJournal(self._engagement_id)
@@ -1897,6 +2388,89 @@ class WorkflowEngine:
             self._task_outputs["task_synthesis_lead"] = final_report
             self._task_outputs["task_quality_gate"] = quality_score
 
+            # ─────────────────────────────────────────────────────────────
+            # W-08: the Quality Gate can refuse to ship.
+            # BLOCKED means Stage 5 never runs — no HANDOFF to the delivery
+            # agents, no Presentation Designer, no Data Visualizer, no Render
+            # Engine, no client PDF under any name. The engagement ends with
+            # a machine-readable operator diagnostic instead.
+            # SHIP_WITH_CAVEAT (opt-in via allow_ship_with_caveat) ships but
+            # forces a prominent limitations declaration onto the report.
+            # ─────────────────────────────────────────────────────────────
+            terminal_state = (
+                quality_score.terminal_state if quality_score else QualityTerminalState.BLOCKED
+            )
+            if terminal_state == QualityTerminalState.BLOCKED:
+                blocked_reason = (
+                    quality_score.blocked_reason
+                    if quality_score and quality_score.blocked_reason
+                    else "Quality Gate blocked the run"
+                )
+                self._log(
+                    f"QUALITY: BLOCKED — refusing to ship. {blocked_reason}"
+                )
+                diagnostic_path = self._write_blocked_diagnostic(quality_score) if quality_score else ""
+                await self.bus.publish(
+                    channel=Channel.ESCALATION,
+                    msg_type=MessageType.ESCALATION,
+                    sender=AgentName.QUALITY_GATE,
+                    payload={
+                        "agent": AgentName.QUALITY_GATE.value,
+                        "issue": f"Quality Gate BLOCKED the run: {blocked_reason}",
+                        "suggested_action": (
+                            "Operator diagnostic written"
+                            f"{' to ' + diagnostic_path if diagnostic_path else ''}; "
+                            "engagement ends without a deliverable"
+                        ),
+                    },
+                )
+                result.success = False
+                result.failure_reason = "quality_gate"
+                result.error = f"Quality Gate BLOCKED: {blocked_reason}"
+                result.duration_seconds = time.time() - self._start_time
+                result.metadata = EngagementMetadata(
+                    engagement_id=self._engagement_id,
+                    question=question,
+                    question_type=dag.question_type,
+                    agents_used=dag.agents_selected,
+                    sources_accessed=sum(
+                        1 for f in self._all_findings if hasattr(f, "sources") and f.sources
+                    ),
+                    data_points_collected=len(self._all_findings),
+                    duration_seconds=result.duration_seconds,
+                )
+                if diagnostic_path:
+                    result.metadata.blocked_diagnostic_path = diagnostic_path
+                return result
+
+            if terminal_state == QualityTerminalState.SHIP_WITH_CAVEAT:
+                caveat_notice = (
+                    "QUALITY CAVEAT: this report shipped below the approval "
+                    f"threshold (score {quality_score.total_score:.2f}/"
+                    f"{quality_score.threshold:.2f}) under the explicit "
+                    "allow_ship_with_caveat setting. Findings should be "
+                    "treated as provisional and independently verified before "
+                    "any decision is made on them."
+                )
+                if caveat_notice not in final_report.limitations:
+                    final_report.limitations.insert(0, caveat_notice)
+                self._log(
+                    "QUALITY: SHIP_WITH_CAVEAT — limitations page notice prepended "
+                    f"(score {quality_score.total_score:.2f} below threshold "
+                    f"{quality_score.threshold:.2f})"
+                )
+
+            # W-10: build the methodology section HERE, before the handoff.
+            # The orchestrator is the only holder of both the DAG (whose
+            # roster_decisions carry the W-06 method eligibility, including the
+            # exclusions that answer "why is there no company valuation on a
+            # nation state?") and the W-07 insufficiency resolutions (which
+            # carry the retrieval strategies attempted and the declared-gap /
+            # out-of-scope outcomes). The designer can only build a thinner
+            # report-only record, so building it here is what makes subsections
+            # 1, 2 and 3 substantive. Deterministic and LLM-free by design.
+            self._attach_methodology(final_report, dag)
+
             # D4-rest: Explicit FinalReport HANDOFF on the bus so delivery
             # agents receive it via their subscription, not just via local var.
             await self.bus.publish(
@@ -1924,22 +2498,42 @@ class WorkflowEngine:
                 and t.status == TaskStatus.PENDING
             ]
 
-            # Execute delivery tasks in order (they have dependencies)
+            # Execute delivery tasks in topological order. W-03 re-pointed
+            # the delivery chain (visualizer -> designer -> render engine),
+            # so a single pass in DAG-declaration order would skip the
+            # designer permanently. Iterate to a fix-point: each pass
+            # executes every task whose dependencies are now met, and the
+            # loop stops when no task changed state.
+            #
+            # W-04: every delivery task is REQUIRED and the stage fails
+            # CLOSED. The first failure raises DeliveryFailure — there is no
+            # `continue` path that would let a later stage render a PDF on
+            # top of a missing chart set or a missing layout (the exact bug
+            # that produced a 34-page report with zero charts reported as
+            # SUCCESS). Unmet dependencies after the fix-point are likewise
+            # an invariant violation, not a skip-and-continue condition.
             self._log(f"DELIVERY: starting {len(delivery_tasks)} delivery tasks")
-            for task in delivery_tasks:
-                if task.status == TaskStatus.PENDING:
+            progressed = True
+            while progressed:
+                progressed = False
+                for task in delivery_tasks:
+                    if task.status != TaskStatus.PENDING:
+                        continue
                     # Check if dependencies are met
                     ready = all(
-                        dag.get_task(dep) and dag.get_task(dep).status == TaskStatus.COMPLETED
+                        (dependency_task := dag.get_task(dep)) is not None
+                        and dependency_task.status == TaskStatus.COMPLETED
                         for dep in task.dependencies
                     )
                     if ready:
                         self._log(f"DELIVERY: executing {task.agent.value}")
                         try:
                             await self._execute_task(task, dag)
-                        except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                            # D4-rest: Escalate delivery failure instead of crashing
-                            self._log(f"DELIVERY: {task.agent.value} failed: {e!s:.200}")
+                        except Exception as e:  # noqa: BLE001 - W-04: fail closed, with the traceback
+                            import traceback as _tb
+
+                            task.status = TaskStatus.FAILED
+                            task.error = str(e)[:200]
                             await self.bus.publish(
                                 channel=Channel.ESCALATION,
                                 msg_type=MessageType.ESCALATION,
@@ -1947,24 +2541,67 @@ class WorkflowEngine:
                                 payload={
                                     "agent": task.agent.value,
                                     "issue": f"Delivery agent failed: {e!s:.200}",
-                                    "suggested_action": "Proceed with partial output or generate stub PDF",
+                                    "suggested_action": "Engagement fails closed — no deliverable",
                                 },
                             )
-                            task.status = TaskStatus.FAILED
-                            task.error = str(e)[:200]
-                    else:
-                        self._log(f"DELIVERY: {task.agent.value} dependencies not met — skipping")
+                            raise DeliveryFailure(
+                                agent=task.agent.value,
+                                exc_type=type(e).__name__,
+                                message=str(e)[:300],
+                                tb=_tb.format_exc(),
+                            ) from e
+                        progressed = True
+            stuck = [t for t in delivery_tasks if t.status == TaskStatus.PENDING]
+            if stuck:
+                stuck_agent = stuck[0].agent.value
+                unmet: dict[str, str] = {}
+                for dep in stuck[0].dependencies:
+                    dependency_task = dag.get_task(dep)
+                    unmet[dep] = (
+                        dependency_task.status.value
+                        if dependency_task is not None
+                        else "missing"
+                    )
+                self._log(
+                    f"DELIVERY: INVARIANT VIOLATION — {stuck_agent} cannot run, "
+                    f"dependencies never completed: {unmet}"
+                )
+                raise DeliveryFailure(
+                    agent=stuck_agent,
+                    exc_type="UnmetDependencies",
+                    message=f"delivery task could not run; dependency states: {unmet}",
+                )
 
             # Collect delivery outputs
             result.layout_plan = self._get_output_by_agent(dag, AgentName.PRESENTATION_DESIGNER)
             result.visualization_output = self._get_output_by_agent(dag, AgentName.DATA_VISUALIZER)
             result.render_output = self._get_output_by_agent(dag, AgentName.RENDER_ENGINE)
 
-            # Get PDF path
+            # Get PDF path — W-03: exactly ONE source, the Render Engine.
+            # The deleted `elif layout_plan.pdf_path` branch was the RC-4
+            # mechanism: an unaudited designer-rendered PDF could become the
+            # deliverable when the designer wrote one and the render engine
+            # did not. The designer no longer writes PDFs at all.
             if result.render_output and hasattr(result.render_output, "pdf_path"):
                 result.pdf_path = result.render_output.pdf_path
-            elif result.layout_plan and hasattr(result.layout_plan, "pdf_path"):
-                result.pdf_path = result.layout_plan.pdf_path
+
+            # W-04: PDF=NO must imply failure — the two can never diverge.
+            # An empty pdf_path here means the render engine produced no
+            # audited PDF, which is a failed engagement, not a "no-PDF
+            # success". (W-02 guarantees a rejected render never occupies the
+            # deliverable name, so an empty path is never a quarantine artifact.)
+            if not result.pdf_path:
+                result.success = False
+                result.failure_reason = "delivery"
+                if not result.error:
+                    result.error = (
+                        "Delivery failed closed: the render engine produced no "
+                        "audited PDF (verification_failed or render failure)."
+                    )
+                self._log("DELIVERY: no audited PDF — engagement marked FAILED")
+            assert not (not result.pdf_path and result.success), (
+                "W-04 invariant: result.pdf_path empty must imply result.success is False"
+            )
 
             self._log(
                 f"DELIVERY: complete — PDF={'YES' if result.pdf_path else 'NO'} "
@@ -2102,6 +2739,11 @@ class WorkflowEngine:
             self._print_run_summary(result)
             return result
         finally:
+            # W-18: every success and failure result carries the cost accrued
+            # before return; Python executes this mutation before returning it.
+            # Router-free deterministic runs truthfully report zero cost.
+            if self.router is not None:
+                result.estimated_llm_cost_usd = self.router.get_engagement_cost_usd()
             # P10: Close journal
             if self._journal:
                 self._journal.close()
@@ -2158,6 +2800,7 @@ class WorkflowEngine:
         total_calls = token_summary.get("total_calls", 0)
         print(f"\n  Total Tokens:    {total_tokens:,}")
         print(f"  Total LLM Calls: {total_calls:,}")
+        print(f"  Est. LLM Cost:   ${result.estimated_llm_cost_usd:.6f}")
 
         by_provider = token_summary.get("by_provider", {})
         if by_provider:

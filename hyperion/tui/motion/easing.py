@@ -8,8 +8,15 @@ log-line fade-in, and section transitions.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 
-def _cubic_bezier(p1x: float, p1y: float, p2x: float, p2y: float):
+
+def _cubic_bezier(
+    p1x: float,
+    p1y: float,
+    p2x: float,
+    p2y: float,
+) -> Callable[[float], float]:
     """Return a callable f(t)->y approximating a CSS cubic-bezier.
 
     P0=(0,0), P3=(1,1). Solve x(t)=target via a few Newton iterations, then

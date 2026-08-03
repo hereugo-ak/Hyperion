@@ -52,7 +52,25 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+from markupsafe import Markup
+
+# Chromium does not implement CSS paged-media margin boxes. These templates
+# provide the running furniture for the Playwright fallback; the first-page
+# cover stays clean because Chromium suppresses header/footer templates when
+# the page margins are removed by the named cover page.
+PLAYWRIGHT_HEADER_TEMPLATE = """
+<div style="width:100%;font-family:serif;font-size:10px;color:#6f675f;text-align:center;">
+  HYPERION
+</div>
+"""
+PLAYWRIGHT_FOOTER_TEMPLATE = """
+<div style="width:100%;font-family:monospace;font-size:8px;color:#6f675f;text-align:center;">
+  HYPERION · many minds. one reading. ·
+  <span class="pageNumber"></span> / <span class="totalPages"></span>
+</div>
+"""
 
 
 @dataclass
@@ -85,6 +103,13 @@ class PDFRenderResult:
     success: bool = False
     error: str = ""
     warnings: list[str] = field(default_factory=list)
+    # W-02 (RC-2): when the page audit rejects the render, pdf_path is ""
+    # and these record where the rejected bytes went and why. A withheld
+    # PDF must be physically observable — not a silent success=False with
+    # the deliverable name still on disk (RC-2: a 277-violation PDF named
+    # exactly what the user expected the deliverable to be named).
+    rejected_path: str = ""
+    audit_violations: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +121,8 @@ class PDFRenderResult:
             "success": self.success,
             "error": self.error,
             "warnings": self.warnings,
+            "rejected_path": self.rejected_path,
+            "audit_violations": self.audit_violations,
         }
 
 
@@ -253,14 +280,6 @@ class TemplateRenderer:
         if not value:
             return ""
 
-        try:
-            from markupsafe import Markup
-        except ImportError:
-            try:
-                from jinja2 import Markup  # deprecated fallback for old jinja2
-            except ImportError:
-                Markup = str  # noqa: N806 — fallback; str will be auto-escaped by Jinja2
-
         import re
 
         html = value
@@ -315,9 +334,7 @@ class TemplateRenderer:
             result.append("</p>")
 
         output = "\n".join(result)
-        if Markup is not str:
-            return Markup(output)
-        return output
+        return cast("str", Markup(output))
 
     async def render_template(
         self,
@@ -438,6 +455,9 @@ class PDFRenderer:
                     path=output_path,
                     format="A4",
                     print_background=True,
+                    display_header_footer=True,
+                    header_template=PLAYWRIGHT_HEADER_TEMPLATE,
+                    footer_template=PLAYWRIGHT_FOOTER_TEMPLATE,
                     margin={
                         "top": "25mm",
                         "bottom": "25mm",
@@ -466,64 +486,93 @@ class PDFRenderer:
                     os.remove(temp_html)
 
     def _embed_images_as_data_uris(self, html: str) -> str:
-        """Convert img src file paths to base64 data URIs (D17 fix).
+        """Embed local images while enforcing per-asset and total byte budgets.
 
-        WeasyPrint and Playwright can't reliably load images from absolute
-        Windows paths (C:\\...) or relative paths. Embedding as data URIs
-        makes the HTML self-contained — no external file dependencies.
-
-        Handles:
-        - <img src="C:\\path\\to\\image.png">  → <img src="data:image/png;base64,...">
-        - <img src="path/to/image.png">       → resolved relative to cwd
-        - <img src="data:image/...">          → already embedded, skip
-        - <img src="https://...">             → remote URL, skip
+        Self-contained HTML is portable, but blindly base64-encoding archival
+        PNGs can add tens of megabytes to one report. Oversized photographs are
+        recompressed before embedding, charts retain lossless PNG where the
+        budget permits, and assets that cannot fit are omitted. Machine-local
+        paths are never left behind as a false promise to another renderer.
         """
         import base64
         import re
 
-        # Match img src attributes
-        img_pattern = re.compile(r'<img\s+[^>]*src="([^"]+)"', re.IGNORECASE)
+        from hyperion.output.images import (
+            MAX_CHART_IMAGE_BYTES,
+            MAX_COVER_BYTES,
+            MAX_EMBEDDED_IMAGE_BYTES,
+            MAX_SECTION_IMAGE_BYTES,
+            compress_image_for_embedding,
+        )
+
+        img_pattern = re.compile(
+            r'<img\b[^>]*\bsrc="([^"]+)"[^>]*>',
+            re.IGNORECASE,
+        )
+        embedded_bytes = 0
 
         def replace_src(match: re.Match[str]) -> str:
+            nonlocal embedded_bytes
+            tag = match.group(0)
             src = match.group(1)
+            tag_lower = tag.lower()
 
-            # Skip already-embedded data URIs
+            is_cover = "cover-image" in tag_lower
+            is_chart = any(
+                marker in tag_lower or marker in Path(src).stem.lower()
+                for marker in ("chart", "exhibit", "plot")
+            )
+            per_asset_budget = (
+                MAX_COVER_BYTES
+                if is_cover
+                else MAX_CHART_IMAGE_BYTES
+                if is_chart
+                else MAX_SECTION_IMAGE_BYTES
+            )
+            remaining = MAX_EMBEDDED_IMAGE_BYTES - embedded_bytes
+            allowed_bytes = min(per_asset_budget, remaining)
+            if allowed_bytes <= 0:
+                return ""
+
+            # Existing data URIs still count against both limits. They cannot
+            # safely be recompressed without MIME-specific decoding, so omit an
+            # over-budget payload rather than bypassing the guard.
             if src.startswith("data:"):
-                return match.group(0)
+                try:
+                    payload = src.split(",", 1)[1]
+                    size = len(base64.b64decode(payload, validate=True))
+                except (IndexError, ValueError):
+                    return ""
+                if size > allowed_bytes:
+                    return ""
+                embedded_bytes += size
+                return tag
 
-            # Skip remote URLs
-            if src.startswith("http://") or src.startswith("https://"):
-                return match.group(0)
+            # Remote URLs are deliberately left alone: this method owns local
+            # asset embedding, and callers may intentionally allow network
+            # resources in non-deliverable preview HTML.
+            if src.startswith(("http://", "https://")):
+                return tag
 
-            # Resolve to absolute path
             img_path = Path(src)
             if not img_path.is_absolute():
                 img_path = Path.cwd() / img_path
+            if not img_path.is_file():
+                return ""
 
-            if not img_path.exists():
-                return match.group(0)  # Leave as-is if file doesn't exist
+            compressed = compress_image_for_embedding(
+                img_path,
+                allowed_bytes,
+                preserve_lossless=is_chart,
+            )
+            if compressed is None:
+                return ""
 
-            # Determine MIME type
-            ext = img_path.suffix.lower()
-            mime_map = {
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".gif": "image/gif",
-                ".svg": "image/svg+xml",
-                ".webp": "image/webp",
-                ".bmp": "image/bmp",
-            }
-            mime_type = mime_map.get(ext, "application/octet-stream")
-
-            # Read and encode
-            try:
-                img_data = img_path.read_bytes()
-                b64 = base64.b64encode(img_data).decode("ascii")
-                new_src = f"data:{mime_type};base64,{b64}"
-                return match.group(0).replace(src, new_src)
-            except (OSError, ValueError):
-                return match.group(0)
+            img_data, mime_type = compressed
+            embedded_bytes += len(img_data)
+            b64 = base64.b64encode(img_data).decode("ascii")
+            new_src = f"data:{mime_type};base64,{b64}"
+            return tag.replace(src, new_src, 1)
 
         return img_pattern.sub(replace_src, html)
 
@@ -599,6 +648,79 @@ class PDFRenderer:
         else:
             result.warnings.append(f"PDF/A-2b post-pass skipped: {post.reason}")
 
+    def _finalize_or_reject(
+        self,
+        result: PDFRenderResult,
+        staging_path: str,
+        output_path: str,
+    ) -> PDFRenderResult:
+        """W-02 (RC-2): the single finalisation point for BOTH PDF engines.
+
+        The staging file has been rendered and post-processed; audit it,
+        then either promote it to the deliverable name or quarantine it.
+
+        On pass: ``os.replace(staging, output)`` — atomic on the same
+        filesystem, so the deliverable path either does not exist or is a
+        clean, audited PDF. There is no window in which a partial or
+        unaudited file occupies the deliverable name.
+
+        On fail: move the staging file to
+        ``<output_dir>/_rejected/<slug>.<timestamp>.rejected.pdf`` with a
+        sibling ``.violations.txt`` listing every violation in full, and
+        guarantee the deliverable path does not exist. The rejected bytes
+        are preserved for debugging; the ``_rejected/`` location and the
+        ``.rejected.pdf`` suffix mean the user can never mistake one for a
+        deliverable.
+        """
+        from hyperion.output.page_audit import PageAuditError, audit_pdf
+
+        try:
+            audit_pdf(staging_path)
+        except PageAuditError as exc:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            slug = Path(output_path).stem
+            rejected_dir = Path(output_path).parent / "_rejected"
+            rejected_dir.mkdir(parents=True, exist_ok=True)
+            rejected_path = rejected_dir / f"{slug}.{timestamp}.rejected.pdf"
+            violations_path = rejected_dir / f"{slug}.{timestamp}.violations.txt"
+            try:
+                # Same directory tree as the deliverable, so os.replace is
+                # atomic here too (never shutil.move across filesystems).
+                os.replace(staging_path, rejected_path)
+            except OSError as move_exc:
+                result.warnings.append(
+                    f"rejected artifact could not be quarantined: {move_exc!s:.100}"
+                )
+            violations_path.write_text(
+                f"Page audit rejected: {output_path}\n"
+                f"Rejected at: {datetime.now().isoformat()}\n"
+                f"Violations ({len(exc.violations)}):\n"
+                + "\n".join(f"- {v}" for v in exc.violations)
+                + "\n",
+                encoding="utf-8",
+            )
+            # The deliverable name must not exist after a failed audit.
+            Path(output_path).unlink(missing_ok=True)
+            result.success = False
+            result.pdf_path = ""
+            result.rejected_path = str(rejected_path)
+            result.audit_violations = list(exc.violations)
+            result.error = (
+                f"page audit failed ({len(exc.violations)} violation(s)); "
+                f"rejected artifact quarantined at {rejected_path}; "
+                f"full violation list at {violations_path}"
+            )
+            result.warnings.append(
+                "PDF withheld: render-time page audit failed (see error)"
+            )
+            return result
+
+        os.replace(staging_path, output_path)
+        result.pdf_path = output_path
+        result.success = True
+        result.file_size_bytes = os.path.getsize(output_path)
+        return result
+
     def render_pdf(
         self,
         html: str,
@@ -631,6 +753,13 @@ class PDFRenderer:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = str(self._reports_dir / f"hyperion_report_{timestamp}.pdf")
 
+        # W-02 (RC-2): render to a staging path in the SAME directory, never
+        # directly to the deliverable name. The deliverable path is only ever
+        # populated by _finalize_or_reject's atomic os.replace AFTER the page
+        # audit passes; a failed audit quarantines the bytes under _rejected/
+        # and guarantees the deliverable name does not exist.
+        staging_path = output_path + ".staging.pdf"
+
         # Fix 3.3: no brand CSS is loaded from disk. The only stylesheet this
         # renderer adds beyond the inline <style> in `html` is an explicit
         # caller-provided `additional_css` escape hatch.
@@ -662,22 +791,18 @@ class PDFRenderer:
             # the shipped brand CSS is inline in `full_html` already.
             css_obj = weasy_css(string=css_embedded) if css_embedded else None
 
-            # Render PDF
+            # Render PDF to the staging path (W-02) — the deliverable name
+            # stays empty until _finalize_or_reject promotes audited bytes.
             if css_obj:
-                html_obj.write_pdf(output_path, stylesheets=[css_obj])
+                html_obj.write_pdf(staging_path, stylesheets=[css_obj])
             else:
-                html_obj.write_pdf(output_path)
-
-            # Get PDF metadata
-            result.pdf_path = output_path
-            result.success = True
-            result.file_size_bytes = os.path.getsize(output_path)
+                html_obj.write_pdf(staging_path)
 
             # Try to get page count
             try:
                 import fitz
 
-                doc = fitz.open(output_path)
+                doc = fitz.open(staging_path)
                 result.page_count = len(doc)
 
                 # Check embedded fonts
@@ -690,64 +815,38 @@ class PDFRenderer:
             except (ImportError, OSError, ValueError):
                 result.warnings.append("PyMuPDF not available — page count unknown")
 
-            self._apply_pdf_post_pass(result, output_path, full_html)
+            self._apply_pdf_post_pass(result, staging_path, full_html)
 
-            # P2-08/P2-G1: render-time page audit, fail closed. This runs
-            # after the PDF/A post-pass so the audited bytes are the shipped
-            # bytes. A violation must never reach the client as a success.
-            from hyperion.output.page_audit import PageAuditError, audit_pdf
-
-            try:
-                audit_pdf(output_path)
-            except PageAuditError as exc:
-                result.success = False
-                result.error = f"page audit failed: {exc}"
-                result.warnings.append(
-                    "PDF withheld: render-time page audit failed (see error)"
-                )
-                return result
-
-            return result
+            # P2-08/P2-G1 + W-02: render-time page audit, fail closed, via
+            # the shared finaliser — a pass atomically promotes the staging
+            # file to the deliverable name; a failure quarantines it under
+            # _rejected/ and guarantees the deliverable name does not exist.
+            return self._finalize_or_reject(result, staging_path, output_path)
 
         except (OSError, ImportError, ValueError, RuntimeError) as exc:
             weasy_error = exc
             result.warnings.append(f"WeasyPrint failed: {weasy_error!s:.120}")
 
         # ── Attempt 2: Playwright Chromium fallback ──
-        if self._render_pdf_playwright(full_html, output_path, css_embedded):
-            result.pdf_path = output_path
-            result.success = True
-            result.file_size_bytes = os.path.getsize(output_path)
+        if self._render_pdf_playwright(full_html, staging_path, css_embedded):
             result.warnings.append("PDF rendered via Playwright (WeasyPrint unavailable)")
 
             # Try to get page count
             try:
                 import fitz
 
-                doc = fitz.open(output_path)
+                doc = fitz.open(staging_path)
                 result.page_count = len(doc)
                 doc.close()
             except (ImportError, OSError, ValueError):
                 pass
 
-            self._apply_pdf_post_pass(result, output_path, full_html)
+            self._apply_pdf_post_pass(result, staging_path, full_html)
 
-            # P2-08/P2-G1: render-time page audit, fail closed (same as the
-            # WeasyPrint path above — the audit applies to whichever engine
-            # produced the bytes).
-            from hyperion.output.page_audit import PageAuditError, audit_pdf
-
-            try:
-                audit_pdf(output_path)
-            except PageAuditError as exc:
-                result.success = False
-                result.error = f"page audit failed: {exc}"
-                result.warnings.append(
-                    "PDF withheld: render-time page audit failed (see error)"
-                )
-                return result
-
-            return result
+            # P2-08/P2-G1 + W-02: same shared finaliser as the WeasyPrint
+            # path — the audit applies to whichever engine produced the
+            # bytes, and a failure is quarantined identically.
+            return self._finalize_or_reject(result, staging_path, output_path)
 
         # ── Both PDF engines failed: emit a real HTML deliverable ──
         #
@@ -766,6 +865,10 @@ class PDFRenderer:
         # to PDF from a browser, and inspect — never an empty folder.
         result.success = False
         result.pdf_path = ""
+        # W-02: no staging or deliverable bytes survive a total engine
+        # failure — only the self-contained HTML fallback remains.
+        Path(output_path).unlink(missing_ok=True)
+        Path(staging_path).unlink(missing_ok=True)
 
         fallback_path = output_path.replace(".pdf", "_FALLBACK.html")
         fallback_written = False

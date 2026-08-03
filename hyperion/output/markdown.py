@@ -238,7 +238,8 @@ class MarkdownExporter:
             for finding in findings:
                 if isinstance(finding, dict):
                     f_title = finding.get("title", "")
-                    f_content = finding.get("content", finding.get("description", ""))
+                    raw_content = finding.get("content", finding.get("description", ""))
+                    f_content = raw_content if isinstance(raw_content, str) else str(raw_content)
                     f_conf = finding.get("confidence", "")
                     lines.append(f"- **{f_title}**: {f_content[:200]}")
                     if f_conf:
@@ -246,12 +247,15 @@ class MarkdownExporter:
                         lines.append(f"  - *Confidence: {conf_str}*")
                     f_sources = finding.get("sources", [])
                     if f_sources:
-                        src_titles = []
-                        for s in f_sources[:3]:
-                            if isinstance(s, dict):
-                                src_titles.append(s.get("title", s.get("url", "")))
+                        src_titles: list[str] = []
+                        for source in f_sources[:3]:
+                            if isinstance(source, dict):
+                                raw_title = source.get("title", source.get("url", ""))
+                                src_titles.append(
+                                    raw_title if isinstance(raw_title, str) else str(raw_title)
+                                )
                             else:
-                                src_titles.append(str(s))
+                                src_titles.append(str(source))
                         if src_titles:
                             lines.append(f"  - *Sources: {', '.join(src_titles)}*")
                 else:

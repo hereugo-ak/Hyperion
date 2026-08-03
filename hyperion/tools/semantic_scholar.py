@@ -40,7 +40,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -229,7 +229,7 @@ class SemanticScholarClient:
         cache_key = self._cache_key(endpoint, *sorted((params or {}).items()))
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("dict[str, Any]", cached)
 
         await self._rate_limit()
         client = await self._get_client()
@@ -240,7 +240,7 @@ class SemanticScholarClient:
             try:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
-                data = response.json()
+                data = cast("dict[str, Any]", response.json())
 
                 self._set_cached(cache_key, data)
                 return data
@@ -274,7 +274,7 @@ class SemanticScholarClient:
         cache_key = self._cache_key(url, *sorted((params or {}).items()))
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("dict[str, Any]", cached)
 
         await self._rate_limit()
         client = await self._get_client()
@@ -283,7 +283,7 @@ class SemanticScholarClient:
             try:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
-                data = response.json()
+                data = cast("dict[str, Any]", response.json())
 
                 self._set_cached(cache_key, data)
                 return data
@@ -492,7 +492,7 @@ class SemanticScholarClient:
 
         tldr_data = data.get("tldr")
         if tldr_data and isinstance(tldr_data, dict):
-            return tldr_data.get("text", "")
+            return str(tldr_data.get("text", ""))
 
         return ""
 

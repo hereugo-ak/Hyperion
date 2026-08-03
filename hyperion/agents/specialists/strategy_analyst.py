@@ -1,5 +1,5 @@
 """
-HYPERION Strategy Analyst — Agent 14, the strategic frameworks specialist.
+HYPERION Strategy Analyst, Agent 14, the strategic frameworks specialist.
 
 This is NOT a generic "apply SWOT to everything" agent. This is a specialist
 with 8 proprietary analytical frameworks:
@@ -24,17 +24,17 @@ with 8 proprietary analytical frameworks:
   equilibria.
 
 It doesn't apply every framework to every question. It selects the right
-framework for the specific question — Porter's for industry attractiveness,
+framework for the specific question, Porter's for industry attractiveness,
 VRIO for resource-based strategy, Blue Ocean for market creation, game theory
 for competitive dynamics. A generic strategist applies SWOT to everything.
 The HYPERION Strategy Analyst applies the framework that actually illuminates
 the specific question, and explicitly says why it chose that framework over
 the alternatives. (§4.4, Agent 14)
 
-Model Tier: STRONG (Nemotron 3 Super 120B — strategy requires the strongest
+Model Tier: STRONG (Nemotron 3 Super 120B, strategy requires the strongest
 reasoning)
 Tools: SearxNG, Jina, Obscura
-Sub-agents: Max 3 — Porter's data, competitor moves, VRIO resources
+Sub-agents: Max 3, Porter's data, competitor moves, VRIO resources
 Output: StrategyAnalysis (Five Forces, VRIO, SWOT/TOWS, strategic options,
         game theory)
 
@@ -118,7 +118,7 @@ STRATEGY_ANALYST_SPEC = AgentSpec(
                 "of new entrants, bargaining power of suppliers, bargaining "
                 "power of buyers, threat of substitutes, and competitive "
                 "rivalry. Score each force as strong/moderate/weak with "
-                "specific rationale. Not just 'rivalry is high' — 'rivalry "
+                "specific rationale. Not just 'rivalry is high''rivalry "
                 "is STRONG because 3 well-funded competitors compete on price "
                 "in a mature market with 70% combined market share.'"
             ),
@@ -155,7 +155,7 @@ STRATEGY_ANALYST_SPEC = AgentSpec(
                 "Identify whether the company can create uncontested market "
                 "space using the eliminate-reduce-raise-create framework. "
                 "Build a strategy canvas comparing the company to competitors. "
-                "Not just 'differentiate' — 'Eliminate: premium pricing. "
+                "Not just 'differentiate''Eliminate: premium pricing. "
                 "Reduce: feature bloat. Raise: customer support quality. "
                 "Create: self-service onboarding.'"
             ),
@@ -169,7 +169,7 @@ STRATEGY_ANALYST_SPEC = AgentSpec(
                 "Imitability, and Organization. Identify which resources "
                 "provide sustainable competitive advantage vs. temporary "
                 "advantage vs. competitive parity vs. disadvantage. Not just "
-                "'our brand is valuable' — 'Brand: V=yes, R=yes, I=yes "
+                "'our brand is valuable''Brand: V=yes, R=yes, I=yes "
                 "(60-year history), O=yes → sustained competitive advantage.'"
             ),
             inputs=["resource_list", "capability_assessment", "competitor_resources"],
@@ -191,7 +191,7 @@ STRATEGY_ANALYST_SPEC = AgentSpec(
             description=(
                 "Build a grid of 3-5 strategic options, each scored on: "
                 "feasibility, impact, risk, time to value, and resource "
-                "requirements. Not just 'option A is good' — 'Option A: "
+                "requirements. Not just 'option A is good''Option A: "
                 "feasibility HIGH, impact HIGH, risk MEDIUM, time 6-12mo, "
                 "resources MEDIUM. Recommended.'"
             ),
@@ -204,7 +204,7 @@ STRATEGY_ANALYST_SPEC = AgentSpec(
                 "Analyze competitive interactions using game theory "
                 "(prisoner's dilemma, sequential games, signaling). Identify "
                 "dominant strategies and Nash equilibria. Not just "
-                "'competition is intense' — 'This is a prisoner's dilemma: "
+                "'competition is intense''This is a prisoner's dilemma: "
                 "if both competitors cut prices, both lose. The Nash "
                 "equilibrium is to maintain prices, but the temptation to "
                 "defect is high.'"
@@ -214,7 +214,7 @@ STRATEGY_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Strategy Analyst — the specialist who applies "
+        "You are the HYPERION Strategy Analyst, the specialist who applies "
         "strategic frameworks to the question, evaluates competitive "
         "positioning, and designs strategic options.\n\n"
         "Your proprietary frameworks:\n"
@@ -247,16 +247,16 @@ STRATEGY_ANALYST_SPEC = AgentSpec(
         "actually illuminates the specific question.\n\n"
         "Rules:\n"
         "- EACH PORTER'S FORCE MUST HAVE SPECIFIC RATIONALE. Not just 'high' "
-        "— 'STRONG because 3 competitors with 70% combined share compete on "
+        "'STRONG because 3 competitors with 70% combined share compete on "
         "price in a mature market.'\n"
         "- SWOT MUST BE CONVERTED TO TOWS. SWOT alone is just a snapshot. "
         "TOWS generates strategic options.\n"
-        "- VRIO MUST HAVE ALL 4 DIMENSIONS per resource. V, R, I, O — each "
+        "- VRIO MUST HAVE ALL 4 DIMENSIONS per resource. V, R, I, O, each "
         "yes/no with reasoning.\n"
         "- GAME THEORY MUST IDENTIFY THE GAME TYPE. Not just 'competition is "
-        "intense' — identify the specific game (prisoner's dilemma, "
+        "intense', identify the specific game (prisoner's dilemma, "
         "sequential, signaling) and the Nash equilibrium.\n"
-        "- STRATEGIC OPTIONS MUST BE SCORED. Not just 'option A is good' — "
+        "- STRATEGIC OPTIONS MUST BE SCORED. Not just 'option A is good'"
         "scored on feasibility, impact, risk, time to value, resources.\n\n"
         "You can spawn up to 3 sub-agents for parallel data collection:\n"
         "- Sub-agent A: Find Porter's Five Forces data for [industry] (MICRO, "
@@ -265,7 +265,7 @@ STRATEGY_ANALYST_SPEC = AgentSpec(
         "SearxNG)\n"
         "- Sub-agent C: Find VRIO-relevant resources for [company] (FAST, "
         "SearxNG + Obscura)\n\n"
-        "Your output is a StrategyAnalysis Pydantic model — structured, not "
+        "Your output is a StrategyAnalysis Pydantic model, structured, not "
         "free text."
     ),
     spawn_condition="Spawned when the question involves strategy, competitive "
@@ -288,7 +288,7 @@ class StrategyAnalyst(BaseAgent):
 
     Applies strategic frameworks to the question, evaluates competitive
     positioning, and designs strategic options. Selects the right framework
-    for the specific question — doesn't apply SWOT to everything. Explicitly
+    for the specific question, doesn't apply SWOT to everything. Explicitly
     says why it chose that framework over alternatives. (§4.4, Agent 14)
 
     Lifecycle:
@@ -476,10 +476,10 @@ class StrategyAnalyst(BaseAgent):
                             })
                             self._sources.append(Source(
                                 id=f"src_{len(self._sources):03d}",
-                                title=f"Strategy DB — {url.split('/')[2]}",
+                                title=f"Strategy DB, {url.split('/')[2]}",
                                 url=url,
                                 credibility=SourceCredibility.INDUSTRY_REPORT,
-                                key_data=f"Strategy data from {url.split('/')[2]}",
+                                key_data=page_data["content"][:500],
                             ))
                     except (ValueError, AttributeError, RuntimeError):
                         continue
@@ -492,7 +492,7 @@ class StrategyAnalyst(BaseAgent):
         return results
 
     # ─────────────────────────────────────────────────────────────────────
-    # Framework selection — the critical differentiator
+    # Framework selection, the critical differentiator
     # ─────────────────────────────────────────────────────────────────────
 
     async def _select_frameworks(self, question: str, context: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -513,16 +513,16 @@ class StrategyAnalyst(BaseAgent):
             f"Sector: {sector}\n"
             f"Company: {company}\n\n"
             "Available frameworks:\n"
-            "1. Porter's Five Forces — for industry attractiveness questions\n"
-            "2. BCG growth-share matrix — for portfolio questions\n"
-            "3. SWOT/TOWS — for general strategic positioning\n"
-            "4. Blue Ocean strategy — for market creation questions\n"
-            "5. VRIO framework — for resource-based strategy questions\n"
-            "6. Core competence analysis — for capability assessment\n"
-            "7. Strategic option grid — for evaluating strategic options\n"
-            "8. Game theory — for competitive dynamics questions\n\n"
+            "1. Porter's Five Forces, for industry attractiveness questions\n"
+            "2. BCG growth-share matrix, for portfolio questions\n"
+            "3. SWOT/TOWS, for general strategic positioning\n"
+            "4. Blue Ocean strategy, for market creation questions\n"
+            "5. VRIO framework, for resource-based strategy questions\n"
+            "6. Core competence analysis, for capability assessment\n"
+            "7. Strategic option grid, for evaluating strategic options\n"
+            "8. Game theory, for competitive dynamics questions\n\n"
             "SELECT 3-5 frameworks that best illuminate this specific question. "
-            "Do NOT apply all 8 — select the RIGHT ones.\n\n"
+            "Do NOT apply all 8, select the RIGHT ones.\n\n"
             "Also list frameworks you are NOT selecting and why not.\n\n"
             "Return JSON:\n"
             "{\n"
@@ -603,7 +603,7 @@ class StrategyAnalyst(BaseAgent):
             "performance tradeoffs\n"
             "5. Competitive rivalry: number of competitors, growth rate, "
             "differentiation, exit barriers\n\n"
-            "NOT just 'rivalry is high' — 'rivalry is STRONG because 3 well-"
+            "NOT just 'rivalry is high''rivalry is STRONG because 3 well-"
             "funded competitors compete on price in a mature market with 70% "
             "combined market share.'\n\n"
             "Return JSON:\n"
@@ -697,7 +697,7 @@ class StrategyAnalyst(BaseAgent):
             "V=yes, R=yes, I=no → temporary advantage\n"
             "V=yes, R=yes, I=yes, O=yes → sustained advantage\n"
             "V=yes, R=yes, I=yes, O=no → unused advantage\n\n"
-            "NOT just 'our brand is valuable' — 'Brand: V=yes, R=yes, I=yes "
+            "NOT just 'our brand is valuable''Brand: V=yes, R=yes, I=yes "
             "(60-year history), O=yes → sustained competitive advantage.'\n\n"
             "Return JSON:\n"
             "{\n"
@@ -890,7 +890,7 @@ class StrategyAnalyst(BaseAgent):
             "- resource_requirements: high, medium, low\n"
             "- overall_score: ranking or score\n"
             "- recommendation: pursue, explore, or reject\n\n"
-            "NOT just 'option A is good' — 'Option A: feasibility HIGH, "
+            "NOT just 'option A is good''Option A: feasibility HIGH, "
             "impact HIGH, risk MEDIUM, time 6-12mo, resources MEDIUM. "
             "Recommended.'\n\n"
             "Also identify the recommended option and why.\n\n"
@@ -976,7 +976,7 @@ class StrategyAnalyst(BaseAgent):
             "- dominant_strategy: dominant strategy if one exists\n"
             "- nash_equilibrium: Nash equilibrium description\n"
             "- implications: strategic implications for the company\n\n"
-            "NOT just 'competition is intense' — 'This is a prisoner's "
+            "NOT just 'competition is intense''This is a prisoner's "
             "dilemma: if both competitors cut prices, both lose. The Nash "
             "equilibrium is to maintain prices, but the temptation to defect "
             "is high.'\n\n"
@@ -1020,8 +1020,8 @@ class StrategyAnalyst(BaseAgent):
     # Conditional frameworks (Phase 5.1e)
     #
     # `_select_frameworks` offers the LLM 8 frameworks and asks it to pick
-    # 3-5. Five had implementations. Three — BCG growth-share matrix, Blue
-    # Ocean, and core competence analysis — did not: `run()` hardcoded
+    # 3-5. Five had implementations. Three, BCG growth-share matrix, Blue
+    # Ocean, and core competence analysis, did not: `run()` hardcoded
     #
     #     bcg_matrix=None,       # Only applied if portfolio question
     #     blue_ocean=None,       # Only applied if market creation question
@@ -1031,7 +1031,7 @@ class StrategyAnalyst(BaseAgent):
     # (and for portfolio questions, would) choose a framework the agent was
     # structurally incapable of delivering, `StrategyAnalysis` carried three
     # permanently-null fields, and `frameworks_selected` advertised analysis
-    # that was never performed — a false claim in the deliverable.
+    # that was never performed, a false claim in the deliverable.
     #
     # These three run only when actually selected, which is what the original
     # comments described but never implemented.
@@ -1059,7 +1059,7 @@ class StrategyAnalyst(BaseAgent):
         """Plot business units on the BCG growth-share matrix.
 
         Categorisation is derived from the two axes the framework is defined
-        by — market growth rate and relative market share — not taken on the
+        by, market growth rate and relative market share, not taken on the
         model's word. If the model says "star" but reports low growth, the
         axes win: the framework is the framework.
         """
@@ -1163,7 +1163,7 @@ class StrategyAnalyst(BaseAgent):
         )
 
     #: The framework's own prescription per quadrant, used when the model
-    #: omits a recommendation. Not a guess — this is what BCG says.
+    #: omits a recommendation. Not a guess, this is what BCG says.
     _BCG_DEFAULT_ACTION = {
         BCGCategory.STAR: "invest",
         BCGCategory.CASH_COW: "harvest",
@@ -1199,7 +1199,7 @@ class StrategyAnalyst(BaseAgent):
         "star" is contradicting the framework it was asked to apply. When an
         axis is missing we fall back to the model's own label rather than
         guessing, and only then to QUESTION_MARK (the genuinely
-        "insufficient information" quadrant — high potential, unproven).
+        "insufficient information" quadrant, high potential, unproven).
         """
         growth_val = self._parse_leading_number(growth)
         share_val = self._parse_leading_number(share)
@@ -1230,7 +1230,7 @@ class StrategyAnalyst(BaseAgent):
         Every imbalance present is reported, not just the first one found. An
         earlier version returned on the first match, so a portfolio of three
         dogs and one question mark was described only as "no cash cow to fund
-        the growth unit" — true, but it silently omitted that three quarters of
+        the growth unit", true, but it silently omitted that three quarters of
         the portfolio should be divested. A partial diagnosis of a portfolio is
         arguably worse than none: the reader believes they have the whole
         picture and acts on one finding while the larger one goes unmentioned.
@@ -1255,7 +1255,7 @@ class StrategyAnalyst(BaseAgent):
             )
         if cows and not (stars or marks):
             issues.append(
-                f"{cows} cash cow(s) but no stars or question marks — the "
+                f"{cows} cash cow(s) but no stars or question marks, the "
                 "portfolio has no future growth engine"
             )
         if dogs > (stars + cows + marks):
@@ -1303,7 +1303,7 @@ class StrategyAnalyst(BaseAgent):
             "Then judge honestly whether a blue ocean is actually available. "
             "Most industries are red oceans and most companies should compete "
             "in them better rather than pretend otherwise. Set "
-            "is_blue_ocean_feasible to false and say why if so — a false "
+            "is_blue_ocean_feasible to false and say why if so, a false "
             "negative here is far cheaper than recommending a market that "
             "does not exist.\n\n"
             "If feasible, describe new_market_space concretely: who is the "
@@ -1372,7 +1372,7 @@ class StrategyAnalyst(BaseAgent):
         space = str(data.get("new_market_space") or "").strip()
 
         # A "feasible blue ocean" with no described market space is an empty
-        # claim — the single most seductive failure mode of this framework.
+        # claim, the single most seductive failure mode of this framework.
         # Downgrade rather than publish it.
         if feasible and not space:
             feasible = False
@@ -1399,7 +1399,7 @@ class StrategyAnalyst(BaseAgent):
     ) -> CoreCompetence:
         """Identify core competencies, grounded in the VRIO assessment.
 
-        The original comment said "Derived from VRIO if needed" — this is that
+        The original comment said "Derived from VRIO if needed", this is that
         derivation, made real. VRIO's sustained advantages are exactly the
         Prahalad-and-Hamel test for a core competence, so they are passed in
         as the evidence base rather than asking the model to start over.
@@ -1424,7 +1424,7 @@ class StrategyAnalyst(BaseAgent):
             "3. It can be leveraged across multiple products or markets\n\n"
             "A large budget is not a competence. Being big is not a "
             "competence. If only one competence passes all three tests, "
-            "return one — do not pad to three.\n\n"
+            "return one, do not pad to three.\n\n"
             "Assess is_defensible and is_transferable as booleans, and "
             "justify each in defensibility_assessment and "
             "transferability_assessment.\n\n"
@@ -1468,7 +1468,7 @@ class StrategyAnalyst(BaseAgent):
 
         # Keep descriptions aligned with competencies. The two are parallel
         # lists, so a length mismatch silently mis-attributes a description to
-        # the wrong competence — pad instead of letting them slip.
+        # the wrong competence, pad instead of letting them slip.
         if descriptions and len(descriptions) != len(competencies):
             if len(descriptions) < len(competencies):
                 descriptions = descriptions + [""] * (len(competencies) - len(descriptions))
@@ -1504,27 +1504,27 @@ class StrategyAnalyst(BaseAgent):
         """
         sub_specs = [
             SubAgentSpec(
-                question=f"Find Porter's Five Forces data for {sector} industry — barriers to entry, supplier power, buyer power, substitutes, rivalry intensity",
+                question=f"Find Porter's Five Forces data for {sector} industry, barriers to entry, supplier power, buyer power, substitutes, rivalry intensity",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
                 context={"sector": sector},
             ),
             SubAgentSpec(
-                question=f"Find competitor strategic moves in {sector} — recent announcements, M&A, product launches, pricing changes, market entry/exit",
+                question=f"Find competitor strategic moves in {sector}, recent announcements, M&A, product launches, pricing changes, market entry/exit",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
                 context={"sector": sector},
             ),
             SubAgentSpec(
-                question=f"Find VRIO-relevant resources for {company or sector} — brand value, patents, proprietary technology, distribution networks, key partnerships, unique capabilities",
+                question=f"Find VRIO-relevant resources for {company or sector}, brand value, patents, proprietary technology, distribution networks, key partnerships, unique capabilities",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1573,7 +1573,7 @@ class StrategyAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 8-step methodology
+    # Main execution, the 8-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1618,7 +1618,7 @@ class StrategyAnalyst(BaseAgent):
         await self._transition(AgentState.WORKING, f"Step 1: Searching for strategic context in {sector}")
         self._search_results = await self._search_strategic_context(sector, company)
 
-        # Framework selection — the critical differentiator
+        # Framework selection, the critical differentiator
         await self._transition(AgentState.WORKING, "Selecting frameworks based on the specific "
             "question")
         self._frameworks_selected, self._frameworks_not_selected = await self._select_frameworks(
@@ -1659,7 +1659,7 @@ class StrategyAnalyst(BaseAgent):
             "competitive dynamics")
         game_theory = await self._run_game_theory(self._question, porter, self._search_results, self._context)
 
-        # Step 7b: Conditional frameworks — run ONLY when _select_frameworks
+        # Step 7b: Conditional frameworks, run ONLY when _select_frameworks
         # actually chose them (Phase 5.1e). Previously these three were
         # hardcoded to None, so the selector could advertise analysis the agent
         # could not produce. Running them unconditionally would be the opposite

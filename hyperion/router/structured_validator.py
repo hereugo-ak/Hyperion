@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from hyperion.obs import trace
 
@@ -208,7 +208,10 @@ def validate_json_list(content: str) -> list[Any] | None:
     return None
 
 
-def validate_pydantic(content: str, model_cls: type) -> tuple[Any | None, str]:
+def validate_pydantic[ModelT: BaseModel](
+    content: str,
+    model_cls: type[ModelT],
+) -> tuple[ModelT | None, str]:
     """Validate JSON content against a Pydantic model.
 
     Returns (model_instance, error_message). On success, error is "".
@@ -273,7 +276,7 @@ class StructuredValidator:
     async def validate_and_repair(
         self,
         content: str,
-        model_cls: type | None = None,
+        model_cls: type[BaseModel] | None = None,
         messages: list[dict[str, str]] | None = None,
         tier: Any = None,
         agent_name: str = "",

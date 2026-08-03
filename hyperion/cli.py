@@ -15,6 +15,9 @@ from __future__ import annotations
 import asyncio
 import json as json_module
 import logging
+import os
+import re
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +95,10 @@ def shell(
         # package. Chaining keeps that traceback reachable instead of replacing
         # it with a misleading install hint.
         raise typer.Exit(code=1) from exc
+
+    # The interactive shell can own a live engagement just like `consult` and
+    # `resume`, so it needs the same journal-close and output-quarantine path.
+    _install_interrupt_handlers()
 
     # Teardown is guaranteed here as well as inside the app.
     #
@@ -173,6 +180,98 @@ def boot(
     shell(reduced_motion=reduced_motion, demo=demo, no_mouse=no_mouse)
 
 
+# ── W-20: interrupt safety ──────────────────────────────────────────────────────
+#
+# There were previously ZERO SIGINT/SIGTERM handlers anywhere in the tree, so
+# Ctrl+C mid-engagement left (a) the durable-execution journal un-closed (WAL
+# never checkpointed — a later resume could not see the steps that HAD
+# finished) and (b) a partial PDF at the deliverable path
+# (``output/report.pdf`` or its ``.staging.pdf`` sibling), which is exactly
+# the stale-deliverable failure W-02 exists to prevent for audit failures.
+
+# The engine being driven right now (module-level so the synchronous signal
+# handler can reach its journal without a reference cycle through the frame).
+_active_engine: Any = None
+
+
+def _deliverable_candidates() -> list[str]:
+    """Paths where a partial deliverable can exist at the moment of interrupt.
+
+    The live pipeline renders to ``output/report.pdf.staging.pdf`` and only
+    atomically renames to ``output/report.pdf`` after the page audit passes
+    (W-02), so both names — plus the user-visible ``--output`` target — are
+    candidates for quarantine.
+    """
+    candidates = [
+        "output/report.pdf",
+        "output/report.pdf.staging.pdf",
+    ]
+    return candidates
+
+
+def _quarantine_partial_outputs(extra_paths: list[str] | None = None) -> list[str]:
+    """Move partial deliverable bytes under ``output/_rejected/`` (W-02 path).
+
+    Same naming contract as the audit-rejection quarantine:
+    ``<slug>.<timestamp>.interrupted.pdf``. Anything moved is returned so the
+    handler can report it. Never raises — this runs inside a signal handler.
+    """
+    import shutil
+    import time as _time
+
+    moved: list[str] = []
+    rejected_dir = Path("output") / "_rejected"
+    for path in [*_deliverable_candidates(), *(extra_paths or [])]:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            rejected_dir.mkdir(parents=True, exist_ok=True)
+            slug = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(path))
+            dest = rejected_dir / f"{slug}.{_time.strftime('%Y%m%d_%H%M%S')}.interrupted.pdf"
+            shutil.move(path, dest)
+            moved.append(str(dest))
+        except OSError as exc:
+            logger.warning("%s: %s", "_quarantine_partial_outputs", exc)
+    return moved
+
+
+def _install_interrupt_handlers(output_path: str = "") -> None:
+    """Install SIGINT/SIGTERM handlers for a CLI engagement run.
+
+    On interrupt: (1) close the open RunJournal so its WAL is checkpointed
+    and a subsequent ``hyperion resume`` sees every step that had actually
+    completed, and (2) quarantine whatever partial output exists at the
+    deliverable path via the W-02 ``_rejected/`` path, so an interrupted run
+    never leaves stale bytes at the deliverable name. Then re-raise as
+    KeyboardInterrupt / default SIGTERM so the process still terminates.
+    """
+
+    def _handler(signum: int, _frame: Any) -> None:
+        name = signal.Signals(signum).name
+        console.print(f"[{WARN}]{name} received — closing journal, quarantining partial output…[/{WARN}]")
+        engine = _active_engine
+        journal = getattr(engine, "_journal", None) if engine is not None else None
+        if journal is not None:
+            try:
+                journal.close()
+                console.print(f"[{DIM}]journal closed (WAL checkpointed) — `hyperion resume` can replay completed steps[/{DIM}]")
+            except Exception as exc:  # noqa: BLE001 - must not mask the interrupt
+                logger.warning("%s: %s", "interrupt journal close", exc)
+        extra = [output_path, f"{output_path}.staging.pdf"] if output_path else []
+        moved = _quarantine_partial_outputs(extra)
+        for dest in moved:
+            console.print(f"[{DIM}]partial output quarantined → {dest}[/{DIM}]")
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        # SIGTERM: restore the default disposition and re-raise so the exit
+        # status reflects the signal rather than a clean 0.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+
+
 # ── consult ─────────────────────────────────────────────────────────────────────
 
 
@@ -182,9 +281,20 @@ def consult(
     context: str = typer.Option("", "--context", "-c", help="Extra engagement context."),
     output: str = typer.Option("", "--output", "-o", help="PDF output path."),
     markdown: bool = typer.Option(False, "--markdown", "-m", help="Also export markdown."),
+    fresh: bool = typer.Option(
+        False,
+        "--fresh",
+        help="Force a brand-new run id — ignore any resumable journal for this question.",
+    ),
 ) -> None:
-    """Run a full engagement non-interactively and save the report."""
+    """Run a full engagement non-interactively and save the report.
+
+    By default the run id is deterministic (W-20), so re-invoking the same
+    question after a crash RESUMES from the journal's completed steps. Pass
+    ``--fresh`` to force a from-zero re-run.
+    """
     _banner()
+    _install_interrupt_handlers(output)
     console.print(
         Panel(
             Text(question, style="bold"),
@@ -194,7 +304,7 @@ def consult(
     )
     console.print()
 
-    result = asyncio.run(_run_engagement(question, context, output))
+    result = asyncio.run(_run_engagement(question, context, output, fresh=fresh))
 
     if result.success:
         lines = [
@@ -218,7 +328,12 @@ def consult(
         raise typer.Exit(code=1)
 
 
-async def _run_engagement(question: str, context: str, output_path: str) -> Any:
+async def _run_engagement(
+    question: str,
+    context: str,
+    output_path: str,
+    fresh: bool = False,
+) -> Any:
     from hyperion.orchestrator import WorkflowEngine
     from hyperion.tui.boot import (
         ensure_docker_ready,
@@ -257,9 +372,15 @@ async def _run_engagement(question: str, context: str, output_path: str) -> Any:
             f"search only[/{WARN}]"
         )
 
+    global _active_engine
     engine = WorkflowEngine()
+    _active_engine = engine
     try:
-        result = await engine.run_engagement(question=question, conversation_context=context)
+        result = await engine.run_engagement(
+            question=question,
+            conversation_context=context,
+            fresh=fresh,
+        )
         if output_path and result.pdf_path:
             import shutil
 
@@ -267,9 +388,97 @@ async def _run_engagement(question: str, context: str, output_path: str) -> Any:
             result.pdf_path = output_path
         return result
     finally:
+        _active_engine = None
         await engine.close()
         # Stop all services on exit (Docker containers + global tool clients)
         await stop_services()
+
+
+# ── resume ───────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def resume(
+    target: str = typer.Argument(
+        ...,
+        help="Engagement id (eng_…) or the original question text.",
+    ),
+    output: str = typer.Option("", "--output", "-o", help="PDF output path."),
+) -> None:
+    """Resume an interrupted engagement from its durable-execution journal.
+
+    The journal under ``artifacts/<run_id>/`` records every DAG step that
+    completed. Re-running the same question (W-20 deterministic run id)
+    replays those steps from the artifact store instead of re-dispatching
+    them, and executes only the steps that never finished.
+    """
+    _banner()
+    from hyperion.obs import RunManifest
+    from hyperion.orchestrator import derive_run_id
+
+    if target.startswith("eng_"):
+        manifest = RunManifest.load(target)
+        if manifest is None:
+            console.print(
+                f"[{ERROR}]no journal/manifest found for '{target}' under artifacts/ — "
+                f"nothing to resume. Pass the original question text instead.[/{ERROR}]"
+            )
+            raise typer.Exit(code=1)
+        question = manifest.question
+        context = manifest.conversation_context
+        run_id = target
+    else:
+        question = target
+        context = ""
+        run_id = derive_run_id(question)
+
+    journal_path = Path("artifacts") / run_id / "journal.sqlite"
+    if not journal_path.exists():
+        console.print(
+            f"[{WARN}]no journal at {journal_path} — this question has no "
+            f"resumable state; running it fresh (deterministic id {run_id}).[/{WARN}]"
+        )
+    else:
+        from hyperion.obs import RunJournal
+
+        journal = RunJournal(run_id)
+        journal.open()
+        try:
+            done = journal.get_completed_steps()
+            failed = journal.get_failed_steps()
+        finally:
+            journal.close()
+        console.print(
+            f"[{CYAN}]resuming {run_id}: {len(done)} completed step(s) will "
+            f"replay from cache, {len(failed)} previously-failed step(s) re-run[/{CYAN}]"
+        )
+
+    console.print(
+        Panel(
+            Text(question, style="bold"),
+            title=Text("resume engagement", style=VIOLET),
+            border_style=DIM,
+        )
+    )
+    _install_interrupt_handlers(output)
+    result = asyncio.run(_run_engagement(question, context, output, fresh=False))
+    if result.success:
+        console.print(
+            Panel(
+                Text(result.pdf_path or "completed", style=MAGENTA),
+                title=Text("resumed — done", style=SUCCESS),
+                border_style=SUCCESS,
+            )
+        )
+    else:
+        console.print(
+            Panel(
+                Text(result.error or "engagement failed", style=ERROR),
+                title=Text("error", style=ERROR),
+                border_style=ERROR,
+            )
+        )
+        raise typer.Exit(code=1)
 
 
 # ── providers ────────────────────────────────────────────────────────────────
@@ -290,7 +499,8 @@ def providers() -> None:
     table.add_column("provider", style=f"bold {CYAN}")
     table.add_column("status", justify="center")
     table.add_column("tpm", justify="right")
-    table.add_column("budget", justify="right")
+    table.add_column("daily requests", justify="right")
+    table.add_column("engagement cost", justify="right")
     table.add_column("uptime", justify="right")
 
     for pt in ProviderType:
@@ -304,6 +514,7 @@ def providers() -> None:
             status,
             f"{tpm.get('percentage', 0.0):.0f}%",
             f"{budget.get('percentage', 0.0):.0f}%",
+            f"${budget.get('engagement_cost_usd', 0.0):.6f}",
             f"{h.get('uptime_pct', 0.0):.0f}%",
         )
     console.print(table)
@@ -409,7 +620,8 @@ def help() -> None:
     table.add_column("command", style=f"bold {CYAN}")
     table.add_column("description", style=DIM)
     table.add_row("shell", "launch the interactive TUI command bridge")
-    table.add_row("consult <q>", "run an engagement non-interactively → PDF")
+    table.add_row("consult <q>", "run an engagement non-interactively → PDF (--fresh to restart)")
+    table.add_row("resume <id|q>", "resume an interrupted engagement from its journal")
     table.add_row("providers", "show LLM provider status and rate limits")
     table.add_row("vault <query>", "search the Second Brain for prior research")
     table.add_row("export <fmt>", "export the latest report (pdf | markdown | json)")

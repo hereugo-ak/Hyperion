@@ -23,6 +23,7 @@ This file contains:
 
 from __future__ import annotations
 
+import re as _re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
@@ -30,7 +31,10 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-import re as _re
+# W-10. Safe to import at module level: hyperion.schemas.methodology is a leaf
+# (stdlib + pydantic only) and defers its ClientProse import into the validator
+# body precisely so this direction stays acyclic.
+from hyperion.schemas.methodology import MethodologyRecord
 
 # P2-09: a serialized-object repr (``{'name': ...}`` / ``{"name": ...}``) must
 # be unrepresentable in any client-facing string field. Matches the same
@@ -96,7 +100,7 @@ class AnalysisGap(BaseModel):
 
     id: str = Field(description="Unique gap identifier")
     section_id: str = Field(description="Section this gap belongs to")
-    agent: "AgentName" = Field(description="Specialist that owns the gap")
+    agent: AgentName = Field(description="Specialist that owns the gap")
     field: Literal["key_insight", "body", "implications", "sources", "datapoint"] = Field(
         description="Which section field the gap blocks"
     )
@@ -2379,6 +2383,25 @@ class QualityDimension(BaseModel):
         "regardless of total")
 
 
+class QualityTerminalState(str, Enum):
+    """W-08: the three terminal states of the Quality Gate.
+
+    Separates "cannot improve further" from "acceptable to deliver" and
+    makes the second an actual gate:
+
+    - APPROVED: score at or above threshold, no hard blockers. Ships.
+    - SHIP_WITH_CAVEAT: score below threshold but above the floor, no hard
+      blockers. Ships only with a prominent limitations page and only when
+      the operator has explicitly enabled caveat shipping.
+    - BLOCKED: any hard blocker, or score below the floor. Does not ship;
+      the engagement ends with an operator diagnostic, not a client PDF.
+    """
+
+    APPROVED = "approved"
+    SHIP_WITH_CAVEAT = "ship_with_caveat"
+    BLOCKED = "blocked"
+
+
 class QualityScore(BaseModel):
     """Output from the Quality Gate (Agent 18).
 
@@ -2416,12 +2439,26 @@ class QualityScore(BaseModel):
         "max_iterations_reached.",
     )
     critical_dimensions: list[QualityDimensionName] = Field(default_factory=list, description="Dimensions scoring < 3 — forces iteration")
-    max_iterations_reached: bool = Field(default=False, description="True if 3 iterations done "
-        "without pass")
+    max_iterations_reached: bool = Field(default=False, description="True if iteration cap "
+        "reached without approval. DIAGNOSTIC ONLY (W-08): never read in a ship condition.")
     escalation_report: str | None = Field(default=None, description="Detailed escalation report "
         "if max iterations reached without pass")
     fix_priority: list[str] = Field(default_factory=list, description="Ordered list of fixes to "
         "apply, highest impact first")
+    # W-08: three terminal states, not two. The orchestrator computes this
+    # once, after the iteration loop, and it is the ONLY ship/no-ship
+    # decision point. "cannot improve further" (max_iterations_reached) is
+    # deliberately absent from its derivation.
+    terminal_state: QualityTerminalState = Field(
+        default=QualityTerminalState.BLOCKED,
+        description="W-08 terminal state: APPROVED ships, SHIP_WITH_CAVEAT ships only with "
+        "a limitations page and only when explicitly enabled, BLOCKED never ships.",
+    )
+    blocked_reason: str | None = Field(
+        default=None,
+        description="Why the run was BLOCKED (hard blockers and/or score below floor), "
+        "for the operator diagnostic.",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2526,7 +2563,31 @@ class FinalReport(BaseModel):
         description="Chart specs (title/section/data_series/insight) for the Data Visualizer",
     )
 
+    # W-10: the methodology section, built from recorded structures.
+    #
+    # The methodology page used to be assembled in the Jinja template out of
+    # three counts (total_sources, total_data_points) and the agent roster.
+    # A count is not a method and a roster is telemetry, so the page answered
+    # "who ran?" when the reader asked "how do you know?". This field carries
+    # the real thing: six ordered subsections (question decomposition, method
+    # selection, retrieval coverage, inclusion criteria, verification
+    # procedure, design limitations), each derived deterministically from the
+    # DAG's roster decisions, the W-07 insufficiency resolutions, the fact
+    # checker's counters and the Source corpus. Built by
+    # hyperion.output.methodology.build_methodology, never by an LLM: a prompt
+    # would describe research that did not happen.
+    #
+    # None means "not yet built"; the Presentation Designer builds a
+    # report-only record in that case rather than printing nothing.
+    methodology: MethodologyRecord | None = Field(
+        default=None,
+        description="W-10 six-subsection methodology record, built from recorded structures",
+    )
+
     # Metadata for methodology page (§6.1)
+    #
+    # agents_used remains for OPERATOR telemetry (EngagementTelemetry reads it).
+    # W-09 keeps it off ClientReport, so it can no longer reach a client page.
     agents_used: list[str] = Field(default_factory=list, description="Which agents were spawned")
     total_sources: int = Field(default=0, description="Total unique sources cited")
     total_data_points: int = Field(default=0, description="Total data points collected")
@@ -2651,8 +2712,11 @@ class LayoutPlan(BaseModel):
         "placements")
     html_template_path: str = Field(default="", description="Path to the Jinja2-rendered HTML")
     css_path: str = Field(default="", description="Path to the CSS file (brand colors, typography)")
-    pdf_path: str = Field(default="", description="Path to the generated PDF (empty until Render "
-        "Engine runs)")
+    # W-03: the pdf_path field was deleted. The Presentation Designer's
+    # contract is the staged HTML + this layout plan and nothing else; the
+    # Render Engine is the single PDF writer, so a pdf_path attribute here
+    # could only ever be stale (or worse, the RC-4 fallback's vehicle for an
+    # unaudited designer-rendered PDF becoming the deliverable).
     typography: dict[str, str] = Field(
         default_factory=lambda: {
             "header_font": "Instrument Serif",

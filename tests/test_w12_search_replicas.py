@@ -1,0 +1,303 @@
+"""W-12 regression gates for isolated SearXNG replicas and lifecycle."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import pytest
+import yaml
+
+from hyperion.infra import services
+from hyperion.infra.searxng_profiles import build_profiles
+from hyperion.tools.searxng import (
+    EngineRegistryMismatch,
+    EngineTokenBucket,
+    SearchResponse,
+    SearchResult,
+    SearxNGClient,
+    SearxngEndpoint,
+    SearxngPool,
+    referenced_engines,
+)
+from hyperion.tools.valkey import ValkeyStore, get_valkey_store
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_replica_registry_is_complete_and_disjoint() -> None:
+    seen: set[str] = set()
+    for replica in services.SEARXNG_REPLICAS:
+        engines = set(replica.engines)
+        assert not seen.intersection(engines)
+        seen.update(engines)
+    assert seen == referenced_engines()
+    assert [replica.port for replica in services.SEARXNG_REPLICAS] == [8888, 8889, 8890]
+
+
+def test_generated_profiles_match_registry_and_have_unique_identity() -> None:
+    base = yaml.safe_load((ROOT / "searxng_settings.yml").read_text(encoding="utf-8"))
+    profiles = build_profiles(base)
+    secrets: set[str] = set()
+    valkey_urls: set[str] = set()
+    for replica in services.SEARXNG_REPLICAS:
+        profile = profiles[replica.profile]
+        assert {engine["name"] for engine in profile["engines"]} == set(replica.engines)
+        secrets.add(profile["server"]["secret_key"])
+        valkey_urls.add(profile["valkey"]["url"])
+    assert len(secrets) == 3
+    assert len(valkey_urls) == 3
+
+
+def test_container_specs_are_isolated_loopback_only_and_flare_is_opt_in() -> None:
+    specs = services.searxng_specs()
+    assert len(specs) == 3
+    assert len({spec.name for spec in specs}) == 3
+    assert len({spec.host_port for spec in specs}) == 3
+    assert len({spec.named_volumes[0][0] for spec in specs}) == 3
+    assert len({spec.env["SEARXNG_SECRET"] for spec in specs}) == 3
+    for spec in specs:
+        argv = services._docker_run_argv(spec, spec.image)
+        assert f"127.0.0.1:{spec.host_port}:8080" in argv
+        assert argv[argv.index("--network") + 1] == services.RETRIEVAL_NETWORK
+    assert "flaresolverr" not in {spec.name for spec in services.all_specs()}
+    assert "flaresolverr" in {
+        spec.name for spec in services.all_specs(include_flaresolverr=True)
+    }
+
+
+def test_profile_routing_least_outstanding_and_cross_profile_fallback() -> None:
+    pool = SearxngPool.from_config()
+    assert pool.endpoint_for(category="science").profile == "scholar"
+    assert pool.endpoint_for(category="medical").profile == "scholar"
+    assert pool.endpoint_for(category="it").profile == "reference"
+    assert pool.endpoint_for(category="geo").profile == "reference"
+    assert pool.endpoint_for(category="general").profile == "web"
+    assert pool.endpoint_for(category="news").profile == "web"
+
+    first_web = pool.endpoint_for(category="general")
+    duplicate = SearxngEndpoint(
+        "http://127.0.0.1:9890",
+        "web",
+        9890,
+        first_web.engines,
+    )
+    pool.endpoints.append(duplicate)
+    first_web.outstanding = 2
+    assert pool.endpoint_for(category="general") is duplicate
+
+    pool.mark_unhealthy(first_web.port)
+    pool.mark_unhealthy(duplicate.port)
+    fallback = pool.endpoint_for(category="general")
+    assert fallback.profile == "reference"
+    assert pool.engines_for(
+        fallback,
+        category="general",
+        requested_engines={"mojeek", "brave"},
+        explicit=False,
+    ) == fallback.engines
+
+
+def test_explicit_engines_are_bound_to_exactly_one_profile() -> None:
+    pool = SearxngPool.from_config()
+    reference = pool.endpoint_for(category="general", requested_engines={"wikipedia"})
+    assert reference.profile == "reference"
+    assert pool.engines_for(
+        reference,
+        category="general",
+        requested_engines={"wikipedia"},
+        explicit=True,
+    ) == {"wikipedia"}
+
+    with pytest.raises(
+        EngineRegistryMismatch,
+        match="crosses isolated SearXNG profiles",
+    ):
+        pool.endpoint_for(
+            category="general",
+            requested_engines={"wikipedia", "crossref"},
+        )
+
+    pool.mark_unhealthy(reference.port)
+    with pytest.raises(RuntimeError, match="No healthy SearXNG endpoint"):
+        pool.endpoint_for(category="general", requested_engines={"wikipedia"})
+
+
+@pytest.mark.asyncio
+async def test_valkey_store_uses_internal_container_and_atomic_engine_script(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    async def fake_run(command: list[str], timeout: float = 30.0):
+        commands.append(command)
+        return 0, "125", ""
+
+    monkeypatch.setattr("hyperion.tools.valkey.run_command", fake_run)
+    wait = await ValkeyStore().reserve_engine_window(
+        {"brave", "mojeek"},
+        interval_ms=2000,
+        jitter_ms=100,
+    )
+
+    assert wait == 0.125
+    command = commands[0]
+    assert command[:4] == ["docker", "exec", "hyperion-valkey", "valkey-cli"]
+    assert "EVAL" in command
+    assert "hyperion:retrieval:engine:brave" in command
+    assert "hyperion:retrieval:engine:mojeek" in command
+
+
+@pytest.mark.asyncio
+async def test_token_bucket_prefers_cross_process_valkey_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+
+    async def reserve(*_args, **_kwargs):
+        return 0.25
+
+    async def fake_sleep(delay: float) -> None:
+        waits.append(delay)
+
+    monkeypatch.setattr(get_valkey_store(), "reserve_engine_window", reserve)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    EngineTokenBucket._next_allowed = {}
+    await EngineTokenBucket.acquire({"brave"})
+    assert waits == [0.25]
+    assert EngineTokenBucket._next_allowed == {}
+
+
+@pytest.mark.asyncio
+async def test_result_cache_is_normalized_and_shared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stored: dict[str, object] = {}
+
+    async def set_json(key: str, value: dict[str, object], ttl_seconds: int) -> bool:
+        stored.update(key=key, value=value, ttl=ttl_seconds)
+        return True
+
+    async def get_json(key: str):
+        if key == stored.get("key"):
+            return stored.get("value")
+        return None
+
+    store = get_valkey_store()
+    monkeypatch.setattr(store, "set_json", set_json)
+    monkeypatch.setattr(store, "get_json", get_json)
+    client = SearxNGClient()
+    first_key = client._cache_key("  Market   SIZE ", engines="brave,mojeek")
+    second_key = client._cache_key("market size", engines="mojeek, brave")
+    assert first_key == second_key
+
+    response = SearchResponse(
+        query="market size",
+        results=[SearchResult(title="Authority", url="https://example.test", engine="brave")],
+        total=1,
+        engines_used=["brave"],
+    )
+    await client._set_cached(first_key, response)
+    client._cache.clear()
+    cached = await client._get_cached(first_key)
+    assert cached is not None
+    assert cached.cached is True
+    assert cached.results[0].url == "https://example.test"
+    assert stored["ttl"] == client.CACHE_TTL_SECONDS
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_default_services_start_concurrently(monkeypatch: pytest.MonkeyPatch) -> None:
+    active = 0
+    peak = 0
+
+    async def fake_run_command(command: list[str], timeout: float = 30.0):
+        return 0, "network-ready", ""
+
+    async def fake_ensure(spec, *, on_progress=None):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return services.ServiceStatus(spec.name, state=services.OK, ready=True)
+
+    monkeypatch.setattr(services, "docker_available", lambda: True)
+    monkeypatch.setattr(services, "run_command", fake_run_command)
+    monkeypatch.setattr(services, "ensure_container", fake_ensure)
+
+    statuses = await services.start_services()
+    assert set(statuses) == {spec.name for spec in services.all_specs()}
+    assert peak == len(services.all_specs())
+
+
+@pytest.mark.asyncio
+async def test_shared_startup_deadline_returns_explicit_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_command(command: list[str], timeout: float = 30.0):
+        return 0, "network-ready", ""
+
+    async def never_ready(spec, *, on_progress=None):
+        await asyncio.Event().wait()
+
+    async def immediate_timeout(tasks, *, timeout):
+        task_set = set(tasks)
+        return set(), task_set
+
+    monkeypatch.setattr(services, "docker_available", lambda: True)
+    monkeypatch.setattr(services, "run_command", fake_run_command)
+    monkeypatch.setattr(services, "ensure_container", never_ready)
+    monkeypatch.setattr(services.asyncio, "wait", immediate_timeout)
+
+    statuses = await services.start_services()
+    assert set(statuses) == {spec.name for spec in services.all_specs()}
+    assert all(status.state == services.FAIL for status in statuses.values())
+    assert all("shared" in status.detail for status in statuses.values())
+
+
+@pytest.mark.asyncio
+async def test_shutdown_is_concurrent_and_removes_owned_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = 0
+    peak = 0
+    commands: list[list[str]] = []
+
+    async def fake_remove(name: str) -> None:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        active -= 1
+
+    async def fake_run(command: list[str], timeout: float = 30.0):
+        commands.append(command)
+        return 0, "", ""
+
+    monkeypatch.setattr(services, "docker_available", lambda: True)
+    monkeypatch.setattr(services, "remove_container", fake_remove)
+    monkeypatch.setattr(services, "run_command", fake_run)
+
+    removed = await services.stop_services()
+    assert all(removed.values())
+    assert peak == len(services.MANAGED_CONTAINERS)
+    assert ["docker", "network", "rm", services.RETRIEVAL_NETWORK] in commands
+
+
+def test_compose_matches_pins_resources_and_network_exposure() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    definitions = compose["services"]
+    for replica in services.SEARXNG_REPLICAS:
+        item = definitions[f"searxng-{replica.profile}"]
+        assert item["image"] == services.SEARXNG_IMAGE
+        assert item["ports"] == [f"127.0.0.1:{replica.port}:8080"]
+        assert item["mem_limit"] == "512m"
+        assert item["cpus"] == 2.0
+        assert item["read_only"] is True
+        assert item["cap_drop"] == ["ALL"]
+        assert item["security_opt"] == ["no-new-privileges:true"]
+    assert definitions["valkey"]["image"] == services.VALKEY_IMAGE
+    assert "ports" not in definitions["valkey"]
+    assert definitions["flaresolverr"]["profiles"] == ["investigation"]

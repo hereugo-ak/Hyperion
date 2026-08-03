@@ -49,11 +49,21 @@ def test_section_rows_link_to_section_anchors():
 
 
 def test_fixed_blocks_have_anchor_ids():
+    # W-09: "technical-appendix" is deleted from the client document — its
+    # content is operator telemetry and lives in reports/diagnostics/.
     for anchor in ("at-a-glance", "exec-summary", "risk-analysis",
-                   "methodology", "endnotes", "technical-appendix",
+                   "methodology", "endnotes",
                    "appendix-sources"):
         assert f'id="{anchor}"' in HTML_TEMPLATE, f"missing chapter anchor id={anchor}"
         assert f'href="#{anchor}"' in HTML_TEMPLATE, f"missing TOC link to #{anchor}"
+
+
+def test_technical_appendix_anchor_is_gone():
+    """W-09: no chapter anchor and no TOC row may point at the removed
+    technical appendix — a dangling TOC link is the same defect class as a
+    missing one."""
+    assert 'id="technical-appendix"' not in HTML_TEMPLATE
+    assert 'href="#technical-appendix"' not in HTML_TEMPLATE
 
 
 def test_toc_risk_row_shares_chapter_condition():

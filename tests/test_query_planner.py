@@ -656,7 +656,7 @@ def _make_runner(question: str, tools: list, router):
     spec = SubAgentSpec(
         question=question,
         parent_agent=AgentName.MARKET_ANALYST,
-        model_tier=ModelTier.MICRO,
+        model_tier=ModelTier.STANDARD,
         tools=tools,
         findings_model="KeyFinding",
     )
@@ -817,8 +817,8 @@ class TestSubAgentUsesThePlanner:
         assert urls, "search leg produced no URLs under planner failure"
         assert spy.await_count >= 1
 
-    def test_planner_tier_is_fast_even_though_sub_agent_is_micro(self):
-        """The sub-agent itself runs MICRO; the planner is pinned FAST by the
+    def test_planner_tier_is_fast_independent_of_sub_agent_tier(self):
+        """The sub-agent runs STANDARD while its planner is pinned FAST by the
         module constant, not inherited from the caller's tier."""
         from hyperion.schemas.agents import ToolName
 
@@ -826,7 +826,7 @@ class TestSubAgentUsesThePlanner:
         spy = _search_double()
         runner = _make_runner(QUESTION, [ToolName.SEARXNG], router)
         runner._tools["searxng"] = type("F", (), {"search": spy})()
-        assert runner.tier is ModelTier.MICRO
+        assert runner.tier is ModelTier.STANDARD
 
         _run(runner._search_searxng())
 

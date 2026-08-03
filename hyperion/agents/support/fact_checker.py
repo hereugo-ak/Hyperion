@@ -60,7 +60,8 @@ from typing import Any
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
-from hyperion.config import ModelTier
+from hyperion.agents.prompt_contract import compose_agent_prompt
+from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.structured_validator import validate_json_list
 from hyperion.schemas.agents import (
@@ -277,8 +278,20 @@ class FactChecker(BaseAgent):
         re.IGNORECASE,
     )
 
-    # Suspicious round number thresholds
+    # Suspicious round number thresholds (canonical units, post-normalisation)
     ROUND_NUMBER_SUSPECTS = {10_000_000_000, 1_000_000_000, 100_000_000, 10_000_000}
+    # Denomination multipliers for normalising "$1.2B" and "$1200M" to the
+    # same canonical value before comparing against the suspect set (W-15).
+    _UNIT_MULTIPLIERS = {
+        "trillion": 1_000_000_000_000,
+        "t": 1_000_000_000_000,
+        "billion": 1_000_000_000,
+        "b": 1_000_000_000,
+        "million": 1_000_000,
+        "m": 1_000_000,
+        "thousand": 1_000,
+        "k": 1_000,
+    }
     IMPLAUSIBLE_GROWTH_THRESHOLD = 300  # % YoY
 
     # Concurrency limit for web verification searches
@@ -512,7 +525,7 @@ class FactChecker(BaseAgent):
                     #   1. The prompt asks for "a JSON list" and models fence it
                     #      (```json ... ```) or preface it with a sentence, so
                     #      raw json.loads raised and EVERY LLM-extracted claim
-                    #      was discarded — the fact-checker degraded to
+                    # was discarded, the fact-checker degraded to
                     #      regex-only claims with no signal that it had.
                     #   2. `except: pass` meant the drop left no trace at all.
                     # validate_json_list() handles fences, prose, and the
@@ -583,36 +596,40 @@ class FactChecker(BaseAgent):
     # ─────────────────────────────────────────────────────────────────────
 
     def _check_local_corpus(self, claim: Claim) -> list[Source]:
-        """Check if the claim is already supported by sources in the local findings.
+        """Return local sources whose own fetched data supports ``claim``.
 
-        Before hitting the web, scan all collected findings' sources for
-        content that already supports this claim. This avoids redundant
-        web searches for claims that are well-sourced by specialists.
-
-        Returns a list of Source objects from the local corpus that support
-        the claim, or an empty list if no local support is found.
+        Finding prose is agent output and therefore cannot independently
+        verify a claim extracted from that same prose. Only the underlying
+        source's non-empty ``key_data`` is eligible, and it must pass the same
+        token-boundary matcher used by the web-verification and evidence-chain
+        paths. This preserves useful cached evidence without circularly treating
+        a specialist's assertion as its own proof.
         """
         local_sources: list[Source] = []
-        claim_lower = claim.claim.lower()
-        claim_words = set(w for w in claim_lower.split() if len(w) > 4)
+        seen_urls: set[str] = set()
 
         for finding in self._all_findings:
-            # Check finding content for the claim
-            content_lower = (finding.content or "").lower()
-            if claim_lower in content_lower or claim_words & set(content_lower.split()):
-                # This finding's content references the claim — use its sources
-                for src in finding.sources[:3]:
-                    if not src or not src.url:
-                        continue
-                    credibility = self._score_domain_credibility(src.url)
-                    local_sources.append(Source(
-                        id=f"local_{hashlib.md5(src.url.encode()).hexdigest()[:8]}",
-                        title=src.title or finding.title[:100],
-                        url=src.url,
-                        credibility=credibility,
-                        accessed_at=datetime.now(),
-                        key_data=finding.content[:500],
-                    ))
+            for src in finding.sources[:3]:
+                if (
+                    not src
+                    or not src.url
+                    or src.url in seen_urls
+                    or not (src.key_data or "").strip()
+                    or not self._source_supports_claim(claim, src)
+                ):
+                    continue
+
+                seen_urls.add(src.url)
+                local_sources.append(Source(
+                    id=f"local_{hashlib.md5(src.url.encode()).hexdigest()[:8]}",
+                    title=src.title or finding.title[:100],
+                    url=src.url,
+                    credibility=self._score_domain_credibility(src.url),
+                    accessed_at=src.accessed_at,
+                    author=src.author,
+                    publication_date=src.publication_date,
+                    key_data=src.key_data,
+                ))
 
         return local_sources
 
@@ -645,12 +662,12 @@ class FactChecker(BaseAgent):
             # the previous query was `claim.claim[:100]` with the internal
             # agent name appended (e.g. "... market analyst"), which had two
             # problems. First, a blind 100-char slice of a claim sentence is
-            # not a search query — it frequently cut mid-word/mid-clause,
+            # not a search query, it frequently cut mid-word/mid-clause,
             # producing debris like "...for $218 milli" instead of the
             # claim's actual entity+metric. Second, appending the internal
             # agent name injected HYPERION's own org vocabulary
             # ("market analyst", "risk analyst") into the outbound search
-            # string — exactly the debris `normalize_query`'s
+            # string, exactly the debris `normalize_query`'s
             # `_INTERNAL_TOKENS` set exists to strip, and it never went
             # through `ground_query` at all, so a claim with no clear
             # subject of its own (e.g. a bare percentage) could search
@@ -658,11 +675,11 @@ class FactChecker(BaseAgent):
             # geography.
             #
             # Fixed: ground the claim's own text (not a pre-truncated
-            # slice — `ground_query` truncates to 256 chars internally,
+            # slice, `ground_query` truncates to 256 chars internally,
             # AFTER cleaning, which preserves whole words instead of
             # cutting mid-token) and do not append the agent name at all.
             # `searxng.search()` also grounds internally (fix 1.1), so this
-            # is defence in depth — it means a subject-less claim is
+            # is defence in depth, it means a subject-less claim is
             # rescued from the engagement focus instead of being dropped
             # for lack of an entity/metric to anchor it to, and it means
             # this call site can never again leak an internal agent-role
@@ -704,12 +721,54 @@ class FactChecker(BaseAgent):
         except (ValueError, AttributeError, RuntimeError) as e:
             logger.warning("Fact checker SearXNG search failed: %s", e)
 
+        # W-14: attributed/event/relationship claims benefit from Google's
+        # citation supports. This is a high-value escalation and remains
+        # fail-open: the local corpus and SearXNG sources above are retained.
+        attribution_types = {
+            ClaimType.QUOTE,
+            ClaimType.EVENT,
+            ClaimType.RELATIONSHIP,
+        }
+        if claim.claim_type in attribution_types and query:
+            try:
+                from hyperion.tools.deep_search import (
+                    record_retrieval_backend,
+                    record_retrieval_constraints,
+                )
+                from hyperion.tools.grounded_search import (
+                    GroundedSearchClient,
+                    GroundingReason,
+                )
+
+                grounded = await GroundedSearchClient(settings=self.settings).search(
+                    query,
+                    reason=GroundingReason.ATTRIBUTION_VERIFICATION,
+                )
+                record_retrieval_backend("gemini", grounded.actual_units)
+                record_retrieval_constraints(grounded.constraints)
+                for result in grounded.results:
+                    if any(source.url == result.url for source in verification_sources):
+                        continue
+                    verification_sources.append(Source(
+                        id=(
+                            "verify_grounded_"
+                            f"{hashlib.md5(result.url.encode()).hexdigest()[:8]}"
+                        ),
+                        title=result.title,
+                        url=result.url,
+                        credibility=self._score_domain_credibility(result.url),
+                        accessed_at=datetime.now(),
+                        key_data=result.snippet,
+                    ))
+            except (ValueError, AttributeError, RuntimeError) as exc:
+                logger.warning("Fact checker grounded verification failed open: %s", exc)
+
         # Step 3: Use Jina to extract content from top results for evidence chain validation
         if verification_sources:
             try:
                 jina = self.get_tool(ToolName.JINA)
                 for source in verification_sources[:3]:
-                    # Skip local sources — they already have key_data
+                    # Skip local sources, they already have key_data
                     if source.id.startswith("local_"):
                         continue
                     try:
@@ -814,21 +873,22 @@ class FactChecker(BaseAgent):
         claim.credibility_weighted_score = self._calculate_credibility_weighted_score(verification_sources)
         claim.verification_sources = verification_sources
 
-        # Check if the claim data appears in the source content
+        # Check if the claim data appears in the source content.
+        # W-15: exactly one matching algorithm in this file. The naive
+        # substring/word-overlap block that used to live here measured a
+        # different strictness than _validate_evidence_chains, so
+        # verification_rate and hallucinated_count could disagree about the
+        # same corpus for no principled reason. Both paths now call the
+        # same token-boundary matcher.
         supporting_sources = 0
         contradicting_sources = 0
 
-        claim_lower = claim.claim.lower()
         for source in verification_sources:
-            source_data = (source.key_data or "").lower()
-            if claim_lower in source_data or any(
-                word in source_data for word in claim_lower.split() if len(word) > 4
-            ):
+            if self._source_supports_claim(claim, source):
                 supporting_sources += 1
-            else:
-                # Check for contradiction (source mentions the topic but with different data)
-                # This is a simplified check — the LLM would do deeper analysis
-                pass
+            # Contradiction detection requires deeper analysis than token
+            # overlap; sources that do not support the claim are not
+            # automatically contradicting it.
 
         # Determine status
         if supporting_sources >= 2 and is_independent:
@@ -1079,12 +1139,26 @@ class FactChecker(BaseAgent):
         if router is None:
             return None, ""
         try:
+            contracted_messages = [dict(message) for message in messages]
+            system_message = next(
+                (message for message in contracted_messages if message.get("role") == "system"),
+                None,
+            )
+            if system_message is None:
+                contracted_messages.insert(
+                    0,
+                    {"role": "system", "content": compose_agent_prompt("")},
+                )
+            else:
+                system_message["content"] = compose_agent_prompt(system_message.get("content", ""))
+
             response = await router.complete(
                 tier=ModelTier.STRONG,
-                messages=messages,
+                messages=contracted_messages,
                 agent_name=self.name.value,
                 urgency=TaskUrgency.HIGH,
                 temperature=0.0,
+                max_tokens=TIER_OUTPUT_BUDGET[ModelTier.STRONG],
                 response_format={"type": "json_object"},
             )
         except Exception as exc:  # noqa: BLE001 - stage 1 flag stands
@@ -1134,6 +1208,11 @@ class FactChecker(BaseAgent):
                 payload={
                     "to_agent": agent,
                     "from_agent": self.name.value,
+                    "agent": self.name.value,
+                    "issue": (
+                        f"{len(agent_claims)} claim(s) from {agent} could not be verified"
+                    ),
+                    "suggested_action": "Provide additional sources or clarify the claims",
                     "request_type": "verify_claims",
                     "unverified_claims": [c.model_dump() for c in agent_claims],
                     "message": (
@@ -1197,12 +1276,15 @@ class FactChecker(BaseAgent):
             if supported:
                 continue
 
-            # No overlap found. Require a SECOND independent signal — a dead
-            # URL — before asserting the citation was invented. A live source
+            # No overlap found. Require a SECOND independent signal, a dead
+            # URL, before asserting the citation was invented. A live source
             # whose fetched text simply does not mention the claim is
-            # UNVERIFIABLE, not HALLUCINATED.
-            url_alive = await self._any_source_url_alive(content_sources)
-            if not url_alive:
+            # UNVERIFIABLE, not HALLUCINATED. An UNKNOWN liveness result
+            # (our own egress failed) is also UNVERIFIABLE, W-15: "cannot
+            # prove the citation was invented" is a reason not to assert
+            # HALLUCINATED, never a reason to assert the source is alive.
+            liveness = await self._any_source_url_alive(content_sources)
+            if liveness is False:
                 claim.evidence_chain_valid = False
                 claim.evidence_chain_break = (
                     "Cited source does not contain the claimed data and the "
@@ -1250,20 +1332,31 @@ class FactChecker(BaseAgent):
         overlap = sum(1 for kw in keywords if kw in source_stems or EvidenceScorer._stem(kw) in source_stems)
         return overlap >= 2
 
-    async def _any_source_url_alive(self, sources: list[Source]) -> bool:
-        """True if at least one cited URL responds (liveness second signal)."""
-        for source in sources:
-            if await self._url_alive(source.url):
-                return True
-        return False
+    async def _any_source_url_alive(self, sources: list[Source]) -> bool | None:
+        """Tri-state liveness aggregate across the cited URLs.
 
-    async def _url_alive(self, url: str) -> bool:
+        True: at least one URL confirmed alive. False: every URL confirmed
+        dead (none unknown). None: no URL confirmed alive and at least one
+        check was inconclusive (network failure), so liveness is UNKNOWN.
+        """
+        saw_unknown = False
+        for source in sources:
+            result = await self._url_alive(source.url)
+            if result is True:
+                return True
+            if result is None:
+                saw_unknown = True
+        return None if saw_unknown else False
+
+    async def _url_alive(self, url: str) -> bool | None:
         """Liveness check: HEAD (fall back to GET) the cited URL.
 
-        Any response below HTTP 400 counts as alive: 301/302 redirects and
-        200s mean the source exists. A connection error, timeout, or 4xx/5xx
-        means dead. Network failures default to alive (we cannot prove the
-        citation was invented because our own egress failed).
+        Tri-state (W-15): True means a response below HTTP 400 came back
+        (301/302 redirects and 200s mean the source exists). False means a
+        response with status >= 400 came back: the source is confirmed dead.
+        None means the check itself failed (connection error, timeout), so
+        liveness is UNKNOWN. An egress failure is not evidence the source
+        is alive, and it is not evidence the source is dead either.
         """
         if not url:
             return False
@@ -1278,9 +1371,9 @@ class FactChecker(BaseAgent):
                 except Exception:  # noqa: BLE001 - some servers reject HEAD
                     resp = await client.get(url, headers={"Range": "bytes=0-0"})
                 return resp.status_code < 400
-        except Exception as exc:  # noqa: BLE001 - egress failure ≠ dead source
+        except Exception as exc:  # noqa: BLE001 - egress failure: UNKNOWN, not alive
             logger.debug("url liveness check failed for %s: %s", url, exc)
-            return True
+            return None
 
     # ─────────────────────────────────────────────────────────────────────
     # Statistical sanity checks (part of Step 4)
@@ -1301,18 +1394,30 @@ class FactChecker(BaseAgent):
             if claim.claim_type != ClaimType.NUMBER:
                 continue
 
-            # Extract the numeric value
-            nums = re.findall(r'\$?(\d[\d,]*)\.?\d*', claim.claim)
-            for num_str in nums:
+            # Extract numeric values WITH their denomination. W-15: the
+            # previous regex read the digits only, so "$1.2B" parsed as 1.2
+            # and could never match the suspect set, while "$1200M" parsed
+            # as 1200, also a miss. Values are normalised to canonical
+            # units (billion/million/trillion/thousand multiplied out)
+            # before comparison, so equivalent magnitudes match regardless
+            # of notation.
+            flagged_values: set[float] = set()
+            nums = re.findall(
+                r'\$?(\d[\d,]*\.?\d*)\s*(trillion|billion|million|thousand|[TtBbMmKk])?\b',
+                claim.claim,
+            )
+            for num_str, unit in nums:
                 try:
-                    # Remove commas and convert
-                    value = int(num_str.replace(",", ""))
+                    value = float(num_str.replace(",", ""))
+                    multiplier = self._UNIT_MULTIPLIERS.get(unit.lower(), 1) if unit else 1
+                    normalised = value * multiplier
 
                     # Check against suspicious round numbers
-                    if value in self.ROUND_NUMBER_SUSPECTS:
+                    if normalised in self.ROUND_NUMBER_SUSPECTS and normalised not in flagged_values:
+                        flagged_values.add(normalised)
                         red_flags.append(
                             f"Suspiciously round number: {claim.claim} "
-                            f"(from {claim.agent}), exactly ${value:,} "
+                            f"(from {claim.agent}), exactly ${normalised:,.0f} "
                             f"is suspicious. Verify with primary source."
                         )
                 except (ValueError, TypeError):
@@ -1399,7 +1504,7 @@ class FactChecker(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 7-step methodology
+    # Main execution, the 7-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1487,6 +1592,10 @@ class FactChecker(BaseAgent):
                 sender=self.name,
                 payload={
                     "agent": self.name.value,
+                    "issue": (
+                        f"Detected {len(self._contradictions)} contradiction(s) between agents"
+                    ),
+                    "suggested_action": "Resolve contradictions using evidence-weighted synthesis",
                     "finding_type": "contradictions",
                     "contradictions": [c.model_dump() for c in self._contradictions],
                     "message": (
@@ -1565,38 +1674,10 @@ class FactChecker(BaseAgent):
             },
         )
 
-        # Publish hallucinated citations as a critical finding
-        if self._hallucinated:
-            finding = KeyFinding(
-                id=f"finding_{hashlib.md5(f'fact_checker_hallucinated_{engagement_id}'.encode()).hexdigest()[:8]}",
-                agent=self.name.value,
-                finding_type="hallucinated_citations",
-                title=f"CRITICAL: {len(self._hallucinated)} Hallucinated Citations Detected",
-                content=(
-                    f"Detected {len(self._hallucinated)} claim(s) where the "
-                    f"cited source does not contain the claimed data. This is "
-                    f"the #1 quality risk in LLM-generated reports. "
-                    f"Affected agents: {', '.join(set(c.agent for c in self._hallucinated))}. "
-                    f"Claims: {', '.join(c.claim[:50] for c in self._hallucinated[:3])}"
-                ),
-                confidence=ConfidenceLevel.HIGH,
-            )
-            await self._publish_finding(finding)
-
-        # Publish statistical red flags as a finding
-        if self._statistical_red_flags:
-            finding = KeyFinding(
-                id=f"finding_{hashlib.md5(f'fact_checker_stats_{engagement_id}'.encode()).hexdigest()[:8]}",
-                agent=self.name.value,
-                finding_type="statistical_red_flags",
-                title=f"Statistical Red Flags: {len(self._statistical_red_flags)} issues",
-                content=(
-                    f"Detected {len(self._statistical_red_flags)} statistical "
-                    f"red flag(s): {'; '.join(self._statistical_red_flags[:3])}"
-                ),
-                confidence=ConfidenceLevel.HIGH,
-            )
-            await self._publish_finding(finding)
+        # W-15: hallucination and statistical-red-flag measurements remain in
+        # FactCheckReport. FinalReport carries that structured report into the
+        # operator-only EngagementTelemetry artifact. Do not republish these
+        # measurements as KeyFinding objects: FINDINGS is client narrative input.
 
         await self._transition(
             AgentState.DONE,

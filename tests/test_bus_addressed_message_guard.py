@@ -11,7 +11,6 @@ the bus is the only place that can see it — so the bus must say so.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 import pytest
@@ -45,7 +44,10 @@ async def test_addressed_escalation_with_no_subscriber_logs_error(bus, caplog):
         "no matching subscriber" in r.message.lower() and "verify_claims" in r.message
         for r in caplog.records
         if r.levelno >= logging.ERROR
-    ), f"expected an ERROR about the undeliverable message, got: {[r.message for r in caplog.records]}"
+    ), (
+        "expected an ERROR about the undeliverable message, got: "
+        f"{[r.message for r in caplog.records]}"
+    )
 
 
 @pytest.mark.asyncio

@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from typing import Any
 
+from textual.content import Content
+from textual.timer import Timer
 from textual.widgets import Static
 
-from hyperion.tui.content import build, span
+from hyperion.tui.content import Line, build, span
 from hyperion.tui.theme import (
     ROSE,
     SAGE,
@@ -44,10 +47,10 @@ def _bar_color(pct: float) -> str:
     return SAGE
 
 
-def _bar_spans(pct: float, width: int = _BAR_WIDTH) -> list:
+def _bar_spans(pct: float, width: int = _BAR_WIDTH) -> Line:
     filled = int(round(pct * width))
     color = _bar_color(pct)
-    spans = []
+    spans: Line = []
     for i in range(width):
         if i < filled:
             spans.append(("█", color))
@@ -73,9 +76,9 @@ class TPMBar(Static):
     }
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         self._providers: dict[str, float] = {}  # name → usage fraction 0..1
-        self._timer = None
+        self._timer: Timer | None = None
         self._frame = 0
         super().__init__(self._render_bars(), **kwargs)
 
@@ -92,9 +95,12 @@ class TPMBar(Static):
         try:
             from hyperion.router.router import get_router
             router = get_router()
-            usage = router.get_tpm_usage()  # dict[provider_name, fraction]
+            usage = router.get_tpm_status()
             if usage:
-                self._providers = dict(usage)
+                self._providers = {
+                    provider.value: max(model_usage.values(), default=0.0)
+                    for provider, model_usage in usage.items()
+                }
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.debug("%s: %s", "_poll_providers", exc)
 
@@ -113,8 +119,8 @@ class TPMBar(Static):
             self._providers[name] = 0.0
         self._repaint()
 
-    def _render_bars(self):
-        lines: list = []
+    def _render_bars(self) -> Content:
+        lines: list[Line] = []
 
         lines.append([
             span("  TPM USAGE", f"bold {TEXT_SECONDARY}"),

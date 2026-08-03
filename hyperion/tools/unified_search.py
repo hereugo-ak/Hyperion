@@ -337,13 +337,13 @@ class UnifiedSearch:
                     jina = await self._get_jina()
                     jina_resp = await jina.search(query=query, num_results=num_results)
 
-                    for result in jina_resp.results:
+                    for jina_result in jina_resp.results:
                         all_results.append({
-                            "title": result.title,
-                            "url": result.url,
-                            "snippet": result.snippet,
+                            "title": jina_result.title,
+                            "url": jina_result.url,
+                            "snippet": jina_result.snippet,
                             "source": "jina",
-                            "content": result.content,
+                            "content": jina_result.content,
                         })
                     jina_count = len(jina_resp.results)
                     if jina_count:

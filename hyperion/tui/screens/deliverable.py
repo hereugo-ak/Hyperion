@@ -22,6 +22,7 @@ from typing import Any
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.content import Content
 from textual.screen import Screen
 from textual.widgets import Static
 
@@ -42,7 +43,7 @@ from hyperion.tui.widgets.rule import hr
 logger = logging.getLogger(__name__)
 
 
-class DeliverableScreen(Screen):
+class DeliverableScreen(Screen[None]):
     """Report deliverable view — markdown, quality scores, export, open PDF."""
 
     DEFAULT_CSS = """
@@ -93,10 +94,10 @@ class DeliverableScreen(Screen):
 
     def on_mount(self) -> None:
         dv = self.query_one("#del-body", DeliverableView)
-        if self._result:
+        if self._result is not None:
             self._populate(dv)
 
-    def _build_header(self):
+    def _build_header(self) -> Content:
         return build_line(
             span("  DELIVERABLE", f"bold {CLAY}"),
             span("  ·  ", TEXT_GHOST),
@@ -106,6 +107,9 @@ class DeliverableScreen(Screen):
     def _populate(self, dv: DeliverableView) -> None:
         """Extract report data from EngagementResult and populate the view."""
         result = self._result
+        if result is None:
+            return
+
         md_text = ""
         quality_scores: dict[str, float] = {}
         quality_total = 0.0

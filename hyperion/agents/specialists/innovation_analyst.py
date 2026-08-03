@@ -1,5 +1,5 @@
 """
-HYPERION Innovation Analyst — Agent 13, the emerging technology specialist.
+HYPERION Innovation Analyst, Agent 13, the emerging technology specialist.
 
 This is NOT a generic "research new tech" agent. This is a specialist with
 6 proprietary analytical frameworks:
@@ -7,7 +7,7 @@ This is NOT a generic "research new tech" agent. This is a specialist with
 - Technology readiness levels (TRL): Assess technologies on the NASA TRL
   scale (1-9) from basic research to deployed. Identify which emerging techs
   are ready for production use vs. still experimental. Not just 'AI is
-  transformative' — 'LLM-based customer support is at TRL 8 (ready for
+  transformative''LLM-based customer support is at TRL 8 (ready for
   production) while autonomous agents are at TRL 4 (2-3 years from production
   readiness).'
 - Gartner hype cycle positioning: Plot technologies on the hype cycle
@@ -23,7 +23,7 @@ This is NOT a generic "research new tech" agent. This is a specialist with
 - First-mover vs. fast-follower: Analyze whether first-mover advantage
   applies in this market or whether fast-follower is the better strategy.
   Consider: network effects, switching costs, learning curve, patent
-  protection, and brand. Not just 'be first' — 'first-mover advantage is
+  protection, and brand. Not just 'be first''first-mover advantage is
   weak here because switching costs are low and network effects are absent.
   Fast-follower is the better strategy.'
 - Innovation portfolio: Map the company's innovation initiatives on the
@@ -31,15 +31,15 @@ This is NOT a generic "research new tech" agent. This is a specialist with
   in one horizon.
 
 It separates hype from reality using the Gartner hype cycle and TRL scale. It
-doesn't say "AI is transformative" — it says "LLM-based customer support is at
+doesn't say "AI is transformative", it says "LLM-based customer support is at
 the slope of enlightenment (TRL 8) and ready for production, while autonomous
 agents are at the peak of inflated expectations (TRL 4) and 2-3 years from
-production readiness." It always assesses first-mover advantage — because in
+production readiness." It always assesses first-mover advantage, because in
 some markets, being first is a disadvantage. (§4.4, Agent 13)
 
 Model Tier: STANDARD
 Tools: SearxNG, Jina, Obscura, Wayback
-Sub-agents: Max 3 — emerging tech search, patent filings, historical adoption
+Sub-agents: Max 3, emerging tech search, patent filings, historical adoption
 Output: InnovationAnalysis (TRL, hype cycle, horizon scan, disruption,
         first-mover, portfolio)
 
@@ -121,7 +121,7 @@ INNOVATION_ANALYST_SPEC = AgentSpec(
                 "Assess technologies on the NASA TRL scale (1-9) from basic "
                 "research to deployed. Identify which emerging techs are ready "
                 "for production use vs. still experimental. Not just 'AI is "
-                "transformative' — 'LLM-based customer support is at TRL 8 "
+                "transformative''LLM-based customer support is at TRL 8 "
                 "(ready for production) while autonomous agents are at TRL 4 "
                 "(2-3 years from production readiness).' Each technology has "
                 "TRL level, description, is_production_ready, time_to_production, "
@@ -136,7 +136,7 @@ INNOVATION_ANALYST_SPEC = AgentSpec(
                 "Plot technologies on the hype cycle: innovation trigger → "
                 "peak of inflated expectations → trough of disillusionment → "
                 "slope of enlightenment → plateau of productivity. Identify "
-                "where each tech currently sits. Not just 'AI is hyped' — "
+                "where each tech currently sits. Not just 'AI is hyped'"
                 "'LLM-based customer support is at the slope of enlightenment, "
                 "2-5 years to plateau. Autonomous agents are at the peak of "
                 "inflated expectations, 5-10 years to plateau.'"
@@ -161,7 +161,7 @@ INNOVATION_ANALYST_SPEC = AgentSpec(
                 "Identify which disruption pattern applies: low-end disruption "
                 "(cheaper, simpler), new-market disruption (serving non-"
                 "consumers), or architectural disruption (reconfiguring the "
-                "value chain). Not just 'disruption is coming' — 'new-market "
+                "value chain). Not just 'disruption is coming''new-market "
                 "disruption pattern: AI tutors serving non-consumers (students "
                 "without access to private tutoring). Incumbents (Kumon, "
                 "Sylvan) are vulnerable because they serve the high end.'"
@@ -175,10 +175,10 @@ INNOVATION_ANALYST_SPEC = AgentSpec(
                 "Analyze whether first-mover advantage applies in this market "
                 "or whether fast-follower is the better strategy. Consider: "
                 "network effects, switching costs, learning curve, patent "
-                "protection, and brand. Not just 'be first' — 'first-mover "
+                "protection, and brand. Not just 'be first''first-mover "
                 "advantage is weak here because switching costs are low and "
                 "network effects are absent. Fast-follower is the better "
-                "strategy — let others bear the R&D cost and learn from "
+                "strategy, let others bear the R&D cost and learn from "
                 "their mistakes.'"
             ),
             inputs=["market_characteristics", "network_effects", "switching_costs", "patent_landscape"],
@@ -189,7 +189,7 @@ INNOVATION_ANALYST_SPEC = AgentSpec(
             description=(
                 "Map the company's innovation initiatives on the 3-horizon "
                 "portfolio. Identify if the portfolio is balanced or over-"
-                "invested in one horizon. Not just 'invest in innovation' — "
+                "invested in one horizon. Not just 'invest in innovation'"
                 "'Portfolio is over-invested in H1 (80% of initiatives) and "
                 "under-invested in H3 (0%). Rebalance: shift 20% of H1 budget "
                 "to H3 moonshots.'"
@@ -199,13 +199,13 @@ INNOVATION_ANALYST_SPEC = AgentSpec(
         ),
     ],
     system_prompt=(
-        "You are the HYPERION Innovation Analyst — the specialist who scans "
+        "You are the HYPERION Innovation Analyst, the specialist who scans "
         "for emerging technologies, maps disruption patterns, assesses "
         "innovation portfolios, and evaluates first-mover vs. fast-follower "
         "strategies.\n\n"
         "Your proprietary frameworks:\n"
         "1. TRL (Technology Readiness Levels): NASA TRL scale 1-9. Not just "
-        "'AI is transformative' — 'LLM-based customer support is at TRL 8 "
+        "'AI is transformative''LLM-based customer support is at TRL 8 "
         "(ready for production) while autonomous agents are at TRL 4 (2-3 "
         "years from production readiness).'\n"
         "2. Gartner hype cycle: Innovation trigger → peak of inflated "
@@ -228,19 +228,19 @@ INNOVATION_ANALYST_SPEC = AgentSpec(
         "- ALWAYS ASSESS FIRST-MOVER ADVANTAGE. Don't just say 'be first.' "
         "Analyze whether first-mover advantage actually applies. In some "
         "markets, fast-follower is the better strategy.\n"
-        "- EACH TRL ASSESSMENT MUST HAVE EVIDENCE. Not just 'TRL 4' — 'TRL 4 "
+        "- EACH TRL ASSESSMENT MUST HAVE EVIDENCE. Not just 'TRL 4''TRL 4 "
         "based on 3 lab demonstrations and 0 production deployments.'\n"
         "- HYPE CYCLE MUST IDENTIFY OVERHYPED TECHNOLOGIES. Flag technologies "
         "where hype exceeds reality.\n"
         "- DISRUPTION PATTERN MUST BE SPECIFIC. Not just 'disruption is "
-        "coming' — identify the pattern, the disrupted, the disruptors, and "
+        "coming', identify the pattern, the disrupted, the disruptors, and "
         "whether incumbents can defend.\n\n"
         "You can spawn up to 3 sub-agents for parallel data collection:\n"
         "- Sub-agent A: Find emerging tech in [space] (MICRO, SearxNG + Jina)\n"
         "- Sub-agent B: Find patent filings for [technology] (MICRO, Obscura)\n"
         "- Sub-agent C: Find historical adoption curves for [similar tech] "
         "(FAST, SearxNG + Wayback)\n\n"
-        "Your output is an InnovationAnalysis Pydantic model — structured, "
+        "Your output is an InnovationAnalysis Pydantic model, structured, "
         "not free text."
     ),
     spawn_condition="Spawned when the question involves emerging technologies, "
@@ -468,10 +468,10 @@ class InnovationAnalyst(BaseAgent):
                         })
                         self._sources.append(Source(
                             id=f"src_{len(self._sources):03d}",
-                            title=f"Patent/Research — {url.split('/')[2]}",
+                            title=f"Patent/Research, {url.split('/')[2]}",
                             url=url,
                             credibility=SourceCredibility.INDUSTRY_REPORT,
-                            key_data=f"Patent/research data from {url.split('/')[2]}",
+                            key_data=page_data["content"][:500],
                         ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue
@@ -491,7 +491,7 @@ class InnovationAnalyst(BaseAgent):
 
         Uses Wayback Machine to pull historical snapshots of technology trend
         pages, hype cycle reports, and adoption curves. This is critical for
-        separating hype from reality — if a technology was "2 years away" 5
+        separating hype from reality, if a technology was "2 years away" 5
         years ago, it's probably overhyped.
         """
         results: list[dict[str, Any]] = []
@@ -519,10 +519,10 @@ class InnovationAnalyst(BaseAgent):
                             })
                             self._sources.append(Source(
                                 id=f"src_{len(self._sources):03d}",
-                                title=f"Wayback — {url.split('/')[2]} ({years_ago}y ago)",
+                                title=f"Wayback, {url.split('/')[2]} ({years_ago}y ago)",
                                 url=url,
                                 credibility=SourceCredibility.NEWS,
-                                key_data=f"Historical snapshot from {years_ago} years ago",
+                                key_data=f"Snapshot {snapshot.timestamp}: {snapshot.snapshot_url}",
                             ))
                 except (ValueError, AttributeError, RuntimeError):
                     continue
@@ -668,11 +668,11 @@ class InnovationAnalyst(BaseAgent):
             f"TRL assessments:\n{trl_summary}\n\n"
             f"Historical trend data:\n{historical_summary or 'No historical data available'}\n\n"
             "Plot each technology on the Gartner hype cycle:\n"
-            "1. Innovation Trigger — technology breakthrough, no usable product\n"
-            "2. Peak of Inflated Expectations — overhyped, unrealistic expectations\n"
-            "3. Trough of Disillusionment — hype fades, reality sets in\n"
-            "4. Slope of Enlightenment — practical applications emerge\n"
-            "5. Plateau of Productivity — mainstream adoption\n\n"
+            "1. Innovation Trigger, technology breakthrough, no usable product\n"
+            "2. Peak of Inflated Expectations, overhyped, unrealistic expectations\n"
+            "3. Trough of Disillusionment, hype fades, reality sets in\n"
+            "4. Slope of Enlightenment, practical applications emerge\n"
+            "5. Plateau of Productivity, mainstream adoption\n\n"
             "For each technology:\n"
             "- technology: name\n"
             "- phase: one of the 5 phases\n"
@@ -853,8 +853,8 @@ class InnovationAnalyst(BaseAgent):
             f"Search results:\n{search_summary}\n\n"
             "DISRUPTION PATTERN ANALYSIS:\n"
             "Identify which disruption pattern applies:\n"
-            "- low_end: cheaper, simpler — serves least demanding customers\n"
-            "- new_market: serving non-consumers — creates new market\n"
+            "- low_end: cheaper, simpler, serves least demanding customers\n"
+            "- new_market: serving non-consumers, creates new market\n"
             "- architectural: reconfiguring the value chain\n\n"
             "For the disruption:\n"
             "- pattern: which pattern\n"
@@ -990,27 +990,27 @@ class InnovationAnalyst(BaseAgent):
 
         sub_specs = [
             SubAgentSpec(
-                question=f"Find emerging technologies in {space or sector} — research papers, breakthroughs, new developments, innovation case studies",
+                question=f"Find emerging technologies in {space or sector}, research papers, breakthroughs, new developments, innovation case studies",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
                 context={"space": space, "sector": sector},
             ),
             SubAgentSpec(
-                question=f"Find patent filings for {tech_str} — Google Patents, USPTO, WIPO. Extract filing trends, top patent holders, patent categories",
+                question=f"Find patent filings for {tech_str}, Google Patents, USPTO, WIPO. Extract filing trends, top patent holders, patent categories",
                 parent_agent=self.name,
-                model_tier=ModelTier.MICRO,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
                 context={"technologies": technologies[:3]},
             ),
             SubAgentSpec(
-                question=f"Find historical adoption curves for technologies similar to {tech_str} — how long did similar technologies take to reach mainstream adoption? Use Wayback Machine for historical hype data",
+                question=f"Find historical adoption curves for technologies similar to {tech_str}, how long did similar technologies take to reach mainstream adoption? Use Wayback Machine for historical hype data",
                 parent_agent=self.name,
-                model_tier=ModelTier.FAST,
+                model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.WAYBACK],
                 findings_model="KeyFinding",
                 timeout_seconds=300,
@@ -1060,7 +1060,7 @@ class InnovationAnalyst(BaseAgent):
         return ConfidenceLevel.LOW
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main execution — the 9-step methodology
+    # Main execution, the 9-step methodology
     # ─────────────────────────────────────────────────────────────────────
 
     async def run(
@@ -1213,7 +1213,7 @@ class InnovationAnalyst(BaseAgent):
                 content=(
                     f"Technologies where hype exceeds reality: {', '.join(tech_overhyped)}. "
                     f"These are at the peak of inflated expectations but have "
-                    f"low TRL — exercise caution before investing."
+                    f"low TRL, exercise caution before investing."
                 ),
                 confidence=ConfidenceLevel.MEDIUM,
                 sources=self._sources[:2],
