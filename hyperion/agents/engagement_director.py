@@ -586,6 +586,12 @@ class EngagementDirector(BaseAgent):
         adaptation, the Director asks the LLM whether this finding changes
         the analysis direction and what adjustments to make.
         """
+        # D-22: this method is callable independently of _handle_escalation.
+        # Keep its nullable-DAG contract local so future call sites cannot
+        # dereference engagement state before a DAG exists or after teardown.
+        if self._current_dag is None:
+            return None
+
         prompt = (
             f"You are the Engagement Director at HYPERION Consulting. An agent "
             f"has escalated an issue during the engagement.\n\n"
