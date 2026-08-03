@@ -451,6 +451,7 @@ class EngagementTelemetry(BaseModel):
                 ("contradicted_count", "Contradicted"),
                 ("verification_rate", "Verification rate"),
                 ("hallucinated_citation_count", "Hallucinated citations"),
+                ("statistical_red_flags", "Statistical red flags"),
                 ("evidence_chain_break_count", "Evidence-chain breaks"),
             )
             parts.append("<h2>Fact-check telemetry</h2><table>")
@@ -459,8 +460,11 @@ class EngagementTelemetry(BaseModel):
                     value = fc[key]
                     if key == "verification_rate" and isinstance(value, (int, float)):
                         value = f"{value:.0%}"
+                    elif key == "statistical_red_flags" and isinstance(value, list):
+                        details = "; ".join(str(item) for item in value)
+                        value = f"{len(value)}" + (f": {details}" if details else "")
                     parts.append(
-                        f"<tr><td>{_esc(label)}</td><td>{value}</td></tr>"
+                        f"<tr><td>{_esc(label)}</td><td>{_esc(str(value))}</td></tr>"
                     )
             parts.append("</table>")
         if self.limitations:

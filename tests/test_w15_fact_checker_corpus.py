@@ -11,8 +11,8 @@ network or provider calls:
    (UNKNOWN), never silently to alive/verified.
 4. ROUND_NUMBER_SUSPECTS matches equivalent magnitudes across notation
    ($1B == $1000M == $1,000,000,000) and deduplicates repeated flags.
-5. The hallucination/statistical findings carry derived confidence, not a
-   hardcoded HIGH.
+5. Hallucination/statistical measurements stay out of client findings and
+   render through the operator-only EngagementTelemetry artifact.
 
 Live provider calls and real URL egress cannot run in this sandbox; the
 liveness test mocks httpx at the import site, which is the same seam the
@@ -30,10 +30,10 @@ from hyperion.schemas.models import (
     Claim,
     ClaimStatus,
     ClaimType,
-    ConfidenceLevel,
     Source,
     SourceCredibility,
 )
+from hyperion.schemas.narrative import EngagementTelemetry
 
 
 def _checker() -> FactChecker:
@@ -164,21 +164,24 @@ class TestRoundNumberNormalisation:
         assert not [f for f in flags if "round number" in f.lower()]
 
 
-class TestDerivedTelemetryConfidence:
-    def test_helper_thresholds(self) -> None:
-        assert FactChecker._telemetry_confidence(1, 400) == ConfidenceLevel.LOW
-        assert FactChecker._telemetry_confidence(2, 400) == ConfidenceLevel.MEDIUM
-        assert FactChecker._telemetry_confidence(40, 50) == ConfidenceLevel.HIGH
-        assert FactChecker._telemetry_confidence(3, 12) == ConfidenceLevel.HIGH
+class TestTelemetryRouting:
+    def test_measurements_are_not_published_as_client_findings(self) -> None:
+        run_source = inspect.getsource(FactChecker.run)
+        assert 'finding_type="hallucinated_citations"' not in run_source
+        assert 'finding_type="statistical_red_flags"' not in run_source
+        assert "await self._publish_finding" not in run_source
 
-    def test_no_hardcoded_high_on_telemetry_findings(self) -> None:
-        import hyperion.agents.support.fact_checker as fc
-
-        tree = inspect.getsource(fc)
-        hallucinated_block = tree.split('finding_type="hallucinated_citations"')[1]
-        hallucinated_block = hallucinated_block.split("await self._publish_finding")[0]
-        assert "ConfidenceLevel.HIGH" not in hallucinated_block
-        assert "_telemetry_confidence" in hallucinated_block
+    def test_measurements_render_in_operator_telemetry(self) -> None:
+        telemetry = EngagementTelemetry(
+            engagement_id="eng_test",
+            fact_check_report={
+                "hallucinated_citation_count": 2,
+                "statistical_red_flags": ["Growth rate is implausibly high"],
+            },
+        )
+        html = telemetry.render_html()
+        assert "Hallucinated citations</td><td>2" in html
+        assert "Statistical red flags</td><td>1: Growth rate is implausibly high" in html
 
 
 class TestSpecialistCorpusHygiene:

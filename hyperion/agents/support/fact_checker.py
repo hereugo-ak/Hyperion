@@ -1473,31 +1473,6 @@ class FactChecker(BaseAgent):
     # Confidence calibration
     # ─────────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _telemetry_confidence(count: int, total_claims: int) -> ConfidenceLevel:
-        """Derive the confidence attached to a telemetry count (W-15).
-
-        A count is not itself a confidence-calibrated statement, so the
-        confidence reflects how material the measured pattern is relative
-        to the corpus it was measured over:
-
-        - HIGH: the pattern touches at least 10% of all claims checked, or
-          3+ claims when the corpus is small. Material either way.
-        - MEDIUM: more than one occurrence, but below the materiality line.
-        - LOW: a single isolated occurrence.
-
-        Replaces the hardcoded ``ConfidenceLevel.HIGH`` that previously made
-        "1 hallucinated citation out of 400 checked" and "40 out of 50"
-        indistinguishable in the telemetry stream.
-        """
-        if total_claims > 0 and count / total_claims >= 0.10:
-            return ConfidenceLevel.HIGH
-        if count >= 3 and total_claims <= 20:
-            return ConfidenceLevel.HIGH
-        if count >= 2:
-            return ConfidenceLevel.MEDIUM
-        return ConfidenceLevel.LOW
-
     def _calibrate_confidence(
         self,
         total_claims: int,
@@ -1695,48 +1670,10 @@ class FactChecker(BaseAgent):
             },
         )
 
-        # Publish hallucinated citations as a critical finding
-        if self._hallucinated:
-            finding = KeyFinding(
-                id=f"finding_{hashlib.md5(f'fact_checker_hallucinated_{engagement_id}'.encode()).hexdigest()[:8]}",
-                agent=self.name.value,
-                finding_type="hallucinated_citations",
-                title=f"CRITICAL: {len(self._hallucinated)} Hallucinated Citations Detected",
-                content=(
-                    f"Detected {len(self._hallucinated)} claim(s) where the "
-                    f"cited source does not contain the claimed data. This is "
-                    f"the #1 quality risk in LLM-generated reports. "
-                    f"Affected agents: {', '.join(set(c.agent for c in self._hallucinated))}. "
-                    f"Claims: {', '.join(c.claim[:50] for c in self._hallucinated[:3])}"
-                ),
-                # W-15: derived, not hardcoded. The confidence attached to
-                # the count reflects how material the measured pattern is
-                # relative to the total claims checked, since a count is
-                # not itself a confidence-calibrated statement.
-                confidence=self._telemetry_confidence(
-                    len(self._hallucinated), total_claims
-                ),
-            )
-            await self._publish_finding(finding)
-
-        # Publish statistical red flags as a finding
-        if self._statistical_red_flags:
-            finding = KeyFinding(
-                id=f"finding_{hashlib.md5(f'fact_checker_stats_{engagement_id}'.encode()).hexdigest()[:8]}",
-                agent=self.name.value,
-                finding_type="statistical_red_flags",
-                title=f"Statistical Red Flags: {len(self._statistical_red_flags)} issues",
-                content=(
-                    f"Detected {len(self._statistical_red_flags)} statistical "
-                    f"red flag(s): {'; '.join(self._statistical_red_flags[:3])}"
-                ),
-                # W-15: derived, not hardcoded (same rationale as the
-                # hallucination finding above).
-                confidence=self._telemetry_confidence(
-                    len(self._statistical_red_flags), total_claims
-                ),
-            )
-            await self._publish_finding(finding)
+        # W-15: hallucination and statistical-red-flag measurements remain in
+        # FactCheckReport. FinalReport carries that structured report into the
+        # operator-only EngagementTelemetry artifact. Do not republish these
+        # measurements as KeyFinding objects: FINDINGS is client narrative input.
 
         await self._transition(
             AgentState.DONE,
