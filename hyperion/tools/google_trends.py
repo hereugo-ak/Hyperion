@@ -36,7 +36,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,7 @@ class GoogleTrendsClient:
         cache_key = self._cache_key("iot", *keywords, timeframe, geography)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("TrendResult", cached)
 
         await self._rate_limit()
 
@@ -289,7 +289,7 @@ class GoogleTrendsClient:
         cache_key = self._cache_key("rq", keyword, rising, timeframe, geography)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("list[RelatedQuery]", cached)
 
         await self._rate_limit()
 
@@ -360,7 +360,7 @@ class GoogleTrendsClient:
         cache_key = self._cache_key("rt", keyword, rising, timeframe, geography)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("list[RelatedTopic]", cached)
 
         await self._rate_limit()
 
@@ -431,7 +431,7 @@ class GoogleTrendsClient:
         cache_key = self._cache_key("ibr", keyword, resolution, timeframe, geography)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("dict[str, int]", cached)
 
         await self._rate_limit()
 
