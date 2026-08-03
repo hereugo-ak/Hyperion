@@ -201,22 +201,13 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 
-# 5.1f staged allowlist — the process fix for the original P0.
-# 342 errors in 68 files at baseline (174 in hyperion/tui). Every NEW module
-# is checked strict by default; the backlog modules below are quarantined
-# with ignore_errors and must be removed one by one as they are annotated.
-# Third-party packages without stubs get ignore_missing_imports only — the
-# code that imports them is still checked.
+# Strict typing applies to every project module. Third-party packages without
+# stubs get ignore_missing_imports only; the code that imports them remains
+# fully checked.
 [[tool.mypy.overrides]]
-# Only packages actually imported by modules NOT in the backlog quarantine
-# appear here (warn_unused_configs flags the rest). When a quarantined module
-# leaves the list below, its third-party imports may need re-adding here —
-# e.g. duckduckgo_search, fredpy, alpha_vantage, kaleido, instructor,
-# tenacity. 5.4 added sqlite_vec / sentence_transformers (optional
-# production backends for hyperion/tools/vector_brain.py; the deterministic
-# hashing fallback needs neither). 5.5 added yfinance (lazy-imported by
-# hyperion/tools/market_data.py). 5.6 added pikepdf (lazy-imported by
-# hyperion/output/pdf_postprocess.py).
+# Optional and untyped third-party packages imported by checked modules.
+# warn_unused_configs ensures obsolete patterns are removed as dependencies
+# gain type information or imports disappear.
 module = [
     "textual.*", "trafilatura", "weasyprint", "transformers", "plotly.*",
     "matplotlib.*", "PIL.*", "fitz", "pdfplumber",
@@ -228,30 +219,3 @@ module = [
     "yfinance", "pikepdf", "fontTools", "fontTools.*",
 ]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-# Backlog quarantine — 68 files with strict errors at the 5.1f baseline.
-# Shrink this list; never grow it.
-module = [
-    "hyperion.tui.app",
-    "hyperion.tui.banner",
-    "hyperion.tui.boot",
-    "hyperion.tui.content",
-    "hyperion.tui.motion.easing",
-    "hyperion.tui.motion.indicators",
-    "hyperion.tui.screens.deliverable",
-    "hyperion.tui.screens.engagement",
-    "hyperion.tui.screens.session",
-    "hyperion.tui.screens.splash",
-    "hyperion.tui.widgets.agent_grid",
-    "hyperion.tui.widgets.deliverable",
-    "hyperion.tui.widgets.findings_stream",
-    "hyperion.tui.widgets.header",
-    "hyperion.tui.widgets.mark",
-    "hyperion.tui.widgets.metrics",
-    "hyperion.tui.widgets.prompt",
-    "hyperion.tui.widgets.rule",
-    "hyperion.tui.widgets.tpm_bar",
-    "hyperion.tui.widgets.transcript",
-]
-ignore_errors = true

@@ -78,7 +78,7 @@ try:  # Declared dependency since fix 2.3; guard anyway — never-raises contrac
 
     PDF_TABLES_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only in a broken env
-    pdfplumber = None  # type: ignore[assignment]
+    pdfplumber = None
     PDF_TABLES_AVAILABLE = False
     logger.warning(
         "pdfplumber is not installed — PDF table extraction tier disabled. "
