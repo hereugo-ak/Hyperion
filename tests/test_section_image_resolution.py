@@ -214,3 +214,51 @@ class TestDesignerRequestsFullResolution:
 
         src = inspect.getsource(pd)
         assert src.count('quality="high"') >= 2  # cover + section call sites
+
+
+class TestCoverFallbackAndFullBleed:
+    """Regression guards for the missing-photo and white-frame cover defects."""
+
+    def test_section_photo_is_promoted_when_dedicated_cover_is_missing(self) -> None:
+        from hyperion.agents.delivery.presentation_designer import PresentationDesigner
+        from hyperion.schemas.models import ImageSelection, PageType
+
+        designer = PresentationDesigner.__new__(PresentationDesigner)
+        section_images = {
+            "section_1": ImageSelection(
+                id="img_section_1",
+                page_type=PageType.SECTION,
+                section_id="section_1",
+                search_term="Africa renewable energy",
+                image_path="/tmp/section.jpg",
+                photographer="Example Photographer",
+                unsplash_id="photo-1",
+                caption="Section illustration.",
+            )
+        }
+
+        cover = designer._promote_section_image_to_cover(section_images)
+
+        assert cover is not None
+        assert cover.page_type == PageType.COVER
+        assert cover.placement == "full_bleed"
+        assert cover.width_percent == 100
+        assert cover.page_number == 1
+        assert cover.section_id == ""
+        assert cover.image_path == "/tmp/section.jpg"
+        assert cover.caption == "Source: Unsplash via Example Photographer"
+        assert section_images == {}, "promoted image must not repeat in the body"
+
+    def test_empty_section_image_map_keeps_typographic_fallback(self) -> None:
+        from hyperion.agents.delivery.presentation_designer import PresentationDesigner
+
+        designer = PresentationDesigner.__new__(PresentationDesigner)
+        assert designer._promote_section_image_to_cover({}) is None
+
+    def test_css_resets_ua_body_margin_and_paints_named_cover_page(self) -> None:
+        from hyperion.agents.delivery.presentation_designer import CSS_TEMPLATE
+
+        assert "margin: 0;\n    padding: 0;" in CSS_TEMPLATE
+        cover_rule = CSS_TEMPLATE.split("@page cover", 1)[1].split("}", 1)[0]
+        assert "margin: 0" in cover_rule
+        assert "background: #1A1A1A" in cover_rule

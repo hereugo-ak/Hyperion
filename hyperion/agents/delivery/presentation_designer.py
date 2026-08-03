@@ -289,6 +289,11 @@ CSS_TEMPLATE = """\
    too, or the cover page keeps the body frame and the bleed returns. */
 @page cover {{
     margin: 0;
+    /* Named-page rules do not inherit the root canvas paint consistently
+       across WeasyPrint and Chromium. Paint the trim box explicitly so a
+       missing image still produces a full-bleed charcoal cover, never a white
+       ring around an inset panel. */
+    background: {warm_charcoal};
     @top-center {{ content: none; }}
     @bottom-center {{ content: none; }}
 }}
@@ -325,6 +330,11 @@ body {{
     font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
     font-size: 10pt;
     color: {warm_charcoal};
+    /* Reset the browser/WeasyPrint UA default (normally 8px). Page margins
+       are owned exclusively by @page; a body margin creates the visible white
+       frame around every page and prevents the cover from reaching trim. */
+    margin: 0;
+    padding: 0;
     /* P2-03: transparent - the background lives on html (canvas
        propagation) and @page (margin boxes), never on body. */
     /* 1.6 was loose for a 10pt sans at this measure; 1.5 tightens the block
@@ -2361,6 +2371,40 @@ class PresentationDesigner(BaseAgent):
         name = (photographer or "").strip() or "Unknown"
         return f"Source: Unsplash via {name}"
 
+    def _promote_section_image_to_cover(
+        self,
+        section_images: dict[str, ImageSelection],
+    ) -> ImageSelection | None:
+        """Promote one downloaded section photo when cover acquisition failed.
+
+        Cover and section searches use the same licensed Unsplash source and
+        print-grade download path. If the dedicated cover query is too narrow,
+        rate-limited, or its first download fails while section searches still
+        succeed, shipping a typographic placeholder wastes imagery that is
+        already available locally. Promote the first section photo and remove
+        it from the section map so the same image is not repeated in the body.
+        """
+        if not section_images:
+            return None
+
+        section_id, image = next(iter(section_images.items()))
+        del section_images[section_id]
+        self._log(
+            "DESIGNER: dedicated cover image unavailable; promoting downloaded "
+            f"section image {image.unsplash_id or image.id!r} to full-bleed cover"
+        )
+        return image.model_copy(
+            update={
+                "id": "img_cover_fallback",
+                "page_type": PageType.COVER,
+                "section_id": "",
+                "placement": "full_bleed",
+                "width_percent": 100,
+                "page_number": 1,
+                "caption": self.build_image_credit(image.photographer),
+            }
+        )
+
     async def _select_section_images(self, report: FinalReport) -> dict[str, ImageSelection]:
         """Select Unsplash images for each section header.
 
@@ -3141,6 +3185,10 @@ class PresentationDesigner(BaseAgent):
             "and sections")
         self._cover_image = await self._select_cover_image(report)
         self._section_images = await self._select_section_images(report)
+        if self._cover_image is None:
+            self._cover_image = self._promote_section_image_to_cover(
+                self._section_images
+            )
 
         # Assign images to pages
         if self._cover_image and self._pages:
