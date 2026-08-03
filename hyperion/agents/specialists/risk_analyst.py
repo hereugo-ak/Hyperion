@@ -941,7 +941,10 @@ class RiskAnalyst(BaseAgent):
             return {}
 
         try:
-            return json.loads(response.content)
+            parsed = json.loads(response.content)
+            if not isinstance(parsed, dict):
+                return {}
+            return {str(key): str(value) for key, value in parsed.items()}
         except (json.JSONDecodeError, ValueError):
             return {}
 
@@ -998,7 +1001,10 @@ class RiskAnalyst(BaseAgent):
             return {}
 
         try:
-            return json.loads(response.content)
+            parsed = json.loads(response.content)
+            if not isinstance(parsed, dict):
+                return {}
+            return {str(key): value for key, value in parsed.items()}
         except (json.JSONDecodeError, ValueError):
             return {}
 
