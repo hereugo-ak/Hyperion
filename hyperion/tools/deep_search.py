@@ -33,7 +33,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from hyperion.tools._content_quality import is_quality_content
 from hyperion.tools.content_selector import select_relevant_content
@@ -641,7 +641,7 @@ class DeepSearchClient:
             tool_name="DeepSearch",
         )
         if empty is not None:
-            return empty
+            return cast("DeepSearchResult", empty)
         query = grounded
 
         # Check cache

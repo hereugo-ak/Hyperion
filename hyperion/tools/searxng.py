@@ -34,8 +34,9 @@ import logging
 import os
 import random
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -253,14 +254,14 @@ class SearchResponse:
             "degradation_events": self.degradation_events,
         }
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[SearchResult]:
         """Iterate over results, yielding SearchResult items."""
         return iter(self.results)
 
     def __len__(self) -> int:
         return len(self.results)
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: int | slice) -> SearchResult | list[SearchResult]:
         """Support indexing and slicing: response[0], response[:5]."""
         return self.results[key]
 
@@ -903,7 +904,7 @@ class SearxNGClient:
             drop_geography=drop_geography,
         )
         if empty is not None:
-            return empty
+            return cast("SearchResponse", empty)
         query = grounded
 
         # Pick the engine set. An explicit `engines=` argument always wins.

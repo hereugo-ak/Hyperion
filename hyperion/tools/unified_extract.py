@@ -94,7 +94,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from hyperion.tools._content_quality import is_quality_content
 from hyperion.tools.camoufox_client import CamoufoxClient
@@ -883,8 +883,13 @@ class UnifiedExtract:
 
             tools_tried.append(tier)
             try:
-                result = await extractor(
-                    url, extract_tables=extract_tables, extract_links=extract_links
+                result = cast(
+                    "UnifiedExtractResult",
+                    await extractor(
+                        url,
+                        extract_tables=extract_tables,
+                        extract_links=extract_links,
+                    ),
                 )
             except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
                 # Fail loud (fix 0.3 discipline): never a bare `except: pass`.
@@ -923,8 +928,13 @@ class UnifiedExtract:
 
         async def _call(url: str) -> UnifiedExtractResult:
             async with semaphore:
-                return await extractor(
-                    url, extract_tables=extract_tables, extract_links=extract_links
+                return cast(
+                    "UnifiedExtractResult",
+                    await extractor(
+                        url,
+                        extract_tables=extract_tables,
+                        extract_links=extract_links,
+                    ),
                 )
 
         return _call

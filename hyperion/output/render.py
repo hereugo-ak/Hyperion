@@ -52,7 +52,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from markupsafe import Markup
 
@@ -334,7 +334,7 @@ class TemplateRenderer:
             result.append("</p>")
 
         output = "\n".join(result)
-        return Markup(output)
+        return cast("str", Markup(output))
 
     async def render_template(
         self,
