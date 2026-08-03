@@ -1248,7 +1248,10 @@ class WorkflowEngine:
                     )
                     record_retrieval_backend("gemini", grounded.actual_units)
                     record_retrieval_constraints(grounded.constraints)
-                    gap.attempts += 1
+                    # This scarce authority lookup is an escalation after the
+                    # declared 3-strategy + 2-scope closure ladder, not a sixth
+                    # ladder round. ``gap.attempts`` intentionally remains the
+                    # number of specialist closure dispatches (maximum five).
                     if grounded.results:
                         gap.resolved = True
                         authorities = ", ".join(
