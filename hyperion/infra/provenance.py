@@ -4,13 +4,16 @@ W-01 (RC-1): a merged fix is not a running fix. The previous audit assumed
 that the merged commit was the code executing; RC-1 proved a site-packages
 shadow plus stale bytecode served pre-fix output for fifteen correct
 commits. This module makes the loaded build physically observable at every
-shell boot, and refuses to boot in the two configurations that produced
-that failure:
+shell boot, and refuses to boot in the two configurations that can actually
+execute code different from the checkout:
 
 1. a ``site-packages`` copy shadowing a git checkout on ``sys.path``
-2. stale ``.pyc`` bytecode newer-source pairs under the package directory
+2. an unchecked-hash ``.pyc`` whose embedded source hash does not match disk
 
-The refusal is a hard stop, not a warning — a warning is what got us here.
+Timestamp caches older than source are deliberately not refused. CPython
+validates their embedded source mtime and size before execution, recompiling
+from source when they differ; this is the normal state immediately after a
+``git pull`` and cannot execute the stale cache.
 
 Two collection paths exist because the boot sequence is async but the PDF
 render path is sync: ``collect_async`` does the full collection (including
@@ -46,7 +49,8 @@ class Provenance:
     git_sha: str | None  # short SHA of HEAD in repo_root
     git_dirty: bool  # working tree has modifications
     install_mode: str  # "editable" | "site-packages" | "unknown"
-    stale_pycache: list[str]  # .pyc older than its .py source
+    # Unsafe unchecked-hash caches retained under the historical field name.
+    stale_pycache: list[str]
 
 
 def _package_dir() -> Path:
@@ -104,12 +108,21 @@ def _find_shadowed_checkout(package_dir: Path) -> Path | None:
 
 
 def _find_stale_pycache(package_dir: Path) -> list[str]:
-    """Find .pyc files older than their .py source under the package dir.
+    """Find caches that CPython can execute without validating the source.
 
-    The walk is capped at the package directory — never the whole
-    filesystem. A stale .pyc means the interpreter may execute bytecode that
-    predates the source on disk (RC-1's second mechanism).
+    A filesystem mtime comparison is not a valid safety check. Timestamp-based
+    ``.pyc`` files contain the source mtime and size in their header; CPython
+    rejects and recompiles them when source changes. Checked-hash caches are
+    similarly validated. Both are safe even when the cache file itself is
+    older than the source, which commonly happens after ``git pull``.
+
+    Unchecked-hash caches are the exception: CPython normally trusts them. We
+    therefore compare their embedded hash ourselves and refuse only a mismatch.
+    Bad magic, malformed headers, and caches for another interpreter are skipped
+    because CPython will reject them rather than execute their bytecode.
     """
+    import importlib.util
+
     stale: list[str] = []
     for py_file in package_dir.rglob("*.py"):
         cache_dir = py_file.parent / "__pycache__"
@@ -117,7 +130,16 @@ def _find_stale_pycache(package_dir: Path) -> list[str]:
             continue
         for pyc_file in cache_dir.glob(py_file.stem + ".cpython-*.pyc"):
             try:
-                if pyc_file.stat().st_mtime < py_file.stat().st_mtime:
+                header = pyc_file.read_bytes()[:16]
+                if len(header) < 16 or header[:4] != importlib.util.MAGIC_NUMBER:
+                    continue
+                flags = int.from_bytes(header[4:8], "little")
+                hash_based = bool(flags & 0x01)
+                check_source = bool(flags & 0x02)
+                if not hash_based or check_source or flags & ~0x03:
+                    continue
+                source_hash = importlib.util.source_hash(py_file.read_bytes())
+                if header[8:16] != source_hash:
                     stale.append(str(pyc_file))
             except OSError:
                 continue
@@ -232,8 +254,8 @@ def banner(provenance: Provenance) -> str:
 def refusal_reason(provenance: Provenance) -> str | None:
     """Return the hard-refusal reason, or None when boot may proceed.
 
-    The two refused configurations are exactly the two RC-1 mechanisms;
-    the message states the fix for each.
+    Refusal is limited to configurations capable of executing code that does
+    not correspond to the active checkout; the message states the fix.
     """
     if provenance.install_mode == "site-packages":
         shadow = _find_shadowed_checkout(Path(provenance.package_dir))
@@ -252,9 +274,9 @@ def refusal_reason(provenance: Provenance) -> str | None:
             else ""
         )
         return (
-            "Stale bytecode detected — .pyc files older than their source:\n"
+            "Unsafe unchecked-hash bytecode does not match its source:\n"
             f"{listed}{more}\n"
-            "The interpreter may execute code that predates the source on "
+            "The interpreter may execute code that differs from the source on "
             "disk.\n"
             "Fix: find . -name __pycache__ -type d -prune -exec rm -rf {} +"
         )
