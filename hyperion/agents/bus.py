@@ -89,37 +89,43 @@ class BusMessage:
 
     # Convenience accessors for common payload fields
 
+    def _string_field(self, key: str, default: str = "") -> str:
+        """Return a payload field only when it satisfies the string contract."""
+        value = self.payload.get(key, default)
+        return value if isinstance(value, str) else default
+
     @property
     def agent(self) -> str:
-        return self.payload.get("agent", self.sender.value)
+        return self._string_field("agent", self.sender.value)
 
     @property
     def state(self) -> str:
-        return self.payload.get("state", "")
+        return self._string_field("state")
 
     @property
     def detail(self) -> str:
-        return self.payload.get("detail", "")
+        return self._string_field("detail")
 
     @property
     def finding(self) -> KeyFinding | None:
-        return self.payload.get("finding")
+        finding = self.payload.get("finding")
+        return finding if isinstance(finding, KeyFinding) else None
 
     @property
     def to_agent(self) -> str:
-        return self.payload.get("to_agent", "")
+        return self._string_field("to_agent")
 
     @property
     def from_agent(self) -> str:
-        return self.payload.get("from_agent", self.sender.value)
+        return self._string_field("from_agent", self.sender.value)
 
     @property
     def issue(self) -> str:
-        return self.payload.get("issue", "")
+        return self._string_field("issue")
 
     @property
     def suggested_action(self) -> str:
-        return self.payload.get("suggested_action", "")
+        return self._string_field("suggested_action")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

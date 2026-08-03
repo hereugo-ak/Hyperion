@@ -234,7 +234,6 @@ ignore_missing_imports = true
 # Shrink this list; never grow it.
 module = [
     "hyperion.agents.base",
-    "hyperion.agents.bus",
     "hyperion.agents.delivery.presentation_designer",
     "hyperion.agents.delivery.render_engine",
     "hyperion.agents.engagement_director",
