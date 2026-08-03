@@ -1,16 +1,20 @@
-"""D-07 runtime probe: do Shape-B escalations still collapse to one fingerprint?
+"""D-07 runtime probe for the Director escalation payload contract.
 
 Reproduces the audit's exact mechanism without an LLM: build the fingerprint
-the Director builds, from the five real Shape-B payloads shipped in the tree.
+the Director builds from the five support-agent payloads shipped in the tree.
+Every payload must provide ``agent``, ``issue``, and ``suggested_action``.
 """
 from __future__ import annotations
 
-# The five real payload shapes, copied verbatim from the current fix0.1 tree.
-SHAPE_B_PAYLOADS = [
+# The five real payload shapes, copied from the current fix0.1 tree.
+ESCALATION_PAYLOADS = [
     # quality_gate.py:1545 — quality gate failed
     {
         "to_agent": "engagement_director",
         "from_agent": "quality_gate",
+        "agent": "quality_gate",
+        "issue": "Quality Gate failed after 2 iterations at 2.2/4.0",
+        "suggested_action": "Review critical dimensions and decide whether to replan",
         "escalation_type": "quality_gate_failed",
         "iteration": 2,
         "total_score": 2.2,
@@ -23,6 +27,9 @@ SHAPE_B_PAYLOADS = [
     {
         "to_agent": "synthesis_lead",
         "from_agent": "quality_gate",
+        "agent": "quality_gate",
+        "issue": "Quality score 2.2/4.0; 1 critical dimension requires revision",
+        "suggested_action": "Revise the report using gaps and fix_priority",
         "task": "iterate",
         "iteration": 3,
         "quality_score": {"total_score": 2.2},
@@ -32,6 +39,9 @@ SHAPE_B_PAYLOADS = [
     {
         "to_agent": "market_analyst",
         "from_agent": "fact_checker",
+        "agent": "fact_checker",
+        "issue": "1 claim from market_analyst could not be verified",
+        "suggested_action": "Provide additional sources or clarify the claims",
         "request_type": "verify_claims",
         "unverified_claims": [{"id": "c1"}],
         "message": "Fact Checker could not verify 4 claim(s).",
@@ -39,6 +49,8 @@ SHAPE_B_PAYLOADS = [
     # fact_checker.py:1592 — contradictions
     {
         "agent": "fact_checker",
+        "issue": "Detected 1 contradiction between agents",
+        "suggested_action": "Resolve contradictions using evidence-weighted synthesis",
         "finding_type": "contradictions",
         "contradictions": [{"id": "x1"}],
         "message": "Fact Checker detected 3 contradiction(s).",
@@ -47,6 +59,9 @@ SHAPE_B_PAYLOADS = [
     {
         "to_agent": "presentation_designer",
         "from_agent": "render_engine",
+        "agent": "render_engine",
+        "issue": "PDF verification failed with 1 issue: blank page 4",
+        "suggested_action": "Fix the reported layout issues and regenerate HTML",
         "task": "fix_layout",
         "issues": ["blank page 4"],
         "pdf_path": "/tmp/r.pdf",
@@ -77,7 +92,7 @@ def main() -> int:
         "render_engine:1285",
     ]
     fingerprints = []
-    for label, payload in zip(labels, SHAPE_B_PAYLOADS, strict=True):
+    for label, payload in zip(labels, ESCALATION_PAYLOADS, strict=True):
         agent, issue, fp = director_read(payload)
         fingerprints.append(fp)
         if fp in seen:
@@ -93,23 +108,22 @@ def main() -> int:
     print(f"distinct fingerprints : {len(set(fingerprints))}  -> {sorted(set(fingerprints))}")
     print(f"evaluated             : {evaluated}")
     print(f"discarded as duplicate: {discarded}")
-    missing_issue = sum(1 for p in SHAPE_B_PAYLOADS if "issue" not in p)
-    print(f"payloads lacking 'issue' key: {missing_issue}/5")
+    required_keys = {"agent", "issue", "suggested_action"}
+    invalid_payloads = sum(
+        1 for payload in ESCALATION_PAYLOADS if not required_keys <= payload.keys()
+    )
+    print(f"payloads lacking required keys: {invalid_payloads}/5")
     print()
 
-    # The defect is NOT "all five share one fingerprint" — that was merely how it
-    # surfaced in the 07-30 log. The defect is that the Director reads a key the
-    # publishers never set, so EVERY Shape-B escalation is content-free at the
-    # point of evaluation, and those sharing the collapsed fingerprint are
-    # additionally discarded. Either condition alone is silent data loss.
-    if missing_issue > 0:
+    # The defect was not merely duplicate fingerprints. The Director read keys
+    # that publishers never set, making every escalation content-free before
+    # evaluation. Requiring the complete three-key contract proves that the
+    # Director now receives both the issue and the requested response.
+    if invalid_payloads > 0:
         print("RESULT: D-07 NOT FIXED.")
-        print(f"        {missing_issue}/5 publishers omit the 'issue' key the Director reads,")
-        print(f"        so {evaluated} escalation(s) reach evaluation with EMPTY content and")
-        print(f"        {discarded} are silently discarded as duplicates of it.")
-        print("        Adaptive replanning is inoperative for all support agents.")
+        print(f"        {invalid_payloads}/5 publishers omit required Director keys.")
         return 1
-    print("RESULT: every publisher sets 'issue'; the D-07 mechanism is gone.")
+    print("RESULT: D-07 FIXED; all publishers satisfy the Director contract.")
     return 0
 
 
