@@ -56,9 +56,10 @@ import uuid
 from typing import Any
 
 from hyperion.agents.base import BaseAgent
-from hyperion.agents.bus import Channel, MessageType
+from hyperion.agents.bus import AgentBus, Channel, MessageType
 from hyperion.config import ModelTier
 from hyperion.router.budget import TaskUrgency
+from hyperion.router.router import LLMRouter
 from hyperion.schemas.agents import (
     AgentName,
     AgentRole,
@@ -471,7 +472,11 @@ class EngagementDirector(BaseAgent):
     Synthesis Lead does the synthesis. The Director is the orchestrator.
     """
 
-    def __init__(self, bus=None, router=None) -> None:
+    def __init__(
+        self,
+        bus: AgentBus | None = None,
+        router: LLMRouter | None = None,
+    ) -> None:
         super().__init__(spec=ENGAGEMENT_DIRECTOR_SPEC, bus=bus, router=router)
         self._current_dag: WorkflowDAG | None = None
         self._escalation_count: int = 0
@@ -629,9 +634,12 @@ class EngagementDirector(BaseAgent):
             return None
 
         try:
-            return json.loads(response.content)
+            parsed = json.loads(response.content)
+            if isinstance(parsed, dict):
+                return {str(key): value for key, value in parsed.items()}
         except (json.JSONDecodeError, ValueError):
-            return None
+            pass
+        return None
 
     async def _apply_adaptation(self, adaptation: dict[str, Any]) -> None:
         """Apply an adaptation to the current DAG, adaptive replanning (§10.2)."""
@@ -1546,6 +1554,11 @@ class EngagementDirector(BaseAgent):
         if second_brain_context:
             init_log.append(f"Second Brain context retrieved: {len(second_brain_context)} chars of prior research")
 
+        subject_class = getattr(self, "_llm_subject_class", None)
+        subject_class_value = (
+            subject_class.value if isinstance(subject_class, SubjectClass) else ""
+        )
+
         return WorkflowDAG(
             engagement_id=engagement_id,
             question=question,
@@ -1561,11 +1574,7 @@ class EngagementDirector(BaseAgent):
             # recorded roster decisions (dispatched AND excluded, with
             # reasons), the methodology section (W-10) and the report's
             # scope note quote these verbatim.
-            subject_class=(
-                self._llm_subject_class.value
-                if isinstance(getattr(self, "_llm_subject_class", None), SubjectClass)
-                else ""
-            ),
+            subject_class=subject_class_value,
             roster_decisions=list(getattr(self, "_roster_decisions", []) or []),
             agents_selected=all_agents,
             estimated_total_llm_calls=total_llm_calls,
