@@ -1287,6 +1287,12 @@ class RenderEngine(BaseAgent):
                 payload={
                     "to_agent": "presentation_designer",
                     "from_agent": self.name.value,
+                    "agent": self.name.value,
+                    "issue": (
+                        f"PDF verification failed with {len(all_issues)} issue(s): "
+                        f"{'; '.join(all_issues[:3])}"
+                    ),
+                    "suggested_action": "Fix the reported layout issues and regenerate HTML",
                     "task": "fix_layout",
                     "issues": all_issues,
                     "pdf_path": pdf_path,

@@ -1547,6 +1547,12 @@ class QualityGate(BaseAgent):
                 payload={
                     "to_agent": "engagement_director",
                     "from_agent": self.name.value,
+                    "agent": self.name.value,
+                    "issue": (
+                        f"Quality Gate failed after {iteration} iterations at "
+                        f"{total_score}/{self.APPROVAL_THRESHOLD}"
+                    ),
+                    "suggested_action": "Review critical dimensions and decide whether to replan",
                     "escalation_type": "quality_gate_failed",
                     "iteration": iteration,
                     "total_score": total_score,
@@ -1575,6 +1581,12 @@ class QualityGate(BaseAgent):
                 payload={
                     "to_agent": "synthesis_lead",
                     "from_agent": self.name.value,
+                    "agent": self.name.value,
+                    "issue": (
+                        f"Quality score {total_score}/{self.APPROVAL_THRESHOLD}; "
+                        f"{len(critical_dims)} critical dimensions require revision"
+                    ),
+                    "suggested_action": "Revise the report using gaps and fix_priority",
                     "task": "iterate",
                     "iteration": iteration + 1,
                     "quality_score": {

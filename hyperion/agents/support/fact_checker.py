@@ -1189,6 +1189,11 @@ class FactChecker(BaseAgent):
                 payload={
                     "to_agent": agent,
                     "from_agent": self.name.value,
+                    "agent": self.name.value,
+                    "issue": (
+                        f"{len(agent_claims)} claim(s) from {agent} could not be verified"
+                    ),
+                    "suggested_action": "Provide additional sources or clarify the claims",
                     "request_type": "verify_claims",
                     "unverified_claims": [c.model_dump() for c in agent_claims],
                     "message": (
@@ -1593,6 +1598,10 @@ class FactChecker(BaseAgent):
                 sender=self.name,
                 payload={
                     "agent": self.name.value,
+                    "issue": (
+                        f"Detected {len(self._contradictions)} contradiction(s) between agents"
+                    ),
+                    "suggested_action": "Resolve contradictions using evidence-weighted synthesis",
                     "finding_type": "contradictions",
                     "contradictions": [c.model_dump() for c in self._contradictions],
                     "message": (
