@@ -1021,15 +1021,19 @@ class SynthesisLead(BaseAgent):
             }
 
         try:
-            return json.loads(response.content)
+            parsed = json.loads(response.content)
+            if isinstance(parsed, dict):
+                return {str(key): value for key, value in parsed.items()}
         except (json.JSONDecodeError, ValueError):
-            return {
-                "recommendation": "investigate",
-                "recommendation_rationale": "LLM output parsing failed.",
-                "critical_assumptions": [],
-                "executive_summary": "Further research is needed.",
-                "key_findings_titles": [],
-            }
+            pass
+
+        return {
+            "recommendation": "investigate",
+            "recommendation_rationale": "LLM output parsing failed.",
+            "critical_assumptions": [],
+            "executive_summary": "Further research is needed.",
+            "key_findings_titles": [],
+        }
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 7: Calibrate system confidence
@@ -1205,7 +1209,7 @@ class SynthesisLead(BaseAgent):
             # Select the best finding for the key insight box.
             # Prefer findings with real implications and non-generic titles.
             # Avoid "analysis_summary" type findings whose titles may be raw data labels.
-            def _insight_score(f: KeyFinding) -> tuple:
+            def _insight_score(f: KeyFinding) -> tuple[bool, bool, bool, int]:
                 has_implications = bool(f.implications and f.implications.strip())
                 is_specific = f.finding_type != "analysis_summary"
                 has_sources = len(f.sources) > 0

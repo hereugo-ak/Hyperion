@@ -239,7 +239,6 @@ module = [
     "hyperion.agents.specialists.competitive_intel",
     "hyperion.agents.specialists.market_analyst",
     "hyperion.agents.specialists.risk_analyst",
-    "hyperion.agents.synthesis_lead",
     "hyperion.eval.ci_gate",
     "hyperion.eval.harness",
     "hyperion.infra.services",
