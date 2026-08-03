@@ -143,7 +143,7 @@ class TestStructuralGuards:
     """AST/config guards so the NEXT recurrence of 'gate silently weakened'
     is caught by the suite, not by an audit."""
 
-    def test_pre_commit_config_exists_and_covers_both_tools(self):
+        def test_pre_commit_config_exists_and_covers_both_tools(self):
         cfg = REPO_ROOT / ".pre-commit-config.yaml"
         assert cfg.exists(), (
             ".pre-commit-config.yaml was deleted — the local half of the "
@@ -152,7 +152,17 @@ class TestStructuralGuards:
         text = cfg.read_text(encoding="utf-8")
         assert "ruff" in text and "mypy" in text
 
+    def test_ci_workflow_invokes_the_regression_gate(self):
+        """W-19 requires the gate to run remotely, not just exist as dead code."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "quality-gate.yml"
+        assert workflow.exists(), "quality gate workflow was removed"
+        text = workflow.read_text(encoding="utf-8")
+        assert "pull_request:" in text
+        assert "python -m hyperion.eval.ci_gate --lint" in text
+        assert "tests/test_eval.py" in text
+
     def test_pre_commit_does_not_silently_rewrite_code(self):
+
         """The 5.1e triage proved ruff's autofix can be semantics-changing
         (UP042/TC00x). A hook with --fix rewrites code at commit time with no
         review — the exact surprise class this gate exists to prevent.
