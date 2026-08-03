@@ -1,9 +1,12 @@
 # INDEPENDENT RE-VERIFICATION — PART 1 (D-01…D-23)
 
-**Audit source:** `HYPERION_DEEP_AUDIT_2026-07-30.md`  
-**Branch verified:** `fix0.1` at `a32eef5` before this report-only commit  
-**Previous verification point:** `995cdf5` / report commit `6d19fcd`  
-**Date:** 2026-08-03  
+**Audit source:** `HYPERION_DEEP_AUDIT_2026-07-30.md`
+
+**Branch verified:** `fix0.1` at `a32eef5` before this report-only commit
+
+**Previous verification point:** `995cdf5` / report commit `6d19fcd`
+
+**Date:** 2026-08-03
 **Method:** current source inspection, defect-signature searches, focused regression tests,
 repository-wide Ruff, strict mypy, and all pytest modules. Commit subjects were used only to
 locate candidate changes; verdicts below are based on current code and executable evidence.
