@@ -576,8 +576,18 @@ class QualityGate(BaseAgent):
         retrieval_events = get_engine_health().degradation_events()
         if retrieval_events:
             latest = retrieval_events[-1]
-            healthy = int(latest.get("healthy", 0))
-            required = int(latest.get("required", 4))
+
+            def _event_int(key: str, default: int) -> int:
+                value = latest.get(key, default)
+                if isinstance(value, (str, bytes, bytearray, int, float)):
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        return default
+                return default
+
+            healthy = _event_int("healthy", 0)
+            required = _event_int("required", 4)
             score = min(score, 3)
             feedback_parts.append(
                 f"Retrieval pool degraded to {healthy} healthy engines "
