@@ -53,6 +53,7 @@ import asyncio
 import contextlib
 import logging
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
@@ -208,7 +209,7 @@ async def run_boot_sequence(
             logger.debug("%s: %s", "_start_step", exc)
         return step
 
-    def _progress_for(step: BootStep):
+    def _progress_for(step: BootStep) -> Callable[[str], None]:
         """Live sub-status callback for a long-running step.
 
         The container and engine helpers report what they are doing
@@ -510,7 +511,9 @@ def _obscura_present(settings: Any) -> bool:
     return False
 
 
-async def start_services(*, on_progress: object = None) -> dict[str, bool]:
+async def start_services(
+    *, on_progress: Callable[[str], None] | None = None
+) -> dict[str, bool]:
     """Recreate the managed containers from a clean slate. Headless entry point.
 
     Delegates to :func:`hyperion.infra.services.start_services`, which owns the
@@ -522,7 +525,9 @@ async def start_services(*, on_progress: object = None) -> dict[str, bool]:
     return {name: status.ok for name, status in statuses.items()}
 
 
-async def ensure_docker_ready(*, on_progress: object = None) -> bool:
+async def ensure_docker_ready(
+    *, on_progress: Callable[[str], None] | None = None
+) -> bool:
     """Start the Docker engine if needed. True when the daemon is usable."""
     status = await ensure_docker_engine(on_progress=on_progress)
     return status.ok
