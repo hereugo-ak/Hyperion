@@ -447,19 +447,48 @@ class MarketAnalyst(BaseAgent):
         macro: dict[str, Any] = {}
 
         requested = (geography or "").strip()
-        if requested and requested.upper() not in {"US", "USA", "UNITED STATES"}:
-            macro["geography_mismatch"] = {
-                "requested": requested,
-                "actual": "US",
-                "note": (
-                    "FRED serves US series only. These are US macro figures "
-                    f"used as a proxy and must not be presented as {requested} data."
-                ),
-            }
-            self._log(
-                f"FRED macro context is US-only; requested {requested!r} "
-                "cannot be served, flagging mismatch"
-            )
+        is_us = not requested or requested.upper() in {"US", "USA", "UNITED STATES"}
+        if not is_us:
+            # International market sizing must use country-specific data; FRED
+            # is never called for a non-US geography.
+            try:
+                world_bank = self.get_tool(ToolName.WORLD_BANK)
+                country_code = await world_bank.resolve_country_code(requested)
+                if not country_code:
+                    raise ValueError(f"World Bank country not found: {requested}")
+
+                gdp_growth = await world_bank.get_indicator(
+                    "gdp_growth", country=country_code, date_range="2019:"
+                )
+                inflation = await world_bank.get_inflation(
+                    country=country_code, date_range="2019:"
+                )
+                household_spending = await world_bank.get_indicator(
+                    "NE.CON.PRVT.CD", country=country_code, date_range="2019:"
+                )
+                macro.update({
+                    "data_source": "world_bank",
+                    "country_code": country_code,
+                    "gdp_growth": gdp_growth.to_dict(),
+                    "inflation": inflation.to_dict(),
+                    "sector_spending": household_spending.to_dict(),
+                })
+                self._sources.append(Source(
+                    id=f"src_{len(self._sources):03d}",
+                    title=f"World Bank Macroeconomic Data, {requested}",
+                    url=f"https://data.worldbank.org/country/{country_code.lower()}",
+                    credibility=SourceCredibility.GOVERNMENT,
+                    key_data="Country-specific GDP growth, inflation, and household spending",
+                ))
+                return macro
+            except (ValueError, AttributeError, RuntimeError) as exc:
+                macro["geography_mismatch"] = {
+                    "requested": requested,
+                    "actual": "unavailable",
+                    "note": f"World Bank country-specific macro retrieval failed: {exc}",
+                }
+                self._log(f"World Bank macro retrieval failed for {requested!r}: {exc}")
+                return macro
 
         try:
             fred = self.get_tool(ToolName.FRED)
