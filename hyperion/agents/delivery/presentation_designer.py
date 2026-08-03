@@ -2163,9 +2163,12 @@ class PresentationDesigner(BaseAgent):
             if response.success and response.content:
                 import json
                 data = json.loads(response.content)
-                term = data.get("search_term", "").strip()
-                if term and len(term) < 100:
-                    return term
+                if isinstance(data, dict):
+                    raw_term = data.get("search_term")
+                    if isinstance(raw_term, str):
+                        term = raw_term.strip()
+                        if term and len(term) < 100:
+                            return term
         except (ValueError, KeyError, TypeError):
             pass
 
@@ -2297,9 +2300,12 @@ class PresentationDesigner(BaseAgent):
             if response.success and response.content:
                 import json
                 data = json.loads(response.content)
-                term = data.get("search_term", "").strip()
-                if term and len(term) < 100:
-                    return term
+                if isinstance(data, dict):
+                    raw_term = data.get("search_term")
+                    if isinstance(raw_term, str):
+                        term = raw_term.strip()
+                        if term and len(term) < 100:
+                            return term
         except (ValueError, KeyError, TypeError):
             pass
 
