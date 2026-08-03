@@ -26,6 +26,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+type FlareSearchResult = dict[str, str]
+
 
 class FlareBreaker:
     """Circuit breaker for FlareSolverr — prevents flood after repeated failures.
@@ -168,7 +170,11 @@ class FlareSolverrClient:
         except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             return FlareSolverrResult(url=url, error=f"Unexpected: {e!s:.100}")
 
-    async def search_google(self, query: str, num_results: int = 10) -> list[dict]:
+    async def search_google(
+        self,
+        query: str,
+        num_results: int = 10,
+    ) -> list[FlareSearchResult]:
         """Search Google via FlareSolverr, bypassing CAPTCHA.
 
         Constructs a Google search URL, fetches it through FlareSolverr,
@@ -185,7 +191,11 @@ class FlareSolverrClient:
 
         return self._parse_google_html(result.html, num_results)
 
-    async def search_duckduckgo(self, query: str, num_results: int = 10) -> list[dict]:
+    async def search_duckduckgo(
+        self,
+        query: str,
+        num_results: int = 10,
+    ) -> list[FlareSearchResult]:
         """Search DuckDuckGo via FlareSolverr, bypassing CAPTCHA.
 
         Returns:
@@ -199,7 +209,11 @@ class FlareSolverrClient:
 
         return self._parse_ddg_html(result.html, num_results)
 
-    async def search(self, query: str, num_results: int = 10) -> list[dict]:
+    async def search(
+        self,
+        query: str,
+        num_results: int = 10,
+    ) -> list[FlareSearchResult]:
         """Search via FlareSolverr — tries Google first, then DuckDuckGo.
 
         Returns:
@@ -214,11 +228,15 @@ class FlareSolverrClient:
         results = await self.search_duckduckgo(query, num_results)
         return results[:num_results]
 
-    def _parse_google_html(self, html: str, max_results: int) -> list[dict]:
+    def _parse_google_html(
+        self,
+        html: str,
+        max_results: int,
+    ) -> list[FlareSearchResult]:
         """Parse Google search results HTML into structured data."""
         import re
 
-        results: list[dict] = []
+        results: list[FlareSearchResult] = []
 
         # Google result links are in <a href="/url?q=..."> or <a href="https://..."> within result
         # divs
@@ -296,11 +314,15 @@ class FlareSolverrClient:
 
         return results
 
-    def _parse_ddg_html(self, html: str, max_results: int) -> list[dict]:
+    def _parse_ddg_html(
+        self,
+        html: str,
+        max_results: int,
+    ) -> list[FlareSearchResult]:
         """Parse DuckDuckGo HTML search results into structured data."""
         import re
 
-        results: list[dict] = []
+        results: list[FlareSearchResult] = []
 
         # DuckDuckGo HTML results have class="result__a" for links
         # and class="result__snippet" for snippets
