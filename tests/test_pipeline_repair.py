@@ -830,7 +830,7 @@ class TestSearchInfrastructure:
         cats = SearxNGClient.CATEGORY_ENGINES
         assert "arxiv" in cats["science"].lower()
         assert "github" in cats["it"].lower()
-        assert cats["news"].lower() == "mojeek,marginalia"
+        assert cats["news"].lower() == "mojeek,mwmbl"
 
     def test_forwarded_headers_are_sent(self):
         """Host-originated requests carried no X-Forwarded-For, so the limiter

@@ -165,13 +165,13 @@ SEARXNG_REPLICAS = (
         "hyperion-searxng-reference",
         8889,
         "reference",
-        ("wikipedia", "wikidata", "openstreetmap", "github", "stackexchange", "hackernews"),
+        ("wikipedia", "openstreetmap", "github", "stackexchange", "hackernews"),
     ),
     SearxngReplica(
         "hyperion-searxng-web",
         8890,
         "web",
-        ("mojeek", "marginalia", "brave", "yep", "wiby"),
+        ("mojeek", "mwmbl", "brave", "yep"),
     ),
 )
 SEARXNG_PRIMARY_PORT = SEARXNG_REPLICAS[0].port
@@ -246,6 +246,8 @@ class ContainerSpec:
     #: Seconds to wait for the readiness probe to pass.
     ready_timeout: float = 90.0
     named_volumes: list[tuple[str, str]] = field(default_factory=list)
+    health_headers: dict[str, str] = field(default_factory=dict)
+    network_aliases: tuple[str, ...] = ()
 
     def health_url(self) -> str:
         return f"http://127.0.0.1:{self.host_port}{self.health_path}"
@@ -275,7 +277,11 @@ def searxng_spec(replica: SearxngReplica | None = None) -> ContainerSpec:
         image_floating=SEARXNG_IMAGE_FLOATING,
         host_port=replica.port,
         container_port=SEARXNG_CONTAINER_PORT,
-        health_path="/",
+        health_path="/config",
+        health_headers={
+            "X-Forwarded-For": "127.0.0.1",
+            "X-Real-IP": "127.0.0.1",
+        },
         volumes=volumes,
         named_volumes=[(f"{replica.name}-data", "/var/cache/searxng")],
         env={
@@ -303,6 +309,7 @@ def valkey_spec() -> ContainerSpec:
         container_port=6379,
         health_path="",
         named_volumes=[("hyperion-valkey-data", "/data")],
+        network_aliases=("valkey",),
     )
 
 
@@ -717,9 +724,9 @@ async def wait_until_ready(spec: ContainerSpec) -> bool:
     async with httpx.AsyncClient(timeout=5.0) as client:
         while loop.time() < deadline:
             try:
-                response = await client.get(url)
-                # Any HTTP answer below 500 proves the app is serving. SearxNG
-                # answers 200 on `/`; FlareSolverr answers 200 on `/health`.
+                response = await client.get(url, headers=spec.health_headers)
+                # Any HTTP answer below 500 proves the app is serving. SearXNG
+                # answers 200 on `/config`; FlareSolverr answers 200 on `/health`.
                 if response.status_code < 500:
                     return True
             except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
@@ -768,6 +775,8 @@ def _docker_run_argv(spec: ContainerSpec, image: str) -> list[str]:
         "--network",
         RETRIEVAL_NETWORK,
     ]
+    for alias in spec.network_aliases:
+        argv += ["--network-alias", alias]
     if spec.host_port:
         argv += ["-p", f"127.0.0.1:{spec.host_port}:{spec.container_port}"]
     for host_path, container_path in spec.volumes:
@@ -889,38 +898,63 @@ async def start_services(
                 for spec in all_specs()
             }
 
-    deadline = max(spec.ready_timeout for spec in specs) + 210.0
-    tasks = {
-        spec.name: asyncio.create_task(
-            ensure_container(spec, on_progress=on_progress),
-            name=f"start-{spec.name}",
-        )
-        for spec in specs
-    }
-    done, pending = await asyncio.wait(tasks.values(), timeout=deadline)
-    statuses: dict[str, ServiceStatus] = {}
-    names_by_task = {task: name for name, task in tasks.items()}
-    for task in done:
-        name = names_by_task[task]
-        try:
-            statuses[name] = task.result()
-        except Exception as exc:  # noqa: BLE001 - convert startup faults to status
+    async def _start_batch(
+        batch: list[ContainerSpec], *, deadline: float
+    ) -> dict[str, ServiceStatus]:
+        tasks = {
+            spec.name: asyncio.create_task(
+                ensure_container(spec, on_progress=on_progress),
+                name=f"start-{spec.name}",
+            )
+            for spec in batch
+        }
+        done, pending = await asyncio.wait(tasks.values(), timeout=deadline)
+        statuses: dict[str, ServiceStatus] = {}
+        names_by_task = {task: name for name, task in tasks.items()}
+        for task in done:
+            name = names_by_task[task]
+            try:
+                statuses[name] = task.result()
+            except Exception as exc:  # noqa: BLE001 - convert startup faults to status
+                statuses[name] = ServiceStatus(
+                    name=name,
+                    state=FAIL,
+                    detail=f"startup raised {type(exc).__name__}: {exc}",
+                )
+        for task in pending:
+            task.cancel()
+            name = names_by_task[task]
             statuses[name] = ServiceStatus(
                 name=name,
                 state=FAIL,
-                detail=f"startup raised {type(exc).__name__}: {exc}",
+                detail=f"startup exceeded shared {deadline:.0f}s deadline",
             )
-    for task in pending:
-        task.cancel()
-        name = names_by_task[task]
-        statuses[name] = ServiceStatus(
-            name=name,
-            state=FAIL,
-            detail=f"startup exceeded shared {deadline:.0f}s deadline",
-        )
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
-    return statuses
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return statuses
+
+    # SearXNG initializes its Valkey client during application startup. Starting
+    # all containers concurrently races DNS and readiness, producing a running
+    # uWSGI process whose application cannot serve. Bring the dependency fully
+    # online first; the independent SearXNG replicas may then start in parallel.
+    valkey = next(spec for spec in specs if spec.name == "hyperion-valkey")
+    results.update(
+        await _start_batch([valkey], deadline=valkey.ready_timeout + 30.0)
+    )
+    valkey_status = results[valkey.name]
+    dependents = [spec for spec in specs if spec.name != valkey.name]
+    if not valkey_status.ok or not valkey_status.ready:
+        for spec in dependents:
+            results[spec.name] = ServiceStatus(
+                name=spec.name,
+                state=FAIL,
+                detail="dependency hyperion-valkey did not become ready",
+            )
+        return results
+
+    deadline = max(spec.ready_timeout for spec in dependents) + 210.0
+    results.update(await _start_batch(dependents, deadline=deadline))
+    return results
 
 
 async def stop_services() -> dict[str, bool]:

@@ -28,9 +28,13 @@ def build_profiles(base: dict[str, Any]) -> dict[str, dict[str, Any]]:
         assigned.update(replica.engines)
 
         profile = copy.deepcopy(base)
+        profile["use_default_settings"]["engines"]["keep_only"] = list(replica.engines)
         profile["general"]["instance_name"] = f"HYPERION {replica.profile.title()} Search"
-        profile["server"]["secret_key"] = f"${{SEARXNG_{replica.profile.upper()}_SECRET}}"
-        profile["valkey"] = {"url": f"redis://valkey:6379/{db_index}"}
+        # Every container receives a different SEARXNG_SECRET value from its
+        # ContainerSpec; the settings placeholder itself uses the official
+        # entrypoint variable name shared by all profiles.
+        profile["server"]["secret_key"] = "${SEARXNG_SECRET}"
+        profile["valkey"] = {"url": f"valkey://valkey:6379/{db_index}"}
         profile["engines"] = [copy.deepcopy(declared[name]) for name in replica.engines]
         profiles[replica.profile] = profile
 

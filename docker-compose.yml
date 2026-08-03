@@ -17,7 +17,13 @@ x-searxng-common: &searxng-common
     valkey:
       condition: service_healthy
   healthcheck:
-    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+    test:
+      - CMD
+      - wget
+      - -qO-
+      - "--header=X-Forwarded-For: 127.0.0.1"
+      - "--header=X-Real-IP: 127.0.0.1"
+      - http://127.0.0.1:8080/config
     interval: 10s
     timeout: 5s
     retries: 12

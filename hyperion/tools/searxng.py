@@ -50,14 +50,14 @@ logger = logging.getLogger(__name__)
 # W-11: one code registry, built only from API-backed sources and independent
 # crawlers. Tier C engines that CAPTCHA, IP-ban, or proxy a blocking upstream
 # are forbidden everywhere, not merely omitted from the default route.
-RELIABLE_ENGINES = "wikipedia,wikidata,mojeek,marginalia,brave,crossref"
-STANDBY_ENGINES = "yep,wiby"
+RELIABLE_ENGINES = "wikipedia,mojeek,mwmbl,brave,crossref"
+STANDBY_ENGINES = "yep"
 CATEGORY_ENGINES = {
     "science": "arxiv,crossref,openalex,semantic scholar",
     "medical": "pubmed,openalex",
     "it": "github,stackexchange,hackernews",
-    "geo": "openstreetmap,wikidata",
-    "news": "mojeek,marginalia",
+    "geo": "openstreetmap",
+    "news": "mojeek,mwmbl",
 }
 TIER_C_ENGINES = frozenset({
     "bing",
@@ -117,7 +117,14 @@ async def reconcile_engine_registry(
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=10.0)
     try:
-        response = await http.get(f"{base_url.rstrip('/')}/config")
+        response = await http.get(
+            f"{base_url.rstrip('/')}/config",
+            headers={
+                "User-Agent": "HYPERION/1.0 (local readiness probe)",
+                "X-Forwarded-For": "127.0.0.1",
+                "X-Real-IP": "127.0.0.1",
+            },
+        )
         response.raise_for_status()
         payload = response.json()
     finally:

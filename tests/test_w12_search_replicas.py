@@ -38,15 +38,19 @@ def test_replica_registry_is_complete_and_disjoint() -> None:
 def test_generated_profiles_match_registry_and_have_unique_identity() -> None:
     base = yaml.safe_load((ROOT / "searxng_settings.yml").read_text(encoding="utf-8"))
     profiles = build_profiles(base)
-    secrets: set[str] = set()
     valkey_urls: set[str] = set()
     for replica in services.SEARXNG_REPLICAS:
         profile = profiles[replica.profile]
         assert {engine["name"] for engine in profile["engines"]} == set(replica.engines)
-        secrets.add(profile["server"]["secret_key"])
+        assert set(
+            profile["use_default_settings"]["engines"]["keep_only"]
+        ) == set(replica.engines)
+        assert profile["server"]["secret_key"] == "${SEARXNG_SECRET}"
+        assert profile["default_doi_resolver"] == "doi.org"
+        assert "default_doi_resolver" not in profile["search"]
         valkey_urls.add(profile["valkey"]["url"])
-    assert len(secrets) == 3
     assert len(valkey_urls) == 3
+    assert all(url.startswith("valkey://valkey:6379/") for url in valkey_urls)
 
 
 def test_container_specs_are_isolated_loopback_only_and_flare_is_opt_in() -> None:
@@ -60,6 +64,12 @@ def test_container_specs_are_isolated_loopback_only_and_flare_is_opt_in() -> Non
         argv = services._docker_run_argv(spec, spec.image)
         assert f"127.0.0.1:{spec.host_port}:8080" in argv
         assert argv[argv.index("--network") + 1] == services.RETRIEVAL_NETWORK
+        assert spec.health_path == "/config"
+        assert spec.health_headers["X-Forwarded-For"] == "127.0.0.1"
+    valkey_argv = services._docker_run_argv(
+        services.valkey_spec(), services.VALKEY_IMAGE
+    )
+    assert valkey_argv[valkey_argv.index("--network-alias") + 1] == "valkey"
     assert "flaresolverr" not in {spec.name for spec in services.all_specs()}
     assert "flaresolverr" in {
         spec.name for spec in services.all_specs(include_flaresolverr=True)
@@ -236,19 +246,28 @@ async def test_startup_removes_legacy_single_instance_and_inactive_flare(
 
 
 @pytest.mark.asyncio
-async def test_default_services_start_concurrently(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_valkey_is_ready_before_replicas_start_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     active = 0
     peak = 0
+    valkey_ready = False
 
     async def fake_run_command(command: list[str], timeout: float = 30.0):
         return 0, "network-ready", ""
 
     async def fake_ensure(spec, *, on_progress=None):
-        nonlocal active, peak
-        active += 1
-        peak = max(peak, active)
-        await asyncio.sleep(0)
-        active -= 1
+        nonlocal active, peak, valkey_ready
+        if spec.name == "hyperion-valkey":
+            assert active == 0
+            await asyncio.sleep(0)
+            valkey_ready = True
+        else:
+            assert valkey_ready
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0)
+            active -= 1
         return services.ServiceStatus(spec.name, state=services.OK, ready=True)
 
     monkeypatch.setattr(services, "docker_available", lambda: True)
@@ -257,7 +276,7 @@ async def test_default_services_start_concurrently(monkeypatch: pytest.MonkeyPat
 
     statuses = await services.start_services()
     assert set(statuses) == {spec.name for spec in services.all_specs()}
-    assert peak == len(services.all_specs())
+    assert peak == len(services.searxng_specs())
 
 
 @pytest.mark.asyncio
@@ -282,7 +301,9 @@ async def test_shared_startup_deadline_returns_explicit_failures(
     statuses = await services.start_services()
     assert set(statuses) == {spec.name for spec in services.all_specs()}
     assert all(status.state == services.FAIL for status in statuses.values())
-    assert all("shared" in status.detail for status in statuses.values())
+    assert "shared" in statuses["hyperion-valkey"].detail
+    for replica in services.SEARXNG_REPLICAS:
+        assert "dependency" in statuses[replica.name].detail
 
 
 @pytest.mark.asyncio
@@ -326,6 +347,9 @@ def test_compose_matches_pins_resources_and_network_exposure() -> None:
         assert item["read_only"] is True
         assert item["cap_drop"] == ["ALL"]
         assert item["security_opt"] == ["no-new-privileges:true"]
+        healthcheck = item["healthcheck"]["test"]
+        assert healthcheck[-1] == "http://127.0.0.1:8080/config"
+        assert "--header=X-Forwarded-For: 127.0.0.1" in healthcheck
     assert definitions["valkey"]["image"] == services.VALKEY_IMAGE
     assert "ports" not in definitions["valkey"]
     assert definitions["flaresolverr"]["profiles"] == ["investigation"]

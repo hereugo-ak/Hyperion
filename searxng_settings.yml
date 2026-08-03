@@ -2,10 +2,27 @@
 #
 # Governing policy: only documented APIs and independent crawlers are allowed.
 # Engines that CAPTCHA, IP-ban, or proxy a blocking upstream are Tier C and
-# must not appear here. use_default_settings stays false so an image upgrade
-# cannot silently reintroduce one.
+# must not appear here. Inherit current core settings while keeping only the
+# audited engine allowlist, so image upgrades cannot silently reintroduce an
+# engine or omit newly required application settings.
 
-use_default_settings: false
+use_default_settings:
+  engines:
+    keep_only:
+      - wikipedia
+      - openstreetmap
+      - github
+      - stackexchange
+      - hackernews
+      - arxiv
+      - crossref
+      - openalex
+      - pubmed
+      - semantic scholar
+      - mojeek
+      - mwmbl
+      - brave
+      - yep
 
 general:
   instance_name: "HYPERION Search"
@@ -18,7 +35,10 @@ search:
   formats:
     - html
     - json
-  default_doi_resolver: "doi.org"
+
+# SearXNG reads this at the document root (not under ``search``). Keeping it
+# explicit also makes the configured resolver deterministic across image tags.
+default_doi_resolver: "doi.org"
 
 # One DOI map only. Duplicate YAML keys silently overwrite each other and are
 # rejected by tests/test_w11_search_registry.py.
@@ -61,13 +81,6 @@ engines:
   - name: wikipedia
     engine: wikipedia
     shortcut: wp
-    disabled: false
-    timeout: 6
-    weight: 1.0
-
-  - name: wikidata
-    engine: wikidata
-    shortcut: wd
     disabled: false
     timeout: 6
     weight: 1.0
@@ -151,9 +164,9 @@ engines:
     timeout: 10
     weight: 1.0
 
-  - name: marginalia
-    engine: marginalia
-    shortcut: mg
+  - name: mwmbl
+    engine: mwmbl
+    shortcut: mwm
     disabled: false
     timeout: 10
     weight: 0.8
@@ -171,10 +184,3 @@ engines:
     disabled: false
     timeout: 10
     weight: 0.6
-
-  - name: wiby
-    engine: wiby
-    shortcut: wb
-    disabled: false
-    timeout: 10
-    weight: 0.5
