@@ -59,10 +59,12 @@ import secrets
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any, cast
 
 from hyperion.infra.paths import (
     docker_mount_path,
@@ -470,7 +472,7 @@ async def _launch_docker_desktop() -> str:
         for exe in _windows_desktop_candidates():
             if exe.exists():
                 try:
-                    subprocess.Popen([str(exe)], **_no_window_kwargs())  # type: ignore[arg-type]
+                    subprocess.Popen([str(exe)], **cast("Any", _no_window_kwargs()))
                     return f"launching {exe.name}"
                 except OSError:
                     continue
@@ -530,7 +532,7 @@ async def _launch_docker_desktop() -> str:
 async def ensure_docker_engine(
     *,
     wait_seconds: float = 90.0,
-    on_progress: object = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> DockerStatus:
     """Make sure the Docker daemon is running, starting it if necessary.
 
@@ -550,7 +552,7 @@ async def ensure_docker_engine(
         # an infra operation, so the suppression is intentional.
         if callable(on_progress):
             with suppress(Exception):
-                on_progress(message)  # type: ignore[misc]
+                on_progress(message)
 
     platform = detect_platform()
     if not docker_available():
@@ -784,7 +786,7 @@ async def container_logs(name: str, lines: int = 20) -> str:
 async def ensure_container(
     spec: ContainerSpec,
     *,
-    on_progress: object = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> ServiceStatus:
     """Bring ``spec`` up from a clean slate and wait until it truly serves."""
 
@@ -793,7 +795,7 @@ async def ensure_container(
         # an infra operation, so the suppression is intentional.
         if callable(on_progress):
             with suppress(Exception):
-                on_progress(message)  # type: ignore[misc]
+                on_progress(message)
 
     status = ServiceStatus(name=spec.name)
 
@@ -838,7 +840,9 @@ async def ensure_container(
     return status
 
 
-async def start_services(*, on_progress: object = None) -> dict[str, ServiceStatus]:
+async def start_services(
+    *, on_progress: Callable[[str], None] | None = None
+) -> dict[str, ServiceStatus]:
     """Start every managed container. Returns per-service status.
 
     Used by both the TUI boot sequence and ``hyperion consult``, so the two

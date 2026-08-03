@@ -163,7 +163,7 @@ class CamoufoxClient:
             from trafilatura import extract
             text = extract(html, include_comments=False, include_tables=True)
             if text and len(text) > 50:
-                return text
+                return str(text)
         except ImportError:
             pass
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed

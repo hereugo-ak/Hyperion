@@ -99,7 +99,7 @@ class CurlCffiClient:
             import asyncio
             loop = asyncio.get_event_loop()
 
-            def _do_fetch():
+            def _do_fetch() -> Any:
                 return cffi_requests.get(
                     url,
                     impersonate=imp,
@@ -146,7 +146,7 @@ class CurlCffiClient:
             from trafilatura import extract
             text = extract(html, include_comments=False, include_tables=True)
             if text and len(text) > 50:
-                return text
+                return str(text)
         except ImportError:
             pass
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
