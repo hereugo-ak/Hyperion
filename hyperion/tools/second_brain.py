@@ -242,15 +242,24 @@ class SecondBrainClient:
                 # Simple YAML parsing (key: value)
                 for line in fm_text.split("\n"):
                     if ":" in line:
-                        key, value = line.split(":", 1)
+                        key, raw_value = line.split(":", 1)
                         key = key.strip()
-                        value = value.strip()
+                        raw_value = raw_value.strip()
+                        value: Any = raw_value
                         # Handle lists [item1, item2]
-                        if value.startswith("[") and value.endswith("]"):
-                            value = [v.strip().strip('"\'') for v in value[1:-1].split(",") if v.strip()]
+                        if raw_value.startswith("[") and raw_value.endswith("]"):
+                            value = [
+                                item.strip().strip('"\'')
+                                for item in raw_value[1:-1].split(",")
+                                if item.strip()
+                            ]
                         # Handle quoted strings
-                        elif value.startswith('"') and value.endswith('"') or value.startswith("'") and value.endswith("'"):
-                            value = value[1:-1]
+                        elif (
+                            raw_value.startswith('"') and raw_value.endswith('"')
+                        ) or (
+                            raw_value.startswith("'") and raw_value.endswith("'")
+                        ):
+                            value = raw_value[1:-1]
                         frontmatter[key] = value
 
         return frontmatter, body

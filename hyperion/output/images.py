@@ -112,7 +112,7 @@ class ImageRelevanceGate:
         content = self._candidate_text(candidate)
         if not query or not content:
             return 0.0
-        return self._scorer._score_relevance(query, content)
+        return float(self._scorer._score_relevance(query, content))
 
     def is_relevant(self, candidate: Any, subject: str, topic: str) -> bool:
         """True only when the candidate clears the floor and is not chart-like."""
@@ -584,7 +584,7 @@ class ImageProcessor:
 
         try:
             with pil_image.open(image_path) as img:
-                return img.width >= min_width and img.height >= min_height
+                return bool(img.width >= min_width and img.height >= min_height)
         except (OSError, ValueError):
             return False
 
