@@ -39,7 +39,11 @@ def dead_router(monkeypatch):
         provider.health.trip_circuit_breaker(cooldown_seconds=3600)
 
     # And belt-and-braces: no model candidates anywhere
-    monkeypatch.setattr(router, "get_available_providers", lambda tier, urgency=TaskUrgency.NORMAL: set())
+    monkeypatch.setattr(
+        router,
+        "get_available_providers",
+        lambda tier, urgency=TaskUrgency.NORMAL, estimated_tokens=0: set(),
+    )
     yield router
     reset_router()
 
@@ -92,7 +96,9 @@ async def test_router_failure_no_model_for_tier(monkeypatch):
 
     router = LLMRouter()
     monkeypatch.setattr(
-        router, "get_available_providers", lambda tier, urgency=TaskUrgency.NORMAL: set()
+        router,
+        "get_available_providers",
+        lambda tier, urgency=TaskUrgency.NORMAL, estimated_tokens=0: set(),
     )
     r = await router.complete(ModelTier.DEEP, MESSAGES)
     assert not r.success
