@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from hyperion.agents.bus import Channel, MessageType, get_bus, reset_bus
 from hyperion.agents.engagement_director import EngagementDirector
 from hyperion.agents.synthesis_lead import SynthesisLead
@@ -909,7 +911,11 @@ class WorkflowEngine:
             else:
                 task.status = TaskStatus.COMPLETED
             task.completed_at = time.time()
-            task.output = result.model_dump() if hasattr(result, "model_dump") else str(result)
+            task.output = (
+                result.model_dump()
+                if isinstance(result, BaseModel)
+                else {"result": str(result)}
+            )
             self._task_outputs[task.id] = result
             self._publish_task_update(task)
 
@@ -1468,9 +1474,7 @@ class WorkflowEngine:
             from hyperion.tools.query_utils import get_engagement_focus
             from hyperion.tools.searxng import SearxNGClient
 
-            focus = get_engagement_focus() or {}
-            subject = focus.get("subject", "")
-            geography = focus.get("geography", "")
+            _, subject, geography = get_engagement_focus()
             if not subject:
                 return 0
             client = SearxNGClient()
@@ -1639,6 +1643,10 @@ class WorkflowEngine:
                 timeout=self.SPECIALIST_TIMEOUT_SECONDS,
             )
 
+            if current_score is None:
+                self._log(f"QUALITY iteration {iteration}: no score returned")
+                break
+
             self._log(
                 f"QUALITY iteration {iteration}/{max_iterations}: "
                 f"score={current_score.total_score:.1f}/{current_score.threshold:.1f} "
@@ -1646,9 +1654,6 @@ class WorkflowEngine:
                 f"critical={len(current_score.critical_dimensions)} "
                 f"gaps={len(current_score.gaps)}"
             )
-
-            if current_score is None:
-                break
 
             # P2-22: exit the loop only on the authoritative `approved` flag,
             # not on the weighted score alone. `approved` already folds in
@@ -1732,19 +1737,7 @@ class WorkflowEngine:
                 f"blockers={len(current_score.integrity_blockers)})"
             )
 
-        # Mark the quality_gate task as COMPLETED in the DAG so that
-        # delivery tasks (presentation_designer, etc.) that depend on
-        # task_quality_gate can proceed.
-        for task in dag.tasks:
-            if task.agent == AgentName.QUALITY_GATE and task.status != TaskStatus.COMPLETED:
-                task.status = TaskStatus.COMPLETED
-                task.completed_at = time.time()
-                task.output = current_score.model_dump() if hasattr(current_score, "model_dump") else str(current_score)
-                self._task_outputs[task.id] = current_score
-                self._publish_task_update(task)
-                break
-
-        return current_report, current_score or QualityScore(
+        final_score = current_score or QualityScore(
             dimensions=[],
             total_score=0.0,
             approved=False,
@@ -1754,7 +1747,21 @@ class WorkflowEngine:
             max_iterations_reached=True,
             terminal_state=QualityTerminalState.BLOCKED,
             blocked_reason="Quality Gate did not produce a score",
-        ), iterations
+        )
+
+        # Mark the quality_gate task as COMPLETED in the DAG so that
+        # delivery tasks (presentation_designer, etc.) that depend on
+        # task_quality_gate can proceed.
+        for task in dag.tasks:
+            if task.agent == AgentName.QUALITY_GATE and task.status != TaskStatus.COMPLETED:
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = time.time()
+                task.output = final_score.model_dump()
+                self._task_outputs[task.id] = final_score
+                self._publish_task_update(task)
+                break
+
+        return current_report, final_score, iterations
 
     def _compute_quality_terminal_state(self, score: QualityScore) -> None:
         """W-08: compute the Quality Gate terminal state. The ONLY ship/no-ship decision point.
@@ -1888,13 +1895,9 @@ class WorkflowEngine:
 
             dimensions = [
                 {
-                    "dimension": (
-                        d.dimension.value
-                        if hasattr(getattr(d, "dimension", None), "value")
-                        else str(getattr(d, "dimension", ""))
-                    ),
-                    "score": getattr(d, "score", None),
-                    "rationale": getattr(d, "rationale", "")[:500],
+                    "dimension": d.dimension_id.value,
+                    "score": d.score,
+                    "rationale": d.feedback[:500],
                 }
                 for d in (score.dimensions or [])
             ]
@@ -2045,7 +2048,7 @@ class WorkflowEngine:
         This makes the system smarter over time — future engagements on
         similar topics can retrieve this context via the Second Brain.
         """
-        if not result.final_report or not result.metadata:
+        if not result.final_report or not result.metadata or result.quality_score is None:
             return
 
         try:
@@ -2518,7 +2521,8 @@ class WorkflowEngine:
                         continue
                     # Check if dependencies are met
                     ready = all(
-                        dag.get_task(dep) and dag.get_task(dep).status == TaskStatus.COMPLETED
+                        (dependency_task := dag.get_task(dep)) is not None
+                        and dependency_task.status == TaskStatus.COMPLETED
                         for dep in task.dependencies
                     )
                     if ready:
@@ -2550,12 +2554,14 @@ class WorkflowEngine:
             stuck = [t for t in delivery_tasks if t.status == TaskStatus.PENDING]
             if stuck:
                 stuck_agent = stuck[0].agent.value
-                unmet = {
-                    dep: (
-                        dag.get_task(dep).status.value if dag.get_task(dep) else "missing"
+                unmet: dict[str, str] = {}
+                for dep in stuck[0].dependencies:
+                    dependency_task = dag.get_task(dep)
+                    unmet[dep] = (
+                        dependency_task.status.value
+                        if dependency_task is not None
+                        else "missing"
                     )
-                    for dep in stuck[0].dependencies
-                }
                 self._log(
                     f"DELIVERY: INVARIANT VIOLATION — {stuck_agent} cannot run, "
                     f"dependencies never completed: {unmet}"

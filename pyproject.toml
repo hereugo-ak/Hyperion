@@ -239,7 +239,6 @@ module = [
     "hyperion.eval.ci_gate",
     "hyperion.eval.harness",
     "hyperion.infra.services",
-    "hyperion.orchestrator",
     "hyperion.output.chart_specs",
     "hyperion.output.charts",
     "hyperion.output.images",
