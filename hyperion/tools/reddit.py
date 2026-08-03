@@ -38,7 +38,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +314,7 @@ class RedditClient:
         cache_key = self._cache_key("subs", query, limit)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("list[Subreddit]", cached)
 
         await self._rate_limit()
 
@@ -376,7 +376,7 @@ class RedditClient:
         cache_key = self._cache_key("posts", query, subreddit, sort, time_filter, limit)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("list[RedditPost]", cached)
 
         await self._rate_limit()
 
@@ -451,7 +451,7 @@ class RedditClient:
         cache_key = self._cache_key("comments", post_id, limit)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("list[RedditComment]", cached)
 
         await self._rate_limit()
 
