@@ -38,7 +38,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -249,7 +249,7 @@ class SECEdgarClient:
         cache_key = self._cache_key(url, *sorted((params or {}).items()))
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("dict[str, Any]", cached)
 
         await self._rate_limit()
         client = await self._get_client()
@@ -258,7 +258,7 @@ class SECEdgarClient:
             try:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
-                data = response.json()
+                data = cast("dict[str, Any]", response.json())
 
                 self._set_cached(cache_key, data)
                 return data
@@ -279,7 +279,7 @@ class SECEdgarClient:
         cache_key = self._cache_key(url)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            return cached
+            return str(cached)
 
         await self._rate_limit()
         client = await self._get_client()
@@ -352,13 +352,13 @@ class SECEdgarClient:
         tickers = await self._load_tickers()
         query_upper = query.upper()
         if query_upper in tickers:
-            return tickers[query_upper]["cik"]
+            return str(tickers[query_upper]["cik"])
 
         # Try name match (case-insensitive substring)
         query_lower = query.lower()
         for entry in tickers.values():
-            if query_lower in entry.get("title", "").lower():
-                return entry["cik"]
+            if query_lower in str(entry.get("title", "")).lower():
+                return str(entry["cik"])
 
         return None
 
