@@ -129,10 +129,10 @@ class ProvenanceRefusalError(RuntimeError):
     """W-01: the shell refuses to boot in an RC-1 configuration.
 
     Raised by run_boot_sequence when the loaded build is a site-packages
-    copy shadowing a git checkout on sys.path, or when stale .pyc bytecode
-    sits under the package directory — the two mechanisms that served
-    pre-fix output for fifteen correct commits. This is a hard stop, never
-    a warning.
+    copy shadowing a git checkout on sys.path, or when an unchecked-hash
+    .pyc can execute bytecode that does not match its source. Timestamp and
+    checked-hash caches are validated by CPython and are safe after a pull.
+    This is a hard stop, never a warning.
     """
 
 
@@ -172,8 +172,8 @@ async def run_boot_sequence(
     # ── W-01: build provenance, before ANY service bring-up ─────────────
     # RC-1: a merged fix is not a running fix. Fifteen correct commits
     # produced pre-fix output because the shell booted a site-packages
-    # shadow with stale bytecode and nobody could see it. The banner is
-    # printed unconditionally (never a log line at INFO level), and the two
+    # shadow with unsafe bytecode and nobody could see it. The banner is
+    # printed unconditionally (never a log line at INFO level), and unsafe
     # RC-1 configurations are a hard refusal, not a warning.
     from hyperion.config import get_settings
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import py_compile
 import sys
 from pathlib import Path
 
@@ -540,6 +541,62 @@ class TestDockerAutostart:
         assert await services._launch_docker_desktop() == ""
         assert ["sudo", "-n", "true"] in commands
         assert all(cmd[:1] != ["sudo"] or "-n" in cmd for cmd in commands)
+
+    def test_timestamp_cache_older_than_source_does_not_refuse_boot(self, tmp_path):
+        """A post-pull timestamp cache is rejected by CPython, not executed."""
+        from hyperion.infra import provenance
+
+        package_dir = tmp_path / "hyperion"
+        package_dir.mkdir()
+        source = package_dir / "module.py"
+        source.write_text("VALUE = 'old'\n", encoding="utf-8")
+        pyc = Path(py_compile.compile(str(source), doraise=True))
+
+        # Reproduce the screenshot: git updates source after a cache was made.
+        source.write_text("VALUE = 'new'\n", encoding="utf-8")
+        newer = pyc.stat().st_mtime + 10
+        os.utime(source, (newer, newer))
+
+        assert pyc.stat().st_mtime < source.stat().st_mtime
+        assert provenance._find_stale_pycache(package_dir) == []
+        snapshot = provenance.Provenance(
+            package_dir=str(package_dir),
+            repo_root=str(tmp_path),
+            git_sha="abc1234",
+            git_dirty=False,
+            install_mode="editable",
+            stale_pycache=[],
+        )
+        assert provenance.refusal_reason(snapshot) is None
+
+    def test_mismatched_unchecked_hash_cache_still_refuses_boot(self, tmp_path):
+        """Retain the hard stop only where CPython can trust stale bytecode."""
+        from hyperion.infra import provenance
+
+        package_dir = tmp_path / "hyperion"
+        package_dir.mkdir()
+        source = package_dir / "module.py"
+        source.write_text("VALUE = 'old'\n", encoding="utf-8")
+        pyc = Path(py_compile.compile(
+            str(source),
+            doraise=True,
+            invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+        ))
+        source.write_text("VALUE = 'new'\n", encoding="utf-8")
+
+        unsafe = provenance._find_stale_pycache(package_dir)
+        assert unsafe == [str(pyc)]
+        snapshot = provenance.Provenance(
+            package_dir=str(package_dir),
+            repo_root=str(tmp_path),
+            git_sha="abc1234",
+            git_dirty=False,
+            install_mode="editable",
+            stale_pycache=unsafe,
+        )
+        reason = provenance.refusal_reason(snapshot)
+        assert reason is not None
+        assert "Unsafe unchecked-hash bytecode" in reason
 
     def test_w13_boot_banner_reports_detected_platform(self, monkeypatch):
         from hyperion.infra import provenance, services
