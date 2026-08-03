@@ -1,0 +1,35 @@
+name: Quality gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - fix0.1
+
+permissions:
+  contents: read
+
+jobs:
+  regression-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install gate dependencies
+        run: python -m pip install --disable-pip-version-check -e ".[dev]"
+
+      - name: Run enforced CI gate
+        run: python -m hyperion.eval.ci_gate --lint
+
+      - name: Run deterministic eval tests
+        run: python -m pytest tests/test_eval.py tests/test_ci_gate_lint.py -q
