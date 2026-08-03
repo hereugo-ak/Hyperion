@@ -431,7 +431,12 @@ class CompetitiveIntel(BaseAgent):
 
         try:
             data = json.loads(response.content)
-            return data.get("competitors", [])
+            if not isinstance(data, dict):
+                return []
+            competitors = data.get("competitors", [])
+            if not isinstance(competitors, list):
+                return []
+            return [name for name in competitors if isinstance(name, str)]
         except (json.JSONDecodeError, ValueError):
             return []
 
@@ -517,7 +522,10 @@ class CompetitiveIntel(BaseAgent):
             results = await searxng.search(f"{competitor_name} official website", max_results=3)
             for r in results:
                 url = r.get("url", "")
-                if url and not any(x in url for x in ["linkedin.com", "crunchbase.com", "bloomberg.com"]):
+                if isinstance(url, str) and url and not any(
+                    blocked in url
+                    for blocked in ["linkedin.com", "crunchbase.com", "bloomberg.com"]
+                ):
                     return url
         except (ValueError, AttributeError, RuntimeError):
             pass
@@ -632,7 +640,17 @@ class CompetitiveIntel(BaseAgent):
             return {}
 
         try:
-            return json.loads(response.content)
+            data = json.loads(response.content)
+            if not isinstance(data, dict):
+                return {}
+            return {
+                str(competitor): {
+                    str(dimension): str(value)
+                    for dimension, value in details.items()
+                }
+                for competitor, details in data.items()
+                if isinstance(details, dict)
+            }
         except (json.JSONDecodeError, ValueError):
             return {}
 
@@ -860,7 +878,10 @@ class CompetitiveIntel(BaseAgent):
             return {}
 
         try:
-            return json.loads(response.content)
+            data = json.loads(response.content)
+            if not isinstance(data, dict):
+                return {}
+            return {str(key): value for key, value in data.items()}
         except (json.JSONDecodeError, ValueError):
             return {}
 
@@ -882,9 +903,12 @@ class CompetitiveIntel(BaseAgent):
         if not positioning_map:
             return []
 
-        white_space = positioning_map.get("white_space", [])
-        if not isinstance(white_space, list):
-            white_space = []
+        raw_white_space = positioning_map.get("white_space", [])
+        white_space = (
+            [item for item in raw_white_space if isinstance(item, str)]
+            if isinstance(raw_white_space, list)
+            else []
+        )
 
         # Also check for open strategic groups (less than 3 members)
         for group in strategic_groups:
@@ -916,7 +940,12 @@ class CompetitiveIntel(BaseAgent):
 
         try:
             data = json.loads(response.content)
-            return data.get("white_space", white_space)
+            if not isinstance(data, dict):
+                return white_space
+            prioritized = data.get("white_space", white_space)
+            if not isinstance(prioritized, list):
+                return white_space
+            return [item for item in prioritized if isinstance(item, str)]
         except (json.JSONDecodeError, ValueError):
             return white_space
 
