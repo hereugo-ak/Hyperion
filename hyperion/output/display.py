@@ -131,7 +131,7 @@ def display_value(obj: Any) -> str:
     )
 
 
-def _present_mapping(data: dict, skip_empty: bool) -> str:
+def _present_mapping(data: dict[Any, Any], skip_empty: bool) -> str:
     """Render a mapping as ``Key: Value · Key: Value`` prose."""
     parts: list[str] = []
     for key, value in data.items():
