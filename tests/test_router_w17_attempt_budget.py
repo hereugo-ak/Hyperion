@@ -23,7 +23,12 @@ from __future__ import annotations
 import pytest
 
 from hyperion.config import ModelTier, ProviderType
-from hyperion.router.providers.base import RouterResponse
+from hyperion.router.providers.base import (
+    ProviderHealth,
+    ProviderStatus,
+    RouterResponse,
+    is_transient_connection_error,
+)
 from hyperion.router.router import RouterAttempt, reset_router
 
 MESSAGES = [
@@ -200,6 +205,64 @@ async def test_transient_retried_once_then_failover(monkeypatch):
         assert count <= 2
     # And the walk did move on to at least one other provider.
     assert len(counter) >= 2
+
+
+@pytest.mark.asyncio
+async def test_connection_error_retried_once_then_recovers(monkeypatch):
+    """A status-less SDK connection failure is transient, not provider death."""
+    router = _fresh_router()
+    calls: list[ProviderType] = []
+
+    async def _connection_then_success(
+        self, model, messages, tier, temperature=None, max_tokens=None,
+        response_format=None,
+    ):
+        calls.append(self.provider_type)
+        if len(calls) == 1:
+            return _failure(self.provider_type, tier, None, "Connection error.")
+        return RouterResponse(
+            content="ok",
+            model=model,
+            provider=self.provider_type,
+            tier=tier,
+            input_tokens=4,
+            output_tokens=1,
+            total_tokens=5,
+        )
+
+    import hyperion.router.router as router_mod
+    from hyperion.router.providers.base import BaseProvider
+
+    monkeypatch.setattr(BaseProvider, "complete", _connection_then_success)
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(router_mod.asyncio, "sleep", _no_sleep)
+    response = await router.complete(tier=ModelTier.FAST, messages=MESSAGES)
+
+    assert response.success
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert is_transient_connection_error("Temporary failure in name resolution")
+    assert is_transient_connection_error("Name or service not known")
+
+
+def test_single_network_error_is_recoverable_and_circuit_is_timed():
+    health = ProviderHealth()
+
+    health.record_network_error()
+    assert health.status == ProviderStatus.DEGRADED
+    assert health.is_available()
+
+    health.record_network_error()
+    health.record_network_error()
+    assert health.status == ProviderStatus.CIRCUIT_OPEN
+    assert not health.is_available()
+
+    health.cooldown_until = 0
+    assert health.is_available()
+    assert health.status == ProviderStatus.HEALTHY
 
 
 @pytest.mark.asyncio

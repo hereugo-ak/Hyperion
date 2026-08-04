@@ -24,6 +24,30 @@ from openai import AsyncOpenAI
 
 from hyperion.config import ModelSpec, ModelTier, ProviderConfig, ProviderType
 
+_TRANSIENT_CONNECTION_MARKERS = (
+    "api connection",
+    "connection error",
+    "connection refused",
+    "connection reset",
+    "connecterror",
+    "dns",
+    "name or service not known",
+    "network is unreachable",
+    "remote protocol error",
+    "temporary failure in name resolution",
+    "transport error",
+)
+
+
+def is_transient_connection_error(error: str | None) -> bool:
+    """Return whether a status-less provider failure is recoverable transport I/O."""
+    if not error:
+        return False
+    normalized = error.casefold()
+    return "timeout" in normalized or "timed out" in normalized or any(
+        marker in normalized for marker in _TRANSIENT_CONNECTION_MARKERS
+    )
+
 
 @dataclass
 class RouterFailure:
@@ -134,8 +158,8 @@ class ProviderHealth:
     The failover handler uses this to decide when to skip a provider:
     - 429 -> mark cooldown (60s)
     - 500/503 -> health check, circuit breaker (3 failures -> 5-min cooldown)
-    - Timeout -> exponential backoff (1s, 2s, 4s, max 3 retries)
-    - Network error -> immediate failover, no retry
+    - Timeout/network error -> degraded; 3 consecutive failures open a cooldown
+    - Authentication error -> unavailable until credentials are corrected
     """
 
     status: ProviderStatus = ProviderStatus.HEALTHY
@@ -188,10 +212,21 @@ class ProviderHealth:
             self.trip_circuit_breaker()
 
     def record_network_error(self) -> None:
-        self.status = ProviderStatus.UNAVAILABLE
+        """Record recoverable transport failure without permanently disabling capacity.
+
+        DNS, connect, and protocol failures are commonly brief infrastructure
+        events. Permanently setting ``UNAVAILABLE`` after one such failure made
+        a provider unusable for the rest of the process. Keep it eligible for
+        the router's bounded retry, then open a timed circuit only after three
+        consecutive failures.
+        """
+        self.status = ProviderStatus.DEGRADED
+        self.consecutive_failures += 1
         self.last_error = "Network Error"
         self.total_errors += 1
         self.total_requests += 1
+        if self.consecutive_failures >= 3:
+            self.trip_circuit_breaker()
 
     def record_auth_error(self) -> None:
         """401/403 from the provider: the credential is dead (P2-29).
@@ -218,7 +253,10 @@ class ProviderHealth:
                 self.consecutive_failures = 0
                 return True
             return False
-        return self.status != ProviderStatus.UNAVAILABLE
+        return self.status not in (
+            ProviderStatus.UNAVAILABLE,
+            ProviderStatus.UNAUTHENTICATED,
+        )
 
     def uptime_percentage(self) -> float:
         if self.total_requests == 0:
@@ -454,7 +492,11 @@ class BaseProvider:
                 self.health.record_500()
             elif "timeout" in lower or "timed out" in lower:
                 self.health.record_timeout()
+            elif is_transient_connection_error(error_str):
+                self.health.record_network_error()
             else:
+                # Unknown status-less failures must fail over, but they are not
+                # proof that the provider is permanently unreachable.
                 self.health.record_network_error()
 
             return RouterResponse(
@@ -476,7 +518,11 @@ class BaseProvider:
         """
         try:
             await self.client.models.list()
-            if self.health.status in (ProviderStatus.UNAVAILABLE, ProviderStatus.CIRCUIT_OPEN):
+            if self.health.status in (
+                ProviderStatus.DEGRADED,
+                ProviderStatus.UNAVAILABLE,
+                ProviderStatus.CIRCUIT_OPEN,
+            ):
                 self.health.status = ProviderStatus.HEALTHY
                 self.health.consecutive_failures = 0
             return True

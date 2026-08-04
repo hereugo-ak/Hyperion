@@ -50,6 +50,7 @@ from hyperion.router.providers.base import (
     ProviderStatus,
     RouterFailure,
     RouterResponse,
+    is_transient_connection_error,
 )
 from hyperion.router.providers.cerebras import CerebrasProvider
 from hyperion.router.providers.google import GoogleProvider
@@ -85,7 +86,7 @@ _TIER_DOWNGRADE: dict[ModelTier, ModelTier] = {
 # - rate_limit (429): the wait gate mispredicted capacity. Cool the exact
 #   provider+model pair and fail over to a different provider. Provider quotas
 #   are independent; stopping the whole call here strands healthy capacity.
-# - transient (5xx/timeout): retry the SAME provider once with a short
+# - transient (5xx/timeout/connect/DNS): retry the SAME provider once with a short
 #   backoff, then fail over.
 # - other: fail over to the next unvisited candidate.
 _TRANSIENT_STATUS_CODES = frozenset({408, 425, 500, 502, 503, 504})
@@ -511,10 +512,6 @@ class LLMRouter:
                 self._response_cache.set(tier, messages, response, temperature, max_tokens)
                 return response
 
-        # All tiers exhausted — return the last error response
-        if response is not None:
-            return response
-
         # P2-29: a total failure is attributed to NO provider. Naming one
         # (the old ProviderType.GOOGLE "Placeholder") misreported a deleted
         # API key as quota exhaustion for two entire engagements.
@@ -532,14 +529,20 @@ class LLMRouter:
             status="total_failure",
             detail=failure.render(),
         )
+        last_error = response.error if response is not None else None
+        detail = f"; last provider error: {last_error}" if last_error else ""
         return RouterResponse(
             content="",
             model="none",
             provider=ProviderType.NONE,
             tier=tier,
             success=False,
-            error=f"All providers exhausted across all adjacent tiers ({failure.render()})",
+            error=(
+                "All providers exhausted across all adjacent tiers "
+                f"({failure.render()}){detail}"
+            ),
             failure=failure,
+            status_code=response.status_code if response is not None else None,
         )
 
     def _diagnose_skip_reasons(
@@ -827,9 +830,7 @@ class LLMRouter:
             return response
 
         is_transient = status in _TRANSIENT_STATUS_CODES or (
-            status is None
-            and response.error is not None
-            and ("timeout" in response.error.lower() or "timed out" in response.error.lower())
+            status is None and is_transient_connection_error(response.error)
         )
         if is_transient and not attempt.exhausted():
             # W-17 step 5: exactly ONE same-provider retry with backoff.
