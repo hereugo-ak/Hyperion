@@ -285,6 +285,7 @@ class SearxngEndpoint:
     outstanding: int = 0
     consecutive_failures: int = 0
     circuit_open: bool = False
+    retry_after: float = 0.0
 
 
 class SearxngPool:
@@ -349,6 +350,11 @@ class SearxngPool:
             # replace them with a different profile's corpus during failover.
             profiles = owners
 
+        now = time.monotonic()
+        for endpoint in self.endpoints:
+            if endpoint.circuit_open and endpoint.retry_after <= now:
+                endpoint.circuit_open = False
+                endpoint.consecutive_failures = 0
         for profile in profiles:
             candidates = [
                 endpoint for endpoint in self.endpoints
@@ -384,11 +390,16 @@ class SearxngPool:
         endpoint = next(item for item in self.endpoints if item.port == port)
         endpoint.consecutive_failures += 1
         endpoint.circuit_open = True
+        endpoint.retry_after = time.monotonic() + min(
+            300.0,
+            30.0 * (2 ** max(0, endpoint.consecutive_failures - 1)),
+        )
 
     def mark_success(self, port: int) -> None:
         endpoint = next(item for item in self.endpoints if item.port == port)
         endpoint.consecutive_failures = 0
         endpoint.circuit_open = False
+        endpoint.retry_after = 0.0
 
 
 class SearxNGClient:
@@ -603,6 +614,19 @@ class SearxNGClient:
                     requested_engines=requested_engines,
                     explicit=explicit_engines,
                 )
+                health = get_engine_health()
+                selected_engines = set(
+                    health.filter_available(sorted(selected_engines))
+                )
+                if not selected_engines:
+                    if explicit_engines:
+                        return None
+                    self._pool.mark_unhealthy(endpoint.port)
+                    logger.warning(
+                        "SearXNG profile %s has no healthy engines; failing over",
+                        endpoint.profile,
+                    )
+                    continue
                 params: dict[str, Any] = {
                     "q": query,
                     "format": "json",
@@ -650,7 +674,6 @@ class SearxNGClient:
 
                 unresponsive = data.get("unresponsive_engines", [])
                 degradation_events: list[dict[str, object]] = []
-                health = get_engine_health()
                 if unresponsive or engines_used_set:
                     health.record_response(
                         unresponsive_engines=unresponsive,
@@ -679,6 +702,15 @@ class SearxNGClient:
                         "SearXNG unresponsive engines for '%s': %s",
                         query[:80], unresponsive,
                     )
+                if unresponsive and not health.filter_available(
+                    sorted(endpoint.engines)
+                ):
+                    # All engines in this isolated profile are cooling or
+                    # suspended. Open the endpoint circuit and use the next
+                    # profile instead of repeatedly hammering dead upstreams.
+                    self._pool.mark_unhealthy(endpoint.port)
+                    if not explicit_engines and attempt < self.MAX_RETRIES - 1:
+                        continue
                 logger.debug(
                     "SearXNG returned 0 results for '%s' (attempt %d)",
                     query,

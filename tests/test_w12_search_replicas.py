@@ -179,6 +179,97 @@ async def test_token_bucket_prefers_cross_process_valkey_reservation(
 
 
 @pytest.mark.asyncio
+async def test_dead_web_profile_fails_over_to_reference_engines(monkeypatch) -> None:
+    """Blocked web upstreams must not leave the evidence corpus empty."""
+    client = SearxNGClient()
+    client._pool = SearxngPool([
+        SearxngEndpoint(
+            "http://web", "web", 8890, frozenset({"brave", "mojeek"})
+        ),
+        SearxngEndpoint(
+            "http://reference", "reference", 8889, frozenset({"wikipedia"})
+        ),
+        SearxngEndpoint(
+            "http://scholar", "scholar", 8888, frozenset({"crossref"})
+        ),
+    ])
+
+    class Health:
+        def __init__(self) -> None:
+            self.dead: set[str] = set()
+
+        def filter_available(self, engines):
+            return [engine for engine in engines if engine not in self.dead]
+
+        def record_response(self, unresponsive_engines, responding_engines):
+            self.dead.update(str(entry[0]) for entry in unresponsive_engines)
+            self.dead.difference_update(responding_engines)
+
+        def record_degradation_if_needed(self, engines, *, floor=4):
+            return None
+
+    health = Health()
+    monkeypatch.setattr("hyperion.tools.searxng.get_engine_health", lambda: health)
+    monkeypatch.setattr(EngineTokenBucket, "acquire", staticmethod(lambda engines: _done()))
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class Http:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        async def get(self, path, params=None):
+            if self.base_url == "http://web":
+                return Response({
+                    "results": [],
+                    "unresponsive_engines": [
+                        ["brave", "HTTP 429 suspended_time=180"],
+                        ["mojeek", "HTTP 403 suspended_time=180"],
+                    ],
+                })
+            return Response({
+                "results": [{
+                    "title": "Grounding source",
+                    "url": "https://en.wikipedia.org/wiki/Market_research",
+                    "content": "Independent reference evidence",
+                    "engine": "wikipedia",
+                    "score": 1.0,
+                }],
+                "unresponsive_engines": [],
+            })
+
+    async def _get_client(base_url=None):
+        return Http(base_url)
+
+    async def _done():
+        return None
+
+    monkeypatch.setattr(client, "_get_client", _get_client)
+    response = await client._search_searxng_json(
+        query="market evidence",
+        num_results=5,
+        categories="general",
+        language="en",
+        time_range="",
+        engines="brave,mojeek",
+        safesearch=0,
+    )
+
+    assert response is not None
+    assert response.results[0].engine == "wikipedia"
+    assert client._pool.endpoints[0].circuit_open is True
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_result_cache_is_normalized_and_shared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
