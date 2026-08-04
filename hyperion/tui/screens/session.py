@@ -122,6 +122,10 @@ class SessionScreen(Screen[None]):
         self._bus_sub_id = "tui_session"
         self._active_rows: dict[str, LogRow] = {}
         self._task_list_rows: dict[str, LogRow] = {}  # task_id → row in checklist
+        self._router_token_baseline = 0
+        self._router_provider_call_baseline: dict[str, int] = {}
+        self._event_token_total = 0
+        self._live_router_telemetry = False
 
     # ── compose ────────────────────────────────────────────────────────────────
 
@@ -141,6 +145,11 @@ class SessionScreen(Screen[None]):
     def on_mount(self) -> None:
         self.query_one("#prompt", PromptBar).focus()
         self._render_intro()
+        # Provider usage is maintained by the shared router rather than the
+        # AgentBus. Poll its exact ledger while an engagement is active so
+        # token totals also include sub-agents and remain current between bus
+        # paints. The callback is a cheap no-op while idle.
+        self.set_interval(0.25, self._refresh_live_metrics)
         delay = 0.05 if self._reduced else 0.6
         # Run the premium boot sequence — Docker/SearxNG auto-start,
         # provider health, roster init, vault prime — all streamed live.
@@ -284,6 +293,14 @@ class SessionScreen(Screen[None]):
         self.query_one("#prompt", PromptBar).set_busy(True)
         self._active_rows.clear()
         self._task_list_rows.clear()
+        self._event_token_total = 0
+        summary = self._router_token_summary()
+        self._router_token_baseline = max(0, int(summary.get("total_tokens", 0) or 0))
+        self._router_provider_call_baseline = {
+            str(provider): max(0, int(stats.get("calls", 0) or 0))
+            for provider, stats in summary.get("by_provider", {}).items()
+        }
+        self._live_router_telemetry = True
         self._metrics().start(phase="decompose")
         self._log().add_entry(
             "THINKING",
@@ -340,12 +357,15 @@ class SessionScreen(Screen[None]):
                     detail=detail,
                     icon="✓",
                 )
+                self._refresh_live_metrics()
                 self._metrics().finish(ok=True)
             else:
                 log.add_entry("ERROR", result.error or "engagement did not complete", icon="✗")
+                self._refresh_live_metrics()
                 self._metrics().finish(ok=False)
         except asyncio.CancelledError:
             log.add_entry("WARN", "engagement cancelled", icon="▸")
+            self._refresh_live_metrics()
             self._metrics().finish(ok=False)
             raise
         # Failure is surfaced inline; the screen must never blank.
@@ -357,8 +377,10 @@ class SessionScreen(Screen[None]):
                 "or check keys with `/providers`",
                 icon="▸",
             )
+            self._refresh_live_metrics()
             self._metrics().finish(ok=False)
         finally:
+            self._live_router_telemetry = False
             try:
                 from hyperion.agents.bus import get_bus
 
@@ -404,7 +426,16 @@ class SessionScreen(Screen[None]):
                     task_agent = payload.get("task_agent", "")
                     task_status = payload.get("task_status", "")
                     self._update_task_row(task_id, task_agent, task_status)
+                    self._update_task_metrics(task_agent, task_status)
                     return
+
+                # Hidden tool-access events are emitted from BaseAgent and
+                # SubAgentRunner at invocation time. Count them without adding
+                # noisy duplicate rows to the transcript.
+                if payload.get("telemetry_kind") == "tool_call":
+                    metrics.add_tool_call(1)
+                    if payload.get("display") is False:
+                        return
 
                 # ── Tool / LLM telemetry ──
                 # Build colored spans: provider in sky, model in bold clay,
@@ -413,8 +444,15 @@ class SessionScreen(Screen[None]):
                     # action is like "mistral/magistral-medium-latest"
                     # detail_str is like "strong tier · OK · 2484 chars"
                     parts = action.split("/", 1)
-                    provider_name = parts[0] if len(parts) > 1 else ""
+                    provider_name = str(payload.get("provider") or (
+                        parts[0] if len(parts) > 1 else ""
+                    ))
                     model_name = parts[1] if len(parts) > 1 else action
+                    if provider_name and provider_name not in {"none", "unknown"}:
+                        metrics.touch_provider(provider_name)
+                    event_tokens = max(0, int(payload.get("total_tokens", 0) or 0))
+                    self._event_token_total += event_tokens
+                    self._refresh_live_metrics()
 
                     # Parse detail for tier, status, chars
                     detail_parts = detail_str.split(" · ")
@@ -478,7 +516,6 @@ class SessionScreen(Screen[None]):
                     if detail_str:
                         plain_text += f" · {detail_str}"
                     log.add_entry("TOOL", plain_text, icon=status_icon, content_spans=spans)
-                metrics.add_tool_call(1)
             elif msg.channel == Channel.STATUS:
                 agent = msg.agent
                 state = (msg.state or "").lower()
@@ -562,6 +599,7 @@ class SessionScreen(Screen[None]):
         self._task_list_rows.clear()
 
         log.add_entry("PLAN", f"── TASK CHECKLIST ({len(tasks)} tasks) ──", icon="▸")
+        metrics = self._metrics()
         for task in tasks:
             task_id = task.get("id", "")
             agent_val = task.get("agent", "")
@@ -581,6 +619,15 @@ class SessionScreen(Screen[None]):
             text = f"{icon} {badge} [{tier}] {desc[:60]}"
             row = log.add_entry("PLAN", text, icon="▸")
             self._task_list_rows[task_id] = row
+            metrics.set_agent(
+                agent_val,
+                badge,
+                {
+                    "running": "working",
+                    "completed": "done",
+                    "failed": "blocked",
+                }.get(status, "queued"),
+            )
 
     def _update_task_row(self, task_id: str, agent_val: str, status: str) -> None:
         """Update a single task's status in the checklist."""
@@ -598,6 +645,64 @@ class SessionScreen(Screen[None]):
             badge = agent_badge(agent_val)
             log.update_row(row, content=f"{icon} {badge} — {status}", icon="▸")
 
+    def _update_task_metrics(self, agent: str, status: str) -> None:
+        """Keep dispatched-agent totals and pipeline phase in lockstep."""
+        from hyperion.tui.theme import agent_badge
+
+        state = {
+            "running": "working",
+            "completed": "done",
+            "failed": "blocked",
+        }.get(status, "queued")
+        self._metrics().set_agent(agent, agent_badge(agent), state)
+        if status != "running":
+            return
+        if agent == "synthesis_lead":
+            phase = "synthesize"
+        elif agent == "quality_gate":
+            phase = "quality"
+        elif agent in {"presentation_designer", "data_visualizer", "render_engine"}:
+            phase = "deliver"
+        else:
+            phase = "execute"
+        self._metrics().set_phase(phase)
+
+    def _router_token_summary(self) -> dict[str, Any]:
+        """Return a safe snapshot of the process router's usage ledger."""
+        try:
+            from hyperion.router.router import get_router
+
+            summary = get_router().get_token_summary()
+            return summary if isinstance(summary, dict) else {}
+        except Exception:  # noqa: BLE001 - live telemetry is best-effort
+            return {}
+
+    def _router_token_total(self) -> int:
+        """Return the process router's cumulative provider-reported tokens."""
+        return max(0, int(self._router_token_summary().get("total_tokens", 0) or 0))
+
+    def _refresh_live_metrics(self) -> None:
+        """Refresh exact engagement tokens and providers during execution."""
+        try:
+            metrics = self._metrics()
+            if metrics.tel.status != "running" or not self._live_router_telemetry:
+                return
+
+            summary = self._router_token_summary()
+            router_total = max(0, int(summary.get("total_tokens", 0)))
+            engagement_total = max(0, router_total - self._router_token_baseline)
+            # Bus payloads make a completed call visible immediately; the
+            # router ledger is authoritative and catches calls from every path.
+            metrics.set_tokens(max(engagement_total, self._event_token_total))
+            for provider, stats in summary.get("by_provider", {}).items():
+                provider_name = str(provider)
+                calls = max(0, int(stats.get("calls", 0) or 0))
+                baseline_calls = self._router_provider_call_baseline.get(provider_name, 0)
+                if calls > baseline_calls:
+                    metrics.touch_provider(provider_name)
+        except Exception:  # noqa: BLE001 - telemetry must never stop a run
+            return
+
     # ── demo mode: premium animations without any API keys ─────────────────────
 
     def _start_demo(self) -> None:
@@ -606,6 +711,8 @@ class SessionScreen(Screen[None]):
             return
         self.query_one("#prompt", PromptBar).set_busy(True)
         self._active_rows.clear()
+        self._event_token_total = 0
+        self._live_router_telemetry = False
         self._metrics().start(phase="decompose")
         self._engagement_task = asyncio.create_task(self._run_demo())
 

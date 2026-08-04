@@ -16,7 +16,6 @@ import pytest
 
 from hyperion.obs.health import (
     MIN_SMOKE_RESULTS,
-    SMOKE_QUERY,
     _check_searxng,
 )
 
@@ -51,9 +50,10 @@ class _MockResponse:
 
 
 def _stub_get(payload: dict):
-    def _get(url, params=None, timeout=None):
-        assert params["q"] == SMOKE_QUERY
+    def _get(url, params=None, headers=None, timeout=None):
+        assert params["q"]
         assert params["format"] == "json"
+        assert headers["X-Forwarded-For"] == "127.0.0.1"
         return _MockResponse(payload)
 
     return _get
@@ -108,22 +108,23 @@ def test_health_degraded_when_some_engines_dead(port_open, monkeypatch):
 def test_health_offline_when_port_closed(port_closed):
     h = _check_searxng(_settings())
     assert h.status == "OFFLINE"
-    assert "not reachable" in h.detail
+    assert "unreachable" in h.detail
 
 
 def test_health_offline_when_smoke_query_raises(port_open, monkeypatch):
-    def _boom(url, params=None, timeout=None):
+    def _boom(url, params=None, headers=None, timeout=None):
         raise httpx.ReadTimeout("timed out")
 
     monkeypatch.setattr(httpx, "get", _boom)
     h = _check_searxng(_settings())
     assert h.status == "OFFLINE"
-    assert "smoke query failed" in h.detail
+    assert "ReadTimeout" in h.detail
 
 
-def test_health_offline_when_few_results(port_open, monkeypatch):
-    """Fewer than MIN_SMOKE_RESULTS results = engine layer effectively dead."""
+def test_health_degraded_when_few_results(port_open, monkeypatch):
+    """A thin response proves evidence exists but must not report full health."""
     results = [{"title": "only one", "engine": "mojeek"}]
     monkeypatch.setattr(httpx, "get", _stub_get({"results": results}))
     h = _check_searxng(_settings())
-    assert h.status == "OFFLINE"
+    assert h.status == "DEGRADED"
+    assert "1 results" in h.detail

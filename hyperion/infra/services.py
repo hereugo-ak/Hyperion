@@ -725,9 +725,10 @@ async def wait_until_ready(spec: ContainerSpec) -> bool:
         while loop.time() < deadline:
             try:
                 response = await client.get(url, headers=spec.health_headers)
-                # Any HTTP answer below 500 proves the app is serving. SearXNG
-                # answers 200 on `/config`; FlareSolverr answers 200 on `/health`.
-                if response.status_code < 500:
+                # Readiness must be a successful application response. Treating
+                # 3xx/4xx as ready hid bad SearXNG configuration and bot-detection
+                # failures behind a merely open HTTP socket.
+                if response.status_code == 200:
                     return True
             except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
                 logger.warning("%s: %s", "wait_until_ready", exc)
