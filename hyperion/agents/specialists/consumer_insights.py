@@ -946,7 +946,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"company": company, "sector": sector},
             ),
             SubAgentSpec(
@@ -955,7 +955,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"segment": segment, "sector": sector},
             ),
             SubAgentSpec(
@@ -964,7 +964,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"product_category": product_category, "sector": sector},
             ),
         ]

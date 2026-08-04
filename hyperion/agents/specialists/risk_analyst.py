@@ -1032,7 +1032,7 @@ class RiskAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"industry": industry},
             ),
             SubAgentSpec(
@@ -1041,7 +1041,7 @@ class RiskAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"jurisdiction": jurisdiction},
             ),
             SubAgentSpec(
@@ -1050,7 +1050,7 @@ class RiskAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"space": space},
             ),
         ]

@@ -123,6 +123,20 @@ async def credential_preflight(router: Any) -> dict[Any, str]:
     process and never aggregates it into rate-limit reporting.
     """
     from hyperion.config import ModelTier
+    from hyperion.router import network_health
+
+    # L1 fix: ONE preflight network probe before dispatching per-provider
+    # pings. If the environment is unreachable, every subsequent per-
+    # provider ping will fail and independently trip its circuit — the
+    # exact "three parallel circuit storms" the audit calls out. A single
+    # probe → global degraded flag lets the whole system report
+    # UNAVAILABLE cleanly instead of firing five noisy failures in
+    # parallel while the network is down.
+    try:
+        await network_health.probe(force=True)
+    except Exception as exc:  # noqa: BLE001 - probe is contractually non-raising
+        # Best effort: a probe failure is not a preflight failure.
+        _log_preflight("__network__", "PROBE_ERROR", f"{type(exc).__name__}: {exc}")
 
     results: dict[Any, str] = {}
     for provider_type, provider in router._providers.items():

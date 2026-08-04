@@ -27,7 +27,9 @@ class TaskUrgency(str, Enum):
 
 _PROVIDER_DAILY_BUDGETS: dict[ProviderType, int] = {
     ProviderType.GOOGLE: 29_460,
-    ProviderType.GROQ: 18_400,
+    # L1 fix: Groq's real ceiling is per-model TPM/TPD; keep only a high
+    # defensive process ceiling and let the wait gate govern.
+    ProviderType.GROQ: 1_000_000,
     # NVIDIA publishes per-minute model limits, not a 33-request daily cap.
     # The old synthetic credit-derived ceiling disabled NIM early in every
     # engagement and surfaced as `nvidia=budget_exhausted` despite available
@@ -36,7 +38,12 @@ _PROVIDER_DAILY_BUDGETS: dict[ProviderType, int] = {
     # RPD is only a defensive ceiling; BudgetStore.reserve() enforces each
     # Cerebras model's configured TPD limit as the binding constraint.
     ProviderType.CEREBRAS: 10_000,
-    ProviderType.MISTRAL: 86_400,
+    # L1 fix: Mistral models all have rpd=None. The old 86,400 cap (1 req/s
+    # averaged over 24h) was the reason Mistral flipped to
+    # `budget_exhausted` in fallback during a heavy engagement even though
+    # every ministral-3b RPM slot (750/min) was free. The wait gate is the
+    # real bind for Mistral; the ceiling below is only defensive.
+    ProviderType.MISTRAL: 1_000_000,
 }
 
 _PROVIDER_SCARCITY: dict[ProviderType, int] = {
@@ -46,6 +53,18 @@ _PROVIDER_SCARCITY: dict[ProviderType, int] = {
     ProviderType.GOOGLE: 3,
     ProviderType.MISTRAL: 4,
 }
+
+# L1 fix: providers whose per-model rpd is None across the board. For these
+# the daily provider ceiling in ``_PROVIDER_DAILY_BUDGETS`` is INFORMATIONAL
+# ONLY, the wait gate's RPM/TPM windows are the real bind. ``can_serve`` /
+# ``filter_available_providers`` skip the ceiling check for these providers
+# so a heavy engagement cannot artificially flip them to
+# ``budget_exhausted``. NVIDIA and Mistral both publish per-minute limits
+# rather than per-day quotas on the free/experiment tiers we target.
+_RPM_BOUND_PROVIDERS: frozenset[ProviderType] = frozenset({
+    ProviderType.NVIDIA,
+    ProviderType.MISTRAL,
+})
 
 # USD per million input/output tokens. Pricing snapshot: 2026-08-01.
 # Sources (official provider pricing pages, retrieved 2026-08-01):
@@ -375,7 +394,11 @@ class DailyBudgetPlanner:
         estimated_tokens: int = 0,
     ) -> bool:
         budget = self._budgets[provider]
-        if not budget.can_consume(urgency):
+        # L1 fix: NVIDIA/Mistral publish per-minute limits and every one of
+        # their models declares ``rpd=None`` — the wait gate is the binding
+        # constraint. Skip the daily provider ceiling for them so a stale
+        # synthetic budget can never veto a model whose RPM window is free.
+        if provider not in _RPM_BOUND_PROVIDERS and not budget.can_consume(urgency):
             return False
         remaining_requests = budget.remaining_for_model(model)
         if remaining_requests is not None and remaining_requests < 1:
