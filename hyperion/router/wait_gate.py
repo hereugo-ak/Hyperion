@@ -66,6 +66,11 @@ class SlidingWindowTracker:
     _latency_samples: deque[float] = field(default_factory=deque)
     _max_latency_samples: int = 50
 
+    # A 429 is normally scoped to this provider+model quota. Keeping cooldown
+    # here prevents one exhausted model from disabling every model exposed by
+    # the same provider.
+    _cooldown_until: float = 0.0
+
     def _prune_window(self) -> None:
         """Remove entries older than window_seconds. Called on every access."""
         cutoff = time.time() - self.window_seconds
@@ -112,14 +117,26 @@ class SlidingWindowTracker:
             return None
         return max(0, self.model.rpd - self.current_rpd())
 
+    def in_cooldown(self) -> bool:
+        return time.time() < self._cooldown_until
+
+    def record_429(self, cooldown_seconds: int) -> None:
+        self._cooldown_until = max(
+            self._cooldown_until,
+            time.time() + max(0, cooldown_seconds),
+        )
+
     def can_serve(self, estimated_tokens: int) -> bool:
         """Check if this model can serve a request right now.
 
         A model can serve if:
-        1. RPM capacity is available (at least 1 request slot)
-        2. TPM capacity is available (at least estimated_tokens)
-        3. RPD capacity is available (if applicable)
+        1. Its model-scoped 429 cooldown has expired
+        2. RPM capacity is available (at least 1 request slot)
+        3. TPM capacity is available (at least estimated_tokens)
+        4. RPD capacity is available (if applicable)
         """
+        if self.in_cooldown():
+            return False
         if self.rpm_available() < 1:
             return False
         if self.tpm_available() < estimated_tokens:
@@ -192,6 +209,7 @@ class SlidingWindowTracker:
     def seconds_until_capacity(self, estimated_tokens: int) -> float:
         """Minimum wait time until this model can serve the request."""
         return max(
+            max(0.0, self._cooldown_until - time.time()),
             self.seconds_until_rpm_available(),
             self.seconds_until_tpm_available(estimated_tokens),
         )
@@ -439,6 +457,16 @@ class WaitGate:
         tracker = self._trackers.get((provider, model_name))
         if tracker:
             tracker.record_request(estimated_tokens)
+
+    def record_rate_limit(
+        self,
+        provider: ProviderType,
+        model_name: str,
+    ) -> None:
+        """Cool only the exact provider+model pair that returned HTTP 429."""
+        tracker = self._trackers.get((provider, model_name))
+        if tracker:
+            tracker.record_429(self.config.rate_limit_cooldown)
 
     def record_actual_usage(
         self,

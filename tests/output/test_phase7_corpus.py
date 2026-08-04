@@ -327,3 +327,43 @@ class TestRetrievalEscalation:
         assert report.limitations, (
             "a failed escalation must leave a stated evidence limitation"
         )
+
+    def test_escalation_persists_recovered_urls_on_report(self, monkeypatch):
+        """Recovered counts must correspond to real report provenance."""
+        from hyperion.orchestrator import WorkflowEngine
+        from hyperion.tools.searxng import SearxNGClient
+
+        monkeypatch.setattr(
+            "hyperion.tools.query_utils.get_engagement_focus",
+            lambda: ("question", "Acme", "Singapore"),
+        )
+
+        async def fake_search(self, query, num_results=5, **kwargs):
+            slug = query.lower().replace(" ", "-")
+            result = SimpleNamespace(
+                url=f"https://example.com/{slug}",
+                title=f"Evidence for {query}",
+                snippet="Retrieved evidence",
+                published_date="2026-08-01",
+            )
+            return SimpleNamespace(results=[result])
+
+        monkeypatch.setattr(SearxNGClient, "search", fake_search)
+        section = SimpleNamespace(sources=[])
+        report = SimpleNamespace(
+            sections=[section],
+            key_findings=[],
+            total_sources=0,
+        )
+        orch = WorkflowEngine.__new__(WorkflowEngine)
+
+        recovered = asyncio.run(orch._escalate_retrieval(report, needed=8))
+
+        assert recovered == 3
+        assert report.total_sources == 3
+        assert len(section.sources) == 3
+        assert {source.url for source in section.sources} == {
+            "https://example.com/acme-singapore-market-analysis",
+            "https://example.com/acme-singapore-industry-report-2025",
+            "https://example.com/acme-singapore-news",
+        }

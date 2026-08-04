@@ -9,8 +9,8 @@ Verifies the acceptance criteria from HYPERION_DEEP_AUDIT_2026-07-31_PART2.md
    (the second dispatch is only ever the explicit transient retry).
 3. A 401/403 failure never triggers a second attempt against the same
    provider and the budget charge is refunded.
-4. A 429 failure never triggers an immediate cross-provider failover — the
-   tier walk halts on the rate-limited response.
+4. A 429 cools the exact model and fails over to an independent provider
+   instead of disabling the whole provider fleet.
 5. RouterResponse carries the `downgraded` field, set when a walk succeeds
    on an adjacent/downgrade tier.
 
@@ -134,19 +134,44 @@ async def test_auth_failure_never_retried_and_budget_refunded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_429_halts_tier_walk_without_failover(monkeypatch):
-    """Criterion 4: a 429 must halt the walk on that response — no instant
-    cross-provider failover."""
+async def test_429_cools_model_and_fails_over_to_independent_provider(monkeypatch):
+    """Criterion 4: one model's 429 must not strand other providers."""
     router = _fresh_router()
     counter: dict[ProviderType, int] = {}
-    _patch_all_providers(router, monkeypatch, 429, "429 Rate Limited", counter)
+    first_provider: list[ProviderType] = []
 
+    async def _first_rate_limited_then_success(
+        self, model, messages, tier, temperature=None, max_tokens=None,
+        response_format=None,
+    ):
+        counter[self.provider_type] = counter.get(self.provider_type, 0) + 1
+        if not first_provider:
+            first_provider.append(self.provider_type)
+            return _failure(self.provider_type, tier, 429, "429 Rate Limited")
+        return RouterResponse(
+            content="ok",
+            model=model,
+            provider=self.provider_type,
+            tier=tier,
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+        )
+
+    from hyperion.router.providers.base import BaseProvider
+
+    monkeypatch.setattr(BaseProvider, "complete", _first_rate_limited_then_success)
     response = await router.complete(tier=ModelTier.STANDARD, messages=MESSAGES)
 
-    assert not response.success
-    assert response.status_code == 429
-    # Exactly one provider was dispatched before the halt.
-    assert sum(counter.values()) == 1
+    assert response.success
+    assert len(counter) == 2
+    assert counter[first_provider[0]] == 1
+    cooled = [
+        tracker
+        for (provider, _), tracker in router._trackers.items()
+        if provider == first_provider[0] and tracker.in_cooldown()
+    ]
+    assert len(cooled) == 1
 
 
 @pytest.mark.asyncio

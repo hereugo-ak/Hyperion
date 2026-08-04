@@ -1130,8 +1130,8 @@ class SustainabilityAnalysis(BaseModel):
 
     esg_scores: list[ESGScore] = Field(default_factory=list, description="ESG scores across "
         "frameworks")
-    most_relevant_framework: str = Field(default="", description="Most relevant ESG framework for "
-        "the stakeholder")
+    most_relevant_framework: str | None = Field(default=None, description="Most relevant ESG "
+        "framework for the stakeholder, or null when evidence is insufficient")
     carbon_footprint: CarbonFootprint | None = Field(default=None, description="Carbon footprint "
         "with abatement costs")
     reporting_requirements: list[ReportingRequirement] = Field(default_factory=list, description="Mandatory and voluntary reporting requirements")

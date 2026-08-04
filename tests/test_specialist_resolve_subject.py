@@ -30,14 +30,17 @@ already covered by `test_search_grounding.py`).
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from hyperion.agents.specialists.competitive_intel import CompetitiveIntel
 from hyperion.agents.specialists.market_analyst import MarketAnalyst
 from hyperion.agents.specialists.regulatory_analyst import RegulatoryAnalyst
 from hyperion.agents.specialists.risk_analyst import RiskAnalyst
+from hyperion.agents.specialists.sustainability_analyst import SustainabilityAnalyst
 from hyperion.tools.query_utils import clear_engagement_focus, set_engagement_focus
 
 QUESTION = "Should a mid-size Vietnamese seafood exporter expand into the EU market?"
@@ -249,3 +252,82 @@ class TestRiskAnalystResolveSubject:
         import hyperion.agents.specialists.risk_analyst as mod
 
         assert hasattr(mod, "resolve_subject")
+
+
+class TestCompetitiveIntelLLMResearch:
+    def test_query_plan_is_generated_from_arbitrary_engagement(self, monkeypatch):
+        agent = CompetitiveIntel()
+        agent._question = "Who competes in precision-fermentation dairy proteins in Brazil?"
+        agent._context = {"geography": "Brazil", "customer": "food manufacturers"}
+        response = SimpleNamespace(
+            success=True,
+            content=json.dumps({
+                "subject": "precision-fermentation dairy protein suppliers",
+                "inclusion_criteria": ["Sells fermentation-derived dairy proteins"],
+                "exclusion_criteria": ["Traditional dairy processors"],
+                "queries": [
+                    "Brazil precision fermentation whey protein suppliers",
+                    "fermentation-derived casein companies Latin America",
+                ],
+            }),
+        )
+        monkeypatch.setattr(agent, "_llm_complete", AsyncMock(return_value=response))
+
+        plan = asyncio.run(agent._plan_competitor_searches("alternative proteins"))
+
+        assert plan["subject"] == "precision-fermentation dairy protein suppliers"
+        assert len(plan["queries"]) == 2
+        assert all("aerospace" not in query.lower() for query in plan["queries"])
+
+    def test_semantic_judge_requires_valid_cited_results(self, monkeypatch):
+        agent = CompetitiveIntel()
+        agent._question = "Compare workflow automation tools for hospitals"
+        response = SimpleNamespace(
+            success=True,
+            content=json.dumps({
+                "competitors": [
+                    {
+                        "name": "ClinicalFlow",
+                        "evidence_result_ids": [4],
+                        "relevance": "Automates hospital clinical workflows",
+                    },
+                    {
+                        "name": "Uncited Vendor",
+                        "evidence_result_ids": [],
+                        "relevance": "No supporting result",
+                    },
+                    {
+                        "name": "Invalid Citation Vendor",
+                        "evidence_result_ids": [99],
+                        "relevance": "Citation does not exist",
+                    },
+                ],
+            }),
+        )
+        monkeypatch.setattr(agent, "_llm_complete", AsyncMock(return_value=response))
+        results = [{
+            "result_id": 4,
+            "title": "ClinicalFlow hospital automation platform",
+            "snippet": "Clinical workflow orchestration for care teams",
+            "url": "https://example.com/clinicalflow",
+        }]
+
+        names, evidence_ids = asyncio.run(agent._extract_competitor_names({}, results))
+
+        assert names == ["ClinicalFlow"]
+        assert evidence_ids == {4}
+
+
+class TestSustainabilityNullableFramework:
+    def test_null_framework_preserves_unknown_semantics(self, monkeypatch):
+        agent = SustainabilityAnalyst()
+        response = SimpleNamespace(
+            success=True,
+            content='{"esg_scores": [], "most_relevant_framework": null}',
+        )
+        monkeypatch.setattr(agent, "_llm_complete", AsyncMock(return_value=response))
+
+        scores, framework = asyncio.run(agent._score_esg("space sector", [], [], {}))
+
+        assert scores == []
+        assert framework is None

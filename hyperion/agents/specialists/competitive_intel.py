@@ -287,158 +287,189 @@ class CompetitiveIntel(BaseAgent):
     # Step 1: Identify all competitors (SearxNG)
     # ─────────────────────────────────────────────────────────────────────
 
-    async def _identify_competitors(self, market_query: str) -> list[dict[str, Any]]:
-        """Identify all competitors in the space using SearxNG.
-
-        Searches for competitors using multiple query patterns to catch
-        different angles: direct competitors, alternatives, market leaders.
-        Also uses the pre-seeded competitor list from the Engagement Director
-        if available.
-        """
-        # Start with pre-seeded competitors from context
-        results: list[dict[str, Any]] = []
-
-        # Build focused search queries from context, not the raw question
-        company = self._context.get("company") or ""
-        geography = self._context.get("geography") or ""
-
-        # Resolve the subject explicitly rather than reading one context key and
-        # hoping it is populated. `resolve_subject` walks sector -> industry ->
-        # the engagement subject -> the user's own question, so the subject is
-        # whatever the user actually asked about and is never empty while the
-        # question is non-empty.
-        #
-        # This is defence in depth, not a live bug fix: `ground_query` at the
-        # single SearxNG call site already re-anchors any query that lost its
-        # subject. Making it explicit here keeps the invariant local, a reader
-        # of this function can see that a subject-less query is impossible
-        # without having to know about the choke point.
-        sector = resolve_subject(
-            self._context, "sector", "industry", question=self._question
-        )
-
-        def _q(*parts: str) -> str:
-            """Join query parts, dropping empties.
-
-            Every query is built through this helper so an absent part
-            disappears instead of leaving a hole. The previous
-            f"top {sector} companies {geography}" collapsed to
-            "top  companies" with a doubled space when both were empty, a query that cannot return anything relevant.
-            """
-            return " ".join(p.strip() for p in parts if p and p.strip())
-
-        # Derive a short search term from the question if context is sparse
-        question_short = market_query[:100] if market_query else ""
-
-        # Build the core search term: prefer company/sector, fall back to question
-        if company:
-            core_term = company
-            query_patterns = [
-                _q(company, "competitors"),
-                _q(company, "alternatives"),
-                _q(company, "vs"),
-                _q("companies like", company),
-                _q(company, "market share competitors"),
-            ]
-        elif sector:
-            core_term = sector
-            query_patterns = [
-                _q(sector, "market leaders top companies"),
-                _q("best", sector, "companies comparison"),
-                _q(sector, "competitors alternatives"),
-                _q("top", sector, "companies", geography),
-                _q(sector, "industry key players"),
-            ]
-        else:
-            core_term = question_short
-            query_patterns = [
-                _q(question_short, "competitors"),
-                _q(question_short, "alternatives"),
-                _q(question_short, "market leaders top companies"),
-                _q("best", question_short, "companies comparison"),
-            ]
-
-        # Add sector+geography scoped patterns if we have both
-        if sector and geography:
-            query_patterns.append(_q("top", sector, "companies in", geography))
-        if company and sector:
-            query_patterns.append(_q(company, "competitors in", sector))
-
-        # A query that is empty or lost its subject cannot return anything
-        # relevant, so it is dropped rather than sent.
-        query_patterns = [q for q in query_patterns if q.strip()]
-
-        try:
-            searxng = self.get_tool(ToolName.SEARXNG)
-
-            for pattern in query_patterns:
-                search_results = await searxng.search(pattern, max_results=10)
-                for r in search_results:
-                    results.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("url", ""),
-                        "snippet": r.get("content", ""),
-                        "query": pattern,
-                    })
-                    self._sources.append(Source(
-                        id=f"src_{len(self._sources):03d}",
-                        title=r.get("title", ""),
-                        url=r.get("url", ""),
-                        credibility=SourceCredibility.NEWS,
-                    ))
-
-        except (ValueError, AttributeError, RuntimeError):
-            pass
-
-        # Use LLM to extract competitor names from search results
-        competitor_names = await self._extract_competitor_names(core_term, results)
-
-        # Merge with pre-seeded competitors
-        all_names = list(set(competitor_names + self._competitor_names))
-        self._competitor_names = all_names
-
-        return results
-
-    async def _extract_competitor_names(
-        self,
-        market_query: str,
-        search_results: list[dict[str, Any]],
-    ) -> list[str]:
-        """Use LLM to extract competitor names from search results."""
-        search_summary = "\n".join(
-            f"- {r['title']}: {r.get('snippet', '')[:200]}"
-            for r in search_results[:15]
-        )
-
+    async def _plan_competitor_searches(self, market_query: str) -> dict[str, Any]:
+        """Use the LLM to translate any engagement into focused search queries."""
+        context_summary = json.dumps(self._context, default=str)[:3000]
         prompt = (
-            "You are the Competitive Intelligence analyst identifying competitors.\n\n"
-            f"Market question: {market_query}\n\n"
-            f"Search results:\n{search_summary}\n\n"
-            "Extract a list of distinct competitor company names from these results.\n"
-            "Only include actual companies/products, not generic terms.\n"
-            "Return JSON: {\"competitors\": [\"name1\", \"name2\", ...]}\n"
+            "You are planning web research for a competitive-intelligence engagement.\n\n"
+            f"User question: {self._question or market_query}\n"
+            f"Resolved subject: {market_query}\n"
+            f"Engagement context: {context_summary}\n\n"
+            "Interpret the exact competitive arena dynamically. Identify the product or "
+            "service boundary, customer/job-to-be-done, value-chain position, and any "
+            "geographic constraints. Then create 4-7 high-precision web search queries "
+            "that will find direct and genuinely adjacent competitors. Each query must "
+            "carry enough semantic context to disambiguate the arena. Avoid generic "
+            "country-wide company lists and do not assume a particular industry.\n\n"
+            "Return JSON:\n"
+            "{\n"
+            '  "subject": "precise competitive arena",\n'
+            '  "inclusion_criteria": ["..."],\n'
+            '  "exclusion_criteria": ["..."],\n'
+            '  "queries": ["...", "..."]\n'
+            "}\n"
         )
-
         response = await self._llm_complete(
             user_prompt=prompt,
-            urgency=TaskUrgency.NORMAL,
+            urgency=TaskUrgency.HIGH,
             temperature=0.2,
             response_format={"type": "json_object"},
         )
 
+        fallback_subject = market_query or self._question
+        fallback = {
+            "subject": fallback_subject,
+            "inclusion_criteria": [],
+            "exclusion_criteria": [],
+            "queries": [f"{fallback_subject} direct competitors"],
+        }
         if not response.success or not response.content:
-            return []
+            return fallback
 
         try:
             data = json.loads(response.content)
-            if not isinstance(data, dict):
-                return []
-            competitors = data.get("competitors", [])
-            if not isinstance(competitors, list):
-                return []
-            return [name for name in competitors if isinstance(name, str)]
-        except (json.JSONDecodeError, ValueError):
-            return []
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return fallback
+        if not isinstance(data, dict):
+            return fallback
+
+        queries = data.get("queries")
+        clean_queries = list(dict.fromkeys(
+            query.strip()
+            for query in queries
+            if isinstance(query, str) and query.strip()
+        )) if isinstance(queries, list) else []
+        if not clean_queries:
+            return fallback
+
+        subject = data.get("subject")
+        inclusion = data.get("inclusion_criteria")
+        exclusion = data.get("exclusion_criteria")
+        return {
+            "subject": subject.strip() if isinstance(subject, str) and subject.strip() else fallback_subject,
+            "inclusion_criteria": [
+                item for item in inclusion if isinstance(item, str)
+            ] if isinstance(inclusion, list) else [],
+            "exclusion_criteria": [
+                item for item in exclusion if isinstance(item, str)
+            ] if isinstance(exclusion, list) else [],
+            "queries": clean_queries[:7],
+        }
+
+    async def _identify_competitors(self, market_query: str) -> list[dict[str, Any]]:
+        """Plan searches and let the LLM judge result relevance with citations."""
+        subject = resolve_subject(
+            self._context, "company", "sector", "industry", question=self._question
+        ) or market_query
+        plan = await self._plan_competitor_searches(subject)
+        results: list[dict[str, Any]] = []
+
+        try:
+            searxng = self.get_tool(ToolName.SEARXNG)
+            for pattern in plan["queries"]:
+                search_results = await searxng.search(pattern, max_results=10)
+                for row in search_results:
+                    results.append({
+                        "result_id": len(results),
+                        "title": row.get("title", ""),
+                        "url": row.get("url", ""),
+                        "snippet": row.get("content", ""),
+                        "query": pattern,
+                    })
+        except (ValueError, AttributeError, RuntimeError):
+            pass
+
+        competitors, evidence_ids = await self._extract_competitor_names(plan, results)
+        self._competitor_names = competitors
+
+        relevant_results = [
+            result for result in results if result["result_id"] in evidence_ids
+        ]
+        for result in relevant_results:
+            self._sources.append(Source(
+                id=f"src_{len(self._sources):03d}",
+                title=result["title"],
+                url=result["url"],
+                credibility=SourceCredibility.NEWS,
+            ))
+        return relevant_results
+
+    async def _extract_competitor_names(
+        self,
+        plan: dict[str, Any],
+        search_results: list[dict[str, Any]],
+    ) -> tuple[list[str], set[int]]:
+        """Use an LLM semantic judge to select competitors and cite evidence rows."""
+        search_summary = "\n".join(
+            f"[{result['result_id']}] {result['title']}: "
+            f"{result.get('snippet', '')[:300]} ({result.get('url', '')})"
+            for result in search_results[:60]
+        )
+        prompt = (
+            "You are the senior semantic relevance judge for competitive intelligence.\n\n"
+            f"Original user question: {self._question}\n"
+            f"Research plan: {json.dumps(plan, default=str)}\n"
+            f"Director-suggested candidates: {json.dumps(self._competitor_names)}\n\n"
+            f"Numbered search results:\n{search_summary}\n\n"
+            "Determine which organizations are direct competitors or strategically "
+            "relevant adjacent competitors in the precise arena defined by the user. "
+            "Reason from business model, offering, customer need, and value-chain role—not "
+            "mere keyword or geographic overlap. Reject unrelated organizations and generic "
+            "listicle entries. Every accepted organization must cite one or more numbered "
+            "results that support both its identity and relevance. If evidence is weak, omit "
+            "the organization. Do not use industry-specific assumptions.\n\n"
+            "Return JSON:\n"
+            "{\n"
+            '  "competitors": [{\n'
+            '    "name": "organization name",\n'
+            '    "evidence_result_ids": [0],\n'
+            '    "relevance": "why it competes in this precise arena"\n'
+            "  }]\n"
+            "}\n"
+        )
+        response = await self._llm_complete(
+            user_prompt=prompt,
+            urgency=TaskUrgency.HIGH,
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        if not response.success or not response.content:
+            return ([], set())
+
+        try:
+            data = json.loads(response.content)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return ([], set())
+        if not isinstance(data, dict) or not isinstance(data.get("competitors"), list):
+            return ([], set())
+
+        valid_ids = {result["result_id"] for result in search_results}
+        names: list[str] = []
+        evidence_ids: set[int] = set()
+        seen: set[str] = set()
+        for candidate in data["competitors"]:
+            if not isinstance(candidate, dict):
+                continue
+            name = candidate.get("name")
+            relevance = candidate.get("relevance")
+            raw_ids = candidate.get("evidence_result_ids")
+            cited_ids = {
+                result_id
+                for result_id in raw_ids
+                if isinstance(result_id, int) and result_id in valid_ids
+            } if isinstance(raw_ids, list) else set()
+            if not isinstance(name, str) or not name.strip() or not cited_ids:
+                continue
+            if not isinstance(relevance, str) or not relevance.strip():
+                continue
+            key = name.strip().casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(name.strip())
+            evidence_ids.update(cited_ids)
+
+        return (names, evidence_ids)
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 2: Scrape competitor websites (Obscura + Jina)

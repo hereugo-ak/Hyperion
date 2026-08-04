@@ -28,7 +28,11 @@ class TaskUrgency(str, Enum):
 _PROVIDER_DAILY_BUDGETS: dict[ProviderType, int] = {
     ProviderType.GOOGLE: 29_460,
     ProviderType.GROQ: 18_400,
-    ProviderType.NVIDIA: 33,
+    # NVIDIA publishes per-minute model limits, not a 33-request daily cap.
+    # The old synthetic credit-derived ceiling disabled NIM early in every
+    # engagement and surfaced as `nvidia=budget_exhausted` despite available
+    # RPM. Keep only a high defensive process ceiling; WaitGate enforces RPM.
+    ProviderType.NVIDIA: 1_000_000,
     # RPD is only a defensive ceiling; BudgetStore.reserve() enforces each
     # Cerebras model's configured TPD limit as the binding constraint.
     ProviderType.CEREBRAS: 10_000,
@@ -53,7 +57,7 @@ _PROVIDER_SCARCITY: dict[ProviderType, int] = {
 _MODEL_PRICES_PER_MILLION: dict[tuple[ProviderType, str], tuple[float, float]] = {
     (ProviderType.GOOGLE, "gemma-4-31b"): (0.10, 0.20),
     (ProviderType.GOOGLE, "gemma-4-26b"): (0.10, 0.20),
-    (ProviderType.GOOGLE, "gemini-3.1-flash-lite"): (0.10, 0.40),
+    (ProviderType.GOOGLE, "gemini-3.5-flash-lite"): (0.10, 0.40),
     (ProviderType.NVIDIA, "nvidia/nemotron-3-super-120b-a12b"): (0.60, 0.60),
     (ProviderType.NVIDIA, "nvidia/nemotron-3-ultra-550b-a55b"): (1.20, 1.20),
     (ProviderType.NVIDIA, "nvidia/nemotron-3-nano-30b-a3b"): (0.20, 0.20),
@@ -65,13 +69,13 @@ _MODEL_PRICES_PER_MILLION: dict[tuple[ProviderType, str], tuple[float, float]] =
     (ProviderType.GROQ, "llama-4-scout-17b"): (0.11, 0.34),
     (ProviderType.GROQ, "qwen-3-32b"): (0.29, 0.59),
     (ProviderType.GROQ, "gpt-oss-20b"): (0.10, 0.50),
-    (ProviderType.MISTRAL, "mistral-large-latest"): (2.00, 6.00),
-    (ProviderType.MISTRAL, "mistral-medium-latest"): (0.40, 2.00),
-    (ProviderType.MISTRAL, "magistral-medium-latest"): (2.00, 5.00),
-    (ProviderType.MISTRAL, "magistral-small-latest"): (0.50, 1.50),
-    (ProviderType.MISTRAL, "mistral-small-latest"): (0.10, 0.30),
-    (ProviderType.MISTRAL, "devstral-latest"): (0.40, 2.00),
-    (ProviderType.MISTRAL, "ministral-3b-latest"): (0.04, 0.04),
+    (ProviderType.MISTRAL, "mistral-large-2512"): (2.00, 6.00),
+    (ProviderType.MISTRAL, "mistral-medium-2605"): (0.40, 2.00),
+    (ProviderType.MISTRAL, "mistral-medium-2508"): (0.40, 2.00),
+    (ProviderType.MISTRAL, "ministral-14b-2512"): (0.15, 0.15),
+    (ProviderType.MISTRAL, "mistral-small-2603"): (0.10, 0.30),
+    (ProviderType.MISTRAL, "devstral-2512"): (0.40, 2.00),
+    (ProviderType.MISTRAL, "ministral-3b-2512"): (0.04, 0.04),
 }
 _PROVIDER_DEFAULT_PRICES: dict[ProviderType, tuple[float, float]] = {
     ProviderType.GOOGLE: (0.10, 0.40),
@@ -240,6 +244,25 @@ class BudgetStore:
                     model,
                     _utc_date(),
                 ),
+            )
+
+    def release_reservation(
+        self,
+        provider: ProviderType,
+        model: str,
+        estimated_tokens: int,
+    ) -> None:
+        """Release token capacity after a failed, non-billable completion.
+
+        The request remains counted because it reached the provider and used an
+        RPM slot. Only the speculative token reservation is released.
+        """
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """UPDATE daily_usage SET
+                     reserved_tokens=MAX(0, reserved_tokens-?)
+                   WHERE provider=? AND model=? AND utc_date=?""",
+                (max(0, estimated_tokens), provider.value, model, _utc_date()),
             )
 
     def refund(
@@ -416,6 +439,14 @@ class DailyBudgetPlanner:
         with self._lock:
             self._engagement_cost_usd += cost
         return cost
+
+    def release_reservation(
+        self,
+        provider: ProviderType,
+        model_name: str,
+        estimated_tokens: int,
+    ) -> None:
+        self.store.release_reservation(provider, model_name, estimated_tokens)
 
     def refund(
         self,

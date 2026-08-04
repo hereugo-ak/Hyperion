@@ -1483,16 +1483,66 @@ class WorkflowEngine:
                 f"{subject} {geography} industry report 2025".strip(),
                 f"{subject} {geography} news".strip(),
             ]
-            found: set[str] = set()
+            found: dict[str, Any] = {}
             for query in queries:
                 response = await client.search(query=query, num_results=5)
                 if response and response.results:
                     for r in response.results:
                         if r.url:
-                            found.add(r.url)
-            current = getattr(report, "total_sources", 0) or 0
-            report.total_sources = current + len(found)
-            return len(found)
+                            found.setdefault(r.url, r)
+
+            # A count is not evidence. The previous implementation incremented
+            # total_sources but discarded every recovered URL, so QualityGate
+            # correctly saw zero cited domains immediately afterward. Persist
+            # recovered sources onto the report before claiming recovery.
+            citation_target = None
+            if getattr(report, "sections", None):
+                citation_target = report.sections[0]
+            elif getattr(report, "key_findings", None):
+                citation_target = report.key_findings[0]
+            if citation_target is None:
+                return 0
+
+            from hyperion.schemas.models import Source, SourceCredibility, SourceType
+            from hyperion.tools.source_classifier import classify_source_type
+
+            credibility_by_type = {
+                SourceType.GOVERNMENT: SourceCredibility.GOVERNMENT,
+                SourceType.ACADEMIC: SourceCredibility.PEER_REVIEWED,
+                SourceType.INDUSTRY: SourceCredibility.INDUSTRY_REPORT,
+                SourceType.NEWS: SourceCredibility.NEWS,
+                SourceType.REFERENCE: SourceCredibility.BLOG,
+                SourceType.BLOG: SourceCredibility.BLOG,
+                SourceType.UNKNOWN: SourceCredibility.BLOG,
+            }
+            existing_urls = {
+                source.url
+                for section in getattr(report, "sections", [])
+                for source in getattr(section, "sources", [])
+                if source.url
+            }
+            existing_urls.update(
+                source.url
+                for finding in getattr(report, "key_findings", [])
+                for source in getattr(finding, "sources", [])
+                if source.url
+            )
+            recovered = 0
+            for url, result in found.items():
+                if url in existing_urls:
+                    continue
+                source_type = classify_source_type(url)
+                citation_target.sources.append(Source(
+                    id=f"retrieval_{len(existing_urls) + recovered:04d}",
+                    title=result.title or url,
+                    url=url,
+                    credibility=credibility_by_type[source_type],
+                    publication_date=result.published_date or None,
+                    key_data=(result.snippet or "")[:500] or None,
+                ))
+                recovered += 1
+            report.total_sources = len(existing_urls) + recovered
+            return recovered
         except Exception as exc:  # noqa: BLE001 - logged, treated as no recovery
             logger.warning("retrieval escalation failed: %s", exc)
             return 0
@@ -1975,6 +2025,13 @@ class WorkflowEngine:
                 content_parts.append(
                     f"**{f.title}** (confidence: {f.confidence.value})\n\n{f.content[:500]}"
                 )
+            section_sources = []
+            seen_source_urls: set[str] = set()
+            for finding in agent_findings:
+                for source in finding.sources:
+                    if source.url and source.url not in seen_source_urls:
+                        seen_source_urls.add(source.url)
+                        section_sources.append(source)
             sections.append(AnalysisSection(
                 id=f"floor_{agent_name}",
                 title=agent_name.replace("_", " ").title(),
@@ -1982,6 +2039,7 @@ class WorkflowEngine:
                 key_insight=agent_findings[0].title if agent_findings else "No key insight available",
                 body="\n\n---\n\n".join(content_parts) or "No content available",
                 findings=agent_findings,
+                sources=section_sources,
                 implications="Floor report — implications not synthesized.",
                 confidence=ConfidenceLevel.LOW,
             ))
@@ -2026,7 +2084,12 @@ class WorkflowEngine:
             key_findings=key_findings,
             sections=sections,
             agents_used=list(by_agent.keys()),
-            total_sources=sum(1 for f in findings if hasattr(f, "sources") and f.sources),
+            total_sources=len({
+                source.url
+                for finding in findings
+                for source in getattr(finding, "sources", [])
+                if source.url
+            }),
             total_data_points=len(findings),
             limitations=[
                 "Full synthesis was not completed.",
