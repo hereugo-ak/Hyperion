@@ -255,67 +255,74 @@ class TestRiskAnalystResolveSubject:
 
 
 class TestCompetitiveIntelLLMResearch:
-    def test_query_plan_is_generated_from_arbitrary_engagement(self, monkeypatch):
+    def test_strong_naming_returns_direct_competitors(self, monkeypatch):
+        """The renamed STRONG-tier call returns the named competitors."""
         agent = CompetitiveIntel()
         agent._question = "Who competes in precision-fermentation dairy proteins in Brazil?"
         agent._context = {"geography": "Brazil", "customer": "food manufacturers"}
         response = SimpleNamespace(
             success=True,
             content=json.dumps({
-                "subject": "precision-fermentation dairy protein suppliers",
-                "inclusion_criteria": ["Sells fermentation-derived dairy proteins"],
-                "exclusion_criteria": ["Traditional dairy processors"],
-                "queries": [
-                    "Brazil precision fermentation whey protein suppliers",
-                    "fermentation-derived casein companies Latin America",
-                ],
-            }),
-        )
-        monkeypatch.setattr(agent, "_llm_complete", AsyncMock(return_value=response))
-
-        plan = asyncio.run(agent._plan_competitor_searches("alternative proteins"))
-
-        assert plan["subject"] == "precision-fermentation dairy protein suppliers"
-        assert len(plan["queries"]) == 2
-        assert all("aerospace" not in query.lower() for query in plan["queries"])
-
-    def test_semantic_judge_requires_valid_cited_results(self, monkeypatch):
-        agent = CompetitiveIntel()
-        agent._question = "Compare workflow automation tools for hospitals"
-        response = SimpleNamespace(
-            success=True,
-            content=json.dumps({
                 "competitors": [
-                    {
-                        "name": "ClinicalFlow",
-                        "evidence_result_ids": [4],
-                        "relevance": "Automates hospital clinical workflows",
-                    },
-                    {
-                        "name": "Uncited Vendor",
-                        "evidence_result_ids": [],
-                        "relevance": "No supporting result",
-                    },
-                    {
-                        "name": "Invalid Citation Vendor",
-                        "evidence_result_ids": [99],
-                        "relevance": "Citation does not exist",
-                    },
+                    {"name": "Company A", "why_it_competes": "Brazilian precision-fermentation whey"},
+                    {"name": "Company B", "why_it_competes": "Latin American casein supplier"},
                 ],
             }),
         )
         monkeypatch.setattr(agent, "_llm_complete", AsyncMock(return_value=response))
-        results = [{
-            "result_id": 4,
-            "title": "ClinicalFlow hospital automation platform",
-            "snippet": "Clinical workflow orchestration for care teams",
-            "url": "https://example.com/clinicalflow",
-        }]
 
-        names, evidence_ids = asyncio.run(agent._extract_competitor_names({}, results))
+        named = asyncio.run(agent._name_competitors(
+            {"sector": "precision fermentation dairy", "region": "Brazil", "subject": "dairy proteins"}
+        ))
 
-        assert names == ["ClinicalFlow"]
-        assert evidence_ids == {4}
+        assert [c["name"] for c in named] == ["Company A", "Company B"]
+        assert all("aerospace" not in c["name"].lower() for c in named)
+
+    def test_parse_rejects_malformed_and_dedupes(self, monkeypatch):
+        """_parse_competitor_names validates, dedupes, and drops malformed rows."""
+        agent = CompetitiveIntel()
+
+        good = SimpleNamespace(success=True, content=json.dumps({
+            "competitors": [{"name": "RealCo", "why_it_competes": "makes the thing"}],
+        }))
+        assert agent._parse_competitor_names(good) == [
+            {"name": "RealCo", "why_it_competes": "makes the thing"}
+        ]
+
+        # Malformed JSON / empty / wrong shape all yield [].
+        for bad in (
+            SimpleNamespace(success=False, content=""),
+            SimpleNamespace(success=True, content="not json"),
+            SimpleNamespace(success=True, content=json.dumps({"competitors": "nope"})),
+            SimpleNamespace(success=True, content=json.dumps({"competitors": [
+                {"why_it_competes": "no name"},  # missing name
+                {"name": "", "why_it_competes": "blank name"},  # blank name
+            ]})),
+        ):
+            assert agent._parse_competitor_names(bad) == []
+
+        # Case-insensitive dedup.
+        dup = SimpleNamespace(success=True, content=json.dumps({"competitors": [
+            {"name": "DupCo", "why_it_competes": "a"},
+            {"name": "dupco", "why_it_competes": "b"},
+        ]}))
+        assert len(agent._parse_competitor_names(dup)) == 1
+
+    def test_naming_retries_once_on_empty_then_gap(self, monkeypatch):
+        """An empty first response triggers exactly one retry; still-empty = []."""
+        agent = CompetitiveIntel()
+        empty = SimpleNamespace(success=True, content=json.dumps({"competitors": []}))
+        retry = SimpleNamespace(success=True, content=json.dumps({"competitors": [
+            {"name": "RecoveredCo", "why_it_competes": "found on retry"}
+        ]}))
+        call = AsyncMock(side_effect=[empty, retry])
+        monkeypatch.setattr(agent, "_llm_complete", call)
+
+        named = asyncio.run(agent._name_competitors(
+            {"sector": "x", "region": "", "subject": "y"}
+        ))
+        assert call.await_count == 2
+        assert [c["name"] for c in named] == ["RecoveredCo"]
 
 
 class TestSustainabilityNullableFramework:

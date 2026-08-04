@@ -272,6 +272,51 @@ class KeyFinding(BaseModel):
     )
 
 
+class CompetitorDossier(BaseModel):
+    """Structured depth dossier for a single competitor, produced by an
+    isolated per-competitor sub-agent (§4.4, Agent 4).
+
+    Richer than a KeyFinding so the parent Competitive Intelligence agent can
+    aggregate the competitor matrix, moat assessment, strategic groups and
+    positioning map by pure functions instead of burning more LLM calls. The
+    sub-agent still emits this as its ``findings_model``; a failed/blocked
+    sub-agent returns a KeyFinding research-gap instead, so the failure stays
+    isolated to that one competitor.
+    """
+
+    name: str = Field(description="Competitor's legal/common name")
+    website: str | None = Field(
+        default=None, description="Primary website URL"
+    )
+    pricing_tiers: list[str] = Field(
+        default_factory=list,
+        description="Pricing tiers/plans described in plain language",
+    )
+    funding_stage: str | None = Field(
+        default=None,
+        description="bootstrapped/seed/A/B/C/IPO/revenue-funded",
+    )
+    total_raised: str | None = Field(
+        default=None, description="Total funding raised, e.g. '$120M'"
+    )
+    headcount: str | None = Field(
+        default=None, description="Approximate employee count"
+    )
+    key_partnerships: list[str] = Field(
+        default_factory=list,
+        description="Integrations, channel partners, alliances",
+    )
+    moat_signals: list[str] = Field(
+        default_factory=list,
+        description="Observed defensibility signals (network effects, switching "
+        "costs, scale, brand, regulatory, IP, distribution)",
+    )
+    evidence_urls: list[str] = Field(
+        default_factory=list,
+        description="Source URLs backing the dossier",
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Risk — the Risk Analyst's output unit (§4.4, Agent 6)
 # ─────────────────────────────────────────────────────────────────────────────
