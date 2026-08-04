@@ -47,7 +47,7 @@ import re
 import time
 from typing import Any
 
-from hyperion.agents.bus import AgentBus, get_bus
+from hyperion.agents.bus import AgentBus, Channel, MessageType, get_bus
 from hyperion.agents.prompt_contract import compose_agent_prompt
 from hyperion.config import TIER_OUTPUT_BUDGET, ModelTier
 from hyperion.router.budget import TaskUrgency
@@ -153,7 +153,37 @@ class SubAgentRunner:
         if tool_name not in self._tools:
             self._tools[tool_name] = self._instantiate_tool(tool_enum)
 
+        self._publish_tool_access(tool_name)
         return self._tools[tool_name]
+
+    def _publish_tool_access(self, tool_name: str) -> None:
+        """Expose sub-agent tool activity to the same live TUI telemetry feed."""
+        try:
+            coro = self.bus.publish(
+                channel=Channel.TUI,
+                msg_type=MessageType.STATUS,
+                sender=self.spec.parent_agent,
+                payload={
+                    "agent": self.parent_agent,
+                    "tool": tool_name,
+                    "action": "access",
+                    "detail": "sub-agent",
+                    "success": None,
+                    "telemetry_kind": "tool_call",
+                    "display": False,
+                },
+            )
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                coro.close()
+                return
+            task = loop.create_task(coro)
+            task.add_done_callback(
+                lambda done: done.exception() if not done.cancelled() else None
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry cannot break research
+            logger.debug("sub-agent tool telemetry failed for %s: %s", tool_name, exc)
 
     def _instantiate_tool(self, tool: Any) -> Any:
         """Instantiate a tool by enum value.
@@ -1162,6 +1192,27 @@ class SubAgentRunner:
             temperature=0.2,
             max_tokens=TIER_OUTPUT_BUDGET[self.spec.model_tier],
             response_format={"type": "json_object"},
+        )
+
+        provider = getattr(response.provider, "value", str(response.provider))
+        await self.bus.publish(
+            channel=Channel.TUI,
+            msg_type=MessageType.STATUS,
+            sender=self.spec.parent_agent,
+            payload={
+                "agent": self.parent_agent,
+                "tool": "llm",
+                "action": f"{provider}/{response.model}",
+                "detail": (
+                    f"{self.spec.model_tier.value} tier · "
+                    f"{'OK' if response.success else 'FAIL'} · sub-agent"
+                ),
+                "success": response.success,
+                "provider": provider,
+                "input_tokens": max(0, int(response.input_tokens or 0)),
+                "output_tokens": max(0, int(response.output_tokens or 0)),
+                "total_tokens": max(0, int(response.total_tokens or 0)),
+            },
         )
 
         if not response.success or not response.content:

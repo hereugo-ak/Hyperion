@@ -61,6 +61,39 @@ def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
 # D-06: the smoke query is the only honest search health signal.
 SMOKE_QUERY = "india import tariff"
 MIN_SMOKE_RESULTS = 3
+_LOCAL_SEARXNG_HEADERS = {
+    "User-Agent": "HYPERION/1.0 (local search health probe)",
+    "X-Forwarded-For": "127.0.0.1",
+    "X-Real-IP": "127.0.0.1",
+}
+
+
+def _searxng_probe_targets(settings: Any) -> list[tuple[str, str, str]]:
+    """Return profile-aware smoke targets for the managed local stack.
+
+    The configured compatibility URL points at the scholar replica on 8888.
+    Probing only that endpoint with a general-web query produced the exact false
+    OFFLINE refusal in the reported run even while the web and reference replicas
+    were healthy. Custom/remote SearXNG deployments remain a single target.
+    """
+    from urllib.parse import urlsplit
+
+    configured = getattr(settings, "searxng_url", "") or "http://localhost:8888"
+    parsed = urlsplit(configured if "://" in configured else f"http://{configured}")
+    if (parsed.hostname or "").lower() not in {"127.0.0.1", "localhost", "::1"}:
+        return [(configured.rstrip("/"), SMOKE_QUERY, "")]
+
+    from hyperion.infra.services import SEARXNG_REPLICAS
+
+    queries = {
+        "scholar": ("india trade policy", "crossref,openalex"),
+        "reference": ("India", "wikipedia"),
+        "web": (SMOKE_QUERY, "mojeek,mwmbl,brave,yep"),
+    }
+    return [
+        (f"http://127.0.0.1:{replica.port}", *queries[replica.profile])
+        for replica in SEARXNG_REPLICAS
+    ]
 
 
 # P2-29: a TCP connect or a key-presence check cannot detect a dead key.
@@ -150,54 +183,75 @@ def _log_preflight(provider_type: Any, status: str, detail: str) -> None:
 
 
 def _check_searxng(settings: Any) -> ToolHealth:
-    """Smoke-query the engine layer instead of probing the socket (D-06).
+    """Smoke-query every managed profile and report aggregate search health.
 
-    The 07-30 run booted ``✓ SearXNG ready`` because TCP 8888 accepted
-    connections while every engine behind it was dead — DuckDuckGo under a
-    24-hour 403 ban and Bing returning silent-zero. A port probe measures a
-    socket, not a search; the only check that cannot lie about engine
-    availability is a query that must come back with results.
+    A local three-replica stack is usable when at least one profile returns
+    evidence. Partial startup, upstream engine failures, or a thin response are
+    DEGRADED; only a stack that yields zero evidence everywhere is OFFLINE.
     """
     h = ToolHealth(name="searxng")
-    # Host and port come from the configured URL via one shared parser
-    # (`searxng_host` / `searxng_port` properties on settings), so pointing
-    # HYPERION at a SearxNG on another port probes the right one.
-    url = getattr(settings, "searxng_url", "") or "http://localhost:8888"
-    host = getattr(settings, "searxng_host", None) or "localhost"
-    port = getattr(settings, "searxng_port", None) or 8888
-    if not _check_port(host, port):
-        h.status = "OFFLINE"
-        h.detail = f"not reachable at {host}:{port} ({url})"
-        return h
+    targets = _searxng_probe_targets(settings)
+    healthy_profiles = 0
+    total_results = 0
+    live_engines: set[str] = set()
+    failures: list[str] = []
+
     try:
         import httpx
-
-        r = httpx.get(
-            f"{url}/search",
-            params={"q": SMOKE_QUERY, "format": "json"},
-            timeout=20.0,
-        )
-        r.raise_for_status()
-        body = r.json()
-        results = body.get("results", []) or []
-        # SearxNG reports per-engine failures in `unresponsive_engines`.
-        dead = [e[0] for e in body.get("unresponsive_engines", []) if e]
-        live = sorted({res.get("engine") for res in results if res.get("engine")})
-        if len(results) >= MIN_SMOKE_RESULTS:
-            h.status = "OK" if not dead else "DEGRADED"
-            h.detail = f"{len(results)} results from {live}" + (
-                f"; DEAD: {dead}" if dead else ""
-            )
-        else:
-            # Port open, engine layer dead — exactly the 07-30 state.
-            h.status = "OFFLINE"
-            h.detail = (
-                f"reachable but returned {len(results)} results for "
-                f"{SMOKE_QUERY!r}; unresponsive: {dead or 'none reported'}"
-            )
-    except Exception as exc:  # noqa: BLE001 - any probe failure means OFFLINE
+    except ImportError as exc:
         h.status = "OFFLINE"
-        h.detail = f"smoke query failed: {type(exc).__name__}: {exc!s:.80}"
+        h.detail = f"smoke query unavailable: {exc}"
+        return h
+
+    for url, query, engines in targets:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(url if "://" in url else f"http://{url}")
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        label = str(port)
+        if not _check_port(host, port):
+            failures.append(f"{label}: unreachable")
+            continue
+        params = {"q": query, "format": "json"}
+        if engines:
+            params["engines"] = engines
+        try:
+            response = httpx.get(
+                f"{url.rstrip('/')}/search",
+                params=params,
+                headers=_LOCAL_SEARXNG_HEADERS if host in {"127.0.0.1", "localhost", "::1"} else None,
+                timeout=20.0,
+            )
+            response.raise_for_status()
+            body = response.json()
+            results = body.get("results", []) or []
+            dead = [item[0] for item in body.get("unresponsive_engines", []) if item]
+            if results:
+                healthy_profiles += 1
+                total_results += len(results)
+                live_engines.update(
+                    str(item.get("engine")) for item in results if item.get("engine")
+                )
+                if dead or len(results) < MIN_SMOKE_RESULTS:
+                    failures.append(f"{label}: {len(results)} results; DEAD={dead}")
+            else:
+                failures.append(f"{label}: 0 results; DEAD={dead or 'none reported'}")
+        except Exception as exc:  # noqa: BLE001 - aggregate every profile failure
+            failures.append(f"{label}: {type(exc).__name__}: {str(exc)[:80]}")
+
+    if total_results == 0:
+        h.status = "OFFLINE"
+        h.detail = "no evidence from any SearXNG profile; " + "; ".join(failures)
+    elif healthy_profiles == len(targets) and not failures:
+        h.status = "OK"
+        h.detail = f"{total_results} results from {sorted(live_engines)} across {healthy_profiles} profiles"
+    else:
+        h.status = "DEGRADED"
+        h.detail = (
+            f"{total_results} results from {sorted(live_engines)} across "
+            f"{healthy_profiles}/{len(targets)} profiles; " + "; ".join(failures)
+        )
     return h
 
 

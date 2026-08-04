@@ -152,6 +152,11 @@ class MetricsRail(Static):
         self.tel.tokens += max(0, n)
         self._repaint()
 
+    def set_tokens(self, total: int) -> None:
+        """Set the exact engagement token total from the shared router ledger."""
+        self.tel.tokens = max(0, total)
+        self._repaint()
+
     def set_agent(self, key: str, label: str, state: str) -> None:
         a = self.tel.agents.get(key)
         if a is None:

@@ -653,6 +653,10 @@ class BaseAgent(ABC):
                     "action": f"{provider_name}/{model_name}",
                     "detail": f"{self.model_tier.value} tier · {'OK' if response.success else 'FAIL'} · {len(response.content or '')} chars",
                     "success": response.success,
+                    "provider": provider_name,
+                    "input_tokens": max(0, int(getattr(response, "input_tokens", 0) or 0)),
+                    "output_tokens": max(0, int(getattr(response, "output_tokens", 0) or 0)),
+                    "total_tokens": max(0, int(getattr(response, "total_tokens", 0) or 0)),
                 },
             )
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
@@ -816,7 +820,41 @@ class BaseAgent(ABC):
         if tool not in self._tools:
             self._tools[tool] = self._instantiate_tool(tool)
 
+        # Emit a hidden, countable event at the moment an agent begins using a
+        # tool. Most tool clients do not know about AgentBus, so relying on
+        # hand-written success logs left the live TUI counter at zero for the
+        # majority of real retrieval calls.
+        self._publish_tool_access(tool)
         return self._tools[tool]
+
+    def _publish_tool_access(self, tool: ToolName) -> None:
+        """Publish one non-blocking tool-access event for live telemetry."""
+        try:
+            coro = self.bus.publish(
+                channel=Channel.TUI,
+                msg_type=MessageType.STATUS,
+                sender=self.name,
+                payload={
+                    "agent": self.name.value,
+                    "tool": tool.value,
+                    "action": "access",
+                    "detail": "",
+                    "success": None,
+                    "telemetry_kind": "tool_call",
+                    "display": False,
+                },
+            )
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                coro.close()
+                return
+            task = loop.create_task(coro)
+            task.add_done_callback(
+                lambda done: done.exception() if not done.cancelled() else None
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry cannot break tool access
+            logger.debug("tool telemetry failed for %s: %s", tool.value, exc)
 
     async def get_tool_or_escalate(self, tool: ToolName) -> Any | None:
         """D4-rest: Get a tool, escalating on failure instead of raising.
