@@ -9,36 +9,44 @@ with proprietary analytical frameworks:
 - Market share analysis: Revenue/customer/search/download-based with confidence
 - Moat assessment: Hamilton Helmer 7-force framework, scored strong→nascent
 - Positioning map: 2D plot to identify white space and competitive density
+- It uses Obscura's stealth mode because competitor sites actively block bots.
+- It cross-references current pricing with Wayback historical pricing to show
+- pricing trends, not just current prices. It doesn't just list competitors, it maps their moats and identifies which are defensible vs. eroding. It
+- always identifies white space, where no competitor is currently playing.
+- (§4.4, Agent 4)
 
-It uses Obscura's stealth mode because competitor sites actively block bots.
-It cross-references current pricing with Wayback historical pricing to show
-pricing trends, not just current prices. It doesn't just list competitors, it maps their moats and identifies which are defensible vs. eroding. It
-always identifies white space, where no competitor is currently playing.
-(§4.4, Agent 4)
-
-Model Tier: STANDARD
-Tools: SearxNG, Jina, Obscura, Wayback
-Sub-agents: Max 3, scrape competitor pricing pages, find funding/headcount
+Model Tier: STANDARD (the agent itself); the competitor-naming decision
+borrows STRONG once, see _name_competitors.
+Tools: SearxNG, Jina, Obscura, Wayback, SEC_EDGAR, DEEP_SEARCH
+Sub-agents: Max 5, one isolated depth-dossier sub-agent per competitor
+           (each does its own SearxNG + Jina + Obscura + Wayback search).
 Output: CompetitiveLandscape (competitor matrix, moat assessments, strategic
         groups, positioning map, white space, pricing trends, confidence, sources)
 
-Methodology (§4.4, Agent 4):
-1. Identify all competitors in the space (SearxNG)
-2. Scrape each competitor's website for product/pricing/team info (Obscura)
-3. Pull historical snapshots for trend analysis (Wayback)
-4. Build competitor matrix
-5. Assess moats for top 5 competitors
-6. Create strategic group map
-7. Create positioning map
-8. Identify white space opportunities
+Methodology (§4.4, Agent 4), rewritten to remove the fragile two-stage
+"plan queries → web search → strict integer-ID judge" pipeline:
+1. Resolve the arena (sector + region + engagement entity) from context.
+2. STRONG-tier LLM names the 3-5 most DIRECT competitors (one call, retried
+   once on empty/malformed output).
+3. Spawn one isolated sub-agent per competitor (up to 5) that builds a
+   CompetitorDossier. A block/timeout on one competitor is that competitor's
+   gap finding only — it cannot zero the whole landscape.
+4. Build competitor matrix from the dossiers (pure aggregation).
+5. Assess moats for top 5 competitors (from dossiers, optional light synthesis).
+6. Create strategic group map.
+7. Create positioning map.
+8. Identify white space opportunities.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from hyperion.agents.base import BaseAgent
 from hyperion.agents.bus import Channel, MessageType
@@ -54,13 +62,14 @@ from hyperion.schemas.agents import (
     ToolName,
 )
 from hyperion.schemas.models import (
+    CompetitorDossier,
     CompetitiveLandscape,
     ConfidenceLevel,
     KeyFinding,
     Source,
     SourceCredibility,
 )
-from hyperion.tools.query_utils import resolve_subject
+from hyperion.tools.query_utils import get_engagement_focus, resolve_subject
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -175,15 +184,18 @@ COMPETITIVE_INTEL_SPEC = AgentSpec(
         "used (revenue, downloads, search volume).\n"
         "- Moat scores must include trend direction (strengthening/weakening/stable).\n"
         "- Strategic groups must distinguish direct rivals from adjacent players.\n\n"
-        "You can spawn up to 3 sub-agents for parallel competitor data collection:\n"
-        "- Sub-agent A: Scrape [competitor1] pricing page (MICRO, Obscura)\n"
-        "- Sub-agent B: Scrape [competitor2] pricing page (MICRO, Obscura)\n"
-        "- Sub-agent C: Find [competitor3] funding/headcount (FAST, SearxNG + Jina)\n\n"
+        "Your competitor discovery pipeline (§4.4 rewrite):\n"
+        "1. One STRONG-tier call names the 3-5 most DIRECT competitors for the "
+        "resolved sector + region + engagement entity.\n"
+        "2. One isolated sub-agent per competitor builds a CompetitorDossier "
+        "(pricing tiers, funding stage, headcount, partnerships, moat signals).\n"
+        "3. A single competitor's sub-agent failure is that competitor's gap only — "
+        "it never zeroes the whole landscape.\n\n"
         "Your output is a CompetitiveLandscape Pydantic model, structured, not free text."
     ),
     spawn_condition="Spawned when the question involves competitive analysis, market entry, "
                      "or positioning (GO_NO_GO, MARKET_ENTRY, COMPARISON types)",
-    max_sub_agents=3,
+    max_sub_agents=5,
     output_model="CompetitiveLandscape",
 )
 
@@ -224,18 +236,26 @@ class CompetitiveIntel(BaseAgent):
         self._engagement_id: str = ""
         self._context: dict[str, Any] = {}
 
-        # Collected raw data
+        # Resolved arena (sector + region + engagement entity) for this run
+        self._arena: dict[str, str] = {}
+
+        # Discovered competitors (names) from the STRONG naming call
         self._competitor_names: list[str] = []
+
+        # Per-competitor depth dossiers produced by isolated sub-agents
+        self._competitor_dossiers: list[CompetitorDossier] = []
+
+        # Competitor website URLs (derived from dossiers) for Wayback snapshots
         self._competitor_urls: dict[str, str] = {}  # name → website URL
-        self._scraped_pages: dict[str, dict[str, Any]] = {}  # name → scraped data
-        self._extracted_content: dict[str, str] = {}  # name → extracted text
-        self._historical_snapshots: dict[str, list[dict[str, Any]]] = {}  # name → snapshots
-        self._search_results: list[dict[str, Any]] = []
+
+        # Historical snapshots (Wayback) keyed by competitor name
+        self._historical_snapshots: dict[str, list[dict[str, Any]]] = {}
 
         # Collected sources
         self._sources: list[Source] = []
 
-        # Sub-agent findings
+        # Sub-agent findings: gap findings from any competitor whose sub-agent
+        # failed/blocked, plus dossier-backed competitor profiles.
         self._sub_agent_findings: list[KeyFinding] = []
 
     # ─────────────────────────────────────────────────────────────────────
@@ -263,8 +283,9 @@ class CompetitiveIntel(BaseAgent):
                 self._engagement_id = context_bundle.get("engagement_id", "")
                 self._question = context_bundle.get("question", "")
                 self._context = context_bundle.get("context", {})
-                # Pre-seeded competitor names from Engagement Director
-                self._competitor_names = context_bundle.get("competitors", [])
+                # Competitor discovery is now driven entirely by the STRONG
+                # naming call in run() (see _name_competitors); the Engagement
+                # Director no longer pre-seeds names here.
 
         elif msg.channel == Channel.REQUESTS:
             payload = msg.payload
@@ -284,283 +305,306 @@ class CompetitiveIntel(BaseAgent):
                 pass
 
     # ─────────────────────────────────────────────────────────────────────
-    # Step 1: Identify all competitors (SearxNG)
+    # Step 1: Resolve the arena (replaces resolve_subject(..., "company", ...))
     # ─────────────────────────────────────────────────────────────────────
 
-    async def _plan_competitor_searches(self, market_query: str) -> dict[str, Any]:
-        """Use the LLM to translate any engagement into focused search queries."""
-        context_summary = json.dumps(self._context, default=str)[:3000]
+    def _resolve_arena(self) -> dict[str, str]:
+        """Build a single arena dict from context + engagement focus.
+
+        The old code called ``resolve_subject(self._context, "company",
+        "sector", "industry")`` which collapsed to "" whenever the Engagement
+        Director omitted those keys and silently dropped the engagement entity
+        and region. We now assemble one dict:
+
+        - sector  ← context industry/sector/market/space (then engagement focus)
+        - region  ← context geography / jurisdictions, OPTIONAL; if absent we
+                    search agnostic and NEVER default to "US" (the 119-wrong-
+                    country bug class)
+        - subject ← the engagement entity (e.g. "Tesla entering India") from the
+                    real user question, so we get EV makers in India, not global
+                    automotive giants.
+
+        Region is deliberately conditional: an empty region means "no geography
+        filter", which grounding propagates to every sub-agent search.
+        """
+        ctx = self._context or {}
+        focus_q, focus_subject, focus_geo = get_engagement_focus()
+
+        subject = (
+            ctx.get("question") or focus_q or self._question or ""
+        ).strip()
+
+        sector = (
+            ctx.get("industry")
+            or ctx.get("sector")
+            or ctx.get("market")
+            or ctx.get("space")
+            or focus_subject
+            or resolve_subject(
+                ctx, "industry", "sector", "market", question=self._question
+            )
+            or ""
+        ).strip()
+
+        region = ""
+        if ctx.get("geography"):
+            region = str(ctx["geography"]).strip()
+        elif ctx.get("jurisdictions"):
+            js = ctx["jurisdictions"]
+            if isinstance(js, (list, tuple)) and js:
+                region = str(js[0]).strip()
+            elif isinstance(js, str):
+                region = js.strip()
+        elif focus_geo:
+            region = focus_geo.strip()
+
+        return {"sector": sector, "region": region, "subject": subject}
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 1 (linchpin): STRONG-tier competitor naming
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _name_competitors(self, arena: dict[str, str]) -> list[dict[str, str]]:
+        """Name the 3-5 most DIRECT competitors with one STRONG-tier call.
+
+        This is the decision step that previously used a small-model integer-ID
+        judge whose degenerate 19-char response zeroed the entire section. The
+        naming call now borrows STRONG and is validated + retried once. A thin
+        market (1-2 real competitors) is returned as-is and flagged as white
+        space downstream — only a truly empty/malformed result (transport/LLM
+        failure) is treated as a gap.
+        """
+        sector = arena.get("sector", "")
+        region = arena.get("region", "")
+        subject = arena.get("subject", "")
+
+        region_text = f" in {region}" if region else " (search agnostic — no geography constraint was specified)"
+        subject_text = f" for the engagement: {subject}" if subject else ""
+
         prompt = (
-            "You are planning web research for a competitive-intelligence engagement.\n\n"
-            f"User question: {self._question or market_query}\n"
-            f"Resolved subject: {market_query}\n"
-            f"Engagement context: {context_summary}\n\n"
-            "Interpret the exact competitive arena dynamically. Identify the product or "
-            "service boundary, customer/job-to-be-done, value-chain position, and any "
-            "geographic constraints. Then create 4-7 high-precision web search queries "
-            "that will find direct and genuinely adjacent competitors. Each query must "
-            "carry enough semantic context to disambiguate the arena. Avoid generic "
-            "country-wide company lists and do not assume a particular industry.\n\n"
+            "You are the senior competitive-intelligence analyst naming the most "
+            "DIRECT competitors for an engagement.\n\n"
+            f"Engagement entity: {subject or '(not specified)'}\n"
+            f"Sector / market: {sector or '(not specified)'}\n"
+            f"Region: {region or 'global / agnostic'}\n\n"
+            "Name the 3-5 most DIRECT competitors that compete head-to-head with the "
+            "engagement entity in THIS sector and THIS region. Prefer real companies "
+            "that actually operate in this sector/region over global giants that only "
+            "tangentially overlap. For each, give a one-line rationale tying it to the "
+            "arena.\n\n"
             "Return JSON:\n"
-            "{\n"
-            '  "subject": "precise competitive arena",\n'
-            '  "inclusion_criteria": ["..."],\n'
-            '  "exclusion_criteria": ["..."],\n'
-            '  "queries": ["...", "..."]\n'
-            "}\n"
+            '{"competitors": [{"name": "...", "why_it_competes": "..."}]}\n\n'
+            "If the market is nascent and fewer than 3 real competitors exist, return "
+            "what exists (it is a white-space signal) — but NEVER invent companies that "
+            "do not operate in this sector/region."
         )
+
         response = await self._llm_complete(
             user_prompt=prompt,
             urgency=TaskUrgency.HIGH,
             temperature=0.2,
             response_format={"type": "json_object"},
+            tier=ModelTier.STRONG,
         )
+        names = self._parse_competitor_names(response)
 
-        fallback_subject = market_query or self._question
-        fallback = {
-            "subject": fallback_subject,
-            "inclusion_criteria": [],
-            "exclusion_criteria": [],
-            "queries": [f"{fallback_subject} direct competitors"],
-        }
-        if not response.success or not response.content:
-            return fallback
+        # Validation + 1 retry: empty or malformed output (the degenerate-response
+        # bug) gets one more chance; a legitimately thin market (1-2 names) is kept.
+        if not names:
+            retry = await self._llm_complete(
+                user_prompt=(
+                    f"{prompt}\n\n"
+                    "Your previous answer was empty or not valid JSON. You MUST return "
+                    f"real companies operating in {sector or 'the relevant market'}"
+                    f"{region_text}. If fewer than 3 exist, return those that do."
+                ),
+                urgency=TaskUrgency.HIGH,
+                temperature=0.2,
+                response_format={"type": "json_object"},
+                tier=ModelTier.STRONG,
+            )
+            retry_names = self._parse_competitor_names(retry)
+            if retry_names:
+                names = retry_names
 
+        return names
+
+    def _parse_competitor_names(self, response: Any) -> list[dict[str, str]]:
+        """Parse + validate the STRONG naming response into a name list.
+
+        Returns [] on empty content, malformed JSON, or a structurally-invalid
+        payload, so the caller can decide between retry and gap declaration.
+        """
+        if not getattr(response, "success", False) or not getattr(response, "content", ""):
+            return []
         try:
             data = json.loads(response.content)
         except (json.JSONDecodeError, ValueError, TypeError):
-            return fallback
-        if not isinstance(data, dict):
-            return fallback
-
-        queries = data.get("queries")
-        clean_queries = list(dict.fromkeys(
-            query.strip()
-            for query in queries
-            if isinstance(query, str) and query.strip()
-        )) if isinstance(queries, list) else []
-        if not clean_queries:
-            return fallback
-
-        subject = data.get("subject")
-        inclusion = data.get("inclusion_criteria")
-        exclusion = data.get("exclusion_criteria")
-        return {
-            "subject": subject.strip() if isinstance(subject, str) and subject.strip() else fallback_subject,
-            "inclusion_criteria": [
-                item for item in inclusion if isinstance(item, str)
-            ] if isinstance(inclusion, list) else [],
-            "exclusion_criteria": [
-                item for item in exclusion if isinstance(item, str)
-            ] if isinstance(exclusion, list) else [],
-            "queries": clean_queries[:7],
-        }
-
-    async def _identify_competitors(self, market_query: str) -> list[dict[str, Any]]:
-        """Plan searches and let the LLM judge result relevance with citations."""
-        subject = resolve_subject(
-            self._context, "company", "sector", "industry", question=self._question
-        ) or market_query
-        plan = await self._plan_competitor_searches(subject)
-        results: list[dict[str, Any]] = []
-
-        try:
-            searxng = self.get_tool(ToolName.SEARXNG)
-            for pattern in plan["queries"]:
-                search_results = await searxng.search(pattern, max_results=10)
-                for row in search_results:
-                    results.append({
-                        "result_id": len(results),
-                        "title": row.get("title", ""),
-                        "url": row.get("url", ""),
-                        "snippet": row.get("content", ""),
-                        "query": pattern,
-                    })
-        except (ValueError, AttributeError, RuntimeError):
-            pass
-
-        competitors, evidence_ids = await self._extract_competitor_names(plan, results)
-        self._competitor_names = competitors
-
-        relevant_results = [
-            result for result in results if result["result_id"] in evidence_ids
-        ]
-        for result in relevant_results:
-            self._sources.append(Source(
-                id=f"src_{len(self._sources):03d}",
-                title=result["title"],
-                url=result["url"],
-                credibility=SourceCredibility.NEWS,
-            ))
-        return relevant_results
-
-    async def _extract_competitor_names(
-        self,
-        plan: dict[str, Any],
-        search_results: list[dict[str, Any]],
-    ) -> tuple[list[str], set[int]]:
-        """Use an LLM semantic judge to select competitors and cite evidence rows."""
-        search_summary = "\n".join(
-            f"[{result['result_id']}] {result['title']}: "
-            f"{result.get('snippet', '')[:300]} ({result.get('url', '')})"
-            for result in search_results[:60]
-        )
-        prompt = (
-            "You are the senior semantic relevance judge for competitive intelligence.\n\n"
-            f"Original user question: {self._question}\n"
-            f"Research plan: {json.dumps(plan, default=str)}\n"
-            f"Director-suggested candidates: {json.dumps(self._competitor_names)}\n\n"
-            f"Numbered search results:\n{search_summary}\n\n"
-            "Determine which organizations are direct competitors or strategically "
-            "relevant adjacent competitors in the precise arena defined by the user. "
-            "Reason from business model, offering, customer need, and value-chain role—not "
-            "mere keyword or geographic overlap. Reject unrelated organizations and generic "
-            "listicle entries. Every accepted organization must cite one or more numbered "
-            "results that support both its identity and relevance. If evidence is weak, omit "
-            "the organization. Do not use industry-specific assumptions.\n\n"
-            "Return JSON:\n"
-            "{\n"
-            '  "competitors": [{\n'
-            '    "name": "organization name",\n'
-            '    "evidence_result_ids": [0],\n'
-            '    "relevance": "why it competes in this precise arena"\n'
-            "  }]\n"
-            "}\n"
-        )
-        response = await self._llm_complete(
-            user_prompt=prompt,
-            urgency=TaskUrgency.HIGH,
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
-        if not response.success or not response.content:
-            return ([], set())
-
-        try:
-            data = json.loads(response.content)
-        except (json.JSONDecodeError, ValueError, TypeError):
-            return ([], set())
+            return []
         if not isinstance(data, dict) or not isinstance(data.get("competitors"), list):
-            return ([], set())
+            return []
 
-        valid_ids = {result["result_id"] for result in search_results}
-        names: list[str] = []
-        evidence_ids: set[int] = set()
+        out: list[dict[str, str]] = []
         seen: set[str] = set()
         for candidate in data["competitors"]:
             if not isinstance(candidate, dict):
                 continue
             name = candidate.get("name")
-            relevance = candidate.get("relevance")
-            raw_ids = candidate.get("evidence_result_ids")
-            cited_ids = {
-                result_id
-                for result_id in raw_ids
-                if isinstance(result_id, int) and result_id in valid_ids
-            } if isinstance(raw_ids, list) else set()
-            if not isinstance(name, str) or not name.strip() or not cited_ids:
-                continue
-            if not isinstance(relevance, str) or not relevance.strip():
+            if not isinstance(name, str) or not name.strip():
                 continue
             key = name.strip().casefold()
             if key in seen:
                 continue
             seen.add(key)
-            names.append(name.strip())
-            evidence_ids.update(cited_ids)
-
-        return (names, evidence_ids)
+            out.append({
+                "name": name.strip(),
+                "why_it_competes": (
+                    candidate.get("why_it_competes", "")
+                    if isinstance(candidate.get("why_it_competes"), str)
+                    else ""
+                ),
+            })
+        return out
 
     # ─────────────────────────────────────────────────────────────────────
-    # Step 2: Scrape competitor websites (Obscura + Jina)
+    # Step 2: Per-competitor depth sub-agents (isolated, one per competitor)
     # ─────────────────────────────────────────────────────────────────────
 
-    async def _scrape_competitor_sites(self, competitors: list[str]) -> None:
-        """Scrape each competitor's website for product/pricing/team info.
+    async def _spawn_competitor_sub_agents(
+        self,
+        competitors: list[dict[str, str]],
+        sector: str,
+        region: str,
+    ) -> tuple[list[CompetitorDossier], list[KeyFinding]]:
+        """Spawn one isolated sub-agent per competitor (up to 5).
 
-        Uses Obscura with stealth mode because competitor sites actively
-        block bots. Uses Jina for content extraction from non-JS pages.
-        Falls back to Jina if Obscura is blocked.
+        Each sub-agent does its own SearxNG + Jina + Obscura + Wayback research
+        and returns a structured CompetitorDossier. Isolation is the whole point:
+        one Obscura block/timeout on competitor N produces only that
+        competitor's gap finding (via base.py:1020-1040) and can never zero the
+        landscape for the other competitors.
+
+        Returns (dossiers, gaps) where gaps are KeyFinding research-gap objects
+        for the competitors whose sub-agent failed.
         """
-        try:
-            obscura = self.get_tool(ToolName.OBSCURA)
-        except (ValueError, AttributeError, RuntimeError):
-            obscura = None
+        if not competitors:
+            return ([], [])
 
-        try:
-            jina = self.get_tool(ToolName.JINA)
-        except (ValueError, AttributeError, RuntimeError):
-            jina = None
+        specs = []
+        for c in competitors[:5]:
+            name = c["name"]
+            why = c.get("why_it_competes", "")
+            region_text = f" in {region}" if region else ""
+            specs.append(SubAgentSpec(
+                question=(
+                    f"Build a depth dossier for competitor '{name}' "
+                    f"({why}) operating in {sector or 'the relevant market'}{region_text}. "
+                    "Research and report: (1) pricing tiers, (2) funding stage, "
+                    "(3) total raised, (4) headcount, (5) key partnerships, and "
+                    "(6) observable moat signals (network effects, switching costs, "
+                    "scale, brand, regulatory, IP, distribution). Cite a source URL "
+                    "for every claim in evidence_urls."
+                ),
+                parent_agent=self.name,
+                model_tier=ModelTier.STANDARD,
+                tools=[ToolName.SEARXNG, ToolName.JINA, ToolName.OBSCURA, ToolName.WAYBACK],
+                findings_model="CompetitorDossier",
+                timeout_seconds=300,
+                context={"competitor": name, "sector": sector, "region": region},
+            ))
 
-        for competitor in competitors[:10]:  # Limit to 10 competitors
-            # First, find the competitor's website URL
-            website_url = await self._find_competitor_website(competitor)
-            if website_url:
-                self._competitor_urls[competitor] = website_url
+        results = await asyncio.gather(
+            *(self._spawn_sub_agent(spec) for spec in specs),
+            return_exceptions=True,
+        )
 
-                # Scrape key pages: homepage, pricing, product, about/team
-                pages_to_scrape = [
-                    ("homepage", website_url),
-                    ("pricing", f"{website_url}/pricing"),
-                    ("product", f"{website_url}/product"),
-                    ("about", f"{website_url}/about"),
-                ]
+        dossiers: list[CompetitorDossier] = []
+        gaps: list[KeyFinding] = []
+        for result in results:
+            if isinstance(result, Exception):
+                # A sub-agent spawn that escaped the isolation boundary.
+                logger.warning("%s: competitor sub-agent error: %s", self.name.value, result)
+                continue
+            if not isinstance(result, list):
+                continue
+            for item in result:
+                if isinstance(item, CompetitorDossier):
+                    dossiers.append(item)
+                elif isinstance(item, KeyFinding):
+                    gaps.append(item)
 
-                for page_type, url in pages_to_scrape:
-                    page_data = None
+        return (dossiers, gaps)
 
-                    # Try Obscura first (handles JS-rendered content)
-                    if obscura:
-                        try:
-                            fetch_result = await obscura.fetch(url, stealth=True)
-                            if fetch_result and (fetch_result.markdown or fetch_result.content):
-                                page_data = {"content": (fetch_result.markdown or fetch_result.content)[:15000]}
-                            else:
-                                page_data = None
-                        except (ValueError, AttributeError, RuntimeError):
-                            page_data = None
+    # ─────────────────────────────────────────────────────────────────────
+    # Step 4: Build competitor matrix (pure aggregation from dossiers)
+    # ─────────────────────────────────────────────────────────────────────
 
-                    # Fall back to Jina if Obscura fails
-                    if not page_data and jina:
-                        try:
-                            read_result = await jina.read(url)
-                            if read_result and (read_result.markdown or read_result.content):
-                                content = read_result.markdown or read_result.content
-                            else:
-                                continue
-                            if content:
-                                page_data = {"content": content[:15000]}
-                        except (ValueError, AttributeError, RuntimeError):
-                            page_data = None
+    def _build_matrix_from_dossiers(
+        self,
+        dossiers: list[CompetitorDossier],
+        region: str,
+    ) -> dict[str, dict[str, str]]:
+        """Aggregate the 7-dimension competitor matrix from dossiers.
 
-                    if page_data:
-                        if competitor not in self._scraped_pages:
-                            self._scraped_pages[competitor] = {}
-                        self._scraped_pages[competitor][page_type] = page_data
+        Pure function — no LLM call. Each cell cites the dossier's evidence
+        URLs so downstream synthesis stays sourced.
+        """
+        matrix: dict[str, dict[str, str]] = {}
+        for d in dossiers:
+            cite = f" [source: {', '.join(d.evidence_urls[:2])}]" if d.evidence_urls else ""
+            pricing = ", ".join(d.pricing_tiers) or "Unknown"
+            funding = "Unknown"
+            if d.funding_stage or d.total_raised:
+                funding = " ".join(
+                    part for part in (d.funding_stage, d.total_raised) if part
+                )
+            partnerships = ", ".join(d.key_partnerships) or "Unknown"
+            moat = "; ".join(d.moat_signals) or "Unknown"
+            matrix[d.name] = {
+                "product_features": (moat if moat != "Unknown" else "Unknown") + cite,
+                "pricing": pricing + cite,
+                "target_customer": "Unknown" + cite,
+                "geographic_coverage": (region or "Unknown") + cite,
+                "funding_stage": funding + cite,
+                "headcount": (d.headcount or "Unknown") + cite,
+                "key_partnerships": partnerships + cite,
+            }
+        return matrix
 
-                        self._sources.append(Source(
-                            id=f"src_{len(self._sources):03d}",
-                            title=f"{competitor}, {page_type} page",
-                            url=url,
-                            credibility=SourceCredibility.BLOG,
-                            key_data=content[:500],
-                        ))
-
-    async def _find_competitor_website(self, competitor_name: str) -> str:
-        """Find a competitor's website URL using SearxNG."""
-        try:
-            searxng = self.get_tool(ToolName.SEARXNG)
-            results = await searxng.search(f"{competitor_name} official website", max_results=3)
-            for r in results:
-                url = r.get("url", "")
-                if isinstance(url, str) and url and not any(
-                    blocked in url
-                    for blocked in ["linkedin.com", "crunchbase.com", "bloomberg.com"]
-                ):
-                    return url
-        except (ValueError, AttributeError, RuntimeError):
-            pass
-        return ""
+    def _build_moats_from_dossiers(
+        self,
+        dossiers: list[CompetitorDossier],
+    ) -> list[KeyFinding]:
+        """Aggregate Hamilton-Helmer moat signals from dossiers (no LLM call)."""
+        findings: list[KeyFinding] = []
+        for d in dossiers:
+            if not d.moat_signals and not d.funding_stage:
+                continue
+            content = (
+                f"Moat signals: {'; '.join(d.moat_signals) or 'none observed'}. "
+                f"Funding: {d.funding_stage or 'unknown'} "
+                f"({d.total_raised or 'amount unknown'}). "
+                f"Headcount: {d.headcount or 'unknown'}."
+            )
+            findings.append(KeyFinding(
+                id=f"finding_{uuid.uuid4().hex[:8]}",
+                agent=self.name.value,
+                finding_type="moat_assessment",
+                title=f"Moat Assessment, {d.name}",
+                content=content,
+                confidence=ConfidenceLevel.MEDIUM,
+                implications="defensible" if d.moat_signals else "eroding",
+                sources=[
+                    Source(
+                        id=f"src_{uuid.uuid4().hex[:6]}",
+                        title=f"{d.name} evidence",
+                        url=url,
+                        credibility=SourceCredibility.NEWS,
+                    )
+                    for url in d.evidence_urls[:3]
+                ],
+            ))
+        return findings
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 3: Pull historical snapshots (Wayback)
@@ -606,84 +650,12 @@ class CompetitiveIntel(BaseAgent):
     # ─────────────────────────────────────────────────────────────────────
     # Step 4: Build competitor matrix
     # ─────────────────────────────────────────────────────────────────────
-
-    async def _build_competitor_matrix(
-        self,
-        competitors: list[str],
-        scraped_data: dict[str, dict[str, Any]],
-        search_results: list[dict[str, Any]],
-    ) -> dict[str, dict[str, str]]:
-        """Build a structured competitor comparison matrix.
-
-        7 dimensions: product features, pricing, target customer, geographic
-        coverage, funding stage, headcount, key partnerships.
-        Each cell must cite a source.
-        """
-        # Prepare scraped data summary
-        data_summary = ""
-        for comp, pages in scraped_data.items():
-            for page_type, page_data in pages.items():
-                content = page_data.get("content", "")[:500] if isinstance(page_data, dict) else str(page_data)[:500]
-                data_summary += f"\n{comp}, {page_type}: {content}\n"
-
-        search_summary = "\n".join(
-            f"- {r['title']}: {r.get('snippet', '')[:150]}"
-            for r in search_results[:10]
-        )
-
-        prompt = (
-            "You are the Competitive Intelligence analyst building a competitor matrix.\n\n"
-            f"Competitors: {', '.join(competitors[:10])}\n\n"
-            f"Scraped website data:\n{data_summary[:3000]}\n\n"
-            f"Search results:\n{search_summary[:2000]}\n\n"
-            "Build a competitor matrix with these 7 dimensions:\n"
-            "1. Product features (key features, differentiation)\n"
-            "2. Pricing (price range, model, subscription/one-time/usage-based)\n"
-            "3. Target customer (SMB/mid-market/enterprise, industry vertical)\n"
-            "4. Geographic coverage (regions/countries served)\n"
-            "5. Funding stage (bootstrapped/seed/A/B/C/IPO/revenue-funded)\n"
-            "6. Headcount (approximate employee count)\n"
-            "7. Key partnerships (integrations, channel partners, alliances)\n\n"
-            "For each cell, include the value and source. If unknown, say 'Unknown'.\n\n"
-            "Return JSON:\n"
-            "{\n"
-            '  "competitor1": {\n'
-            '    "product_features": "value [source]",\n'
-            '    "pricing": "value [source]",\n'
-            '    "target_customer": "value [source]",\n'
-            '    "geographic_coverage": "value [source]",\n'
-            '    "funding_stage": "value [source]",\n'
-            '    "headcount": "value [source]",\n'
-            '    "key_partnerships": "value [source]"\n'
-            '  },\n'
-            '  "competitor2": { ... }\n'
-            "}\n"
-        )
-
-        response = await self._llm_complete(
-            user_prompt=prompt,
-            urgency=TaskUrgency.NORMAL,
-            temperature=0.3,
-            response_format={"type": "json_object"},
-        )
-
-        if not response.success or not response.content:
-            return {}
-
-        try:
-            data = json.loads(response.content)
-            if not isinstance(data, dict):
-                return {}
-            return {
-                str(competitor): {
-                    str(dimension): str(value)
-                    for dimension, value in details.items()
-                }
-                for competitor, details in data.items()
-                if isinstance(details, dict)
-            }
-        except (json.JSONDecodeError, ValueError):
-            return {}
+    #
+    # The competitor matrix is now a PURE aggregation of the per-competitor
+    # CompetitorDossiers (see _build_matrix_from_dossiers above), not an extra
+    # LLM call. The previous LLM-backed _build_competitor_matrix was removed:
+    # its only inputs were the (now-deleted) scraped pages, and rebuilding it
+    # here would duplicate work the sub-agents already did.
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 5: Assess moats (Hamilton Helmer framework)
@@ -1073,62 +1045,11 @@ class CompetitiveIntel(BaseAgent):
     # ─────────────────────────────────────────────────────────────────────
     # Sub-agent spawning for parallel competitor data collection
     # ─────────────────────────────────────────────────────────────────────
-
-    async def _spawn_competitor_sub_agents(
-        self,
-        competitors: list[str],
-    ) -> list[KeyFinding]:
-        """Spawn up to 3 sub-agents for parallel competitor data collection.
-
-        Per §4.4, Agent 4:
-        - Sub-agent A: Scrape [competitor1] pricing page (MICRO, Obscura)
-        - Sub-agent B: Scrape [competitor2] pricing page (MICRO, Obscura)
-        - Sub-agent C: Find [competitor3] funding/headcount (FAST, SearxNG + Jina)
-        """
-        if len(competitors) < 3:
-            return []
-
-        sub_specs = [
-            SubAgentSpec(
-                question=f"Scrape {competitors[0]} pricing page, extract pricing tiers, features per tier, and any discounts",
-                parent_agent=self.name,
-                model_tier=ModelTier.STANDARD,
-                tools=[ToolName.OBSCURA],
-                findings_model="KeyFinding",
-                timeout_seconds=600,
-                context={"competitor": competitors[0], "url": self._competitor_urls.get(competitors[0], "")},
-            ),
-            SubAgentSpec(
-                question=f"Scrape {competitors[1]} pricing page, extract pricing tiers, features per tier, and any discounts",
-                parent_agent=self.name,
-                model_tier=ModelTier.STANDARD,
-                tools=[ToolName.OBSCURA],
-                findings_model="KeyFinding",
-                timeout_seconds=600,
-                context={"competitor": competitors[1], "url": self._competitor_urls.get(competitors[1], "")},
-            ),
-            SubAgentSpec(
-                question=f"Find {competitors[2]} funding stage, total raised, headcount, and key investors",
-                parent_agent=self.name,
-                model_tier=ModelTier.STANDARD,
-                tools=[ToolName.SEARXNG, ToolName.JINA],
-                findings_model="KeyFinding",
-                timeout_seconds=600,
-                context={"competitor": competitors[2]},
-            ),
-        ]
-
-        all_findings: list[KeyFinding] = []
-
-        results = await asyncio.gather(
-            *(self._spawn_sub_agent(spec) for spec in sub_specs),
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, list):
-                all_findings.extend(result)
-
-        return all_findings
+    #
+    # The rewritten per-competitor depth sub-agent spawner lives in Step 2
+    # (see _spawn_competitor_sub_agents above). It spawns one isolated
+    # CompetitorDossier sub-agent per competitor (up to 5) instead of the old
+    # fixed 3-sub-agent scrape pattern, and returns (dossiers, gaps).
 
     # ─────────────────────────────────────────────────────────────────────
     # Confidence calibration
@@ -1164,17 +1085,18 @@ class CompetitiveIntel(BaseAgent):
         engagement_id: str = "",
         context: dict[str, Any] | None = None,
     ) -> CompetitiveLandscape:
-        """Execute the Competitive Intelligence 8-step methodology.
+        """Execute the rewritten Competitive Intelligence methodology (§4.4).
 
-        Steps (§4.4, Agent 4):
-        1. Identify all competitors in the space (SearxNG)
-        2. Scrape each competitor's website for product/pricing/team info (Obscura)
-        3. Pull historical snapshots for trend analysis (Wayback)
-        4. Build competitor matrix
-        5. Assess moats for top 5 competitors
-        6. Create strategic group map
-        7. Create positioning map
-        8. Identify white space opportunities
+        Pipeline (replaces the fragile two-stage "plan queries -> web search ->
+        strict integer-ID judge" collapse vector):
+        1. Resolve the arena (sector + region + engagement entity).
+        2. STRONG-tier LLM names the 3-5 most DIRECT competitors (retried once).
+        3. One isolated sub-agent per competitor builds a CompetitorDossier.
+        4. Build competitor matrix from dossiers (pure aggregation).
+        5. Assess moats from dossiers (pure aggregation, optional light synthesis).
+        6. Create strategic group map.
+        7. Create positioning map.
+        8. Identify white space opportunities.
         """
         self._question = question or self._question
         self._engagement_id = engagement_id or self._engagement_id
@@ -1188,102 +1110,124 @@ class CompetitiveIntel(BaseAgent):
             f"Starting competitive intelligence: {self._question[:80]}",
         )
 
-        # Step 1: Identify all competitors
-        await self._transition(AgentState.WORKING, "Step 1: Identifying competitors (SearxNG)")
-        self._search_results = await self._identify_competitors(self._question)
+        # Step 1: Resolve the arena (sector + region + engagement entity)
+        arena = self._resolve_arena()
+        self._arena = arena
+        sector, region = arena["sector"], arena["region"]
+
+        # Step 1 (linchpin): STRONG-tier competitor naming
+        await self._transition(AgentState.WORKING, "Step 1: Naming direct competitors (STRONG tier)")
+        named = await self._name_competitors(arena)
+        self._competitor_names = [c["name"] for c in named]
 
         if not self._competitor_names:
+            # True naming failure (transport/LLM). ONLY here is "zero
+            # competitors" an error. A thin market is NOT a gap (see below).
             await self._escalate(
-                issue="No competitors identified from search, publishing gap finding",
+                issue="Competitor naming returned no companies (STRONG tier call failed)",
                 suggested_action="Proceed with degraded analysis; flag data gap in report",
             )
             gap_finding = KeyFinding(
                 id=f"finding_{uuid.uuid4().hex[:8]}",
                 agent=self.name.value,
                 finding_type="competitive_gap",
-                title="Competitive analysis gap, no competitors identified",
+                title="Competitive analysis gap — no competitors named",
                 content=(
-                    f"No competitors could be identified for the question: "
-                    f"'{self._question[:120]}'. This is a data-availability gap. "
-                    f"Sources checked: {len(self._sources)}."
+                    f"STRONG-tier naming could not identify any direct competitors for "
+                    f"'{self._question[:120]}' in sector '{sector}'"
+                    f"{(' region ' + region) if region else ''}. "
+                    f"This is a transport/LLM failure, not a thin market."
                 ),
                 confidence=ConfidenceLevel.LOW,
                 sources=self._sources[:3],
             )
             await self._publish_finding(gap_finding)
             return CompetitiveLandscape(
-                competitors=[],
+                competitors=[gap_finding],
                 competitor_matrix={},
                 confidence=ConfidenceLevel.LOW,
                 sources=self._sources,
             )
 
-        # Step 2: Scrape competitor websites
+        # Thin market handling: fewer than 3 is a white-space signal, not a gap.
+        if len(self._competitor_names) < 3:
+            await self._transition(
+                AgentState.WORKING,
+                f"Thin market: only {len(self._competitor_names)} direct competitor(s) named — "
+                f"treating as white-space candidate",
+            )
+
+        # Step 2: one isolated depth sub-agent per competitor (up to 5)
         await self._transition(
-            AgentState.WORKING,
-            f"Step 2: Scraping {len(self._competitor_names)} competitor websites (Obscura)",
+            AgentState.SUB_AGENT_SPAWNED,
+            f"Spawning {min(len(named), 5)} competitor dossier sub-agents",
         )
-        await self._scrape_competitor_sites(self._competitor_names)
+        dossiers, gaps = await self._spawn_competitor_sub_agents(named, sector, region)
+        self._competitor_dossiers = dossiers
+        self._sub_agent_findings = gaps
 
-        # Spawn sub-agents for parallel data collection
-        await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning competitor data collection "
-            "sub-agents")
-        sub_findings = await self._spawn_competitor_sub_agents(self._competitor_names)
-        self._sub_agent_findings = sub_findings
+        # Index websites for Wayback and collect dossier sources
+        for d in dossiers:
+            if d.website:
+                self._competitor_urls[d.name] = d.website
+            for url in d.evidence_urls:
+                self._sources.append(Source(
+                    id=f"src_{len(self._sources):03d}",
+                    title=f"{d.name} evidence",
+                    url=url,
+                    credibility=SourceCredibility.NEWS,
+                ))
 
-        await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
-
-        # Step 3: Pull historical snapshots
+        # Step 3: Pull historical snapshots (Wayback) for dossier websites
         await self._transition(AgentState.WORKING, "Step 3: Pulling historical snapshots (Wayback)")
         await self._pull_historical_snapshots(self._competitor_names)
 
-        # Step 4: Build competitor matrix
+        # Step 4: Build competitor matrix from dossiers (pure aggregation)
         await self._transition(AgentState.WORKING, "Step 4: Building competitor matrix")
-        competitor_matrix = await self._build_competitor_matrix(
-            self._competitor_names, self._scraped_pages, self._search_results,
-        )
+        competitor_matrix = self._build_matrix_from_dossiers(dossiers, region)
 
-        # Step 5: Assess moats for top 5 competitors
-        await self._transition(AgentState.WORKING, "Step 5: Assessing moats (Hamilton Helmer "
-            "framework)")
-        moat_assessments = await self._assess_moats(
-            self._competitor_names[:5], competitor_matrix, self._scraped_pages,
-        )
+        # Step 5: Assess moats from dossiers (pure aggregation) + optional synthesis
+        await self._transition(AgentState.WORKING, "Step 5: Assessing moats (Hamilton Helmer)")
+        moat_assessments = self._build_moats_from_dossiers(dossiers)
+        if not moat_assessments and dossiers:
+            # Fall back to the LLM synthesis fed by the matrix when dossiers
+            # carried no explicit moat signals.
+            moat_assessments = await self._assess_moats(
+                self._competitor_names[:5], competitor_matrix, {},
+            )
 
-        # Step 6: Create strategic group map
+        # Step 6/7/8: strategic group map, positioning map, white space (LLM synthesis)
         await self._transition(AgentState.WORKING, "Step 6: Creating strategic group map")
         strategic_groups = await self._create_strategic_group_map(
             self._competitor_names, competitor_matrix,
         )
-
-        # Step 7: Create positioning map
         await self._transition(AgentState.WORKING, "Step 7: Creating positioning map")
         positioning_map = await self._create_positioning_map(
             self._competitor_names, competitor_matrix,
         )
-
-        # Step 8: Identify white space
-        await self._transition(AgentState.WORKING, "Step 8: Identifying white space opportunities")
+        await self._transition(AgentState.WORKING, "Step 8: Identifying white space")
         white_space = await self._identify_white_space(
             positioning_map, strategic_groups, competitor_matrix,
         )
+        # A thin competitive field is itself a white-space signal.
+        if len(self._competitor_names) < 3:
+            white_space = [
+                f"Thin competitive field ({len(self._competitor_names)} direct competitor(s) "
+                f"named) — potential white-space / nascent-market opportunity."
+            ] + white_space
 
-        # Analyze pricing trends from Wayback data
+        # Analyze pricing trends from Wayback snapshots + dossier pricing
         await self._transition(AgentState.WORKING, "Analyzing pricing trends from historical data")
         pricing_trends = await self._analyze_pricing_trends(
             self._competitor_names, self._historical_snapshots,
         )
 
-        # Build competitor profiles as KeyFindings
+        # Build competitor profiles as KeyFindings from matrix (fallback to name)
         competitor_findings: list[KeyFinding] = []
-        for comp in self._competitor_names[:10]:
+        for comp in self._competitor_names:
             matrix_data = competitor_matrix.get(comp, {})
-            competitor_findings.append(KeyFinding(
-                id=f"finding_{uuid.uuid4().hex[:8]}",
-                agent=self.name.value,
-                finding_type="competitor_profile",
-                title=f"Competitor Profile, {comp}",
-                content=(
+            if matrix_data:
+                profile_content = (
                     f"Features: {matrix_data.get('product_features', 'Unknown')}. "
                     f"Pricing: {matrix_data.get('pricing', 'Unknown')}. "
                     f"Target: {matrix_data.get('target_customer', 'Unknown')}. "
@@ -1291,24 +1235,36 @@ class CompetitiveIntel(BaseAgent):
                     f"Funding: {matrix_data.get('funding_stage', 'Unknown')}. "
                     f"Headcount: {matrix_data.get('headcount', 'Unknown')}. "
                     f"Partnerships: {matrix_data.get('key_partnerships', 'Unknown')}."
-                ),
+                )
+            else:
+                profile_content = (
+                    f"Named as a direct competitor but no dossier was collected "
+                    f"(its sub-agent may have failed or returned no validated data)."
+                )
+            competitor_findings.append(KeyFinding(
+                id=f"finding_{uuid.uuid4().hex[:8]}",
+                agent=self.name.value,
+                finding_type="competitor_profile",
+                title=f"Competitor Profile, {comp}",
+                content=profile_content,
                 confidence=ConfidenceLevel.MEDIUM,
                 sources=[s for s in self._sources if comp.lower() in s.title.lower()][:3],
             ))
 
-        # Calibrate confidence
+        # Calibrate confidence (dossier evidence count replaces scraped-page count)
+        dossier_evidence = sum(len(d.evidence_urls) for d in dossiers)
         confidence = self._calibrate_confidence(
             competitors_found=len(self._competitor_names),
             sources_count=len(self._sources),
-            scraped_pages_count=sum(len(pages) for pages in self._scraped_pages.values()),
+            scraped_pages_count=dossier_evidence,
             has_historical_data=bool(self._historical_snapshots),
         )
 
-        # Produce CompetitiveLandscape model
-        await self._transition(AgentState.WORKING, "Producing CompetitiveLandscape model")
+        # Everything the Synthesis Lead / Fact Checker should see.
+        all_findings = competitor_findings + moat_assessments + pricing_trends + gaps
 
         landscape = CompetitiveLandscape(
-            competitors=competitor_findings,
+            competitors=all_findings,
             competitor_matrix=competitor_matrix,
             moat_assessments=moat_assessments,
             strategic_groups=strategic_groups,
@@ -1320,7 +1276,7 @@ class CompetitiveIntel(BaseAgent):
         )
 
         # Publish findings to bus for Synthesis Lead and Fact Checker
-        for finding in competitor_findings + moat_assessments + pricing_trends:
+        for finding in all_findings:
             await self._publish_finding(finding)
 
         # Publish the full CompetitiveLandscape as a finding

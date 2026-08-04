@@ -592,6 +592,7 @@ class BaseAgent(ABC):
         max_tokens: int | None = None,
         response_format: dict[str, str] | None = None,
         conversation_history: list[dict[str, str]] | None = None,
+        tier: ModelTier | None = None,
     ) -> RouterResponse:
         """Request an LLM completion at this agent's model tier.
 
@@ -611,6 +612,11 @@ class BaseAgent(ABC):
         base_prompt = system_prompt_override or self.system_prompt
         system = compose_agent_prompt(base_prompt)
 
+        # Allow a single call to borrow a higher (or lower) tier than the
+        # agent's own — e.g. the Competitive Intelligence agent runs on
+        # STANDARD but borrows STRONG once for the competitor-naming decision.
+        resolved_tier = tier or self.model_tier
+
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         if conversation_history:
             messages.extend(conversation_history)
@@ -618,18 +624,18 @@ class BaseAgent(ABC):
 
         await self._transition(
             AgentState.WAITING,
-            f"Requesting {self.model_tier.value} tier completion",
+            f"Requesting {resolved_tier.value} tier completion",
         )
 
         # D-17: every agent call owns an explicit output ceiling. Leaving this
         # as None delegates length to provider defaults, which are often only a
         # few hundred tokens and silently cap substantive analysis.
-        resolved_max_tokens = max_tokens or TIER_OUTPUT_BUDGET.get(self.model_tier, 4_000)
+        resolved_max_tokens = max_tokens or TIER_OUTPUT_BUDGET.get(resolved_tier, 4_000)
         if resolved_max_tokens <= 0:
             resolved_max_tokens = 4_000
 
         response = await self.router.complete(
-            tier=self.model_tier,
+            tier=resolved_tier,
             messages=messages,
             agent_name=self.name.value,
             urgency=urgency,
@@ -958,7 +964,7 @@ class BaseAgent(ABC):
     # Sub-Agent Spawning (§4.7)
     # ─────────────────────────────────────────────────────────────────────
 
-    async def _spawn_sub_agent(self, spec: SubAgentSpec) -> list[KeyFinding]:
+    async def _spawn_sub_agent(self, spec: SubAgentSpec) -> list[Any]:
         """Spawn a junior sub-agent for a focused sub-question.
 
         Sub-agents handle context isolation (§4.7):

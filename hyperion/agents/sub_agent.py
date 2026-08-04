@@ -54,8 +54,18 @@ from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import LLMRouter, get_router
 from hyperion.schemas.agents import SubAgentSpec
-from hyperion.schemas.models import KeyFinding
+from hyperion.schemas.models import CompetitorDossier, KeyFinding
 from hyperion.tools.content_selector import select_content
+
+# Maps the `findings_model` string in a SubAgentSpec to the Pydantic class the
+# sub-agent must produce. The default (KeyFinding) preserves the historical
+# behaviour; richer models let a parent agent receive structured output
+# (e.g. a CompetitorDossier) instead of free-text KeyFindings, so downstream
+# aggregation can be pure functions rather than more LLM calls.
+_FINDINGS_MODEL_REGISTRY: dict[str, type] = {
+    "KeyFinding": KeyFinding,
+    "CompetitorDossier": CompetitorDossier,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +141,41 @@ class SubAgentRunner:
     @property
     def tools(self) -> list[str]:
         return [t.value for t in self.spec.tools]
+
+    def _findings_model_class(self) -> type:
+        """Resolve the Pydantic class named by ``spec.findings_model``.
+
+        Falls back to KeyFinding for any unknown/model-less spec, so the
+        historical behaviour is fully preserved.
+        """
+        return _FINDINGS_MODEL_REGISTRY.get(self.spec.findings_model, KeyFinding)
+
+    def _findings_model_hint(self) -> str:
+        """Prompt appendix describing the expected structured output schema."""
+        model_cls = self._findings_model_class()
+        if model_cls is KeyFinding:
+            return ""
+        if model_cls is CompetitorDossier:
+            return (
+                "\n\n10. DO NOT return a KeyFinding. Instead return a SINGLE JSON "
+                "object matching the CompetitorDossier schema:\n"
+                "  - name: competitor's name (string)\n"
+                "  - website: primary website URL (string or null)\n"
+                "  - pricing_tiers: array of strings describing pricing plans\n"
+                "  - funding_stage: string (bootstrapped/seed/A/B/C/IPO/revenue-funded)\n"
+                "  - total_raised: string (e.g. '$120M') or null\n"
+                "  - headcount: string (approximate employee count) or null\n"
+                "  - key_partnerships: array of strings\n"
+                "  - moat_signals: array of strings describing defensibility signals\n"
+                "  - evidence_urls: array of source URLs backing the dossier\n"
+                "Return ONLY that JSON object (no findings wrapper)."
+            )
+        # Generic fallback for any future richer model: name the model and let
+        # the model follow its own schema by class name.
+        return (
+            f"\n\n10. Return a SINGLE JSON object matching the {model_cls.__name__} "
+            "schema (no findings wrapper)."
+        )
 
     def _get_tool(self, tool_name: str) -> Any:
         """Get a tool instance by name.
@@ -297,6 +342,7 @@ class SubAgentRunner:
             "(one of: peer_reviewed, government, industry_report, news, blog, social_media)\n"
             "  - confidence: 'high', 'medium', or 'low'\n"
             "  - gaps: array of strings describing what you couldn't find"
+            + self._findings_model_hint()
         )
 
     def _build_user_prompt(self) -> str:
@@ -1176,7 +1222,7 @@ class SubAgentRunner:
         """Check if this sub-agent has access to a specific tool."""
         return any(t.value == tool_name for t in self.spec.tools)
 
-    async def _analyze_and_produce_findings(self, raw_data: str) -> list[KeyFinding]:
+    async def _analyze_and_produce_findings(self, raw_data: str) -> list[Any]:
         """Analyze raw data and produce structured KeyFinding objects.
 
         This is the analysis phase of the sub-agent lifecycle. The LLM
@@ -1230,6 +1276,19 @@ class SubAgentRunner:
         if not response.success or not response.content:
             return []
 
+        model_cls = self._findings_model_class()
+
+        # Richer structured models (e.g. CompetitorDossier) are returned as a
+        # single JSON object (or a wrapping dict/list), not the KeyFinding
+        # schema. Validate directly and return them so the parent agent can
+        # aggregate without another LLM call.
+        if model_cls is not KeyFinding:
+            try:
+                data = json.loads(response.content)
+            except (json.JSONDecodeError, ValueError):
+                return []
+            return self._parse_rich_model(data, model_cls)
+
         try:
             data = json.loads(response.content)
 
@@ -1257,6 +1316,37 @@ class SubAgentRunner:
         except (json.JSONDecodeError, ValueError):
             return []
 
+    def _parse_rich_model(self, data: Any, model_cls: type) -> list[Any]:
+        """Extract and validate richer findings-model objects from parsed JSON.
+
+        A sub-agent asked for a CompetitorDossier returns a single JSON object
+        (possibly wrapped in a dict keyed by the model name, "dossiers", etc.,
+        or as a one-element list). Normalise all of those into a list of
+        validated model instances; malformed items are dropped, never invented.
+        """
+        if isinstance(data, list):
+            items: list[Any] = data
+        elif isinstance(data, dict):
+            for key in (model_cls.__name__, "dossiers", "items", "results", "findings"):
+                if key in data and isinstance(data[key], list):
+                    items = data[key]
+                    break
+            else:
+                # A bare dossier object (top-level dict with the model's fields).
+                items = [data]
+        else:
+            return []
+
+        parsed: list[Any] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                parsed.append(model_cls.model_validate(item))
+            except (ValueError, TypeError):
+                continue
+        return parsed
+
     def gap_finding(self, reason: str, elapsed: float) -> KeyFinding:
         """Build the explicit evidence gap returned on any research failure."""
         from hyperion.schemas.models import ConfidenceLevel
@@ -1277,7 +1367,7 @@ class SubAgentRunner:
             gaps=[self.spec.question],
         )
 
-    async def run(self) -> list[KeyFinding]:
+    async def run(self) -> list[Any]:
         """Execute the sub-agent research task.
 
         This is the full sub-agent lifecycle:
