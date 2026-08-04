@@ -1141,7 +1141,38 @@ class WorkflowEngine:
             if isinstance(output, dict) and isinstance(output.get("findings"), list) \
                     and len(output["findings"]) == 0:
                 return True
+            # L3 fix: a specialist that returned only research_gap findings
+            # (every sub-agent timed out / found nothing) has effectively zero
+            # real findings. Surface it so the reframer re-dispatches a
+            # broadened variant instead of shipping an empty gap as content.
+            real = self._count_real_findings(output)
+            if real is not None and real == 0:
+                return True
         return False
+
+    def _count_real_findings(self, output: Any) -> "int | None":
+        """L3 helper: count non-gap findings in a task output.
+
+        Returns the number of findings whose ``finding_type`` is not
+        ``research_gap``, or ``None`` when the output shape can't be
+        inspected (so the caller won't force a spurious reframe).
+        """
+        findings: Any = None
+        if isinstance(output, list):
+            findings = output
+        elif isinstance(output, dict):
+            findings = output.get("findings")
+        else:
+            findings = getattr(output, "findings", None)
+        if findings is None or not isinstance(findings, (list, tuple)):
+            return None
+        try:
+            return sum(
+                1 for f in findings
+                if getattr(f, "finding_type", None) != "research_gap"
+            )
+        except Exception:  # noqa: BLE001 - unknown finding shape
+            return None
 
     def _failure_signal_for(self, task: TaskNode) -> str:
         """L3: classify a task's failure into a reframer signal string."""

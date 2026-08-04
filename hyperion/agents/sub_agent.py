@@ -407,182 +407,209 @@ class SubAgentRunner:
             raw_data.extend(extracted)
             errors.extend(extract_errors)
 
-        # ── DATA SOURCES (unchanged) ────────────────────────────────────
-
-        # Historical data, Wayback
-        if self._has_tool("wayback"):
-            try:
-                wayback = self._get_tool("wayback")
-                snapshots = await wayback.search(self._condense_query(self.spec.question))
-                if snapshots:
-                    raw_data.append(f"Historical snapshots:\n{snapshots}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"Wayback: {e!s:.80}")
-
-        # Financial data, Alpha Vantage
-        if self._has_tool("alpha_vantage"):
-            try:
-                av = self._get_tool("alpha_vantage")
-                financials = await av.search(self._condense_query(self.spec.question))
-                if financials:
-                    raw_data.append(f"Financial data:\n{financials}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"AlphaVantage: {e!s:.80}")
-
-        # Macro data, FRED
-        if self._has_tool("fred"):
-            try:
-                fred = self._get_tool("fred")
-                macro = await fred.search(self._condense_query(self.spec.question))
-                if macro:
-                    raw_data.append(f"Macro data:\n{macro}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"FRED: {e!s:.80}")
-
-        # ── Phase 2 Data Sources ────────────────────────────────────────
-
-        # SEC EDGAR, financial filings
-        if self._has_tool("sec_edgar"):
-            try:
-                sec = self._get_tool("sec_edgar")
-                filings = await sec.search_full_text(self._condense_query(self.spec.question), limit=10)
-                if filings:
-                    formatted = "\n".join(
-                        f"- {f.company_name} ({f.filing_type}, {f.filing_date}): {f.description[:200]}"
-                        for f in filings[:10]
-                    )
-                    raw_data.append(f"SEC EDGAR filings:\n{formatted}")
-                    # Fetch most recent filing content
-                    content = await sec.get_filing_content(filings[0])
-                    if content and content.content:
-                        # Fix 2.2: a 10-K is the worst case for a blind
-                        # head-slice anywhere in this file. The first 15,000
-                        # chars of one are the cover page, the cross-reference
-                        # table and the opening of Item 1A risk factors, while
-                        # the segment revenue tables and the MD&A a financial
-                        # analyst actually needs sit tens of thousands of
-                        # characters further in.
-                        body = select_content(
-                            content.content,
-                            self.spec.question,
-                            budget_chars=SEC_FILING_BUDGET_CHARS,
-                        )
-                        raw_data.append(f"SEC filing content ({filings[0].filing_type} {filings[0].company_name}):\n{body}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"SEC EDGAR: {e!s:.80}")
-
-        # Semantic Scholar, academic papers
-        if self._has_tool("semantic_scholar"):
-            try:
-                ss = self._get_tool("semantic_scholar")
-                papers = await ss.search(self._condense_query(self.spec.question), limit=10, year_range="2020-")
-                if papers:
-                    formatted = "\n".join(
-                        f"- {p.title} ({p.year}, {p.venue}, citations={p.citation_count}): {p.abstract[:300]}"
-                        for p in papers[:10]
-                    )
-                    raw_data.append(f"Semantic Scholar papers:\n{formatted}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"SemanticScholar: {e!s:.80}")
-
-        # OpenAlex, scholarly works
-        if self._has_tool("open_alex"):
-            try:
-                oa = self._get_tool("open_alex")
-                works = await oa.search_works(self._condense_query(self.spec.question), limit=10)
-                if works:
-                    formatted = "\n".join(
-                        f"- {w.title} ({w.year}, cited_by={w.cited_by_count}): {w.abstract[:300]}"
-                        for w in works[:10]
-                    )
-                    raw_data.append(f"OpenAlex works:\n{formatted}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"OpenAlex: {e!s:.80}")
-
-        # World Bank, macro indicators
-        if self._has_tool("world_bank"):
-            try:
-                wb = self._get_tool("world_bank")
-                # Try GDP indicator as a general macro signal
-                indicator = await wb.get_indicator("gdp", country="all", date_range="2020:2024")
-                if indicator and indicator.data_points:
-                    formatted = "\n".join(
-                        f"- {dp.get('country', 'N/A')}: {dp.get('value', 'N/A')} ({dp.get('date', 'N/A')})"
-                        for dp in indicator.data_points[:15]
-                    )
-                    raw_data.append(f"World Bank data ({indicator.indicator_name}):\n{formatted}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"WorldBank: {e!s:.80}")
-
-        # Google Trends, demand signals
-        if self._has_tool("google_trends"):
-            try:
-                gt = self._get_tool("google_trends")
-                # Extract keywords from the condensed query
-                condensed = self._condense_query(self.spec.question)
-                keywords = condensed.split()[:3]
-                kw_list = [" ".join(keywords)]
-                trend = await gt.get_interest_over_time(kw_list, timeframe="today 12-m")
-                if trend and trend.interest_data:
-                    formatted = "\n".join(
-                        f"- {d.get('date', 'N/A')}: {d.get(' '.join(kw_list), 0)}"
-                        for d in trend.interest_data[:20]
-                    )
-                    raw_data.append(f"Google Trends interest ({', '.join(kw_list)}):\n{formatted}")
-                # Also get related rising queries
-                related = await gt.get_related_queries(kw_list[0], rising=True)
-                if related:
-                    rel_formatted = "\n".join(
-                        f"- {r.query} ({r.value})" for r in related[:10]
-                    )
-                    raw_data.append(f"Google Trends rising queries:\n{rel_formatted}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"GoogleTrends: {e!s:.80}")
-
-        # HackerNews, tech community sentiment
-        if self._has_tool("hackernews"):
-            try:
-                hn = self._get_tool("hackernews")
-                stories = await hn.search_stories(self._condense_query(self.spec.question), hits=15)
-                if stories:
-                    formatted = "\n".join(
-                        f"- {s.title} (points={s.points}, comments={s.num_comments}): {s.url}"
-                        for s in stories[:15]
-                    )
-                    raw_data.append(f"HackerNews stories:\n{formatted}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"HackerNews: {e!s:.80}")
-
-        # Reddit, community sentiment
-        if self._has_tool("reddit"):
-            try:
-                reddit = self._get_tool("reddit")
-                posts = await reddit.search_posts(
-                    self._condense_query(self.spec.question), sort="relevance", time_filter="year", limit=15
-                )
-                if posts:
-                    formatted = "\n".join(
-                        f"- [{p.subreddit}] {p.title} (upvote={p.upvote_ratio:.0%}, comments={p.num_comments})"
-                        for p in posts[:15]
-                    )
-                    raw_data.append(f"Reddit posts:\n{formatted}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"Reddit: {e!s:.80}")
-
-        # Second Brain, prior research
-        if self._has_tool("second_brain"):
-            try:
-                brain = self._get_tool("second_brain")
-                prior = await brain.search(self._condense_query(self.spec.question))
-                if prior:
-                    raw_data.append(f"Prior research from vault:\n{prior}")
-            except Exception as e:  # noqa: BLE001 - failure is recorded in the result
-                errors.append(f"SecondBrain: {e!s:.80}")
+        # ── DATA SOURCES (parallelized + per-tool capped) ────────────────
+        # fix (resilience): these tools used to run SEQUENTIALLY. With ~13
+        # tools each costing 30-120s, the sum blew the sub-agent's 5/10-minute
+        # wall-clock budget and produced the "Sub-agent timed out" field
+        # failures. They now run concurrently under a per-tool cap, so the
+        # block's wall time is bounded by the slowest single tool, not the sum.
+        # A capped source is dropped (not fatal) so one bad provider can never
+        # zero out the rest.
+        ds_raw, ds_errors = await self._gather_data_sources()
+        raw_data.extend(ds_raw)
+        errors.extend(ds_errors)
 
         if errors:
             raw_data.append(f"Tool errors encountered: {'; '.join(errors)}")
 
         return "\n\n---\n\n".join(raw_data) if raw_data else "No raw data available from tools."
+
+    # fix (resilience): the structured data-source tools below used to run
+    # SEQUENTIALLY. With ~13 tools each costing 30-120s, the sum blew the
+    # sub-agent's 5/10-minute wall-clock budget and produced the
+    # "Sub-agent timed out" field failures. They now run concurrently with a
+    # per-tool cap, so the block's wall time is bounded by the slowest single
+    # tool, not the sum. A capped source is dropped (not fatal) so one bad
+    # provider can never zero out the rest.
+    _DATA_SOURCE_TIMEOUT = 30
+
+    async def _gather_data_sources(self) -> tuple[list[str], list[str]]:
+        """Run the optional structured data-source tools concurrently.
+
+        Each source is dispatched together under a per-tool timeout so a
+        single slow/hung provider cannot consume the sub-agent's whole
+        budget. Returns ``(raw_data_blocks, errors)``.
+        """
+        raw: list[str] = []
+        errors: list[str] = []
+
+        async def _safe(label: str, coro: Any) -> Any:
+            try:
+                return await asyncio.wait_for(coro, timeout=self._DATA_SOURCE_TIMEOUT)
+            except asyncio.TimeoutError:
+                errors.append(f"{label}: timed out after {self._DATA_SOURCE_TIMEOUT}s")
+                return None
+            except Exception as e:  # noqa: BLE001 - one bad source must not break the rest
+                errors.append(f"{label}: {e!s:.80}")
+                return None
+
+        async def _src_wayback() -> "str | None":
+            wayback = self._get_tool("wayback")
+            snapshots = await wayback.search(self._condense_query(self.spec.question))
+            return f"Historical snapshots:\n{snapshots}" if snapshots else None
+
+        async def _src_alpha_vantage() -> "str | None":
+            av = self._get_tool("alpha_vantage")
+            financials = await av.search(self._condense_query(self.spec.question))
+            return f"Financial data:\n{financials}" if financials else None
+
+        async def _src_fred() -> "str | None":
+            fred = self._get_tool("fred")
+            macro = await fred.search(self._condense_query(self.spec.question))
+            return f"Macro data:\n{macro}" if macro else None
+
+        async def _src_sec_edgar() -> "str | None":
+            sec = self._get_tool("sec_edgar")
+            filings = await sec.search_full_text(
+                self._condense_query(self.spec.question), limit=10
+            )
+            if not filings:
+                return None
+            formatted = "\n".join(
+                f"- {f.company_name} ({f.filing_type}, {f.filing_date}): {f.description[:200]}"
+                for f in filings[:10]
+            )
+            out = f"SEC EDGAR filings:\n{formatted}"
+            content = await sec.get_filing_content(filings[0])
+            if content and content.content:
+                # Fix 2.2: a 10-K is the worst case for a blind head-slice
+                # anywhere in this file. The first 15,000 chars are the cover
+                # page / cross-reference table / opening of Item 1A, while the
+                # segment revenue tables and MD&A a financial analyst needs
+                # sit tens of thousands of characters further in.
+                body = select_content(
+                    content.content,
+                    self.spec.question,
+                    budget_chars=SEC_FILING_BUDGET_CHARS,
+                )
+                out += (
+                    f"\nSEC filing content ({filings[0].filing_type} "
+                    f"{filings[0].company_name}):\n{body}"
+                )
+            return out
+
+        async def _src_semantic_scholar() -> "str | None":
+            ss = self._get_tool("semantic_scholar")
+            papers = await ss.search(
+                self._condense_query(self.spec.question), limit=10, year_range="2020-"
+            )
+            if not papers:
+                return None
+            return "\n".join(
+                f"- {p.title} ({p.year}, {p.venue}, citations={p.citation_count}): {p.abstract[:300]}"
+                for p in papers[:10]
+            )
+
+        async def _src_open_alex() -> "str | None":
+            oa = self._get_tool("open_alex")
+            works = await oa.search_works(self._condense_query(self.spec.question), limit=10)
+            if not works:
+                return None
+            return "\n".join(
+                f"- {w.title} ({w.year}, cited_by={w.cited_by_count}): {w.abstract[:300]}"
+                for w in works[:10]
+            )
+
+        async def _src_world_bank() -> "str | None":
+            wb = self._get_tool("world_bank")
+            indicator = await wb.get_indicator("gdp", country="all", date_range="2020:2024")
+            if not (indicator and indicator.data_points):
+                return None
+            return "\n".join(
+                f"- {dp.get('country', 'N/A')}: {dp.get('value', 'N/A')} ({dp.get('date', 'N/A')})"
+                for dp in indicator.data_points[:15]
+            )
+
+        async def _src_google_trends() -> "str | None":
+            gt = self._get_tool("google_trends")
+            condensed = self._condense_query(self.spec.question)
+            keywords = condensed.split()[:3]
+            kw_list = [" ".join(keywords)]
+            parts: list[str] = []
+            trend = await gt.get_interest_over_time(kw_list, timeframe="today 12-m")
+            if trend and trend.interest_data:
+                parts.append(
+                    "\n".join(
+                        f"- {d.get('date', 'N/A')}: {d.get(' '.join(kw_list), 0)}"
+                        for d in trend.interest_data[:20]
+                    )
+                )
+            related = await gt.get_related_queries(kw_list[0], rising=True)
+            if related:
+                parts.append("\n".join(f"- {r.query} ({r.value})" for r in related[:10]))
+            return f"Google Trends ({', '.join(kw_list)}):\n" + "\n".join(parts) if parts else None
+
+        async def _src_hackernews() -> "str | None":
+            hn = self._get_tool("hackernews")
+            stories = await hn.search_stories(self._condense_query(self.spec.question), hits=15)
+            if not stories:
+                return None
+            return "\n".join(
+                f"- {s.title} (points={s.points}, comments={s.num_comments}): {s.url}"
+                for s in stories[:15]
+            )
+
+        async def _src_reddit() -> "str | None":
+            reddit = self._get_tool("reddit")
+            posts = await reddit.search_posts(
+                self._condense_query(self.spec.question),
+                sort="relevance",
+                time_filter="year",
+                limit=15,
+            )
+            if not posts:
+                return None
+            return "\n".join(
+                f"- [{p.subreddit}] {p.title} (upvote={p.upvote_ratio:.0%}, comments={p.num_comments})"
+                for p in posts[:15]
+            )
+
+        async def _src_second_brain() -> "str | None":
+            brain = self._get_tool("second_brain")
+            prior = await brain.search(self._condense_query(self.spec.question))
+            return f"Prior research from vault:\n{prior}" if prior else None
+
+        coros: list[Any] = []
+        if self._has_tool("wayback"):
+            coros.append(_safe("Wayback", _src_wayback()))
+        if self._has_tool("alpha_vantage"):
+            coros.append(_safe("AlphaVantage", _src_alpha_vantage()))
+        if self._has_tool("fred"):
+            coros.append(_safe("FRED", _src_fred()))
+        if self._has_tool("sec_edgar"):
+            coros.append(_safe("SEC EDGAR", _src_sec_edgar()))
+        if self._has_tool("semantic_scholar"):
+            coros.append(_safe("SemanticScholar", _src_semantic_scholar()))
+        if self._has_tool("open_alex"):
+            coros.append(_safe("OpenAlex", _src_open_alex()))
+        if self._has_tool("world_bank"):
+            coros.append(_safe("WorldBank", _src_world_bank()))
+        if self._has_tool("google_trends"):
+            coros.append(_safe("GoogleTrends", _src_google_trends()))
+        if self._has_tool("hackernews"):
+            coros.append(_safe("HackerNews", _src_hackernews()))
+        if self._has_tool("reddit"):
+            coros.append(_safe("Reddit", _src_reddit()))
+        if self._has_tool("second_brain"):
+            coros.append(_safe("SecondBrain", _src_second_brain()))
+
+        if coros:
+            results = await asyncio.gather(*coros)
+            for r in results:
+                if r:
+                    raw.append(r)
+
+        return raw, errors
 
     @staticmethod
     def _condense_query(question: str, max_len: int = 120) -> str:
