@@ -54,6 +54,7 @@ from hyperion.schemas.agents import (
     ToolName,
 )
 from hyperion.schemas.models import (
+    AnalysisGap,
     CompetitiveLandscape,
     ConfidenceLevel,
     KeyFinding,
@@ -1194,28 +1195,17 @@ class CompetitiveIntel(BaseAgent):
 
         if not self._competitor_names:
             await self._escalate(
-                issue="No competitors identified from search, publishing gap finding",
-                suggested_action="Proceed with degraded analysis; flag data gap in report",
+                issue="No competitors identified from search, raising AnalysisGap",
+                suggested_action="Trigger gap-closure loop to re-dispatch with refined query",
             )
-            gap_finding = KeyFinding(
-                id=f"finding_{uuid.uuid4().hex[:8]}",
-                agent=self.name.value,
-                finding_type="competitive_gap",
-                title="Competitive analysis gap, no competitors identified",
-                content=(
-                    f"No competitors could be identified for the question: "
-                    f"'{self._question[:120]}'. This is a data-availability gap. "
-                    f"Sources checked: {len(self._sources)}."
-                ),
-                confidence=ConfidenceLevel.LOW,
-                sources=self._sources[:3],
-            )
-            await self._publish_finding(gap_finding)
-            return CompetitiveLandscape(
-                competitors=[],
-                competitor_matrix={},
-                confidence=ConfidenceLevel.LOW,
-                sources=self._sources,
+            raise AnalysisGap(
+                id=f"gap_{uuid.uuid4().hex[:8]}",
+                section_id="competitive_landscape",
+                agent=AgentName.COMPETITIVE_INTEL,
+                field="datapoint",
+                question=f"No competitors could be identified for: {self._question[:120]}",
+                attempts=0,
+                resolved=False,
             )
 
         # Step 2: Scrape competitor websites
