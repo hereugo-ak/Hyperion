@@ -157,9 +157,19 @@ class ProviderHealth:
 
     The failover handler uses this to decide when to skip a provider:
     - 429 -> mark cooldown (60s)
-    - 500/503 -> health check, circuit breaker (3 failures -> 5-min cooldown)
+    - 500/503 -> health check, circuit breaker (3 failures -> exponential cooldown)
     - Timeout/network error -> degraded; 3 consecutive failures open a cooldown
     - Authentication error -> unavailable until credentials are corrected
+
+    L1 fix: the circuit-breaker cooldown is now exponential rather than a
+    flat 300s. The old flat cooldown meant one network blip (three failures
+    of any kind, in sequence) took the provider offline for a full 5
+    minutes. Since NVIDIA, Mistral and Groq share the same egress network
+    path, one blip could — and did — trip all three simultaneously. The
+    schedule below starts short (30s) and grows to 300s so a transient blip
+    is a 30s inconvenience, not a 5-minute outage; only a persistent
+    outage escalates to the full ceiling. ``circuit_trips`` counts full
+    trips so the schedule can climb across repeated recoveries.
     """
 
     status: ProviderStatus = ProviderStatus.HEALTHY
@@ -171,11 +181,27 @@ class ProviderHealth:
     total_errors: int = 0
     total_429s: int = 0
     total_timeouts: int = 0
+    # L1 fix: cumulative count of circuit-breaker trips this process. Drives
+    # the exponential backoff schedule in ``trip_circuit_breaker``. Reset by
+    # a successful request via ``record_success``.
+    circuit_trips: int = 0
+    # L1 fix: gate for the single "micro-probe" recovery attempt allowed per
+    # cooldown window. See ``allow_micro_probe`` / ``_micro_probe_ready``.
+    # Reset when the circuit closes on its own or on a successful probe.
+    _micro_probe_used: bool = False
 
     def record_success(self) -> None:
         self.status = ProviderStatus.HEALTHY
         self.last_response_at = time.time()
         self.consecutive_failures = 0
+        # L1 fix: reset the exponential-backoff counter on a genuine success
+        # so a provider that recovers is not penalized for its earlier
+        # outage on the NEXT (unrelated) blip. Also clear the cooldown
+        # window so a successful micro-probe re-opens the provider
+        # immediately rather than waiting the remaining backoff.
+        self.circuit_trips = 0
+        self.cooldown_until = 0.0
+        self._micro_probe_used = False
         self.total_requests += 1
 
     def record_429(self, cooldown_seconds: int = 60, *, provider_wide: bool = False) -> None:
@@ -219,6 +245,15 @@ class ProviderHealth:
         a provider unusable for the rest of the process. Keep it eligible for
         the router's bounded retry, then open a timed circuit only after three
         consecutive failures.
+
+        L1 fix: when the shared network-health module already knows the
+        environment is unreachable, the per-provider circuit is opened
+        with the SHORTEST backoff step (30s). Rationale: three providers
+        share the same egress path, so a persistent egress outage should
+        not stack three independent 5-minute cooldowns — that only serves
+        to keep every provider offline long after the outage has ended.
+        The 30s window is short enough that the micro-probe path can
+        re-check quickly once the network recovers.
         """
         self.status = ProviderStatus.DEGRADED
         self.consecutive_failures += 1
@@ -226,7 +261,16 @@ class ProviderHealth:
         self.total_errors += 1
         self.total_requests += 1
         if self.consecutive_failures >= 3:
-            self.trip_circuit_breaker()
+            # Import locally to avoid a circular import at module load.
+            from hyperion.router import network_health
+
+            if network_health.is_degraded():
+                # Whole environment is unreachable → shortest backoff.
+                self.trip_circuit_breaker(
+                    cooldown_seconds=self._CIRCUIT_BACKOFF_SCHEDULE[0]
+                )
+            else:
+                self.trip_circuit_breaker()
 
     def record_request_error(self, status_code: int | None = None) -> None:
         """Record a model/request rejection without poisoning provider health.
@@ -251,10 +295,95 @@ class ProviderHealth:
         self.total_errors += 1
         self.total_requests += 1
 
-    def trip_circuit_breaker(self, cooldown_seconds: int = 300) -> None:
+    # L1 fix: exponential backoff schedule for circuit-breaker trips.
+    # Schedule: 30s -> 60s -> 120s -> 300s (capped). Rationale is documented
+    # on the ProviderHealth class; the short first step means one blip is a
+    # 30-second recovery window, not a 5-minute outage that takes multiple
+    # providers offline together because they share an egress network path.
+    _CIRCUIT_BACKOFF_SCHEDULE: tuple[int, ...] = (30, 60, 120, 300)
+
+    def trip_circuit_breaker(self, cooldown_seconds: int | None = None) -> None:
+        """Open the circuit with an exponentially escalating cooldown.
+
+        L1 fix: previously a flat 300s. The exponential schedule
+        (:pyattr:`_CIRCUIT_BACKOFF_SCHEDULE`) starts at 30s so a transient
+        network blip does not remove the provider for 5 minutes. An
+        explicit ``cooldown_seconds`` is honoured (used by 429 provider-wide
+        cooldowns and by the wait gate's model-scoped cooldowns), otherwise
+        the schedule is indexed by ``circuit_trips`` (0-based) and capped at
+        the last entry.
+        """
         self.status = ProviderStatus.CIRCUIT_OPEN
-        self.cooldown_until = time.time() + cooldown_seconds
-        self.last_error = f"Circuit breaker tripped ({self.consecutive_failures} consecutive failures)"
+        if cooldown_seconds is None:
+            idx = min(self.circuit_trips, len(self._CIRCUIT_BACKOFF_SCHEDULE) - 1)
+            cooldown_seconds = self._CIRCUIT_BACKOFF_SCHEDULE[idx]
+        self.cooldown_until = time.time() + max(0, cooldown_seconds)
+        self.circuit_trips += 1
+        # Re-arm the micro-probe grant for the new cooldown window.
+        self._micro_probe_used = False
+        self.last_error = (
+            f"Circuit breaker tripped ({self.consecutive_failures} consecutive "
+            f"failures; cooldown={cooldown_seconds}s, trip #{self.circuit_trips})"
+        )
+
+    # L1 fix: fraction of the cooldown window after which one recovery
+    # PROBE attempt is allowed. At 60% the wait gate can send exactly one
+    # request through; a success clears the circuit ahead of schedule
+    # (:meth:`record_success`) and a failure re-arms the cooldown from now.
+    # The value trades off "give the outage room to actually end" against
+    # "do not sit on 5 minutes of free capacity when the network is back".
+    _MICRO_PROBE_FRACTION: float = 0.6
+
+    def _cooldown_started_at(self) -> float:
+        """Best-effort wall time this cooldown window started at.
+
+        Recovered from ``cooldown_until`` minus the current backoff step.
+        Used only to gate the micro-probe path; a small inaccuracy here
+        just shifts the probe window slightly, it does not affect
+        correctness.
+        """
+        if self.circuit_trips <= 0:
+            return self.cooldown_until  # never tripped → no probe window
+        idx = min(
+            self.circuit_trips - 1, len(self._CIRCUIT_BACKOFF_SCHEDULE) - 1
+        )
+        return self.cooldown_until - self._CIRCUIT_BACKOFF_SCHEDULE[idx]
+
+    def _micro_probe_ready(self, now: float) -> bool:
+        """True when enough of the cooldown has elapsed to try one probe.
+
+        The circuit stays OPEN — callers that consult :meth:`is_available`
+        still get False — but a dedicated caller
+        (:meth:`allow_micro_probe`) receives a single True per cooldown
+        window. This is the recovery probe: a next call that succeeds
+        clears the circuit immediately; a call that fails just re-arms
+        the same cooldown.
+        """
+        if self.status not in (ProviderStatus.COOLDOWN, ProviderStatus.CIRCUIT_OPEN):
+            return False
+        if self._micro_probe_used:
+            return False
+        started = self._cooldown_started_at()
+        window = max(1.0, self.cooldown_until - started)
+        elapsed = now - started
+        return elapsed / window >= self._MICRO_PROBE_FRACTION
+
+    def allow_micro_probe(self) -> bool:
+        """Consume the single micro-probe grant for the current cooldown.
+
+        Returns True at most ONCE per cooldown window: the caller may
+        dispatch one real request through this provider even though the
+        circuit is still open. Subsequent calls in the same window
+        return False so the probe cannot itself become a stampede.
+
+        L1 fix: this is the "MICRO-ping recovery probe" the audit calls
+        for — a cheap way to detect that a transient outage has ended
+        without waiting out the full exponential window.
+        """
+        if not self._micro_probe_ready(time.time()):
+            return False
+        self._micro_probe_used = True
+        return True
 
     def is_available(self) -> bool:
         now = time.time()
@@ -262,6 +391,7 @@ class ProviderHealth:
             if now >= self.cooldown_until:
                 self.status = ProviderStatus.HEALTHY
                 self.consecutive_failures = 0
+                self._micro_probe_used = False
                 return True
             return False
         return self.status not in (

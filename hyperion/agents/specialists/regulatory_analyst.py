@@ -1178,7 +1178,7 @@ class RegulatoryAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"jurisdiction": jurisdictions[0], "industry": industry},
             ))
 
@@ -1190,7 +1190,7 @@ class RegulatoryAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"jurisdiction": jurisdictions[1], "industry": industry},
             ))
 
@@ -1201,7 +1201,7 @@ class RegulatoryAnalyst(BaseAgent):
             model_tier=ModelTier.STANDARD,
             tools=[ToolName.SEARXNG, ToolName.OBSCURA],
             findings_model="KeyFinding",
-            timeout_seconds=300,
+            timeout_seconds=600,
             context={"industry": industry, "jurisdictions": jurisdictions},
         ))
 

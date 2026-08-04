@@ -141,6 +141,7 @@ GOOGLE_MODELS: list[ModelSpec] = [
         rpd=14_400,
         tier=ModelTier.MICRO,
         roles=["backup workhorse"],
+        deprecated=True,  # L5 fix: retired in favour of gemma-4-31b and NVIDIA/Groq MICRO options.
     ),
     ModelSpec(
         name="gemini-2.5-flash",
@@ -251,13 +252,28 @@ CEREBRAS_MODELS: list[ModelSpec] = [
 # ── Groq (§2.4) ──────────────────────────────────────────────────────────────
 
 GROQ_MODELS: list[ModelSpec] = [
+    # L1 fix: Groq was compounding-underutilized. Three causes, all fixed:
+    #   (a) TPMs were unrealistically small (tpm=6-8k on 128k-context models)
+    #       so ``can_serve()`` dropped any sub-agent analysis call that
+    #       estimated over ~8k tokens BEFORE Groq was even considered.
+    #   (b) Every STANDARD-tier model carried a self-imposed rpd=1_000 cap
+    #       plus the provider-wide 18_400 daily ceiling, making Groq flip
+    #       to ``budget_exhausted`` on a heavy engagement even though the
+    #       real TPM/TPD windows were nowhere near saturation.
+    #   (c) STANDARD tier priority buried Groq behind NVIDIA + Mistral, so
+    #       failover only reached it when both had failed.
+    # Fix: raise TPMs to realistic values matching Groq's published free-
+    # tier limits, drop the rpd=1_000 caps on models that publish tpd
+    # instead, and — separately in ``_TIER_PROVIDER_PRIORITY`` — promote
+    # llama-4-scout-17b onto the STANDARD path as the cheap high-volume
+    # research workhorse.
     ModelSpec(
         name="gpt-oss-120b",
         provider=ProviderType.GROQ,
         context_window=128_000,
         rpm=30,
-        tpm=8_000,
-        rpd=1_000,
+        tpm=30_000,  # L1 fix: was 8_000 — well below one analysis prompt
+        rpd=None,    # L1 fix: TPD is the real ceiling here
         tpd=200_000,
         tier=ModelTier.STANDARD,
         roles=["standard", "research", "analysis"],
@@ -267,8 +283,8 @@ GROQ_MODELS: list[ModelSpec] = [
         provider=ProviderType.GROQ,
         context_window=128_000,
         rpm=30,
-        tpm=12_000,
-        rpd=1_000,
+        tpm=30_000,  # L1 fix: was 12_000
+        rpd=None,    # L1 fix: TPD is the real ceiling here
         tpd=100_000,
         tier=ModelTier.STANDARD,
         roles=["standard alt", "higher TPM"],
@@ -278,7 +294,9 @@ GROQ_MODELS: list[ModelSpec] = [
         provider=ProviderType.GROQ,
         context_window=128_000,
         rpm=30,
-        tpm=6_000,
+        tpm=30_000,  # L1 fix: was 6_000 — the MICRO tier's TPM ceiling
+                     # was small enough that it silently disqualified the
+                     # model on any request over ~5-6k prompt tokens.
         rpd=14_400,
         tpd=500_000,
         tier=ModelTier.MICRO,
@@ -302,18 +320,23 @@ GROQ_MODELS: list[ModelSpec] = [
         context_window=128_000,
         rpm=30,
         tpm=30_000,
-        rpd=1_000,
+        rpd=None,    # L1 fix: was 1_000 — the artificial daily cap that
+                     # kept Groq in ``budget_exhausted`` even when TPM
+                     # windows were free. TPD (500k) is the real ceiling.
         tpd=500_000,
         tier=ModelTier.STANDARD,
-        roles=["high TPM tasks"],
+        roles=[
+            "cheap high-volume standard-tier research",
+            "second in STANDARD priority (after NVIDIA)",
+        ],
     ),
     ModelSpec(
         name="qwen-3-32b",
         provider=ProviderType.GROQ,
         context_window=128_000,
         rpm=60,
-        tpm=6_000,
-        rpd=1_000,
+        tpm=15_000,  # L1 fix: was 6_000
+        rpd=None,    # L1 fix: was 1_000 (see llama-4-scout-17b rationale)
         tpd=500_000,
         tier=ModelTier.STANDARD,
         roles=["high RPM tasks"],
@@ -520,8 +543,14 @@ class SubAgentConfig(BaseModel):
     max_per_specialist: int = 3
 
     # Timeout in seconds — if a sub-agent doesn't return, the parent
-    # proceeds with available findings and flags the gap (§4.7)
-    timeout_seconds: int = 300
+    # proceeds with available findings and flags the gap (§4.7).
+    # L2 fix: 300s was insufficient when providers are slow / capacity is
+    # tight; the pre-fix path *replaced* findings with [] on TimeoutError
+    # (the literal "0 findings" cascade). Raised to 600s to match the
+    # schema default (schemas/agents.py:225) and give the extraction ladder
+    # room to finish, while the TimeoutError branch still routes through
+    # `gap_finding` so a genuine 600s outage remains auditable.
+    timeout_seconds: int = 600
 
     # Sub-agents use MICRO/FAST/STANDARD — STANDARD for deeper findings (§4.7)
     allowed_tiers: list[ModelTier] = Field(default_factory=lambda: [ModelTier.MICRO, ModelTier.FAST, ModelTier.STANDARD])
@@ -775,7 +804,10 @@ class Settings(BaseSettings):
     allow_ship_with_caveat: bool = False
 
     # ── Sub-Agent ──
-    sub_agent_timeout: int = 300
+    # L2 fix: 600s (was 300s). See SubAgentConfig above for the rationale;
+    # the schema default (schemas/agents.py:225) is already 600, and every
+    # specialist that hard-coded 300 has been raised in lockstep.
+    sub_agent_timeout: int = 600
     max_sub_agents: int = 3
 
     # ── Wait Gate ──

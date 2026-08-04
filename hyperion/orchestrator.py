@@ -324,6 +324,14 @@ class WorkflowEngine:
     MAX_QUALITY_ITERATIONS = 4  # W-08: raised from 2 (was 3, then P7 cap 2)
     TASK_TIMEOUT_SECONDS = 600  # 10 minutes — default for most agents
     SPECIALIST_TIMEOUT_SECONDS = 1200  # 20 minutes — specialists spawn up to 3 sub-agents
+    # L3 fix: the task reframer sits BENEATH the Director's STRONG-tier
+    # strategic replanner and handles the common "thin query" case. Each
+    # failed / zero-finding task may be reframed at most this many times
+    # per DAG. Cap of 2 was chosen deliberately: the reframer emits up to
+    # 3 variants per call, so 2 retries is enough to explore multiple
+    # broadening strategies before the Director's slot is spent, without
+    # letting a genuinely un-answerable question loop forever.
+    MAX_REFRAMER_RETRIES = 2
     # Each sub-agent does SearxNG search + Jina read + LLM analysis.
     # With SearxNG semaphore=3 and multiple specialists in parallel,
     # and potentially slow network conditions, 600s was not enough —
@@ -1087,7 +1095,166 @@ class WorkflowEngine:
             else:
                 processed.append(result)
 
+        # L3 fix: reframer retry loop. After the wave settles, check each
+        # task for FAILED status or a zero-finding COMPLETED sub-agent run
+        # (research_gap). If the task has retries left, ask the task
+        # reframer for up to 3 broadened variants and spawn them as
+        # ``task_reframed_*`` TaskNodes on the DAG so a later wave picks
+        # them up. This sits BENEATH the Director's STRONG-tier strategic
+        # replanner — it handles the common "thin query" case without
+        # burning the Director's slot.
+        try:
+            await self._maybe_reframe_failed_tasks(tasks, dag)
+        except Exception as exc:  # noqa: BLE001 - reframer must never break a wave
+            logger.warning("_maybe_reframe_failed_tasks: %s", exc)
+
         return processed
+
+    def _task_needs_reframe(self, task: TaskNode) -> bool:
+        """L3: return True if this task failed or produced zero findings
+        and still has reframer retries left.
+
+        Only specialists are eligible — the Director, Synthesis Lead,
+        Quality Gate, delivery agents etc. have their own recovery paths
+        and shouldn't be reframed.
+        """
+        if task.reframe_attempts >= self.MAX_REFRAMER_RETRIES:
+            return False
+        if task.agent not in self._SPECIALIST_AGENTS:
+            return False
+        # FAILED — clearly worth a reframe.
+        if task.status == TaskStatus.FAILED:
+            return True
+        # COMPLETED but produced no findings for this task. We can't ask
+        # the task directly (findings live on the specialist agent under
+        # ``_findings``), so we check the task_outputs bag: a completed
+        # specialist that didn't emit any finding usually means gap.
+        if task.status == TaskStatus.COMPLETED:
+            output = self._task_outputs.get(task.id)
+            if output is None:
+                return True
+            # Some specialists return dicts/objects with a ``findings``
+            # attr or key — treat 0 findings as a zero-finding signal.
+            findings_attr = getattr(output, "findings", None)
+            if findings_attr is not None and len(findings_attr) == 0:
+                return True
+            if isinstance(output, dict) and isinstance(output.get("findings"), list) \
+                    and len(output["findings"]) == 0:
+                return True
+        return False
+
+    def _failure_signal_for(self, task: TaskNode) -> str:
+        """L3: classify a task's failure into a reframer signal string."""
+        if task.status == TaskStatus.FAILED:
+            err = (task.error or "").lower()
+            if "timed out" in err or "timeout" in err:
+                return "timed_out"
+            return "failed"
+        return "zero_findings"
+
+    async def _maybe_reframe_failed_tasks(
+        self, tasks: list[TaskNode], dag: WorkflowDAG,
+    ) -> None:
+        """L3: dispatch the task reframer for eligible failed / zero-finding
+        specialist tasks and add ``task_reframed_*`` nodes to the DAG.
+
+        This method is non-raising: a reframer outage must not stall the
+        pipeline. Bounded to at most ``MAX_REFRAMER_RETRIES`` per
+        task-chain via the ``reframe_attempts`` counter on TaskNode.
+        """
+        try:
+            from hyperion.tools.task_reframer import reframe_task
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("task_reframer import failed: %s", exc)
+            return
+
+        eligible = [t for t in tasks if self._task_needs_reframe(t)]
+        if not eligible:
+            return
+
+        # Pull engagement context (subject/geography) for better prompts.
+        ctx = self._engagement_context or {}
+        subject = str(ctx.get("subject") or ctx.get("industry") or "")
+        geography = str(ctx.get("geography") or "")
+
+        for original in eligible:
+            failure_signal = self._failure_signal_for(original)
+            try:
+                result = await reframe_task(
+                    original.description or "",
+                    failure_signal=failure_signal,
+                    router=self.router,
+                    task_description=original.description or "",
+                    subject=subject,
+                    geography=geography,
+                    context=ctx,
+                )
+            except Exception as exc:  # noqa: BLE001 - reframer is best-effort
+                logger.warning("reframe_task failed for %s: %s", original.id, exc)
+                continue
+
+            variants = getattr(result, "variants", None) or []
+            if not variants:
+                continue
+
+            spawned = 0
+            for idx, variant in enumerate(variants):
+                # Compact defensive access — variant may be a Pydantic
+                # model or a plain dict depending on deterministic vs
+                # LLM path.
+                new_question = (
+                    getattr(variant, "rephrased_question", None)
+                    or (variant.get("rephrased_question") if isinstance(variant, dict) else None)
+                    or ""
+                ).strip()
+                if not new_question:
+                    continue
+                new_id = f"task_reframed_{original.reframe_attempts + 1}_{idx}_{original.id}"
+                # Idempotence: don't re-add if a previous wave already
+                # spawned an identical node for this original.
+                if dag.get_task(new_id) is not None:
+                    continue
+                # Reframed tasks reuse the original's tier and (empty)
+                # dependencies — they slot in as fresh work for the next
+                # wave. reframed_from lets the DAG/log trace the chain.
+                new_task = TaskNode(
+                    id=new_id,
+                    agent=original.agent,
+                    model_tier=original.model_tier,
+                    description=new_question[:400],
+                    dependencies=[],
+                    status=TaskStatus.PENDING,
+                    reframe_attempts=original.reframe_attempts + 1,
+                    reframed_from=original.id,
+                    estimated_llm_calls=original.estimated_llm_calls,
+                    estimated_tokens=original.estimated_tokens,
+                )
+                try:
+                    dag.add_task(new_task)
+                    spawned += 1
+                    self._publish_task_update(new_task)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("add_task(reframed) failed for %s: %s", new_id, exc)
+                    continue
+
+            if spawned:
+                try:
+                    dag.adapted = True
+                    if hasattr(dag, "adaptation_log"):
+                        dag.adaptation_log.append(
+                            f"Reframed {original.id} ({failure_signal}) → "
+                            f"{spawned} variant(s), attempt "
+                            f"{original.reframe_attempts + 1}/"
+                            f"{self.MAX_REFRAMER_RETRIES}"
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+                self._log(
+                    f"REFRAMER: {original.id} ({original.agent.value}, "
+                    f"{failure_signal}) → {spawned} reframed variant(s) "
+                    f"[attempt {original.reframe_attempts + 1}/"
+                    f"{self.MAX_REFRAMER_RETRIES}]"
+                )
 
     # Delivery agents that must NOT run during _execute_dag — they run
     # AFTER the quality iteration loop on the final iterated report.
@@ -1478,14 +1645,57 @@ class WorkflowEngine:
             if not subject:
                 return 0
             client = SearxNGClient()
-            queries = [
-                f"{subject} {geography} market analysis".strip(),
-                f"{subject} {geography} industry report 2025".strip(),
-                f"{subject} {geography} news".strip(),
-            ]
+
+            # L4 fix: route through the query planner's fan-out instead of
+            # 3 hardcoded strings. When the corpus is at 1 domain the
+            # static queries have already failed once — replaying near-
+            # identical strings just hits the same empty pocket. The
+            # planner emits diversified variants (semantic broadening,
+            # source-type targeting, temporal shifts) so we actually
+            # explore new pockets of the web. Falls back to the old
+            # static set if the planner is unavailable.
+            queries: list[str] = []
+            try:
+                from hyperion.tools.query_planner import plan_queries
+
+                plan_result = await plan_queries(
+                    sub_question=(
+                        f"Find sources on {subject}"
+                        + (f" in {geography}" if geography else "")
+                    ),
+                    router=self.router,
+                    subject=subject,
+                    geography=geography,
+                    target=6,
+                )
+                planner_queries = getattr(plan_result, "queries", None) or []
+                for q in planner_queries:
+                    text = (
+                        getattr(q, "query", None)
+                        or (q.get("query") if isinstance(q, dict) else None)
+                        or ""
+                    ).strip()
+                    if text:
+                        queries.append(text)
+            except Exception as exc:  # noqa: BLE001 - planner is best-effort
+                logger.warning("query planner in _escalate_retrieval failed: %s", exc)
+
+            # Deterministic fallback: keep the original 3 strings so we
+            # never end up with an empty list.
+            if not queries:
+                queries = [
+                    f"{subject} {geography} market analysis".strip(),
+                    f"{subject} {geography} industry report 2025".strip(),
+                    f"{subject} {geography} news".strip(),
+                ]
+
             found: dict[str, Any] = {}
             for query in queries:
-                response = await client.search(query=query, num_results=5)
+                try:
+                    response = await client.search(query=query, num_results=5)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("escalate search '%s' failed: %s", query[:60], exc)
+                    continue
                 if response and response.results:
                     for r in response.results:
                         if r.url:

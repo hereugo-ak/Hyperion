@@ -130,7 +130,13 @@ _TIER_PROVIDER_PRIORITY: dict[ModelTier, list[ProviderType]] = {
     # fell back to `[] + list(set)`, i.e. non-deterministic set order.
     ModelTier.MICRO: [ProviderType.MISTRAL, ProviderType.GOOGLE, ProviderType.GROQ],
     ModelTier.FAST: [ProviderType.MISTRAL, ProviderType.GROQ, ProviderType.CEREBRAS],
-    ModelTier.STANDARD: [ProviderType.NVIDIA, ProviderType.MISTRAL, ProviderType.GROQ],
+    # L1 fix: promote Groq to SECOND in STANDARD priority so llama-4-scout
+    # (the cheap high-volume research model whose config rpd cap was
+    # dropped) actually gets traffic instead of only being reached as
+    # failover after NVIDIA and Mistral both fail. NVIDIA remains first
+    # because nemotron-3-super-120b is the strong workhorse; Mistral
+    # medium-2508 stays available as third-choice STANDARD capacity.
+    ModelTier.STANDARD: [ProviderType.NVIDIA, ProviderType.GROQ, ProviderType.MISTRAL],
     ModelTier.DEEP: [ProviderType.GOOGLE, ProviderType.MISTRAL, ProviderType.NVIDIA],
     ModelTier.STRONG: [ProviderType.NVIDIA, ProviderType.MISTRAL],
 }
@@ -329,10 +335,20 @@ class LLMRouter:
         # makes the real `return budget_available` look like a bug.
 
         # Get models by provider for this tier
+        # L1 fix: consult the micro-probe grant. A provider whose circuit
+        # is still nominally open but whose cooldown is 60%+ elapsed is
+        # allowed exactly ONE recovery request per window — this is how a
+        # transient outage that ended early gets discovered without the
+        # router burning the full exponential backoff.
         models_by_provider: dict[ProviderType, list[ModelSpec]] = {}
         for provider_type, provider in self._providers.items():
             if not provider.health.is_available():
-                continue
+                # allow_micro_probe() is consumed here — a False circuit
+                # that just returned True consumes its ONE grant, so the
+                # subsequent selection call for this provider gets one
+                # dispatch attempt with no additional gates.
+                if not provider.health.allow_micro_probe():
+                    continue
             tier_models = provider.get_models_for_tier(tier)
             if tier_models:
                 models_by_provider[provider_type] = tier_models

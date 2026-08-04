@@ -1103,7 +1103,7 @@ class TechnologyAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"vendor": vendors[0]},
             ))
 
@@ -1115,7 +1115,7 @@ class TechnologyAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"vendor": vendors[1]},
             ))
 
@@ -1126,7 +1126,7 @@ class TechnologyAnalyst(BaseAgent):
             model_tier=ModelTier.STANDARD,
             tools=[ToolName.SEARXNG, ToolName.JINA],
             findings_model="KeyFinding",
-            timeout_seconds=300,
+            timeout_seconds=600,
             context={"technology": technology},
         ))
 

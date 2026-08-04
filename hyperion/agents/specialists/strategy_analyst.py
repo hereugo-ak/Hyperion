@@ -1509,7 +1509,7 @@ class StrategyAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"sector": sector},
             ),
             SubAgentSpec(
@@ -1518,7 +1518,7 @@ class StrategyAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"sector": sector},
             ),
             SubAgentSpec(
@@ -1527,7 +1527,7 @@ class StrategyAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"company": company, "sector": sector},
             ),
         ]

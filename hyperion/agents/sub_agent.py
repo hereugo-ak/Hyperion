@@ -872,10 +872,22 @@ class SubAgentRunner:
         # Same settings source `_instantiate_tool` uses for every other tool, so
         # the ladder's leaf clients see the identical configuration the granted
         # tools would have seen.
+        #
+        # L2 fix: concurrency is bounded explicitly at the sub-agent boundary
+        # (4 in flight) rather than relying on `EXTRACTION_CONCURRENCY`'s
+        # implicit default. Rationale: `_gather_raw_data` is the biggest single
+        # latency contributor in a specialist sub-agent, but each extraction
+        # tier internally opens sockets / browser tabs, so unbounded fanout
+        # can starve the whole event loop when several sub-agents run in
+        # parallel. A cap of 4 keeps 10 URLs at ~3 waves per tier while still
+        # exploiting most of the available parallelism.
         extractor = UnifiedExtract(settings=get_settings())
         try:
             outcome = await extractor.extract_ladder(
-                targets, tiers=tiers, query=query or self.spec.question
+                targets,
+                tiers=tiers,
+                query=query or self.spec.question,
+                concurrency=4,
             )
         except Exception as e:
             # The ladder documents a never-raises contract, but a sub-agent

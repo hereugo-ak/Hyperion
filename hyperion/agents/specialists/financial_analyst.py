@@ -1209,7 +1209,7 @@ class FinancialAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.ALPHA_VANTAGE],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"tickers": tickers[:3]},
             ),
             SubAgentSpec(
@@ -1218,7 +1218,7 @@ class FinancialAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"industry": industry},
             ),
             SubAgentSpec(
@@ -1227,7 +1227,7 @@ class FinancialAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"business_model": business_model},
             ),
         ]
