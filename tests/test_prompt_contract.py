@@ -64,6 +64,7 @@ class _StubResponse:
         self.content = "{}"
         self.input_tokens = 0
         self.output_tokens = 0
+        self.total_tokens = 0
         self.latency_ms = 0.0
         self.success = True
         self.error = None
@@ -171,9 +172,12 @@ def _assert_router_received_contract(router: _RecordingRouter) -> None:
 
 
 def test_contract_reaches_sub_agent_router_payload() -> None:
+    from unittest.mock import AsyncMock
+
     router = _RecordingRouter()
     runner = object.__new__(SubAgentRunner)
     runner.router = router
+    runner.bus = SimpleNamespace(publish=AsyncMock())
     runner.spec = SimpleNamespace(
         model_tier=ModelTier.STANDARD,
         parent_agent=SimpleNamespace(value="market_analyst"),

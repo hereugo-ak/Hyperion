@@ -228,6 +228,17 @@ class ProviderHealth:
         if self.consecutive_failures >= 3:
             self.trip_circuit_breaker()
 
+    def record_request_error(self, status_code: int | None = None) -> None:
+        """Record a model/request rejection without poisoning provider health.
+
+        A 400/404 usually means one model ID or payload is unsupported. Other
+        models on the same provider remain valid capacity, so these responses
+        must not increment the transport circuit breaker.
+        """
+        self.last_error = f"HTTP {status_code or 'request error'}"
+        self.total_errors += 1
+        self.total_requests += 1
+
     def record_auth_error(self) -> None:
         """401/403 from the provider: the credential is dead (P2-29).
 
@@ -494,6 +505,11 @@ class BaseProvider:
                 self.health.record_timeout()
             elif is_transient_connection_error(error_str):
                 self.health.record_network_error()
+            elif status_code is not None:
+                # 400/404/422 are normally model- or payload-scoped. Opening
+                # the provider circuit here prevents the router from trying a
+                # valid sibling model after one stale model ID is rejected.
+                self.health.record_request_error(status_code)
             else:
                 # Unknown status-less failures must fail over, but they are not
                 # proof that the provider is permanently unreachable.

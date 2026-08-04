@@ -9,9 +9,9 @@ context models). (§2.1)
 Models on this provider:
 - gemma-4-31b: MICRO — query generation, fact-check snippets, simple extraction
 - gemma-4-26b: MICRO — backup workhorse
-- gemini-3.5-flash-lite: DEEP — deep context, long doc synthesis (500 RPD)
-- gemini-3.5-flash: DEEP — reserve (20 RPD)
-- gemini-3-flash: DEEP — reserve (20 RPD)
+- gemini-2.5-flash: DEEP — deep context, long doc synthesis, grounding (20 RPD)
+- gemini-3.5-flash: DEEP — disabled reserve
+- gemini-3-flash: DEEP — disabled reserve
 
 This is NOT a generic OpenAI client wrapper. It is the Google-specific
 implementation that knows about Gemma's high RPD workhorse role and
@@ -53,9 +53,9 @@ class GoogleProvider(BaseProvider):
 
     The most abundant provider by RPD. Gemma models handle the high-volume
     MICRO tier work (query generation, fact-check snippets, sub-agent tasks)
-    with 14,400 RPD each. Gemini models serve the DEEP tier for ultra-long
-    context synthesis but are scarce (500/20/20 RPD) and must be preserved
-    by the budget planner for critical tasks only.
+    with 14,400 RPD each. Gemini 2.5 Flash serves the DEEP tier and native
+    Google Search grounding with a 20 RPD project limit, so the budget planner
+    preserves that capacity for critical tasks only.
     """
 
     @property

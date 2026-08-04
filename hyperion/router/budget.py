@@ -57,7 +57,7 @@ _PROVIDER_SCARCITY: dict[ProviderType, int] = {
 _MODEL_PRICES_PER_MILLION: dict[tuple[ProviderType, str], tuple[float, float]] = {
     (ProviderType.GOOGLE, "gemma-4-31b"): (0.10, 0.20),
     (ProviderType.GOOGLE, "gemma-4-26b"): (0.10, 0.20),
-    (ProviderType.GOOGLE, "gemini-3.5-flash-lite"): (0.10, 0.40),
+    (ProviderType.GOOGLE, "gemini-2.5-flash"): (0.30, 2.50),
     (ProviderType.NVIDIA, "nvidia/nemotron-3-super-120b-a12b"): (0.60, 0.60),
     (ProviderType.NVIDIA, "nvidia/nemotron-3-ultra-550b-a55b"): (1.20, 1.20),
     (ProviderType.NVIDIA, "nvidia/nemotron-3-nano-30b-a3b"): (0.20, 0.20),

@@ -24,9 +24,9 @@ Architecture (§3.2):
               → Record actual usage
               → Return RouterResponse
 
-If the selected provider fails, the router failovers to the next candidate
-in the same tier. If all providers in the tier fail, it tries the adjacent
-tier (up or down based on task urgency).
+If the selected model fails, the router fails over to the next unvisited
+provider/model candidate in the same tier. If all candidates in the tier fail,
+it tries the adjacent tier (up or down based on task urgency).
 """
 
 from __future__ import annotations
@@ -104,12 +104,12 @@ class RouterAttempt:
     re-dispatching already-failed providers and consuming daily budget per
     frame. One RouterAttempt is threaded through _try_tier,
     _try_tier and _dispatch for the whole call chain, so every
-    provider is dispatched at most once (twice counting the explicit
-    transient retry) and the chain terminates at a hard ceiling.
+    provider/model candidate is dispatched at most once (twice counting the
+    explicit transient retry) and the chain terminates at a hard ceiling.
     """
 
     max_attempts: int
-    visited: set[ProviderType] = field(default_factory=set)
+    visited: set[tuple[ProviderType, str]] = field(default_factory=set)
     attempts: int = 0
 
     def exhausted(self) -> bool:
@@ -120,7 +120,7 @@ class RouterAttempt:
 # Rationale:
 #   FAST: Mistral primary (rpm60), Groq secondary (rpm30), Cerebras overflow (rpm5)
 #   STANDARD: NVIDIA/Mistral primary (high TPM), Groq burst-only (tpm8k)
-#   DEEP: Google flash-lite, Mistral devstral, NVIDIA ultra-550b (round-robin, ≥2 non-Google)
+#   DEEP: Google Gemini 2.5 Flash, Mistral devstral, NVIDIA ultra-550b
 #   STRONG: NVIDIA nemotron, Mistral large
 _TIER_PROVIDER_PRIORITY: dict[ModelTier, list[ProviderType]] = {
     # P2-31: MICRO is the highest-volume tier (every specialist sub-agent
@@ -131,7 +131,7 @@ _TIER_PROVIDER_PRIORITY: dict[ModelTier, list[ProviderType]] = {
     ModelTier.MICRO: [ProviderType.MISTRAL, ProviderType.GOOGLE, ProviderType.GROQ],
     ModelTier.FAST: [ProviderType.MISTRAL, ProviderType.GROQ, ProviderType.CEREBRAS],
     ModelTier.STANDARD: [ProviderType.NVIDIA, ProviderType.MISTRAL, ProviderType.GROQ],
-    ModelTier.DEEP: [ProviderType.MISTRAL, ProviderType.NVIDIA, ProviderType.GOOGLE],
+    ModelTier.DEEP: [ProviderType.GOOGLE, ProviderType.MISTRAL, ProviderType.NVIDIA],
     ModelTier.STRONG: [ProviderType.NVIDIA, ProviderType.MISTRAL],
 }
 
@@ -427,9 +427,9 @@ class LLMRouter:
         # W-17: ONE attempt context for the entire failover chain — the
         # requested tier, the adjacency walk, and the explicit downgrade
         # share one visited set and one attempt ceiling. Sized to the real
-        # provider count: every provider may be tried once plus one retry
-        # each, never more.
-        attempt = RouterAttempt(max_attempts=max(1, len(self._providers)) * 2)
+        # candidate count: every provider/model pair may be tried once plus
+        # one explicit transient retry, never more.
+        attempt = RouterAttempt(max_attempts=max(1, len(self._trackers)) * 2)
 
         # Try the requested tier first
         response = await self._try_tier(
@@ -585,8 +585,8 @@ class LLMRouter:
         """Try to execute a request at a specific tier.
 
         W-17: this is now ONE explicit loop over the priority-sorted,
-        ``attempt.visited``-filtered providers of the tier — one call frame
-        per attempt, with ``max_attempts`` checked at the single dispatch
+        ``attempt.visited``-filtered provider/model candidates of the tier —
+        one call frame per attempt, with ``max_attempts`` checked at dispatch
         point. The old second pass (``exclude_provider=None``) re-dispatched
         every provider the first pass had just failed, and the mutual
         recursion with ``_try_next_candidate`` had no depth bound; both are
@@ -602,7 +602,7 @@ class LLMRouter:
         """
         if attempt is None:
             attempt = RouterAttempt(
-                max_attempts=max(1, len(self._providers)) * 2
+                max_attempts=max(1, len(self._trackers)) * 2
             )
 
         last_failure: RouterResponse | None = None
@@ -615,13 +615,11 @@ class LLMRouter:
             if not available_providers:
                 break
 
-            # D19/D20/D21: priority order, minus every provider already
-            # dispatched during this complete() call (W-17 step 2/3).
-            ordered_providers = [
-                p
-                for p in self._sort_providers_by_priority(tier, available_providers)
-                if p not in attempt.visited
-            ]
+            # D19/D20/D21: provider priority order. Exact failed models are
+            # excluded by WaitGate while sibling models remain eligible.
+            ordered_providers = self._sort_providers_by_priority(
+                tier, available_providers
+            )
             if not ordered_providers:
                 break
 
@@ -637,6 +635,7 @@ class LLMRouter:
                     tier=tier,
                     estimated_tokens=estimated_tokens,
                     available_providers={provider_type},
+                    excluded_candidates=attempt.visited,
                 )
 
                 if candidate is None:
@@ -678,11 +677,10 @@ class LLMRouter:
 
                 last_failure = response
                 # A 429 cools only this exact model in _dispatch. Continue to
-                # another provider whose quota is independent. The visited set
-                # prevents retrying the same provider in this completion call.
-                # auth/transient/other failures: the provider is now in
-                # attempt.visited (and possibly circuit-open); the loop
-                # moves to the next unvisited provider.
+                # another independent candidate. The visited set prevents
+                # retrying the same model in this completion call. Auth failures
+                # disable the provider; model/request failures preserve sibling
+                # models, and transient failures get one explicit retry.
 
             if not dispatched:
                 # Every remaining provider was unselectable (no candidate,
@@ -758,7 +756,7 @@ class LLMRouter:
           spreading the rate limit across providers.
         - transient (408/425/5xx/timeout): ONE retry on the same provider
           after a short backoff, then fail over.
-        - anything else: fail over to the next unvisited candidate.
+        - anything else: fail over to the next unvisited provider+model pair.
 
         Returns None when the attempt budget is already exhausted.
         """
@@ -778,7 +776,7 @@ class LLMRouter:
 
         provider = self._providers[candidate.provider_type]
         attempt.attempts += 1
-        attempt.visited.add(candidate.provider_type)
+        attempt.visited.add((candidate.provider_type, candidate.model.name))
 
         # Record dispatch AFTER the durable reservation and before the call.
         self.wait_gate.record_dispatch(
@@ -804,6 +802,10 @@ class LLMRouter:
         status = response.status_code
 
         if status in (401, 403):
+            # Enforce provider-wide auth state at the routing boundary as well
+            # as in BaseProvider. Custom providers and test doubles may return
+            # a normalized response without mutating health themselves.
+            provider.health.record_auth_error()
             # A dead credential consumed neither a useful request budget nor
             # token capacity, so refund both parts of the reservation.
             self.budget_planner.refund(

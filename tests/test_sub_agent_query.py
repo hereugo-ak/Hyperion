@@ -598,3 +598,109 @@ class TestLowYieldReformulation:
         assert label == "searxng"
         assert urls == []
         assert formatted is None
+
+
+class TestSubAgentFailureFindings:
+    """Research failures must remain visible as structured evidence gaps."""
+
+    @staticmethod
+    def _spec(*, timeout_seconds: int = 600):
+        from hyperion.config import ModelTier
+        from hyperion.schemas.agents import AgentName, SubAgentSpec
+
+        return SubAgentSpec(
+            question="Find independent competitor evidence",
+            parent_agent=AgentName.COMPETITIVE_INTEL,
+            model_tier=ModelTier.STANDARD,
+            tools=[],
+            findings_model="KeyFinding",
+            timeout_seconds=timeout_seconds,
+        )
+
+    @staticmethod
+    def _parent():
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from hyperion.agents.base import BaseAgent
+        from hyperion.schemas.agents import AgentName, AgentState
+
+        class ConcreteAgent(BaseAgent):
+            async def run(self, *args, **kwargs):
+                return None
+
+        parent = object.__new__(ConcreteAgent)
+        parent.spec = SimpleNamespace(
+            max_sub_agents=3,
+            name=AgentName.COMPETITIVE_INTEL,
+        )
+        parent.bus = MagicMock()
+        parent.router = MagicMock()
+        parent._sub_agent_specs = []
+        parent.state = SimpleNamespace(
+            sub_agents_spawned=0,
+            sub_agents_active=0,
+            state=AgentState.WORKING,
+        )
+        parent._transition = AsyncMock()
+        parent._log = MagicMock()
+        return parent
+
+    @pytest.mark.asyncio
+    async def test_empty_analysis_returns_one_gap(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        runner = SubAgentRunner(
+            self._spec(),
+            bus=MagicMock(),
+            router=MagicMock(),
+        )
+        monkeypatch.setattr(runner, "_gather_raw_data", AsyncMock(return_value=""))
+        monkeypatch.setattr(
+            runner,
+            "_analyze_and_produce_findings",
+            AsyncMock(return_value=[]),
+        )
+
+        findings = await runner.run()
+
+        assert len(findings) == 1
+        assert findings[0].finding_type == "research_gap"
+        assert findings[0].sources == []
+        assert findings[0].gaps == [runner.spec.question]
+
+    @pytest.mark.asyncio
+    async def test_parent_converts_runner_exception_to_gap(self, monkeypatch):
+        from hyperion.agents.sub_agent import SubAgentRunner
+
+        async def fail(_runner):
+            raise RuntimeError("retrieval exploded")
+
+        monkeypatch.setattr(SubAgentRunner, "run", fail)
+        parent = self._parent()
+
+        findings = await parent._spawn_sub_agent(self._spec())
+
+        assert len(findings) == 1
+        assert findings[0].finding_type == "research_gap"
+        assert "RuntimeError" in findings[0].content
+        assert parent.state.sub_agents_active == 0
+
+    @pytest.mark.asyncio
+    async def test_parent_converts_timeout_to_gap(self, monkeypatch):
+        import asyncio
+
+        from hyperion.agents.sub_agent import SubAgentRunner
+
+        async def block(_runner):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(SubAgentRunner, "run", block)
+        parent = self._parent()
+
+        findings = await parent._spawn_sub_agent(self._spec(timeout_seconds=0))
+
+        assert len(findings) == 1
+        assert findings[0].finding_type == "research_gap"
+        assert "timed out" in findings[0].content
+        assert parent.state.sub_agents_active == 0

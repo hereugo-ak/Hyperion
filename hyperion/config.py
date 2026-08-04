@@ -143,14 +143,14 @@ GOOGLE_MODELS: list[ModelSpec] = [
         roles=["backup workhorse"],
     ),
     ModelSpec(
-        name="gemini-3.5-flash-lite",
+        name="gemini-2.5-flash",
         provider=ProviderType.GOOGLE,
-        context_window=250_000,
-        rpm=15,
+        context_window=1_000_000,
+        rpm=5,
         tpm=250_000,
-        rpd=500,
+        rpd=20,
         tier=ModelTier.DEEP,
-        roles=["deep context", "long doc synthesis"],
+        roles=["deep context", "long doc synthesis", "grounded search"],
     ),
     ModelSpec(
         name="gemini-3.5-flash",
@@ -327,7 +327,8 @@ GROQ_MODELS: list[ModelSpec] = [
         rpd=1_000,
         tpd=200_000,
         tier=ModelTier.STANDARD,
-        roles=["lightweight reasoning"],
+        roles=["unsupported legacy model ID"],
+        deprecated=True,
     ),
 ]
 
@@ -743,9 +744,9 @@ class Settings(BaseSettings):
     # OpenAI-compatible completion endpoint. Quota units are provider-issued
     # search queries for Gemini 3 models, not ordinary completion requests.
     google_grounding_enabled: bool = True
-    google_grounding_model: str = "gemini-3.5-flash-lite"
-    google_grounding_daily_limit: int = 500
-    google_grounding_monthly_limit: int = 15_000
+    google_grounding_model: str = "gemini-2.5-flash"
+    google_grounding_daily_limit: int = 20
+    google_grounding_monthly_limit: int = 600
     google_grounding_reserve_fraction: float = 0.10
     google_grounding_max_queries_per_call: int = 4
     google_grounding_ledger_path: Path = Path("./vault/grounding_quota.json")
