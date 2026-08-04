@@ -704,3 +704,95 @@ class TestSubAgentFailureFindings:
         assert findings[0].finding_type == "research_gap"
         assert "timed out" in findings[0].content
         assert parent.state.sub_agents_active == 0
+
+
+class TestSubAgentRetryEscalation:
+    """Resilience fix: a sub-agent that times out or returns only
+    research_gap findings must be retried with an escalated tier (STANDARD ->
+    STRONG) before a gap is shipped as if it were real content. The retry is
+    bounded by SUB_AGENT_MAX_RETRIES so a persistently-empty question cannot
+    loop forever."""
+
+    @pytest.mark.asyncio
+    async def test_retries_until_real_findings(self, monkeypatch):
+        from hyperion.agents.sub_agent import SubAgentRunner
+        from hyperion.schemas.models import ConfidenceLevel, KeyFinding
+
+        calls = {"n": 0}
+
+        async def fake_run(self_runner):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                # Only a gap -> must trigger a retry with an escalated tier.
+                return [self_runner.gap_finding("only gap", 1.0)]
+            return [
+                KeyFinding(
+                    id="f1",
+                    agent=self_runner.parent_agent,
+                    finding_type="market_data",
+                    title="Real",
+                    content="Real finding with data",
+                    sources=[],
+                    confidence=ConfidenceLevel.HIGH,
+                    gaps=[],
+                )
+            ]
+
+        monkeypatch.setattr(SubAgentRunner, "run", fake_run)
+        parent = self._parent()
+
+        findings = await parent._spawn_sub_agent(self._spec())
+
+        assert len(findings) == 1
+        assert findings[0].finding_type == "market_data"
+        assert calls["n"] == 3
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_real_findings_first_time(self, monkeypatch):
+        from hyperion.agents.sub_agent import SubAgentRunner
+        from hyperion.schemas.models import ConfidenceLevel, KeyFinding
+
+        calls = {"n": 0}
+
+        async def fake_run(self_runner):
+            calls["n"] += 1
+            return [
+                KeyFinding(
+                    id="f1",
+                    agent=self_runner.parent_agent,
+                    finding_type="market_data",
+                    title="Real",
+                    content="Real finding with data",
+                    sources=[],
+                    confidence=ConfidenceLevel.HIGH,
+                    gaps=[],
+                )
+            ]
+
+        monkeypatch.setattr(SubAgentRunner, "run", fake_run)
+        parent = self._parent()
+
+        findings = await parent._spawn_sub_agent(self._spec())
+
+        assert len(findings) == 1
+        assert findings[0].finding_type == "market_data"
+        # First attempt already returned real findings -> no retry.
+        assert calls["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_gives_up_with_gap_after_retries(self, monkeypatch):
+        from hyperion.agents.sub_agent import SubAgentRunner
+
+        async def fake_run(self_runner):
+            return [self_runner.gap_finding("only gap", 1.0)]
+
+        monkeypatch.setattr(SubAgentRunner, "run", fake_run)
+        parent = self._parent()
+
+        findings = await parent._spawn_sub_agent(self._spec())
+
+        # After SUB_AGENT_MAX_RETRIES escalated attempts, the gap is returned
+        # rather than looping forever.
+        assert len(findings) == 1
+        assert findings[0].finding_type == "research_gap"
+        assert parent.state.sub_agents_active == 0

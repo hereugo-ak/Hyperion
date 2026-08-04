@@ -61,6 +61,14 @@ logger = logging.getLogger(__name__)
 # Type variable for structured output models
 T = TypeVar("T", bound=BaseModel)
 
+# Retry budget for a single sub-agent that times out or returns only
+# research_gap findings (see _spawn_sub_agent). Bounded so a persistently
+# empty question cannot loop forever; the orchestrator reframer (L3) is the
+# backstop above this. The tier bump on retry gives a larger context window
+# and a stronger analyzer without touching the parent specialist's own
+# synthesis depth.
+SUB_AGENT_MAX_RETRIES = 2
+
 
 class BaseAgent(ABC):
     """The foundation class for all HYPERION agents.
@@ -1009,45 +1017,105 @@ class BaseAgent(ABC):
             f"Spawned sub-agent: {spec.question[:80]}",
         )
 
-        runner = SubAgentRunner(spec=spec, bus=self.bus, router=self.router)
+        # Spawn-time observability: confirm the active timeout budget. A
+        # deploy that predates the 300->600s bump silently runs at 300s and
+        # reproduces the "Sub-agent timed out" field failures, so surface the
+        # effective value on every spawn.
+        logger.info(
+            "Spawning sub-agent (parent=%s, tier=%s, timeout=%ss, tools=%s): %s",
+            self.spec.agent.value,
+            spec.model_tier.value,
+            spec.timeout_seconds,
+            ",".join(t.value for t in spec.tools),
+            spec.question[:80],
+        )
 
-        started = time.monotonic()
+        findings: list[KeyFinding] = []
+        attempt_spec = spec
         try:
-            findings = await asyncio.wait_for(
-                runner.run(),
-                timeout=spec.timeout_seconds,
-            )
-        except TimeoutError:
-            # Timeout is a bounded-resource outcome, not a reason to spend a
-            # STRONG Director call. Preserve one explicit gap and continue.
-            findings = [
-                runner.gap_finding(
-                    f"timed out after {spec.timeout_seconds}s",
-                    time.monotonic() - started,
+            for attempt in range(1 + SUB_AGENT_MAX_RETRIES):
+                runner = SubAgentRunner(
+                    spec=attempt_spec, bus=self.bus, router=self.router
                 )
-            ]
-            self._log(f"Sub-agent timed out: {spec.question[:80]}")
-        except Exception as exc:  # noqa: BLE001 - isolate junior-agent failure
-            # Parallel specialist gather() calls use return_exceptions=True.
-            # Letting this escape silently discarded the entire result and the
-            # TUI reported '0 findings'. Convert every failure into auditable
-            # evidence insufficiency at this boundary.
-            findings = [
-                runner.gap_finding(
-                    f"failed with {type(exc).__name__}: {str(exc)[:160]}",
-                    time.monotonic() - started,
-                )
-            ]
-            logger.exception("Sub-agent failed for %r", spec.question[:120])
+                started = time.monotonic()
+                try:
+                    result = await asyncio.wait_for(
+                        runner.run(),
+                        timeout=attempt_spec.timeout_seconds,
+                    )
+                except TimeoutError:
+                    # Timeout is a bounded-resource outcome, not a reason to
+                    # spend a STRONG Director call. Preserve one explicit gap
+                    # and (below) retry with an escalated strategy.
+                    result = [
+                        runner.gap_finding(
+                            f"timed out after {attempt_spec.timeout_seconds}s",
+                            time.monotonic() - started,
+                        )
+                    ]
+                    self._log(f"Sub-agent timed out: {spec.question[:80]}")
+                except Exception as exc:  # noqa: BLE001 - isolate junior-agent failure
+                    # Parallel specialist gather() calls use return_exceptions.
+                    # Letting this escape silently discarded the entire result
+                    # and the TUI reported '0 findings'. Convert every failure
+                    # into auditable evidence insufficiency at this boundary.
+                    result = [
+                        runner.gap_finding(
+                            f"failed with {type(exc).__name__}: {str(exc)[:160]}",
+                            time.monotonic() - started,
+                        )
+                    ]
+                    logger.exception("Sub-agent failed for %r", spec.question[:120])
+
+                # A run that returns only research_gap findings is a
+                # non-answer: keep it as the gap but retry with an escalated
+                # tier before shipping an empty gap as if it were content.
+                real = [
+                    f for f in result
+                    if getattr(f, "finding_type", None) != "research_gap"
+                ]
+                if real:
+                    findings = result
+                    break
+
+                if attempt < SUB_AGENT_MAX_RETRIES:
+                    attempt_spec = self._escalate_sub_agent_spec(attempt_spec)
+                    self._log(
+                        f"Sub-agent retry {attempt + 1}/{SUB_AGENT_MAX_RETRIES} "
+                        f"(bump tier -> {attempt_spec.model_tier.value}): "
+                        f"{spec.question[:80]}"
+                    )
+                else:
+                    findings = result  # give up with the gap finding
         finally:
             self.state.sub_agents_active = max(0, self.state.sub_agents_active - 1)
 
         await self._transition(
             AgentState.WORKING,
-            f"Sub-agent returned {len(findings)} findings",
+            f"Sub-agent returned {len(findings)} findings"
+            + (
+                f" after {SUB_AGENT_MAX_RETRIES} retries"
+                if attempt_spec is not spec
+                else ""
+            ),
         )
 
         return findings
+
+    def _escalate_sub_agent_spec(self, spec: SubAgentSpec) -> SubAgentSpec:
+        """Escalate a sub-agent spec for a retry attempt.
+
+        Bumps the model tier one level (STANDARD -> STRONG -> DEEP) so a
+        retry that previously returned only research_gap findings gets a
+        larger context window and a stronger analyzer. The question itself is
+        left intact: the sub-agent already performs a drop_geography
+        low-yield retry internally (sub_agent._search_*), so this reinforces
+        that rather than rewriting the parent's carefully-framed question.
+        """
+        tier_order = (ModelTier.STANDARD, ModelTier.STRONG, ModelTier.DEEP)
+        idx = tier_order.index(spec.model_tier) if spec.model_tier in tier_order else 0
+        new_tier = tier_order[min(idx + 1, len(tier_order) - 1)]
+        return spec.model_copy(update={"model_tier": new_tier})
 
     # ─────────────────────────────────────────────────────────────────────
     # Lifecycle
