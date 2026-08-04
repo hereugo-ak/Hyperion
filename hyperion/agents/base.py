@@ -972,7 +972,7 @@ class BaseAgent(ABC):
         Sub-agents handle context isolation (§4.7):
         - Max 3 per specialist per engagement
         - STANDARD or higher tier (research needs a large context window)
-        - 5-minute timeout
+        - bounded timeout (see spec.timeout_seconds; retried on gap/timeout)
         - Returns structured KeyFinding objects, not free text
         - Cannot spawn their own sub-agents (no recursive spawning)
 

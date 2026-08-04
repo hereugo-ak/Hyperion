@@ -1317,8 +1317,9 @@ class SubAgentRunner:
         not for raw research. This is the context isolation strategy
         (§4.7).
 
-        The 5-minute timeout is enforced by the parent via
-        asyncio.wait_for in BaseAgent._spawn_sub_agent.
+        The bounded timeout is enforced by the parent via
+        asyncio.wait_for in BaseAgent._spawn_sub_agent, which retries on
+        timeout / only-gap results with an escalated tier.
         """
         start = time.time()
 
