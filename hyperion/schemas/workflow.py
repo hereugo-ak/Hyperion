@@ -163,6 +163,21 @@ class TaskNode(BaseModel):
     completed_at: float | None = Field(default=None, description="Unix timestamp when task "
         "completed")
     error: str | None = Field(default=None, description="Error message if task failed")
+    # L3 fix: count of task-reframer retries this node has consumed. The
+    # orchestrator caps reframer retries per node (see
+    # ``Orchestrator.MAX_REFRAMER_RETRIES``) so a hopelessly ill-posed
+    # question cannot loop forever. Reset on a fresh DAG.
+    reframe_attempts: int = Field(
+        default=0,
+        description="How many task-reframer retries this node has consumed",
+    )
+    # L3 fix: when this task was spawned by the reframer as a retry of an
+    # earlier failed task, this is the earlier task's id. Used only for
+    # diagnostics (the reframer chain is visible in the adaptation log).
+    reframed_from: str | None = Field(
+        default=None,
+        description="Task id this node was reframed from, if any",
+    )
 
     @property
     def is_ready(self) -> bool:

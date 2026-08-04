@@ -1096,7 +1096,7 @@ class CompetitiveIntel(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"competitor": competitors[0], "url": self._competitor_urls.get(competitors[0], "")},
             ),
             SubAgentSpec(
@@ -1105,7 +1105,7 @@ class CompetitiveIntel(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"competitor": competitors[1], "url": self._competitor_urls.get(competitors[1], "")},
             ),
             SubAgentSpec(
@@ -1114,7 +1114,7 @@ class CompetitiveIntel(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"competitor": competitors[2]},
             ),
         ]

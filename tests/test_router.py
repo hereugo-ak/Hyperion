@@ -76,16 +76,29 @@ class TestTierMapping:
         providers = router.get_available_providers(ModelTier.STRONG, TaskUrgency.LOW)
         assert len(providers) > 0
 
-    def test_google_uses_flash_lite_model_with_nonzero_project_quota(self):
+    def test_google_uses_ai_studio_model_with_visible_project_quota(self):
         reset_router()
         router = get_router()
         deep_models = router._providers[ProviderType.GOOGLE].get_models_for_tier(
             ModelTier.DEEP
         )
-        assert [model.name for model in deep_models] == ["gemini-3.5-flash-lite"]
-        assert deep_models[0].rpm == 15
+        assert [model.name for model in deep_models] == ["gemini-2.5-flash"]
+        assert deep_models[0].rpm == 5
         assert deep_models[0].tpm == 250_000
-        assert deep_models[0].rpd == 500
+        assert deep_models[0].rpd == 20
+
+    def test_unsupported_groq_model_is_never_routable(self):
+        reset_router()
+        router = get_router()
+        configured = router._providers[ProviderType.GROQ].config.models
+        unsupported = next(model for model in configured if model.name == "gpt-oss-20b")
+        assert unsupported.deprecated is True
+        assert all(
+            model.name != "gpt-oss-20b"
+            for model in router._providers[ProviderType.GROQ].get_models_for_tier(
+                ModelTier.STANDARD
+            )
+        )
 
     def test_mistral_uses_versioned_console_limits_not_latest_aliases(self):
         reset_router()

@@ -1149,7 +1149,7 @@ class MarketAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"market_query": market_query},
             ),
             SubAgentSpec(
@@ -1159,7 +1159,7 @@ class MarketAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"geography": geography, "market_query": market_query},
             ),
             SubAgentSpec(
@@ -1168,7 +1168,7 @@ class MarketAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"market_query": market_query, "segment": segment},
             ),
         ]

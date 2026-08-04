@@ -995,7 +995,7 @@ class InnovationAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.JINA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"space": space, "sector": sector},
             ),
             SubAgentSpec(
@@ -1004,7 +1004,7 @@ class InnovationAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"technologies": technologies[:3]},
             ),
             SubAgentSpec(
@@ -1013,7 +1013,7 @@ class InnovationAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.WAYBACK],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"technologies": technologies[:3], "sector": sector},
             ),
         ]

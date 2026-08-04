@@ -1083,7 +1083,7 @@ class MAAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.SEARXNG, ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"criteria": criteria, "sector": sector},
             ),
             SubAgentSpec(
@@ -1093,7 +1093,7 @@ class MAAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.ALPHA_VANTAGE],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"tickers": target_tickers, "companies": target_names},
             ),
             SubAgentSpec(
@@ -1103,7 +1103,7 @@ class MAAnalyst(BaseAgent):
                 model_tier=ModelTier.STANDARD,
                 tools=[ToolName.OBSCURA],
                 findings_model="KeyFinding",
-                timeout_seconds=300,
+                timeout_seconds=600,
                 context={"companies": target_names},
             ),
         ]

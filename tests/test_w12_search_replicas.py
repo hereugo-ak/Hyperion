@@ -105,7 +105,7 @@ def test_profile_routing_least_outstanding_and_cross_profile_fallback() -> None:
         category="general",
         requested_engines={"mojeek", "brave"},
         explicit=False,
-    ) == fallback.engines
+    ) == {"wikipedia"}
 
 
 def test_explicit_engines_are_bound_to_exactly_one_profile() -> None:
@@ -187,7 +187,10 @@ async def test_dead_web_profile_fails_over_to_reference_engines(monkeypatch) -> 
             "http://web", "web", 8890, frozenset({"brave", "mojeek"})
         ),
         SearxngEndpoint(
-            "http://reference", "reference", 8889, frozenset({"wikipedia"})
+            "http://reference",
+            "reference",
+            8889,
+            frozenset({"wikipedia", "github", "stackexchange"}),
         ),
         SearxngEndpoint(
             "http://scholar", "scholar", 8888, frozenset({"crossref"})
@@ -222,11 +225,14 @@ async def test_dead_web_profile_fails_over_to_reference_engines(monkeypatch) -> 
         def json(self):
             return self.payload
 
+    requested: list[tuple[str, str]] = []
+
     class Http:
         def __init__(self, base_url):
             self.base_url = base_url
 
         async def get(self, path, params=None):
+            requested.append((self.base_url, params["engines"]))
             if self.base_url == "http://web":
                 return Response({
                     "results": [],
@@ -265,7 +271,96 @@ async def test_dead_web_profile_fails_over_to_reference_engines(monkeypatch) -> 
 
     assert response is not None
     assert response.results[0].engine == "wikipedia"
+    assert requested == [
+        ("http://web", "brave,mojeek"),
+        ("http://reference", "wikipedia"),
+    ]
     assert client._pool.endpoints[0].circuit_open is True
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_zero_results_walk_each_profile_once(monkeypatch) -> None:
+    """An empty healthy profile must not be mistaken for an empty corpus."""
+    client = SearxNGClient()
+    client._pool = SearxngPool([
+        SearxngEndpoint("http://web", "web", 8890, frozenset({"brave"})),
+        SearxngEndpoint(
+            "http://reference",
+            "reference",
+            8889,
+            frozenset({"wikipedia", "github", "stackexchange"}),
+        ),
+        SearxngEndpoint("http://scholar", "scholar", 8888, frozenset({"crossref"})),
+    ])
+    requested: list[tuple[str, str]] = []
+
+    class Health:
+        def filter_available(self, engines):
+            return list(engines)
+
+        def record_response(self, unresponsive_engines, responding_engines):
+            return None
+
+        def record_degradation_if_needed(self, engines, *, floor=4):
+            return None
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class Http:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        async def get(self, path, params=None):
+            requested.append((self.base_url, params["engines"]))
+            if self.base_url != "http://scholar":
+                return Response({"results": [], "unresponsive_engines": []})
+            return Response({
+                "results": [{
+                    "title": "Independent study",
+                    "url": "https://doi.org/10.1000/example",
+                    "content": "Cross-profile evidence",
+                    "engine": "crossref",
+                }],
+                "unresponsive_engines": [],
+            })
+
+    async def _get_client(base_url=None):
+        return Http(base_url)
+
+    async def _done():
+        return None
+
+    monkeypatch.setattr("hyperion.tools.searxng.get_engine_health", lambda: Health())
+    monkeypatch.setattr(EngineTokenBucket, "acquire", staticmethod(lambda engines: _done()))
+    monkeypatch.setattr(client, "_get_client", _get_client)
+
+    response = await client._search_searxng_json(
+        query="market evidence",
+        num_results=5,
+        categories="general",
+        language="en",
+        time_range="",
+        engines="brave",
+        safesearch=0,
+    )
+
+    assert response is not None
+    assert response.results[0].engine == "crossref"
+    assert requested == [
+        ("http://web", "brave"),
+        ("http://reference", "wikipedia"),
+        ("http://scholar", "crossref"),
+    ]
+    assert len({base_url for base_url, _engines in requested}) == 3
     await client.close()
 
 

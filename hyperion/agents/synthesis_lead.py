@@ -854,7 +854,7 @@ class SynthesisLead(BaseAgent):
             model_tier=ModelTier.FAST,
             tools=[ToolName.SEARXNG, ToolName.JINA],
             findings_model="KeyFinding",
-            timeout_seconds=300,
+            timeout_seconds=600,
             context={
                 "contradiction_type": contradiction.contradiction_type.value,
                 "finding_a_sources": [s.url for s in finding_a.sources],
