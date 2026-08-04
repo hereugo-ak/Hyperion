@@ -143,7 +143,7 @@ class TestStructuralGuards:
     """AST/config guards so the NEXT recurrence of 'gate silently weakened'
     is caught by the suite, not by an audit."""
 
-        def test_pre_commit_config_exists_and_covers_both_tools(self):
+    def test_pre_commit_config_exists_and_covers_both_tools(self):
         cfg = REPO_ROOT / ".pre-commit-config.yaml"
         assert cfg.exists(), (
             ".pre-commit-config.yaml was deleted — the local half of the "

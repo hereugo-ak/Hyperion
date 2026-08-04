@@ -70,7 +70,7 @@ All 5 providers expose OpenAI-compatible APIs:
 
 | Provider | Models | Tiers Served |
 |---|---|---|
-| Google AI Studio | Gemma 4, Gemini 3.x | MICRO, FAST, STANDARD, DEEP |
+| Google AI Studio | Gemma 4, Gemini 2.5 Flash | MICRO, DEEP |
 | NVIDIA NIM | Nemotron 70B | STRONG |
 | Cerebras | GPT OSS 120B | FAST, STRONG |
 | Groq | Llama 3.3, GPT OSS | MICRO, FAST, STANDARD |

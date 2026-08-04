@@ -321,6 +321,7 @@ class WaitGate:
         tier: ModelTier,
         estimated_tokens: int,
         available_providers: set[ProviderType],
+        excluded_candidates: set[tuple[ProviderType, str]] | None = None,
     ) -> list[ProviderCandidate]:
         """Get all eligible provider+model candidates for a given tier.
 
@@ -330,6 +331,7 @@ class WaitGate:
         - Models where RPD is exhausted
         """
         candidates: list[ProviderCandidate] = []
+        excluded = excluded_candidates or set()
 
         # `model_name` is intentionally not read: `tracker.model` is the
         # authoritative model record, and the key half was only ever used for
@@ -337,6 +339,8 @@ class WaitGate:
         # *future* unused loop variable instead of being silenced wholesale.
         for (provider_type, _model_name), tracker in self._trackers.items():
             if provider_type not in available_providers:
+                continue
+            if (provider_type, _model_name) in excluded:
                 continue
             if tracker.model.tier != tier:
                 continue
@@ -370,6 +374,7 @@ class WaitGate:
         tier: ModelTier,
         estimated_tokens: int,
         available_providers: set[ProviderType],
+        excluded_candidates: set[tuple[ProviderType, str]] | None = None,
     ) -> ProviderCandidate | None:
         """Select the best provider+model for a request.
 
@@ -382,7 +387,12 @@ class WaitGate:
         Returns None if no candidates exist at all (all RPD exhausted,
         all providers unhealthy, etc.)
         """
-        candidates = self.get_candidates_for_tier(tier, estimated_tokens, available_providers)
+        candidates = self.get_candidates_for_tier(
+            tier,
+            estimated_tokens,
+            available_providers,
+            excluded_candidates=excluded_candidates,
+        )
 
         if not candidates:
             return None
@@ -416,6 +426,7 @@ class WaitGate:
         tier: ModelTier,
         estimated_tokens: int,
         available_providers: set[ProviderType],
+        excluded_candidates: set[tuple[ProviderType, str]] | None = None,
     ) -> tuple[ProviderCandidate | None, float]:
         """Select provider and return wait time if needed.
 
@@ -427,7 +438,12 @@ class WaitGate:
         - 5-30s: queue, yield to async scheduler, other agents continue
         - > 30s: try adjacent tier (up or down based on priority)
         """
-        candidate = self.select_provider(tier, estimated_tokens, available_providers)
+        candidate = self.select_provider(
+            tier,
+            estimated_tokens,
+            available_providers,
+            excluded_candidates=excluded_candidates,
+        )
 
         if candidate is None:
             return None, float("inf")

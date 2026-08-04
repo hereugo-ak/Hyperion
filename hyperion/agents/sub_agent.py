@@ -1245,6 +1245,26 @@ class SubAgentRunner:
         except (json.JSONDecodeError, ValueError):
             return []
 
+    def gap_finding(self, reason: str, elapsed: float) -> KeyFinding:
+        """Build the explicit evidence gap returned on any research failure."""
+        from hyperion.schemas.models import ConfidenceLevel
+
+        return KeyFinding(
+            id=f"gap_{self.parent_agent}_{time.time_ns()}",
+            agent=self.parent_agent,
+            finding_type="research_gap",
+            title=f"Research gap: {self.spec.question[:100]}",
+            content=(
+                f"Sub-agent could not complete this research question: {reason}. "
+                f"Tools attempted: {', '.join(self.tools) or 'none'}. "
+                f"Time elapsed: {elapsed:.1f}s. No factual claim should be "
+                "inferred from this missing evidence."
+            ),
+            sources=[],
+            confidence=ConfidenceLevel.LOW,
+            gaps=[self.spec.question],
+        )
+
     async def run(self) -> list[KeyFinding]:
         """Execute the sub-agent research task.
 
@@ -1273,22 +1293,10 @@ class SubAgentRunner:
 
         # If no findings were produced, return a gap finding
         if not findings:
-            from hyperion.schemas.models import ConfidenceLevel
             findings = [
-                KeyFinding(
-                    id=f"gap_{self.parent_agent}_{int(time.time())}",
-                    agent=self.parent_agent,
-                    finding_type="research_gap",
-                    title=f"Research gap: {self.spec.question[:100]}",
-                    content=(
-                        f"Sub-agent was unable to find data for this sub-question. "
-                        f"This is a research gap that should be flagged to the parent. "
-                        f"Tools used: {', '.join(self.tools)}. "
-                        f"Time elapsed: {elapsed:.1f}s."
-                    ),
-                    sources=[],
-                    confidence=ConfidenceLevel.LOW,
-                    gaps=[self.spec.question],
+                self.gap_finding(
+                    "retrieval or LLM analysis returned no validated findings",
+                    elapsed,
                 )
             ]
 

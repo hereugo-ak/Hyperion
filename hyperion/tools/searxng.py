@@ -59,6 +59,14 @@ CATEGORY_ENGINES = {
     "geo": "openstreetmap",
     "news": "mojeek,mwmbl",
 }
+# Corpus-safe defaults when a request crosses profiles after an empty/error
+# response. These engines accept broad natural-language research queries;
+# profile-specific code/search/geo engines do not.
+PROFILE_FALLBACK_ENGINES = {
+    "web": frozenset({"mojeek", "mwmbl", "brave", "yep"}),
+    "reference": frozenset({"wikipedia"}),
+    "scholar": frozenset({"crossref", "openalex", "semantic scholar"}),
+}
 TIER_C_ENGINES = frozenset({
     "bing",
     "bing news",
@@ -328,6 +336,7 @@ class SearxngPool:
         *,
         category: str = "general",
         requested_engines: set[str] | None = None,
+        excluded_ports: set[int] | None = None,
     ) -> SearxngEndpoint:
         preferred = self.preferred_profile(category)
         profiles: tuple[str, ...] = (preferred, *self.FALLBACKS[preferred])
@@ -350,6 +359,7 @@ class SearxngPool:
             # replace them with a different profile's corpus during failover.
             profiles = owners
 
+        excluded = excluded_ports or set()
         now = time.monotonic()
         for endpoint in self.endpoints:
             if endpoint.circuit_open and endpoint.retry_after <= now:
@@ -358,7 +368,9 @@ class SearxngPool:
         for profile in profiles:
             candidates = [
                 endpoint for endpoint in self.endpoints
-                if endpoint.profile == profile and not endpoint.circuit_open
+                if endpoint.profile == profile
+                and endpoint.port not in excluded
+                and not endpoint.circuit_open
             ]
             if candidates:
                 return min(candidates, key=lambda endpoint: endpoint.outstanding)
@@ -384,7 +396,19 @@ class SearxngPool:
         compatible = category_engines & endpoint.engines
         if compatible:
             return compatible
-        return set(endpoint.engines)
+        requested_compatible = requested_engines & endpoint.engines
+        if requested_compatible:
+            # An implicit default engine registry is still a corpus policy.
+            # Respect its per-profile intersection so a general business query
+            # falling back to the reference replica does not hit StackExchange,
+            # GitHub and OpenStreetMap with an invalid paragraph-sized query.
+            return requested_compatible
+        # Custom implicit engine sets may contain only engines from the failed
+        # profile. Never respond by enabling every engine on the fallback
+        # replica; choose only broad-query-safe corpus engines.
+        return set(PROFILE_FALLBACK_ENGINES.get(endpoint.profile, frozenset())) & set(
+            endpoint.engines
+        )
 
     def mark_unhealthy(self, port: int) -> None:
         endpoint = next(item for item in self.endpoints if item.port == port)
@@ -602,12 +626,15 @@ class SearxNGClient:
             )
 
         endpoint: SearxngEndpoint | None = None
+        attempted_ports: set[int] = set()
         for attempt in range(self.MAX_RETRIES):
             try:
                 endpoint = self._pool.endpoint_for(
                     category=category,
                     requested_engines=requested_engines if explicit_engines else None,
+                    excluded_ports=attempted_ports,
                 )
+                attempted_ports.add(endpoint.port)
                 selected_engines = self._pool.engines_for(
                     endpoint,
                     category=category,
@@ -709,8 +736,13 @@ class SearxNGClient:
                     # suspended. Open the endpoint circuit and use the next
                     # profile instead of repeatedly hammering dead upstreams.
                     self._pool.mark_unhealthy(endpoint.port)
-                    if not explicit_engines and attempt < self.MAX_RETRIES - 1:
-                        continue
+                if not explicit_engines and attempt < self.MAX_RETRIES - 1:
+                    # A zero-result profile is not proof that the corpus is
+                    # empty. Walk each isolated profile once in this request;
+                    # the previous implementation retried the same preferred
+                    # profile and never reached reference/scholar fallbacks
+                    # unless every engine had already opened a global circuit.
+                    continue
                 logger.debug(
                     "SearXNG returned 0 results for '%s' (attempt %d)",
                     query,

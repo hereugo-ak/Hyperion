@@ -5,8 +5,8 @@ Verifies the acceptance criteria from HYPERION_DEEP_AUDIT_2026-07-31_PART2.md
 
 1. A complete() call with every provider failing terminates in a bounded
    number of dispatch attempts (<= RouterAttempt.max_attempts).
-2. No provider is dispatched more than twice within a single complete() call
-   (the second dispatch is only ever the explicit transient retry).
+2. No provider/model candidate is dispatched more than twice within one
+   complete() call (the second dispatch is the explicit transient retry).
 3. A 401/403 failure never triggers a second attempt against the same
    provider and the budget charge is refunded.
 4. A 429 cools the exact model and fails over to an independent provider
@@ -23,6 +23,7 @@ from __future__ import annotations
 import pytest
 
 from hyperion.config import ModelTier, ProviderType
+from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import (
     ProviderHealth,
     ProviderStatus,
@@ -57,12 +58,12 @@ def _failure(provider: ProviderType, tier: ModelTier, status_code: int | None, e
 
 
 def _patch_all_providers(router, monkeypatch, status_code, error, counter):
-    """Replace every provider's complete() with a failing stub that counts
-    dispatches per provider. Returns the counter dict."""
+    """Replace provider completion with a candidate-scoped failing stub."""
 
     async def _failing_complete(self, model, messages, tier, temperature=None,
                                 max_tokens=None, response_format=None):
-        counter[self.provider_type] = counter.get(self.provider_type, 0) + 1
+        key = (self.provider_type, model)
+        counter[key] = counter.get(key, 0) + 1
         return _failure(self.provider_type, tier, status_code, error)
 
     from hyperion.router.providers.base import BaseProvider
@@ -76,7 +77,7 @@ async def test_all_providers_failing_terminates_bounded(monkeypatch):
     failover chain terminates within max_attempts and no provider sees more
     than two dispatches."""
     router = _fresh_router()
-    counter: dict[ProviderType, int] = {}
+    counter: dict[tuple[ProviderType, str], int] = {}
     _patch_all_providers(router, monkeypatch, 500, "500 Server Error", counter)
 
     # avoid real backoff sleeps in the transient retry path
@@ -91,13 +92,13 @@ async def test_all_providers_failing_terminates_bounded(monkeypatch):
 
     assert not response.success
     total_dispatches = sum(counter.values())
-    max_attempts = max(1, len(router._providers)) * 2
+    max_attempts = max(1, len(router._trackers)) * 2
     assert total_dispatches <= max_attempts, (
         f"unbounded failover: {total_dispatches} dispatches > {max_attempts}"
     )
-    for provider_type, count in counter.items():
+    for candidate, count in counter.items():
         assert count <= 2, (
-            f"{provider_type} dispatched {count}x in one complete() call"
+            f"{candidate} dispatched {count}x in one complete() call"
         )
 
 
@@ -184,7 +185,7 @@ async def test_transient_retried_once_then_failover(monkeypatch):
     """Criterion 2 (transient path): the first provider gets exactly one
     retry; the walk then moves to the next provider."""
     router = _fresh_router()
-    counter: dict[ProviderType, int] = {}
+    counter: dict[tuple[ProviderType, str], int] = {}
     _patch_all_providers(router, monkeypatch, 503, "503 Service Unavailable", counter)
 
     import hyperion.router.router as router_mod
@@ -197,13 +198,11 @@ async def test_transient_retried_once_then_failover(monkeypatch):
     response = await router.complete(tier=ModelTier.FAST, messages=MESSAGES)
     assert not response.success
 
-    first_provider = min(counter, key=lambda p: counter[p] if counter[p] > 0 else 99)
-    # The first-dispatched provider saw exactly 2 dispatches (initial + retry);
-    # every other provider at most 2 as well (they also get the transient retry).
-    assert counter[first_provider] <= 2
+    # Every model sees at most its initial dispatch plus one transient retry.
+    assert counter
     for count in counter.values():
         assert count <= 2
-    # And the walk did move on to at least one other provider.
+    # The walk moved beyond the first failed candidate.
     assert len(counter) >= 2
 
 
@@ -246,6 +245,72 @@ async def test_connection_error_retried_once_then_recovers(monkeypatch):
     assert calls[0] == calls[1]
     assert is_transient_connection_error("Temporary failure in name resolution")
     assert is_transient_connection_error("Name or service not known")
+
+
+@pytest.mark.asyncio
+async def test_model_rejection_fails_over_to_sibling_model(monkeypatch):
+    """A stale model ID must not exclude valid siblings on one provider."""
+    router = _fresh_router()
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        router,
+        "get_available_providers",
+        lambda *_args, **_kwargs: {ProviderType.GROQ},
+    )
+    monkeypatch.setattr(router.budget_planner, "reserve", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        router.budget_planner,
+        "release_reservation",
+        lambda **_kwargs: None,
+    )
+
+    async def _reject_then_succeed(
+        self, model, messages, tier, temperature=None, max_tokens=None,
+        response_format=None,
+    ):
+        calls.append(model)
+        if len(calls) == 1:
+            return _failure(self.provider_type, tier, 404, "model does not exist")
+        return RouterResponse(
+            content="ok",
+            model=model,
+            provider=self.provider_type,
+            tier=tier,
+            input_tokens=4,
+            output_tokens=1,
+            total_tokens=5,
+        )
+
+    from hyperion.router.providers.base import BaseProvider
+
+    monkeypatch.setattr(BaseProvider, "complete", _reject_then_succeed)
+    response = await router._try_tier(
+        tier=ModelTier.STANDARD,
+        messages=MESSAGES,
+        estimated_tokens=10,
+        agent_name="test",
+        urgency=TaskUrgency.NORMAL,
+        temperature=0.0,
+        max_tokens=None,
+        response_format=None,
+    )
+
+    assert response is not None and response.success
+    assert len(calls) == 2
+    assert calls[0] != calls[1]
+
+
+def test_request_error_does_not_poison_provider_health():
+    health = ProviderHealth()
+
+    for _ in range(5):
+        health.record_request_error(404)
+
+    assert health.status == ProviderStatus.HEALTHY
+    assert health.consecutive_failures == 0
+    assert health.is_available()
+    assert health.total_errors == 5
 
 
 def test_single_network_error_is_recoverable_and_circuit_is_timed():

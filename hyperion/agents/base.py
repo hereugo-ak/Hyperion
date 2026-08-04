@@ -1011,21 +1011,37 @@ class BaseAgent(ABC):
 
         runner = SubAgentRunner(spec=spec, bus=self.bus, router=self.router)
 
+        started = time.monotonic()
         try:
             findings = await asyncio.wait_for(
                 runner.run(),
                 timeout=spec.timeout_seconds,
             )
         except TimeoutError:
-            # §4.7: "if a sub-agent doesn't return in 5 min, the parent
-            # proceeds with available findings and flags the gap"
-            findings = []
-            await self._escalate(
-                issue=f"Sub-agent timed out: {spec.question[:80]}",
-                suggested_action="Proceed with available findings and flag the gap",
-            )
+            # Timeout is a bounded-resource outcome, not a reason to spend a
+            # STRONG Director call. Preserve one explicit gap and continue.
+            findings = [
+                runner.gap_finding(
+                    f"timed out after {spec.timeout_seconds}s",
+                    time.monotonic() - started,
+                )
+            ]
+            self._log(f"Sub-agent timed out: {spec.question[:80]}")
+        except Exception as exc:  # noqa: BLE001 - isolate junior-agent failure
+            # Parallel specialist gather() calls use return_exceptions=True.
+            # Letting this escape silently discarded the entire result and the
+            # TUI reported '0 findings'. Convert every failure into auditable
+            # evidence insufficiency at this boundary.
+            findings = [
+                runner.gap_finding(
+                    f"failed with {type(exc).__name__}: {str(exc)[:160]}",
+                    time.monotonic() - started,
+                )
+            ]
+            logger.exception("Sub-agent failed for %r", spec.question[:120])
+        finally:
+            self.state.sub_agents_active = max(0, self.state.sub_agents_active - 1)
 
-        self.state.sub_agents_active -= 1
         await self._transition(
             AgentState.WORKING,
             f"Sub-agent returned {len(findings)} findings",
