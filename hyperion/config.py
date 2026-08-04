@@ -143,7 +143,7 @@ GOOGLE_MODELS: list[ModelSpec] = [
         roles=["backup workhorse"],
     ),
     ModelSpec(
-        name="gemini-3.1-flash-lite",
+        name="gemini-3.5-flash-lite",
         provider=ProviderType.GOOGLE,
         context_window=250_000,
         rpm=15,
@@ -334,72 +334,77 @@ GROQ_MODELS: list[ModelSpec] = [
 # ── Mistral AI (§2.5 — 5th provider, free Experiment tier) ───────────────────
 
 MISTRAL_MODELS: list[ModelSpec] = [
+    # Exact versioned model IDs and Experiment-plan limits from the Mistral
+    # admin console. Do not use "latest" aliases here: aliases can resolve to
+    # a model with a radically smaller quota than the wait gate is tracking.
+    # The console reports requests/second; rpm below is that value × 60,
+    # rounded down where the displayed decimal is approximate.
     ModelSpec(
-        name="mistral-large-latest",
+        name="mistral-large-2512",
         provider=ProviderType.MISTRAL,
         context_window=128_000,
-        rpm=60,
-        tpm=500_000,
+        rpm=4,  # 0.07 RPS
+        tpm=250_000,
         rpd=None,
         tier=ModelTier.STRONG,
         roles=["planning", "writing", "synthesis", "quality gate"],
     ),
     ModelSpec(
-        name="mistral-medium-latest",
+        name="mistral-medium-2605",
         provider=ProviderType.MISTRAL,
         context_window=128_000,
-        rpm=60,
-        tpm=500_000,
+        rpm=25,  # 0.42 RPS
+        tpm=375_000,
+        rpd=None,
+        tier=ModelTier.STRONG,
+        roles=["reasoning", "risk analysis", "game theory", "strategic options"],
+    ),
+    ModelSpec(
+        name="mistral-medium-2508",
+        provider=ProviderType.MISTRAL,
+        context_window=128_000,
+        rpm=22,  # 0.38 RPS
+        tpm=356_250,
         rpd=None,
         tier=ModelTier.STANDARD,
         roles=["research", "analysis", "structured output"],
     ),
     ModelSpec(
-        name="magistral-medium-latest",
+        name="ministral-14b-2512",
         provider=ProviderType.MISTRAL,
-        context_window=40_000,
-        rpm=60,
-        tpm=500_000,
-        rpd=None,
-        tier=ModelTier.STRONG,
-        roles=["reasoning", "DCF", "risk analysis", "game theory", "strategic options"],
-    ),
-    ModelSpec(
-        name="magistral-small-latest",
-        provider=ProviderType.MISTRAL,
-        context_window=40_000,
-        rpm=60,
-        tpm=500_000,
+        context_window=128_000,
+        rpm=30,  # 0.50 RPS
+        tpm=937_500,
         rpd=None,
         tier=ModelTier.STANDARD,
         roles=["reasoning", "fact-check logic", "quality scoring"],
     ),
     ModelSpec(
-        name="mistral-small-latest",
+        name="mistral-small-2603",
         provider=ProviderType.MISTRAL,
         context_window=32_000,
-        rpm=60,
-        tpm=500_000,
+        rpm=49,  # 0.83 RPS; conservative floor avoids bursting at 50/min
+        tpm=50_000,
         rpd=None,
         tier=ModelTier.FAST,
         roles=["fast extraction", "sub-agent research", "keyword matching"],
     ),
     ModelSpec(
-        name="devstral-latest",
+        name="devstral-2512",
         provider=ProviderType.MISTRAL,
         context_window=256_000,
-        rpm=60,
-        tpm=500_000,
+        rpm=49,  # 0.83 RPS
+        tpm=1_000_000,
         rpd=None,
         tier=ModelTier.DEEP,
         roles=["long context", "tool orchestration", "multi-file reasoning"],
     ),
     ModelSpec(
-        name="ministral-3b-latest",
+        name="ministral-3b-2512",
         provider=ProviderType.MISTRAL,
         context_window=128_000,
-        rpm=60,
-        tpm=500_000,
+        rpm=750,  # 12.50 RPS
+        tpm=1_300_000,
         rpd=None,
         tier=ModelTier.MICRO,
         roles=["micro tasks", "quick lookups", "simple classification", "sub-agent"],
@@ -738,7 +743,7 @@ class Settings(BaseSettings):
     # OpenAI-compatible completion endpoint. Quota units are provider-issued
     # search queries for Gemini 3 models, not ordinary completion requests.
     google_grounding_enabled: bool = True
-    google_grounding_model: str = "gemini-3.1-flash-lite"
+    google_grounding_model: str = "gemini-3.5-flash-lite"
     google_grounding_daily_limit: int = 500
     google_grounding_monthly_limit: int = 15_000
     google_grounding_reserve_fraction: float = 0.10
@@ -756,7 +761,7 @@ class Settings(BaseSettings):
 
     # ── Quality Gate ──
     quality_threshold: float = 4.0
-    max_quality_iterations: int = 4  # W-08: raised from 2, bounded by the wall-clock budget below
+    max_quality_iterations: int = 2  # Keep one authoritative cap aligned with QualityGate.MAX_ITERATIONS
     quality_iteration_wall_clock_seconds: int = 900  # W-08: the loop cannot run away
     quality_source_floor: int = 3   # P7: stop iterating if sources < floor
     # W-08: score below this floor is BLOCKED even with zero hard blockers.

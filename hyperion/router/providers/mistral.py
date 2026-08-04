@@ -3,17 +3,17 @@ HYPERION Mistral Provider.
 
 Mistral AI provides the largest free-tier token budget (~1B tokens/month)
 via their Experiment plan. OpenAI-compatible API at api.mistral.ai/v1.
-This is our volume provider — 7 models across all 5 tiers, with the
-highest TPM (500K) and no daily request cap. (§2.5)
+This is our volume provider — 7 models across all 5 tiers, with
+model-specific Experiment-plan limits and no daily request cap. (§2.5)
 
 Models on this provider:
-- mistral-large-latest: STRONG — planning, writing, synthesis, quality gate
-- mistral-medium-latest: STANDARD — research, analysis, structured output
-- magistral-medium-latest: STRONG — reasoning (DCF, risk, game theory)
-- magistral-small-latest: STANDARD — reasoning (fact-check, quality scoring)
-- mistral-small-latest: FAST — fast extraction, sub-agent research
-- devstral-latest: DEEP — 256K context, tool orchestration
-- ministral-3b-latest: MICRO — quick lookups, simple classification
+- mistral-large-2512: STRONG — planning, writing, synthesis, quality gate
+- mistral-medium-2605: STRONG — reasoning (DCF, risk, game theory)
+- mistral-medium-2508: STANDARD — research, analysis, structured output
+- ministral-14b-2512: STANDARD — reasoning (fact-check, quality scoring)
+- mistral-small-2603: FAST — fast extraction, sub-agent research
+- devstral-2512: DEEP — 256K context, tool orchestration
+- ministral-3b-2512: MICRO — quick lookups, simple classification
 
 This is NOT a generic OpenAI client wrapper. It is the Mistral-specific
 implementation that leverages Mistral's unique model diversity — the
@@ -38,16 +38,16 @@ class MistralProvider(BaseProvider):
 
     The volume provider. 7 models give the wait gate maximum flexibility:
 
-    - STRONG reasoning: magistral-medium-latest (chain-of-thought for DCF, risk)
-    - STRONG general: mistral-large-latest (flagship for synthesis, quality gate)
-    - STANDARD reasoning: magistral-small-latest (fact-check logic, scoring)
-    - STANDARD general: mistral-medium-latest (research, structured output)
-    - FAST: mistral-small-latest (fast extraction, sub-agent tasks)
-    - DEEP: devstral-latest (256K context — longest free-tier context window)
-    - MICRO: ministral-3b-latest (quick lookups, simple classification)
+    - STRONG reasoning: mistral-medium-2605 (chain-of-thought for DCF, risk)
+    - STRONG general: mistral-large-2512 (flagship for synthesis, quality gate)
+    - STANDARD reasoning: ministral-14b-2512 (fact-check logic, scoring)
+    - STANDARD general: mistral-medium-2508 / mistral-medium-2605 (research, structured output)
+    - FAST: mistral-small-2603 (fast extraction, sub-agent tasks)
+    - DEEP: devstral-2512 (256K context — longest free-tier context window)
+    - MICRO: ministral-3b-2512 (quick lookups, simple classification)
 
     Mistral's ~1B tokens/month free quota is the largest of any provider.
-    With 500K TPM and no RPD cap, this provider can absorb high-volume
+    With model-specific TPM/RPS limits and no RPD cap, this provider can absorb high-volume
     workloads that would exhaust Groq or Cerebras daily limits.
     """
 

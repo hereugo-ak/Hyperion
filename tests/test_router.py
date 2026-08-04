@@ -76,6 +76,27 @@ class TestTierMapping:
         providers = router.get_available_providers(ModelTier.STRONG, TaskUrgency.LOW)
         assert len(providers) > 0
 
+    def test_google_uses_flash_lite_model_with_nonzero_project_quota(self):
+        reset_router()
+        router = get_router()
+        deep_models = router._providers[ProviderType.GOOGLE].get_models_for_tier(
+            ModelTier.DEEP
+        )
+        assert [model.name for model in deep_models] == ["gemini-3.5-flash-lite"]
+        assert deep_models[0].rpm == 15
+        assert deep_models[0].tpm == 250_000
+        assert deep_models[0].rpd == 500
+
+    def test_mistral_uses_versioned_console_limits_not_latest_aliases(self):
+        reset_router()
+        router = get_router()
+        models = router._providers[ProviderType.MISTRAL].config.models
+        assert all(not model.name.endswith("-latest") for model in models)
+        limits = {model.name: (model.rpm, model.tpm) for model in models}
+        assert limits["mistral-large-2512"] == (4, 250_000)
+        assert limits["mistral-medium-2605"] == (25, 375_000)
+        assert limits["ministral-3b-2512"] == (750, 1_300_000)
+
 
 class TestTPMStatus:
     """Test TPM status reporting for TUI display."""

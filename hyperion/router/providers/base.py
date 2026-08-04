@@ -154,9 +154,17 @@ class ProviderHealth:
         self.consecutive_failures = 0
         self.total_requests += 1
 
-    def record_429(self, cooldown_seconds: int = 60) -> None:
-        self.status = ProviderStatus.COOLDOWN
-        self.cooldown_until = time.time() + cooldown_seconds
+    def record_429(self, cooldown_seconds: int = 60, *, provider_wide: bool = False) -> None:
+        """Record a rate limit without disabling unrelated provider models.
+
+        Provider dashboards expose limits per model. A 429 from one model must
+        therefore cool that model in the wait gate, not open the provider-wide
+        circuit. ``provider_wide`` remains available for an explicitly global
+        quota response.
+        """
+        self.status = ProviderStatus.COOLDOWN if provider_wide else ProviderStatus.DEGRADED
+        if provider_wide:
+            self.cooldown_until = time.time() + cooldown_seconds
         self.last_error = "429 Rate Limited"
         self.total_429s += 1
         self.total_errors += 1
@@ -316,7 +324,10 @@ class BaseProvider:
                 api_key=self.config.api_key,
                 base_url=self.config.base_url,
                 timeout=60.0,
-                max_retries=2,
+                # The router owns retries and reserves RPM/TPM before each one.
+                # SDK retries are invisible to the wait gate and can turn one
+                # tracked dispatch into three real requests.
+                max_retries=0,
             )
         return self._client
 
@@ -436,7 +447,9 @@ class BaseProvider:
                 # window that did not exist for two entire engagements.
                 self.health.record_auth_error()
             elif status_code == 429 or "429" in error_str or "rate_limit" in lower:
-                self.health.record_429()
+                # The router records a cooldown on the exact model tracker.
+                # Keep the provider available for its other model quotas.
+                self.health.record_429(provider_wide=False)
             elif status_code in (500, 502, 503, 504) or "500" in error_str or "503" in error_str or "server_error" in lower:
                 self.health.record_500()
             elif "timeout" in lower or "timed out" in lower:

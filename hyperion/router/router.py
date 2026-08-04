@@ -82,9 +82,9 @@ _TIER_DOWNGRADE: dict[ModelTier, ModelTier] = {
 # - auth (401/403): dead credential. The provider opens its circuit, the
 #   budget charge is refunded (no real quota was consumed), and the provider
 #   is never retried within the same complete() call.
-# - rate_limit (429): the wait gate mispredicted capacity. A cooldown is
-#   recorded in the wait gate and the tier walk STOPS — failing over
-#   instantly is how one provider's 429 becomes every provider's 429.
+# - rate_limit (429): the wait gate mispredicted capacity. Cool the exact
+#   provider+model pair and fail over to a different provider. Provider quotas
+#   are independent; stopping the whole call here strands healthy capacity.
 # - transient (5xx/timeout): retry the SAME provider once with a short
 #   backoff, then fail over.
 # - other: fail over to the next unvisited candidate.
@@ -447,12 +447,9 @@ class LLMRouter:
             self._response_cache.set(tier, messages, response, temperature, max_tokens)
             return response
 
-        if response is not None and response.status_code == 429:
-            # W-17: a 429 halts the ENTIRE complete() call, not just one
-            # tier's loop. Walking adjacent tiers after a rate limit is how
-            # one provider's 429 becomes every provider's 429 — the caller
-            # backs off and retries after the recorded cooldown.
-            return response
+        # A model-scoped 429 is handled inside _try_tier by trying an
+        # independent provider. If every provider fails, continue the normal
+        # adjacent-tier walk rather than aborting the engagement.
 
         # If the requested tier failed, try adjacent tiers (§3.3)
         for adjacent_tier in _TIER_ADJACENCY.get(tier, []):
@@ -484,9 +481,6 @@ class LLMRouter:
                 response.downgraded = True
                 self._response_cache.set(tier, messages, response, temperature, max_tokens)
                 return response
-            if response is not None and response.status_code == 429:
-                # W-17: halt the whole call on rate limit (see above).
-                return response
 
         # D9: If all adjacent tiers exhausted, try explicit downgrade.
         # P2-31: skip when the adjacency walk already attempted this tier —
@@ -515,9 +509,6 @@ class LLMRouter:
             if response is not None and response.success:
                 response.downgraded = True
                 self._response_cache.set(tier, messages, response, temperature, max_tokens)
-                return response
-            if response is not None and response.status_code == 429:
-                # W-17: halt the whole call on rate limit (see above).
                 return response
 
         # All tiers exhausted — return the last error response
@@ -683,12 +674,9 @@ class LLMRouter:
                     return response
 
                 last_failure = response
-                if response.status_code == 429:
-                    # W-17: a 429 means the wait gate mispredicted capacity.
-                    # The provider already recorded its cooldown; failing
-                    # over instantly is how one provider's 429 becomes every
-                    # provider's 429. Halt the walk — the caller backs off.
-                    return response
+                # A 429 cools only this exact model in _dispatch. Continue to
+                # another provider whose quota is independent. The visited set
+                # prevents retrying the same provider in this completion call.
                 # auth/transient/other failures: the provider is now in
                 # attempt.visited (and possibly circuit-open); the loop
                 # moves to the next unvisited provider.
@@ -813,10 +801,8 @@ class LLMRouter:
         status = response.status_code
 
         if status in (401, 403):
-            # W-17 step 6: a dead credential never consumed real quota —
-            # charging it is how a revoked key silently burns a provider's
-            # entire RPD under retry. Refund ONLY this class (see
-            # ProviderBudget.refund's warning against blanket refunds).
+            # A dead credential consumed neither a useful request budget nor
+            # token capacity, so refund both parts of the reservation.
             self.budget_planner.refund(
                 provider=candidate.provider_type,
                 model_name=candidate.model.name,
@@ -824,7 +810,20 @@ class LLMRouter:
             )
             return response
 
+        # Every other failed completion consumed an RPM slot but produced no
+        # token usage. Release estimated token capacity so failed calls cannot
+        # manufacture `budget_exhausted` later in the same engagement.
+        self.budget_planner.release_reservation(
+            provider=candidate.provider_type,
+            model_name=candidate.model.name,
+            estimated_tokens=estimated_tokens,
+        )
+
         if status == 429:
+            self.wait_gate.record_rate_limit(
+                provider=candidate.provider_type,
+                model_name=candidate.model.name,
+            )
             return response
 
         is_transient = status in _TRANSIENT_STATUS_CODES or (
@@ -863,7 +862,19 @@ class LLMRouter:
                 self.budget_planner.refund(
                     provider=candidate.provider_type,
                     model_name=candidate.model.name,
+                    estimated_tokens=estimated_tokens,
                 )
+            else:
+                self.budget_planner.release_reservation(
+                    provider=candidate.provider_type,
+                    model_name=candidate.model.name,
+                    estimated_tokens=estimated_tokens,
+                )
+                if retry.status_code == 429:
+                    self.wait_gate.record_rate_limit(
+                        provider=candidate.provider_type,
+                        model_name=candidate.model.name,
+                    )
             return retry
 
         return response

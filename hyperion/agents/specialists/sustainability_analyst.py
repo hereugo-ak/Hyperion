@@ -564,7 +564,7 @@ class SustainabilityAnalyst(BaseAgent):
         search_results: list[dict[str, Any]],
         esg_platform_data: list[dict[str, Any]],
         context: dict[str, Any],
-    ) -> tuple[list[ESGScore], str]:
+    ) -> tuple[list[ESGScore], str | None]:
         """Score the company/strategy on relevant ESG frameworks.
 
         Identifies which framework is most relevant for the stakeholder
@@ -658,7 +658,12 @@ class SustainabilityAnalyst(BaseAgent):
                     is_mandatory=bool(score.get("is_mandatory", False)),
                 ))
 
-            most_relevant = data.get("most_relevant_framework", "")
+            raw_most_relevant = data.get("most_relevant_framework")
+            most_relevant = (
+                raw_most_relevant.strip()
+                if isinstance(raw_most_relevant, str) and raw_most_relevant.strip()
+                else None
+            )
 
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
