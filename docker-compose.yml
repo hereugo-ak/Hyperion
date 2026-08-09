@@ -13,6 +13,12 @@ x-searxng-common: &searxng-common
   security_opt: [no-new-privileges:true]
   read_only: true
   tmpfs: [/tmp]
+  # FIX0.3 §2: containers run UTC by default while the host runs IST — the
+  # resulting 5h30m log-prefix offset made docker logs impossible to
+  # correlate with the TUI. Pin every container to the host timezone so
+  # TUI / container / host logs agree. Override via TZ in .env if the host
+  # is not Asia/Kolkata. (Each replica re-declares environment below with
+  # TZ because docker-compose merges replace the anchor's environment.)
   depends_on:
     valkey:
       condition: service_healthy
@@ -42,6 +48,9 @@ services:
     cpus: 0.5
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    # FIX0.3 §2: same single timezone rule as the searxng replicas.
+    environment:
+      TZ: ${TZ:-Asia/Kolkata}
     volumes: [hyperion-valkey-data:/data]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
@@ -57,6 +66,7 @@ services:
     container_name: hyperion-searxng-scholar
     ports: ["127.0.0.1:8888:8080"]
     environment:
+      TZ: ${TZ:-Asia/Kolkata}
       SEARXNG_BASE_URL: http://localhost:8888/
       SEARXNG_SECRET: ${SEARXNG_SCHOLAR_SECRET:?set SEARXNG_SCHOLAR_SECRET}
       SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
@@ -70,6 +80,7 @@ services:
     container_name: hyperion-searxng-reference
     ports: ["127.0.0.1:8889:8080"]
     environment:
+      TZ: ${TZ:-Asia/Kolkata}
       SEARXNG_BASE_URL: http://localhost:8889/
       SEARXNG_SECRET: ${SEARXNG_REFERENCE_SECRET:?set SEARXNG_REFERENCE_SECRET}
       SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
@@ -83,6 +94,7 @@ services:
     container_name: hyperion-searxng-web
     ports: ["127.0.0.1:8890:8080"]
     environment:
+      TZ: ${TZ:-Asia/Kolkata}
       SEARXNG_BASE_URL: http://localhost:8890/
       SEARXNG_SECRET: ${SEARXNG_WEB_SECRET:?set SEARXNG_WEB_SECRET}
       SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
@@ -96,7 +108,7 @@ services:
     image: flaresolverr/flaresolverr:v3.3.21
     container_name: flaresolverr
     ports: ["127.0.0.1:8191:8191"]
-    environment: {LOG_LEVEL: info}
+    environment: {LOG_LEVEL: info, TZ: "${TZ:-Asia/Kolkata}"}
     restart: unless-stopped
     mem_limit: 1024m
     cpus: 2.0

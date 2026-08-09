@@ -609,6 +609,63 @@ def export(
     console.print(f"[{SUCCESS}]exported → {out}[/{SUCCESS}]")
 
 
+# ── health ───────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def health(
+    reset_engine_state: bool = typer.Option(
+        False,
+        "--reset-engine-state",
+        help="Clear persisted engine-health cooldowns/suspensions (F-04).",
+    ),
+) -> None:
+    """Show engine-health state; optionally reset it.
+
+    F-04 (FIX0.3_RUNBOOK_2026-08-09): engine-health cooldowns persist across
+    processes up to a 4h cap. A stale suspension from a previous session must
+    not be able to poison the next engagement, so an operator can age them
+    out here without hand-editing ``vault/engine_health.json``.
+    """
+    _banner()
+    from hyperion.tools.engine_health import get_engine_health, reset_engine_health
+
+    if reset_engine_state:
+        reset_engine_health()
+        fresh = get_engine_health()
+        fresh.reset()
+        console.print(
+            f"[{SUCCESS}]engine-health state reset — all engines healthy[/{SUCCESS}]"
+        )
+        return
+
+    tracker = get_engine_health()
+    dropped = tracker.sweep_expired()
+    state_path = getattr(tracker, "_state_path", None)
+    table = Table(border_style=DIM, header_style=f"bold {CYAN}")
+    table.add_column("engine", style=f"bold {CYAN}")
+    table.add_column("state", justify="center")
+    table.add_column("cooldown until (epoch)", justify="right")
+    for engine in sorted(set(tracker._cooldowns) | set(tracker._suspended)):
+        until = tracker.cooldown_until(engine)
+        state = tracker.state(engine).value
+        table.add_row(engine, state, f"{until:.0f}" if until else "")
+    console.print(table)
+    console.print(
+        Text(
+            f"expired entries swept at boot/now: {dropped} · "
+            f"state file: {state_path}",
+            style=DIM,
+        )
+    )
+    console.print(
+        Text(
+            "use --reset-engine-state to clear all cooldowns before an engagement",
+            style=DIM,
+        )
+    )
+
+
 # ── help ─────────────────────────────────────────────────────────────────────
 
 
@@ -625,6 +682,7 @@ def help() -> None:
     table.add_row("providers", "show LLM provider status and rate limits")
     table.add_row("vault <query>", "search the Second Brain for prior research")
     table.add_row("export <fmt>", "export the latest report (pdf | markdown | json)")
+    table.add_row("health", "show engine-health state (--reset-engine-state to clear)")
     console.print(table)
 
 

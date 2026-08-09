@@ -1094,6 +1094,33 @@ class SynthesisLead(BaseAgent):
             }.get(c, 3),
         )
 
+        # F-11c: confidence must track MEASURED evidence coverage, not the
+        # model's assertion. When fewer than half the report's sections cite
+        # at least one source, HIGH confidence is dishonest regardless of what
+        # the LLM said — downgrade it. The Aug 9 run asserted HIGH with 4
+        # total sources and 8/11 unsourced sections (DISHONEST CONFIDENCE
+        # blocker); this makes the downgrade a deterministic fact, not a
+        # post-hoc gate.
+        sections = self._partial_sections or []
+        total_sections = len(sections)
+        if total_sections:
+            sourced = sum(1 for s in sections if getattr(s, "sources", None))
+            coverage = sourced / total_sections
+            if coverage < 0.5:
+                downgraded = {
+                    ConfidenceLevel.HIGH: ConfidenceLevel.MEDIUM,
+                    ConfidenceLevel.MEDIUM: ConfidenceLevel.LOW,
+                    ConfidenceLevel.LOW: ConfidenceLevel.LOW,
+                }.get(system_confidence, ConfidenceLevel.LOW)
+                if downgraded is not system_confidence:
+                    logger.warning(
+                        "DISHONEST CONFIDENCE GUARD: only %d/%d sections sourced "
+                        "(%.0f%% < 50%%): system confidence downgraded %s -> %s",
+                        sourced, total_sections, coverage * 100,
+                        system_confidence.value, downgraded.value,
+                    )
+                system_confidence = downgraded
+
         return system_confidence, per_domain
 
     # ─────────────────────────────────────────────────────────────────────

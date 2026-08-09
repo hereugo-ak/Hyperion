@@ -41,15 +41,39 @@ def test_unresponsive_engine_gets_cooldown(tracker):
     assert tracker.filter_available(["bing", "duckduckgo", "brave"]) == ["bing", "brave"]
 
 
-def test_suspended_time_ban_gets_24h_cooldown(tracker):
-    """A 403 with suspended_time=86400 is a 24-hour cooldown for THAT
-    engine specifically, never a reason to abandon search entirely."""
+def test_suspended_time_ban_is_capped_at_4h(tracker):
+    """F-04: a 403 with suspended_time=86400 is capped at the 4h maximum so
+    a single bad session cannot waste a whole day of capacity."""
+    from hyperion.tools.engine_health import _MAX_COOLDOWN_SECONDS
+
     tracker.record_response(
         unresponsive_engines=[["duckduckgo", "HTTP error 403 (suspended_time=86400)"]],
         responding_engines=[],
     )
     until = tracker.cooldown_until("duckduckgo")
-    assert until >= time.time() + 23 * 3600  # ~24h
+    assert until >= time.time() + 3 * 3600  # a real suspension, not a token one
+    assert until <= time.time() + _MAX_COOLDOWN_SECONDS + 5
+
+
+def test_boot_ttl_sweep_drops_expired_cooldowns(tracker):
+    """F-04: expired cooldowns persisted by an earlier session must be aged
+    out at boot — the Aug 4 session's bans were still active on Aug 9."""
+    tracker.record_response(
+        unresponsive_engines=[["brave", "HTTP error 429 (suspended_time=10)"]],
+        responding_engines=[],
+    )
+    assert not tracker.is_available("brave")
+    # Simulate the passage of time past the cooldown expiry.
+    import time as _time
+
+    expired = _time.time() - 60
+    tracker._suspended["brave"] = expired
+    tracker._cooldowns["brave"] = expired
+    dropped = tracker.sweep_expired()
+    assert dropped >= 1
+    assert tracker.is_available("brave")
+    assert "brave" not in tracker._suspended
+    assert "brave" not in tracker._cooldowns
 
 
 def test_repeated_failures_escalate_cooldown(tracker):

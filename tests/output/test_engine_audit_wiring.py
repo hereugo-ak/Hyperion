@@ -11,7 +11,21 @@ from hyperion.agents.delivery.render_engine import RenderEngine
 
 CREAM = (0xF5, 0xF4, 0xEE)
 _CREAM_FILL = tuple(c / 255 for c in CREAM)
-_DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+def _dejavu_or_platform_font() -> str:
+    """DejaVu on Linux; fall back to a Windows font (Arial carries U+2014)."""
+    from pathlib import Path
+
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    ]
+    for candidate in candidates:
+        if Path(candidate).is_file():
+            return candidate
+    raise RuntimeError("no usable TTF font for synthetic PDF tests")
+
+
+_DEJAVU = _dejavu_or_platform_font()
 
 
 def _make_pdf(path, *, em_dash: bool) -> None:
@@ -20,9 +34,12 @@ def _make_pdf(path, *, em_dash: bool) -> None:
     page = doc.new_page(width=w, height=h)
     page.draw_rect(fitz.Rect(0, 0, w, h), fill=_CREAM_FILL, color=None)
     page.insert_font(fontname="dvs", fontfile=_DEJAVU)
-    col1 = " ".join(f"w{i}" for i in range(520))
+    # 640 filler words per column keeps median ink fill above the page audit's
+    # 45% floor with DejaVu (Linux) OR Arial (Windows) — font metrics differ,
+    # and the audit contract must not depend on which platform font resolved.
+    col1 = " ".join(f"w{i}" for i in range(640))
     page.insert_textbox(fitz.Rect(40, 40, 290, h - 30), col1, fontsize=9, fontname="dvs")
-    col2 = " ".join(f"c{i}" for i in range(520))
+    col2 = " ".join(f"c{i}" for i in range(640))
     if em_dash:
         col2 += " grows — fast"
     page.insert_textbox(fitz.Rect(305, 40, 555, h - 30), col2, fontsize=9, fontname="dvs")

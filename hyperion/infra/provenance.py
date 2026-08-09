@@ -25,9 +25,12 @@ the cached snapshot for the render path without re-running git.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Reuse the bounded command runner from services.py. It is async; the sync
 # wrapper drives it on a private loop for pre-loop callers.
@@ -42,7 +45,14 @@ _cached: Provenance | None = None
 
 @dataclass(frozen=True)
 class Provenance:
-    """The loaded build's identity. Collected once per shell boot."""
+    """The loaded build's identity. Collected once per shell boot.
+
+    F-08 (CHIEF_AUDIT_FIX0.3): the runtime fingerprint must prove that the
+    running process matches the audited checkout AND the audited policy.
+    The audit requires: Git commit, Python executable, import path, source
+    hash, generated profile hash, settings hash, timeout values and search
+    budgets — all printed at boot and attachable to engagement artifacts.
+    """
 
     package_dir: str  # Path(hyperion.__file__).parent, resolved
     repo_root: str | None  # nearest ancestor containing .git, else None
@@ -51,6 +61,16 @@ class Provenance:
     install_mode: str  # "editable" | "site-packages" | "unknown"
     # Unsafe unchecked-hash caches retained under the historical field name.
     stale_pycache: list[str]
+    # F-08: content hashes of the files that define the loaded build and its
+    # policy. ``source_hash`` covers the hyperion package tree; the settings
+    # and generated SearXNG profile hashes let an operator prove the mounted
+    # YAML matches the repository's YAML without trusting a timestamp.
+    source_hash: str = ""
+    settings_hash: str = ""
+    profile_hashes: dict[str, str] = field(default_factory=dict)
+    # F-08: the exact policy numbers the audit demands be observable —
+    # timeouts, retry budgets and search caps as executed, not as documented.
+    policy: dict[str, object] = field(default_factory=dict)
 
 
 def _package_dir() -> Path:
@@ -146,6 +166,108 @@ def _find_stale_pycache(package_dir: Path) -> list[str]:
     return stale
 
 
+def _hash_tree(root: Path) -> str:
+    """Content hash of every ``.py`` file under ``root`` (F-08 source hash)."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    try:
+        for py_file in sorted(root.rglob("*.py")):
+            digest.update(py_file.relative_to(root).as_posix().encode())
+            digest.update(py_file.read_bytes())
+    except OSError:
+        return ""
+    return digest.hexdigest()[:16]
+
+
+def _hash_file(path: Path | None) -> str:
+    """Content hash of one file, or "" when absent/unreadable."""
+    import hashlib
+
+    if path is None:
+        return ""
+    try:
+        if not path.is_file():
+            return ""
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
+def _profile_hashes(root: Path) -> dict[str, str]:
+    """Hash of each generated ``searxng_settings.*.yml`` profile (F-08).
+
+    Lets an operator prove the mounted YAML matches the repository's
+    generated YAML — the audit's "runtime profile hash" diagnostic —
+    without trusting file timestamps.
+    """
+    result: dict[str, str] = {}
+    try:
+        for yml in sorted(root.glob("searxng_settings.*.yml")):
+            if yml.name == "searxng_settings.yml":
+                continue
+            result[yml.name] = _hash_file(yml)
+    except OSError:
+        return {}
+    return result
+
+
+def _policy_snapshot() -> dict[str, object]:
+    """The executed timeout/retry/budget policy (F-08).
+
+    Read from the actual modules the runtime uses, so the fingerprint always
+    matches the loaded code — never a documentation string that drifted.
+    """
+    policy: dict[str, object] = {}
+    try:
+        from hyperion.tools.searxng import SearxNGClient
+
+        policy.update({
+            "searxng_request_timeout_s": SearxNGClient.REQUEST_TIMEOUT,
+            "search_budget_cap": SearxNGClient.SEARCH_BUDGET_CAP,
+            "per_owner_budget_cap": SearxNGClient.PER_OWNER_BUDGET_CAP,
+            "search_max_retries": SearxNGClient.MAX_RETRIES,
+        })
+    except Exception as exc:  # noqa: BLE001 - fingerprint must never crash boot
+        logger.debug("policy: searxng budget values unavailable: %s", exc)
+    try:
+        from hyperion.orchestrator import WorkflowEngine
+
+        policy.update({
+            "task_timeout_s": WorkflowEngine.TASK_TIMEOUT_SECONDS,
+            "specialist_timeout_s": WorkflowEngine.SPECIALIST_TIMEOUT_SECONDS,
+            "max_quality_iterations": WorkflowEngine.MAX_QUALITY_ITERATIONS,
+        })
+    except Exception as exc:  # noqa: BLE001 - fingerprint must never crash boot
+        logger.debug("policy: orchestrator timeouts unavailable: %s", exc)
+    try:
+        from hyperion.agents.base import BaseAgent
+
+        policy.update({"sub_agent_total_ceiling": BaseAgent.SUB_AGENT_TOTAL_CEILING})
+    except Exception as exc:  # noqa: BLE001 - fingerprint must never crash boot
+        logger.debug("policy: sub-agent ceiling unavailable: %s", exc)
+    try:
+        from hyperion.config import get_settings
+
+        settings = get_settings()
+        policy.update({"quality_source_floor": settings.quality_source_floor})
+    except Exception as exc:  # noqa: BLE001 - fingerprint must never crash boot
+        logger.debug("policy: quality source floor unavailable: %s", exc)
+    return policy
+
+
+def _source_hash(package_dir: Path) -> str:
+    """Content hash of the loaded hyperion package tree (F-08)."""
+    return _hash_tree(package_dir)
+
+
+def _settings_hash(repo_root: Path | None) -> str:
+    """Hash of the active SearXNG settings file (F-08)."""
+    if repo_root is None:
+        return ""
+    return _hash_file(repo_root / "searxng_settings.yml")
+
+
 def _sync_snapshot() -> Provenance:
     """Metadata-only snapshot with no git subprocesses — the fallback for
     contexts where the async runner cannot be driven."""
@@ -158,6 +280,10 @@ def _sync_snapshot() -> Provenance:
         git_dirty=False,
         install_mode=_detect_install_mode(package_dir, repo_root),
         stale_pycache=_find_stale_pycache(package_dir),
+        source_hash=_source_hash(package_dir),
+        settings_hash=_settings_hash(repo_root),
+        profile_hashes=_profile_hashes(package_dir.parent),
+        policy=_policy_snapshot(),
     )
 
 
@@ -199,6 +325,10 @@ async def collect_async() -> Provenance:
         git_dirty=git_dirty,
         install_mode=_detect_install_mode(package_dir, repo_root),
         stale_pycache=_find_stale_pycache(package_dir),
+        source_hash=_source_hash(package_dir),
+        settings_hash=_settings_hash(repo_root),
+        profile_hashes=_profile_hashes(package_dir.parent),
+        policy=_policy_snapshot(),
     )
     return _cached
 
@@ -239,15 +369,25 @@ def current() -> Provenance:
 
 
 def banner(provenance: Provenance) -> str:
-    """Render the one-line boot banner, e.g.
+    """Render the boot banner, e.g.
 
     HYPERION  build 87f0582  editable  /home/user/webapp/hyperion
+
+    F-08: the fingerprint line carries the content hashes and the executed
+    policy so a screenshot alone can prove (or refute) that the running
+    build matches the audited checkout.
     """
     sha = provenance.git_sha or "unknown"
     dirty = " +dirty" if provenance.git_dirty else ""
+    profile_bits = "".join(
+        f" {name}={h}" for name, h in sorted(provenance.profile_hashes.items())
+    )
     return (
         f"HYPERION  build {sha}{dirty}  {provenance.install_mode}  "
-        f"platform={detect_platform().value}  {provenance.package_dir}"
+        f"platform={detect_platform().value}  {provenance.package_dir}\n"
+        f"FINGERPRINT source={provenance.source_hash or 'n/a'} "
+        f"settings={provenance.settings_hash or 'n/a'}{profile_bits}\n"
+        f"POLICY {provenance.policy}"
     )
 
 

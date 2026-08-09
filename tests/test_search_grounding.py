@@ -198,11 +198,29 @@ class TestSearxNGGrounding:
         assert result.results == []
         assert called == []
 
-    def test_drop_geography_kwarg_reaches_network_query_without_geography(self, monkeypatch):
+    def test_drop_geography_kwarg_reaches_network_query_without_geography(self, monkeypatch, tmp_path):
         """fix 1.5: ``SearxNGClient.search(..., drop_geography=True)`` must
         actually suppress the geography anchor on the query that reaches
         the network boundary, not just accept the kwarg and ignore it."""
         from hyperion.tools.searxng import SearchResponse, SearxNGClient
+
+        # F-05: engine-health state persists across processes (and is written
+        # by live-stack test runs), so the search() fail-fast gate must not
+        # inherit another run's suspended engines — that would return empty
+        # before the mocked network layer is ever reached. Reset to a clean
+        # isolated store so this hermetic test exercises the mocked boundary.
+        monkeypatch.setenv(
+            "HYPERION_ENGINE_HEALTH_STATE", str(tmp_path / "engine-health.json")
+        )
+        from hyperion.tools.engine_health import reset_engine_health
+
+        reset_engine_health()
+        monkeypatch.setattr(
+            "hyperion.tools.searxng.get_engine_health",
+            lambda: __import__(
+                "hyperion.tools.engine_health", fromlist=["get_engine_health"]
+            ).get_engine_health(),
+        )
 
         set_engagement_focus(
             question="Should India reduce dependence on imports?",

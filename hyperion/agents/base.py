@@ -114,6 +114,10 @@ class BaseAgent(ABC):
         # Sub-agent specs spawned by this agent
         self._sub_agent_specs: list[SubAgentSpec] = []
 
+        # F-07: questions that already got their ONE broadened respawn, so a
+        # timeout/zero-yield can never loop. Keyed by the sub-question text.
+        self._sub_agent_respawned: set[str] = set()
+
         # Issue texts already escalated, for deduplication. See _escalate():
         # each escalation costs the Director a STRONG-tier LLM call, so a loop
         # emitting the same issue repeatedly must not be allowed to storm it.
@@ -883,7 +887,9 @@ class BaseAgent(ABC):
         # must be structured to accept them.
         if tool == ToolName.SEARXNG:
             from hyperion.tools.searxng import SearxNGClient
-            return SearxNGClient(settings=self.settings)
+            # F-05c: label every client with its owning agent so the search
+            # budget can be tracked per-specialist, not just globally.
+            return SearxNGClient(settings=self.settings, owner=self.name.value)
         elif tool == ToolName.JINA:
             from hyperion.tools.jina import JinaClient
             return JinaClient(settings=self.settings)
@@ -958,13 +964,21 @@ class BaseAgent(ABC):
     # Sub-Agent Spawning (§4.7)
     # ─────────────────────────────────────────────────────────────────────
 
+    # F-08b: the absolute sequential ceiling per specialist. The old fixed
+    # 3-slot budget (max_sub_agents) was spent on sub-agents that timed out on
+    # a dead pool ("SUB-AGENT budget reached (3/3)"). max_sub_agents now
+    # bounds CONCURRENT sub-agents only; sequential re-fills are allowed up
+    # to this ceiling so a released slot (timeout/zero yield) can be reused.
+    SUB_AGENT_TOTAL_CEILING = 6
+
     async def _spawn_sub_agent(self, spec: SubAgentSpec) -> list[KeyFinding]:
         """Spawn a junior sub-agent for a focused sub-question.
 
         Sub-agents handle context isolation (§4.7):
-        - Max 3 per specialist per engagement
+        - max_sub_agents CONCURRENT, SUB_AGENT_TOTAL_CEILING sequential
         - STANDARD or higher tier (research needs a large context window)
-        - 5-minute timeout
+        - Timeout: a timeout/zero-yield result releases its slot and triggers
+          ONE broadened respawn (F-07) instead of a terminal gap
         - Returns structured KeyFinding objects, not free text
         - Cannot spawn their own sub-agents (no recursive spawning)
 
@@ -974,21 +988,25 @@ class BaseAgent(ABC):
         """
         from hyperion.agents.sub_agent import SubAgentRunner
 
-        if len(self._sub_agent_specs) >= self.max_sub_agents:
-            # Budget exhaustion is a NORMAL, expected outcome of a bounded
-            # resource, not an anomaly the Director needs to reason about.
-            # This used to call _escalate(), so an agent looping over N items
-            # (e.g. Synthesis Lead resolving N contradictions with
-            # max_sub_agents=1) fired N escalations, each costing the Director
-            # a STRONG-tier LLM evaluation that could only ever conclude
-            # "proceed with available findings". That was the escalation storm.
-            # The correct behaviour is to log the gap and carry on.
-            self._log(
-                f"SUB-AGENT budget reached ({len(self._sub_agent_specs)}/"
-                f"{self.max_sub_agents}); proceeding without spawning: "
-                f"{spec.question[:80]}"
-            )
-            return []
+        # F-08: yield-aware budget. A slot is only consumed by a sub-agent
+        # that produced >=1 non-gap finding; timeouts and zero-findings
+        # RELEASE the slot (sequential refills up to SUB_AGENT_TOTAL_CEILING).
+        # max_sub_agents is the CONCURRENT (resource) bound.
+        if not spec.broadened:
+            if self.state.sub_agents_active >= self.max_sub_agents:
+                self._log(
+                    f"SUB-AGENT concurrent budget reached "
+                    f"({self.state.sub_agents_active}/{self.max_sub_agents}); "
+                    f"proceeding without spawning: {spec.question[:80]}"
+                )
+                return []
+            if len(self._sub_agent_specs) >= self.SUB_AGENT_TOTAL_CEILING:
+                self._log(
+                    f"SUB-AGENT total budget reached "
+                    f"({len(self._sub_agent_specs)}/{self.SUB_AGENT_TOTAL_CEILING}); "
+                    f"proceeding without spawning: {spec.question[:80]}"
+                )
+                return []
 
         # Research sub-agents need the context capacity of STANDARD or higher.
         if spec.model_tier not in (
@@ -1012,12 +1030,15 @@ class BaseAgent(ABC):
         runner = SubAgentRunner(spec=spec, bus=self.bus, router=self.router)
 
         started = time.monotonic()
+        timed_out = False
+        generic_failure = False
         try:
             findings = await asyncio.wait_for(
                 runner.run(),
                 timeout=spec.timeout_seconds,
             )
         except TimeoutError:
+            timed_out = True
             # Timeout is a bounded-resource outcome, not a reason to spend a
             # STRONG Director call. Preserve one explicit gap and continue.
             findings = [
@@ -1028,6 +1049,7 @@ class BaseAgent(ABC):
             ]
             self._log(f"Sub-agent timed out: {spec.question[:80]}")
         except Exception as exc:  # noqa: BLE001 - isolate junior-agent failure
+            generic_failure = True
             # Parallel specialist gather() calls use return_exceptions=True.
             # Letting this escape silently discarded the entire result and the
             # TUI reported '0 findings'. Convert every failure into auditable
@@ -1047,7 +1069,105 @@ class BaseAgent(ABC):
             f"Sub-agent returned {len(findings)} findings",
         )
 
+        # F-07: exactly ONE broadened respawn per question on timeout or on
+        # the runner's own synthetic "no validated findings" gap. NOT on a
+        # generic exception (a code bug must not be retried) and never on an
+        # already-broadened spec (no loops). The respawn is a retry of the
+        # same logical sub-agent, so it bypasses the budget gate.
+        if self._should_respawn_broadened(spec, findings, timed_out, generic_failure):
+            self._log(
+                f"SUB-AGENT RESPAWN (broadened, reason="
+                f"{'timeout' if timed_out else 'zero_findings'}): "
+                f"{spec.question[:80]}"
+            )
+            broadened = spec.model_copy(update={
+                "broadened": True,
+                "timeout_seconds": max(60, spec.timeout_seconds // 2),
+            })
+            self._sub_agent_respawned.add(spec.question)
+            respawned = await self._spawn_sub_agent(broadened)
+            if respawned and not any(
+                f.finding_type == "research_gap" for f in respawned
+            ):
+                return respawned
+            # F-01/F-02: the one permitted retry is spent and produced no
+            # substantive evidence — this is a typed RETRY_EXHAUSTED
+            # terminal state, never a fake successful finding. The runner's
+            # outcome is stamped so the parent (and TUI) can observe the
+            # exhausted state instead of re-deriving it from list lengths.
+            from hyperion.schemas.models import ResearchOutcome
+
+            runner.outcome = ResearchOutcome.RETRY_EXHAUSTED
+            self._log(
+                f"SUB-AGENT RETRY EXHAUSTED: {spec.question[:80]} — "
+                f"{len(findings)} finding(s), "
+                f"{sum(1 for f in findings if f.finding_type == 'research_gap')} "
+                "gap(s); ending with explicit insufficient evidence"
+            )
+
         return findings
+
+    def _should_respawn_broadened(
+        self,
+        spec: SubAgentSpec,
+        findings: list[KeyFinding],
+        timed_out: bool,
+        generic_failure: bool,
+    ) -> bool:
+        """F-07/F-02: decide whether this sub-agent outcome earns one broadened respawn.
+
+        True when ALL of:
+        - not already a broadened respawn (bounded: exactly one per question)
+        - a production budget (unit-test / stress configs stay deterministic)
+        - the question was not already respawned
+        - the trigger is a TIMEOUT or the runner's own synthetic zero-yield gap
+        - NOT a generic exception (a code bug must not be retried)
+        - the retrieval dependency health gate is GREEN (F-02: never broaden
+          into the same dead dependency; a 403/429/dead-pool outage is not
+          cured by wider query text)
+        """
+        if spec.broadened:
+            return False
+        if spec.timeout_seconds < 300:
+            return False
+        if spec.question in self._sub_agent_respawned:
+            return False
+        if generic_failure:
+            return False
+        if not self._dependency_health_green():
+            self._log(
+                "SUB-AGENT RESPAWN suppressed (F-02): retrieval dependency "
+                "health gate is RED — broadening would retry the same dead "
+                f"path: {spec.question[:80]}"
+            )
+            return False
+        if timed_out:
+            return True
+        if len(findings) == 1 and findings[0].finding_type == "research_gap":
+            return "no validated findings" in findings[0].content
+        return False
+
+    @staticmethod
+    def _dependency_health_green() -> bool:
+        """F-02: is the local retrieval dependency healthy enough to broaden?
+
+        Uses the engine-health telemetry: when fewer than the healthy-engine
+        floor are available, the pool is degraded and a broadened respawn
+        would only re-prove the outage with wider query text. Query breadth
+        is a recovery edge only after the dependency health gate is green.
+        """
+        try:
+            from hyperion.tools.engine_health import get_engine_health
+            from hyperion.tools.searxng import HEALTHY_ENGINE_FLOOR, referenced_engines
+
+            health = get_engine_health()
+            return health.healthy_count(referenced_engines()) >= HEALTHY_ENGINE_FLOOR
+        except Exception:  # noqa: BLE001 - a telemetry outage must not crash respawn
+            # Fail open: if we cannot read dependency health, the audit's
+            # invariant ("classify before retry") cannot be proven, so do not
+            # silently broaden. The sub-agent's typed outcome already carries
+            # RETRIEVAL_DEGRADED for the parent to escalate.
+            return False
 
     # ─────────────────────────────────────────────────────────────────────
     # Lifecycle
