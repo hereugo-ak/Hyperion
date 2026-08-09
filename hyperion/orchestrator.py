@@ -358,6 +358,11 @@ class WorkflowEngine:
         self._journal: RunJournal | None = None
         self._artifacts: ArtifactStore | None = None
         self._manifest: RunManifest | None = None
+        # P0/P2: the run-scoped Evidence Ledger and its preflight verdict.
+        self._evidence_ledger: Any = None
+        self._corpus_contract: Any = None
+        self._evidence_reduced_budget: bool = False
+        self._evidence_budget_default: int = 6
         # W-20: guard every mutation of ``_all_findings`` from gathered tasks.
         # ``_execute_wave`` runs tasks via ``asyncio.gather`` and two sites
         # (the cache-hit replay and the live-run collector) extend this list
@@ -2491,6 +2496,13 @@ class WorkflowEngine:
         # never inherit the previous engagement's industry/geography.
         self._engagement_context = None
         clear_engagement_focus()
+        # P0 (overhaul §6 P0.1): open the run-scoped Evidence Ledger. Every
+        # retrieved URL from here on lands in it BEFORE any LLM sees text,
+        # and the Phase-2 corpus preflight will gate the DAG on it.
+        from hyperion.tools.evidence_ledger import new_ledger
+
+        self._evidence_ledger = new_ledger(self._engagement_id)
+        trace("evidence", run_id=self._engagement_id, event="ledger_started")
         # Fix 2.6 (audit §6 Phase 2): reset the extraction-yield accumulator
         # so engagement_yield_report() covers THIS engagement only.
         try:
@@ -2637,6 +2649,16 @@ class WorkflowEngine:
         )
 
         try:
+            # ─────────────────────────────────────────────────────────────
+            # Phase 2 (overhaul §6 P2): Corpus Contract preflight. The
+            # system decides whether it CAN research before spending a token
+            # on research. RED raises CorpusPreflightError — the existing
+            # failure path records the typed INSUFFICIENT_EVIDENCE terminal
+            # state in seconds; AMBER runs a reduced DAG with a smaller
+            # sub-agent budget; GREEN runs the full DAG.
+            # ─────────────────────────────────────────────────────────────
+            await self._run_corpus_preflight(question, settings=_settings)
+
             # ─────────────────────────────────────────────────────────────
             # Stage 1: Engagement Director — decompose and plan
             # ─────────────────────────────────────────────────────────────
@@ -3084,6 +3106,120 @@ class WorkflowEngine:
             # P10: Close journal
             if self._journal:
                 self._journal.close()
+            # P0: persist the Evidence Ledger snapshot on success AND failure
+            # so the run autopsy is reproducible from telemetry alone.
+            self._snapshot_evidence_ledger()
+            # Phase 2: restore the sub-agent ceiling if AMBER reduced it.
+            if getattr(self, "_evidence_reduced_budget", False):
+                from hyperion.agents.base import BaseAgent
+
+                BaseAgent.SUB_AGENT_TOTAL_CEILING = getattr(
+                    self, "_evidence_budget_default", 6
+                )
+                self._evidence_reduced_budget = False
+
+    async def _run_corpus_preflight(
+        self, question: str, settings: Any | None = None
+    ) -> Any:
+        """Phase 2 (overhaul §6 P2): fire the canary battery, apply the verdict.
+
+        RED raises ``CorpusPreflightError`` — the existing failure path records
+        the typed ``INSUFFICIENT_EVIDENCE`` terminal state in seconds. AMBER
+        halves the sequential sub-agent ceiling for this engagement (restored
+        in ``run_engagement``'s ``finally``); GREEN does nothing. Separated
+        into a method so the network-touching battery can be stubbed in tests
+        that drive ``run_engagement`` for other concerns.
+        """
+        from hyperion.agents.support.corpus_preflight import (
+            CorpusPreflightError,
+            CorpusStatus,
+            run_corpus_preflight,
+        )
+
+        try:
+            contract = await run_corpus_preflight(
+                question,
+                settings=settings,
+                run_id=self._engagement_id,
+            )
+        except CorpusPreflightError as exc:
+            # P2: RED must notify the TUI (overhaul §6 P2) before the existing
+            # failure path records the typed INSUFFICIENT_EVIDENCE terminal.
+            try:
+                await self.bus.publish(
+                    channel=Channel.TUI,
+                    msg_type=MessageType.STATUS,
+                    sender="orchestrator",
+                    payload={
+                        "agent": "orchestrator",
+                        "tool": "corpus_preflight",
+                        "action": "RED",
+                        "detail": str(exc)[:200],
+                        "success": False,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - a TUI notify must not mask the terminal
+                logger.warning("corpus preflight TUI notify failed: %s", exc)
+            raise
+
+        self._corpus_contract = contract
+        self._evidence_reduced_budget = contract.status is CorpusStatus.AMBER
+        if self._evidence_reduced_budget:
+            from hyperion.agents.base import BaseAgent
+
+            # AMBER: halve the sequential sub-agent ceiling for this
+            # engagement; capture the default so the restore is exact even if
+            # the class constant ever changes.
+            default_ceiling = BaseAgent.SUB_AGENT_TOTAL_CEILING
+            self._evidence_budget_default = default_ceiling
+            BaseAgent.SUB_AGENT_TOTAL_CEILING = max(1, default_ceiling // 2)
+            self._log(
+                f"CORPUS PREFLIGHT AMBER — reduced sub-agent budget "
+                f"({BaseAgent.SUB_AGENT_TOTAL_CEILING}/{default_ceiling} ceiling): "
+                f"{contract.detail}"
+            )
+        if self._manifest:
+            self._manifest.record_ledger_entry(
+                "corpus_preflight", contract.to_dict()
+            )
+        self._log(
+            f"CORPUS PREFLIGHT {contract.status.value.upper()}: {contract.detail}"
+        )
+        return contract
+
+    def _snapshot_evidence_ledger(self) -> None:
+        """P0: persist the Evidence Ledger snapshot at run end.
+
+        Runs on success AND failure so the Aug-10 autopsy is reproducible
+        from telemetry alone (P0 exit gate). Never raises — a failed snapshot
+        must not mask the run result it describes.
+
+        D-06/§4 0.2: a refused engagement aborts with NO artifacts — the
+        manifest is only opened after the refusal check, so its absence means
+        the run never started and there is nothing to snapshot.
+        """
+        if getattr(self, "_manifest", None) is None:
+            return
+        try:
+            from hyperion.infra.paths import project_file
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            ledger = getattr(self, "_evidence_ledger", None) or get_evidence_ledger()
+            path = project_file(
+                "reports", "diagnostics", self._engagement_id, "evidence_ledger.json"
+            )
+            saved = ledger.snapshot(path)
+            self._manifest.record_ledger_entry("evidence", ledger.summary())
+            trace(
+                "evidence",
+                run_id=self._engagement_id,
+                event="ledger_snapshot",
+                items=ledger.count(),
+                domains=len(ledger.distinct_domains()),
+                path=saved,
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry must not break the run
+            logger.warning("evidence ledger snapshot failed: %s", exc)
 
     def _print_run_summary(self, result: EngagementResult) -> None:
         """Print end-of-run summary with report link, timing, status, and token breakdown."""

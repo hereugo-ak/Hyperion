@@ -1064,9 +1064,17 @@ class BaseAgent(ABC):
         finally:
             self.state.sub_agents_active = max(0, self.state.sub_agents_active - 1)
 
+        # P0 (overhaul §6 P0.3): never count a research gap as a finding at
+        # the display layer. "Sub-agent returned 1 findings" was the Aug-10
+        # lie — a synthetic gap placeholder masquerading as evidence yield.
+        n_substantive = sum(
+            1 for f in findings if f.finding_type != "research_gap"
+        )
+        n_gaps = len(findings) - n_substantive
+        gap_note = f" ({n_gaps} gap)" if n_gaps else ""
         await self._transition(
             AgentState.WORKING,
-            f"Sub-agent returned {len(findings)} findings",
+            f"Sub-agent returned {n_substantive} findings{gap_note}",
         )
 
         # F-07: exactly ONE broadened respawn per question on timeout or on

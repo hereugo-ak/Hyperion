@@ -51,6 +51,7 @@ from urllib.parse import quote_plus
 
 import httpx
 
+from hyperion.tools.evidence_ledger import record_evidence
 from hyperion.tools.query_utils import grounded_search_or_empty
 
 logger = logging.getLogger(__name__)
@@ -282,6 +283,16 @@ class JinaClient:
                     )
                     if result.url:
                         results.append(result)
+                        # P0 (overhaul §6 P0.2): Jina-discovered URLs enter
+                        # the run-scoped Evidence Ledger like any other source.
+                        record_evidence(
+                            url=result.url,
+                            title=result.title,
+                            snippet=result.snippet,
+                            engine="jina",
+                            profile="s.jina.ai",
+                            stage="discovery",
+                        )
 
                 results = results[:num_results]
                 total_tokens = sum(r.tokens_used for r in results)

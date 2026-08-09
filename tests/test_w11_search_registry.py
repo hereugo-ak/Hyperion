@@ -62,7 +62,11 @@ def test_settings_registry_is_exact_and_contains_no_tier_c_engines() -> None:
     }
     assert enabled == referenced_engines()
     assert enabled.isdisjoint(TIER_C_ENGINES)
-    assert set(data["use_default_settings"]["engines"]["keep_only"]) == enabled
+    # P1.2 (overhaul §6 P1, 2026-08-10): ``keep_only`` lists every DECLARED
+    # engine (incl. disabled mojeek/yep); the non-disabled ``enabled`` set is
+    # exactly the active referenced set.
+    declared = {str(engine["name"]) for engine in data["engines"]}
+    assert set(data["use_default_settings"]["engines"]["keep_only"]) == declared
     assert data["default_doi_resolver"] in data["doi_resolvers"]
     assert "default_doi_resolver" not in data["search"]
     assert data["server"]["secret_key"] == "${SEARXNG_SECRET}"

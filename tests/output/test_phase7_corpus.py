@@ -29,28 +29,42 @@ from types import SimpleNamespace
 from hyperion.tools.searxng import SearxNGClient
 
 # ─────────────────────────────────────────────────────────────────────────────
-# P2-26 fix 1: the engine pool is 6+ general-web engines
+# P2-26 fix 1: the engine pool — as rebalanced by overhaul P1.2 (2026-08-10)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestEnginePool:
-    def test_reliable_engines_has_at_least_six(self):
+    def test_reliable_engines_carry_web_and_api_rescue_paths(self):
+        """P1.2 supersedes the >=6 tripwire: the web corpus is mwmbl + brave
+        (the banned scrapers mojeek/yep are gone) while the API-backed
+        scholar/reference engines remain as the fan-out rescue path."""
         engines = [e.strip() for e in SearxNGClient.RELIABLE_ENGINES.split(",") if e.strip()]
-        assert len(engines) >= 6, (
-            f"P2-G23: >= 6 general-web engines required, got {engines}"
+        assert {"mwmbl", "brave"} <= set(engines), (
+            f"P1.2: web corpus = mwmbl + brave required, got {engines}"
         )
+        assert not {"mojeek", "yep"} & set(engines), (
+            f"P1.2: banned scrapers must be gone from the active pool, got {engines}"
+        )
+        # The fan-out rescue path (F-03) still has API-backed engines to
+        # carry a dead web pool.
+        assert {"crossref", "openalex", "wikipedia"} <= set(engines)
 
-    def test_standby_pool_exists_and_is_disjoint(self):
+    def test_standby_pool_is_banned_free_and_disjoint(self):
         standby = [
             e.strip()
             for e in getattr(SearxNGClient, "STANDBY_ENGINES", "").split(",")
             if e.strip()
         ]
         primary = {e.strip() for e in SearxNGClient.RELIABLE_ENGINES.split(",") if e.strip()}
-        assert standby, "a standby engine pool must exist for rotation"
+        # P1.2: an empty standby is a legitimate posture (no banned scraper
+        # may be promoted). Whatever IS there must be disjoint from primary
+        # and must never be a banned scraper.
         assert not (set(standby) & primary), (
             "standby engines must be disjoint from the primary pool, "
             "otherwise rotation adds nothing"
+        )
+        assert not {"mojeek", "yep"} & set(standby), (
+            f"P1.2: banned scrapers must never be promoted to standby, got {standby}"
         )
 
 
@@ -92,6 +106,11 @@ class TestEngineRotationOnZero:
             )
 
         monkeypatch.setattr(SearxNGClient, "_search_searxng_json", fake_json)
+        # P1.2: production STANDBY_ENGINES is empty (banned scrapers were
+        # removed and no replacement was added). The rotation MECHANISM is
+        # still contract-tested here with an injected standby pool, so a
+        # future capacity change that adds a real standby keeps this gate.
+        monkeypatch.setattr(SearxNGClient, "STANDBY_ENGINES", "wikipedia")
 
         client = self._client()
         resp = asyncio.run(client._search_with_rotation(

@@ -319,6 +319,24 @@ class _Harness:
         director = MagicMock()
         director.run = AsyncMock(return_value=dag)
         self.engine._director = director
+        # P2 (overhaul §6 P2): the corpus preflight runs before the DAG. Its
+        # canary battery is a network touch; stub it GREEN so this harness
+        # keeps testing the W-08 terminal-state gate, not retrieval.
+        from hyperion.agents.support.corpus_preflight import (
+            CorpusContract,
+            CorpusStatus,
+        )
+
+        async def _green_preflight(*args, **kwargs):
+            return CorpusContract(
+                status=CorpusStatus.GREEN,
+                min_domains=8,
+                distinct_domains=12,
+                evidence_items=30,
+                detail="stubbed green (w08 harness)",
+            )
+
+        self.engine._run_corpus_preflight = _green_preflight  # type: ignore[method-assign]
 
         async def _no_exec(*args, **kwargs):
             return None

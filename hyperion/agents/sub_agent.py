@@ -56,6 +56,7 @@ from hyperion.router.router import LLMRouter, get_router
 from hyperion.schemas.agents import SubAgentSpec
 from hyperion.schemas.models import KeyFinding, ResearchOutcome
 from hyperion.tools.content_selector import select_content
+from hyperion.tools.evidence_ledger import content_hash_of, record_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -1007,6 +1008,18 @@ class SubAgentRunner:
             if not text:
                 continue
             raw_data.append(f"{result.tool_used} content from {result.url}:\n{text}")
+            # P0 (overhaul §6 P0.2): extraction-ladder survivors are evidence
+            # too — attach the content fingerprint so the ledger measures
+            # corpus depth (extracted documents), not just URL discovery.
+            record_evidence(
+                url=result.url,
+                title=getattr(result, "title", "") or "",
+                snippet=text[:200],
+                content_hash=content_hash_of(text),
+                engine=result.tool_used or "unified_extract",
+                profile="extraction_ladder",
+                stage="extraction",
+            )
 
         if not outcome.results:
             for tier, why in outcome.errors.items():
