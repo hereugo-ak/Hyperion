@@ -391,6 +391,36 @@ def banner(provenance: Provenance) -> str:
     )
 
 
+def banner_lines(provenance: Provenance) -> tuple[str, list[str]]:
+    """Compact transcript rendering of the boot banner.
+
+    ``banner()`` stays the verbatim multi-line fingerprint for stderr and
+    audit captures; this returns the same facts shaped as ``(content, detail)``
+    for a TUI log row, so the BUILD entry reads like the other boot steps
+    (one content line plus ``└─`` detail lines) instead of a raw multi-line
+    dump of hashes and a Python dict.
+    """
+    sha = provenance.git_sha or "unknown"
+    dirty = " +dirty" if provenance.git_dirty else ""
+    content = (
+        f"HYPERION build {sha}{dirty} · {provenance.install_mode} · "
+        f"platform={detect_platform().value}"
+    )
+
+    fingerprint_bits = [
+        f"source={provenance.source_hash or 'n/a'}",
+        f"settings={provenance.settings_hash or 'n/a'}",
+    ]
+    fingerprint_bits.extend(
+        f"{name}={h}" for name, h in sorted(provenance.profile_hashes.items())
+    )
+    detail = [f"fingerprint · {' · '.join(fingerprint_bits)}"]
+
+    policy_bits = [f"{key}={value}" for key, value in (provenance.policy or {}).items()]
+    detail.append(f"policy · {' · '.join(policy_bits)}")
+    return content, detail
+
+
 def refusal_reason(provenance: Provenance) -> str | None:
     """Return the hard-refusal reason, or None when boot may proceed.
 

@@ -543,6 +543,44 @@ def test_f08_collected_policy_has_search_budgets() -> None:
     assert policy.get("sub_agent_total_ceiling", 0) > 0
 
 
+def test_f08_banner_lines_carry_facts_in_compact_form(tmp_path) -> None:
+    """F-08: the transcript BUILD row carries the same facts as the stderr
+    banner, folded into (content, detail lines) instead of a raw dump."""
+    from hyperion.infra import provenance
+
+    package_dir = tmp_path / "hyperion"
+    package_dir.mkdir()
+    (package_dir / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "searxng_settings.yml").write_text("server:\n", encoding="utf-8")
+    (tmp_path / "searxng_settings.web.yml").write_text("web:\n", encoding="utf-8")
+
+    snapshot = provenance.Provenance(
+        package_dir=str(package_dir),
+        repo_root=str(tmp_path),
+        git_sha="abc1234",
+        git_dirty=True,
+        install_mode="editable",
+        stale_pycache=[],
+        source_hash=provenance._source_hash(package_dir),
+        settings_hash=provenance._settings_hash(tmp_path),
+        profile_hashes=provenance._profile_hashes(tmp_path),
+        policy={"task_timeout_s": 600, "search_budget_cap": 600},
+    )
+
+    content, detail = provenance.banner_lines(snapshot)
+    # Content is one compact line: build + dirty + mode + platform.
+    assert content.startswith("HYPERION build abc1234 +dirty · editable · platform=")
+    assert "\n" not in content
+    # The audit facts survive in the styled detail lines.
+    joined = "\n".join(detail)
+    assert "fingerprint" in joined
+    assert "source=" in joined
+    assert "searxng_settings.web.yml=" in joined
+    assert "policy" in joined
+    assert "task_timeout_s=600" in joined
+    assert "search_budget_cap=600" in joined
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # F-09: corpus-floor escalation is terminal
 # ─────────────────────────────────────────────────────────────────────────────
