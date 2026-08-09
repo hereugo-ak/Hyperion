@@ -303,6 +303,51 @@ async def run_boot_sequence(
     # engagement would conceal a forbidden Tier C engine regression.
     results["flare"] = (OK, "disabled by default; opt in for investigation")
 
+    # ── F-05: corpus readiness ───────────────────────────────────────────
+    # Process readiness (the /config reconcile above) proves the SearXNG
+    # processes answer. Corpus readiness proves the ENGINE POOL can actually
+    # return results — the audit's F-05: "SearXNG ready" must never be read as
+    # "search corpus ready". This check is LOCAL and cheap: it reads the
+    # persisted engine-health telemetry (cooldowns/suspensions recorded from
+    # real responses), never a live smoke query, so boot cannot burn fragile
+    # upstream capacity (F-06).
+    corpus_state = OK
+    corpus_detail: list[str] = []
+    try:
+        from hyperion.tools.engine_health import get_engine_health
+        from hyperion.tools.searxng import referenced_engines
+
+        health = get_engine_health()
+        # Sweep first so a restart never inherits a stale ban (F-05/Phase 2).
+        swept = health.sweep_expired()
+        if swept:
+            corpus_detail.append(f"{swept} expired cooldown(s) swept")
+        referenced = sorted(referenced_engines())
+        healthy = health.healthy_count(referenced)
+        suspended = [
+            name for name in referenced
+            if health.state(name).value in ("suspended", "cooling")
+        ]
+        if healthy >= 2:
+            corpus_detail.append(f"corpus={healthy}/{len(referenced)} engines healthy")
+        else:
+            corpus_state = FAIL
+            corpus_detail.append(
+                f"corpus=DEGRADED only {healthy}/{len(referenced)} engines healthy"
+            )
+        if suspended:
+            corpus_state = min(corpus_state, WARN)
+            corpus_detail.append(
+                f"cooldown/suspended: {', '.join(suspended[:6])}"
+            )
+        results["corpus"] = (corpus_state, " · ".join(corpus_detail))
+        results["searxng"] = (
+            results["searxng"][0],
+            results["searxng"][1] + " · " + " · ".join(corpus_detail),
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort, failure must not propagate
+        results["corpus"] = (WARN, f"corpus check partial: {exc!s:.60}")
+
     # ── Step 3c: Data tools readiness ───────────────────────────────────
     step = _start_step("TOOLS", "checking data source tool readiness")
     await _pause(0.3)

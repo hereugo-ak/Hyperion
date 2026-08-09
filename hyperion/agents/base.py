@@ -1090,7 +1090,20 @@ class BaseAgent(ABC):
                 f.finding_type == "research_gap" for f in respawned
             ):
                 return respawned
-            self._log(f"Sub-agent respawn failed: {spec.question[:80]}")
+            # F-01/F-02: the one permitted retry is spent and produced no
+            # substantive evidence — this is a typed RETRY_EXHAUSTED
+            # terminal state, never a fake successful finding. The runner's
+            # outcome is stamped so the parent (and TUI) can observe the
+            # exhausted state instead of re-deriving it from list lengths.
+            from hyperion.schemas.models import ResearchOutcome
+
+            runner.outcome = ResearchOutcome.RETRY_EXHAUSTED
+            self._log(
+                f"SUB-AGENT RETRY EXHAUSTED: {spec.question[:80]} — "
+                f"{len(findings)} finding(s), "
+                f"{sum(1 for f in findings if f.finding_type == 'research_gap')} "
+                "gap(s); ending with explicit insufficient evidence"
+            )
 
         return findings
 
@@ -1101,7 +1114,7 @@ class BaseAgent(ABC):
         timed_out: bool,
         generic_failure: bool,
     ) -> bool:
-        """F-07: decide whether this sub-agent outcome earns one broadened respawn.
+        """F-07/F-02: decide whether this sub-agent outcome earns one broadened respawn.
 
         True when ALL of:
         - not already a broadened respawn (bounded: exactly one per question)
@@ -1109,6 +1122,9 @@ class BaseAgent(ABC):
         - the question was not already respawned
         - the trigger is a TIMEOUT or the runner's own synthetic zero-yield gap
         - NOT a generic exception (a code bug must not be retried)
+        - the retrieval dependency health gate is GREEN (F-02: never broaden
+          into the same dead dependency; a 403/429/dead-pool outage is not
+          cured by wider query text)
         """
         if spec.broadened:
             return False
@@ -1118,11 +1134,40 @@ class BaseAgent(ABC):
             return False
         if generic_failure:
             return False
+        if not self._dependency_health_green():
+            self._log(
+                "SUB-AGENT RESPAWN suppressed (F-02): retrieval dependency "
+                "health gate is RED — broadening would retry the same dead "
+                f"path: {spec.question[:80]}"
+            )
+            return False
         if timed_out:
             return True
         if len(findings) == 1 and findings[0].finding_type == "research_gap":
             return "no validated findings" in findings[0].content
         return False
+
+    @staticmethod
+    def _dependency_health_green() -> bool:
+        """F-02: is the local retrieval dependency healthy enough to broaden?
+
+        Uses the engine-health telemetry: when fewer than the healthy-engine
+        floor are available, the pool is degraded and a broadened respawn
+        would only re-prove the outage with wider query text. Query breadth
+        is a recovery edge only after the dependency health gate is green.
+        """
+        try:
+            from hyperion.tools.engine_health import get_engine_health
+            from hyperion.tools.searxng import HEALTHY_ENGINE_FLOOR, referenced_engines
+
+            health = get_engine_health()
+            return health.healthy_count(referenced_engines()) >= HEALTHY_ENGINE_FLOOR
+        except Exception:  # noqa: BLE001 - a telemetry outage must not crash respawn
+            # Fail open: if we cannot read dependency health, the audit's
+            # invariant ("classify before retry") cannot be proven, so do not
+            # silently broaden. The sub-agent's typed outcome already carries
+            # RETRIEVAL_DEGRADED for the parent to escalate.
+            return False
 
     # ─────────────────────────────────────────────────────────────────────
     # Lifecycle

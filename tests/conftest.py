@@ -25,6 +25,7 @@ this costs at most one respawn and never changes a result.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -49,3 +50,32 @@ def _release_kaleido_after_renderer_modules(request: pytest.FixtureRequest) -> I
     # Never let cleanup be the reason a suite fails; release_renderer() already
     # swallows its own errors and returns False.
     ChartGenerator.release_renderer()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_engine_health_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Give every test its own engine-health state file.
+
+    ``EngineHealthTracker`` persists to ``vault/engine_health.json`` and the
+    SearXNG fail-fast gate reads that file back on every query. Without
+    isolation, one test's recorded 403/429 suspensions poison every later
+    test in the same session: the fleet-health gate drops below its 2-engine
+    floor and ``search()`` fail-fasts to an empty result — "zero findings" —
+    for unrelated tests, and the file is left dirty for real runs. This is
+    the same stale-state poisoning that can make an engagement fail-fast on
+    boot after a previous session's bans.
+
+    Redirecting the state path to a per-test temp file (and resetting the
+    process-wide singleton) keeps the suite hermetic and order-independent.
+    """
+    monkeypatch.setenv(
+        "HYPERION_ENGINE_HEALTH_STATE",
+        str(tmp_path / "engine_health.json"),
+    )
+    from hyperion.tools.engine_health import reset_engine_health
+
+    reset_engine_health()
+    yield
+    reset_engine_health()

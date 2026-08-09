@@ -793,6 +793,16 @@ class Settings(BaseSettings):
     quality_threshold: float = 4.0
     max_quality_iterations: int = 2  # Keep one authoritative cap aligned with QualityGate.MAX_ITERATIONS
     quality_iteration_wall_clock_seconds: int = 900  # W-08: the loop cannot run away
+    # F-09 (CHIEF_AUDIT_FIX0.3): ONE evidence contract, two measures. The
+    # source-count floor (here, 3) bounds the QUALITY ITERATION LOOP — below
+    # it, more synthesis passes cannot help thin evidence. The corpus floor
+    # (8 distinct source domains, QualityGate._CORPUS_FLOOR_DOMAINS and
+    # WorkflowEngine._CORPUS_FLOOR_SOURCE_FLOOR) is the INTEGRITY blocker at
+    # the render boundary — below it, the report cannot ship at all. They are
+    # deliberately not the same number: one governs polishing effort, the
+    # other governs deliverability. A failed corpus-floor escalation is
+    # terminal (INSUFFICIENT_EVIDENCE); a below-source-floor report triggers
+    # a retrieval escalation before any further iteration.
     quality_source_floor: int = 3   # P7: stop iterating if sources < floor
     # W-08: score below this floor is BLOCKED even with zero hard blockers.
     # The run under audit scored 2.15 with five critical dimensions failing;

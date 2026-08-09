@@ -1984,15 +1984,25 @@ class WorkflowEngine:
                     current_report, corpus_floor
                 )
                 if not proceeded:
+                    # F-09: the corpus-floor blocker is the STRONGEST
+                    # thin-evidence signal, and its failed escalation is
+                    # TERMINAL — the report must not keep spending LLM polish
+                    # on an evidence base the integrity gate already refused.
+                    # The old code only logged here, so the loop continued to
+                    # ``iterate_on_quality`` and the final state claimed
+                    # recovery was attempted while the score never changed
+                    # (the audit's exact F-09/E-12 defect).
                     self._log(
                         f"QUALITY: corpus-floor retrieval escalation failed — "
-                        f"report remains below {corpus_floor} distinct domains."
+                        f"report remains below {corpus_floor} distinct domains; "
+                        "ending with terminal INSUFFICIENT_EVIDENCE state"
                     )
-                else:
-                    self._log(
-                        f"QUALITY: corpus-floor retrieval escalation recovered "
-                        f"sources (now {getattr(current_report, 'total_sources', 0)})"
-                    )
+                    current_score.max_iterations_reached = True
+                    break
+                self._log(
+                    f"QUALITY: corpus-floor retrieval escalation recovered "
+                    f"sources (now {getattr(current_report, 'total_sources', 0)})"
+                )
 
             # P2-25: thin evidence triggers retrieval escalation, not a stop.
             # The old content-aware stop broke here; now a below-floor source

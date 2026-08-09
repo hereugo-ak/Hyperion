@@ -147,6 +147,42 @@ def clean_url(url: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class ResearchOutcome(str, Enum):
+    """F-01: the typed outcome of one sub-agent research run.
+
+    The CHIEF_AUDIT_FIX0.3 finding F-01 requires that a failed retrieval
+    phase never masquerade as a successful research result. Previously
+    ``SubAgentRunner.run()`` guaranteed a non-empty findings list by
+    inserting a synthetic ``research_gap`` KeyFinding, so the parent logged
+    ``1 finding`` even when every dependency was dead. Every run now
+    carries one of these typed outcomes, and the parent must never read
+    ``len(findings)`` as evidence yield.
+
+    Transition rules (applied by ``SubAgentRunner.run()``):
+
+    - SUCCESS             -> at least one substantive (non-gap) finding
+    - NO_EVIDENCE         -> zero substantive findings AND zero provider
+                             failures AND retrieval was not degraded
+    - RETRIEVAL_DEGRADED  -> zero substantive findings AND the retrieval
+                             pool reported degradation events (dead/
+                             cooled engines, budget exhaustion)
+    - ANALYSIS_FAILED     -> the LLM/provider call failed or produced
+                             unparseable output (not "the world has no
+                             evidence")
+    - TIMEOUT             -> the search or analysis phase exceeded its
+                             phase budget
+    - RETRY_EXHAUSTED     -> every permitted retry/recovery path has been
+                             tried and the run is terminal
+    """
+
+    SUCCESS = "success"
+    NO_EVIDENCE = "no_evidence"
+    RETRIEVAL_DEGRADED = "retrieval_degraded"
+    ANALYSIS_FAILED = "analysis_failed"
+    TIMEOUT = "timeout"
+    RETRY_EXHAUSTED = "retry_exhausted"
+
+
 class ConfidenceLevel(str, Enum):
     """Confidence level for findings and recommendations.
 

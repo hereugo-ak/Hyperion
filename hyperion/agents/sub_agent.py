@@ -54,10 +54,55 @@ from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import LLMRouter, get_router
 from hyperion.schemas.agents import SubAgentSpec
-from hyperion.schemas.models import KeyFinding
+from hyperion.schemas.models import KeyFinding, ResearchOutcome
 from hyperion.tools.content_selector import select_content
 
 logger = logging.getLogger(__name__)
+
+
+class ResearchCounters:
+    """F-01/F-07: machine-readable counters for one sub-agent research run.
+
+    The audit's F-07 requires that no failure class disappears through a
+    silent ``[]``. Every run publishes these counters so the parent (and the
+    TUI) can distinguish raw results from extracted documents from valid
+    findings from gaps without re-deriving them from list lengths.
+    """
+
+    __slots__ = (
+        "raw_results",
+        "extracted_documents",
+        "valid_findings",
+        "invalid_findings",
+        "provider_failures",
+        "gaps",
+    )
+
+    def __init__(self) -> None:
+        self.raw_results = 0
+        self.extracted_documents = 0
+        self.valid_findings = 0
+        self.invalid_findings = 0
+        self.provider_failures = 0
+        self.gaps = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "raw_results": self.raw_results,
+            "extracted_documents": self.extracted_documents,
+            "valid_findings": self.valid_findings,
+            "invalid_findings": self.invalid_findings,
+            "provider_failures": self.provider_failures,
+            "gaps": self.gaps,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"ResearchCounters(raw={self.raw_results}, extracted="
+            f"{self.extracted_documents}, valid={self.valid_findings}, "
+            f"invalid={self.invalid_findings}, provider_failures="
+            f"{self.provider_failures}, gaps={self.gaps})"
+        )
 
 # Fix 2.2 (§4.7 Finding B-6): the retained-content budget for a fetched SEC
 # filing. Same number as before; what changed is that the budget is now filled
@@ -90,7 +135,29 @@ class SubAgentRunner:
     - Including confidence scores and gap identification
     - Respecting the 5-minute timeout (enforced by the parent via
       asyncio.wait_for in BaseAgent._spawn_sub_agent)
+
+    Class-level defaults for ``outcome``/``counters`` let tests (and any
+    caller) construct a runner via ``object.__new__`` without running
+    ``__init__`` while still reading a deterministic, populated state.
     """
+
+    # F-01/F-07: default outcome for __new__-constructed runners. ``counters``
+    # defaults to None (never a shared mutable class instance) and is created
+    # lazily on first use, so runners built via ``object.__new__`` never leak
+    # counter state across tests/callers.
+    outcome: ResearchOutcome = ResearchOutcome.NO_EVIDENCE
+    counters: ResearchCounters | None = None
+
+    def _ensure_counters(self) -> ResearchCounters:
+        """Lazily create the per-run counter block.
+
+        ``object.__new__``-constructed runners skip ``__init__``; they still
+        get a fresh, deterministic ``ResearchCounters`` on first write instead
+        of sharing one mutable class-level instance.
+        """
+        if self.counters is None:
+            self.counters = ResearchCounters()
+        return self.counters
 
     def __init__(
         self,
@@ -115,6 +182,12 @@ class SubAgentRunner:
 
         # Tool instances, only the subset specified in the spec
         self._tools: dict[str, Any] = {}
+
+        # F-01/F-07: the typed outcome of this run and its counters. Defaults
+        # are filled in by run(); a caller that never runs the runner can
+        # still read a deterministic, unset outcome rather than None.
+        self.outcome: ResearchOutcome = ResearchOutcome.NO_EVIDENCE
+        self.counters = ResearchCounters()
 
     @property
     def question(self) -> str:
@@ -339,6 +412,7 @@ class SubAgentRunner:
         )
 
     async def _gather_raw_data(self) -> str:
+        self._ensure_counters()
         """Gather raw data using the available tools.
 
         This is the research phase of the sub-agent lifecycle:
@@ -409,6 +483,10 @@ class SubAgentRunner:
 
         # Merge + dedup URLs from both search sources (preserves order)
         all_urls = list(dict.fromkeys(searxng_urls + jina_search_urls))
+        # F-07: raw discovery yield is a counter, not a log line. Zero URLs
+        # after a search leg is exactly the ``RETRIEVAL_DEGRADED`` signal the
+        # audit's F-01 wants typed instead of silently absorbed.
+        self.counters.raw_results = len(all_urls)
 
         # ── EXTRACTION (fix 2.1: the single UnifiedExtract ladder) ──────
         # Fix 2.2: the sub-question is passed down so the ladder fills its
@@ -419,6 +497,10 @@ class SubAgentRunner:
             )
             raw_data.extend(extracted)
             errors.extend(extract_errors)
+            # F-07: how many documents actually survived extraction, versus
+            # how many URLs were discovered. A 20-URL discovery with 0
+            # extracted documents is a typed extraction failure class.
+            self.counters.extracted_documents = len(extracted)
 
         # ── DATA SOURCES (unchanged) ────────────────────────────────────
 
@@ -1046,6 +1128,34 @@ class SubAgentRunner:
         )
         return merged or baseline
 
+    # F-03: the audit's E-06/E-07 found the sub-agent search leg was SERIAL
+    # (``for query in queries: await search_fn(query)``). With the query
+    # planner emitting 5-10 variants per leg and each SearXNG request able to
+    # retry across endpoints for up to 45s each, a serial leg consumed the
+    # entire 420s search allocation before extraction or analysis ever ran.
+    #
+    # The scheduler below bounds concurrency AND stops dispatching new
+    # queries once the evidence minimum is met (E-03 exit gate: "Do not wait
+    # for every planned query after the minimum evidence contract is met")
+    # AND cancels pending work when the phase deadline expires.
+    FAN_OUT_CONCURRENCY = 3
+    # Stop dispatching new queries once this many merged results exist. The
+    # audit's Phase 1 exit criterion wants >=8 distinct grounded queries per
+    # sub-question to actually REACH the network, so the early stop must only
+    # fire on a genuinely rich pool — never truncate the normal planner plan
+    # (~7 queries/leg × up to 15 results). 30 merged results is comfortably
+    # above the extraction budget (MAX_EXTRACT_URLS=10) and above any
+    # realistic single-query yield, so a healthy pool still dispatches the
+    # full diversified plan while a pathological (slow-but-productive) pool
+    # is bounded by the deadline instead of the evidence minimum.
+    FAN_OUT_MIN_EVIDENCE = 30
+    # Wall-clock budget for the whole fan-out phase, in seconds. The caller
+    # ALSO wraps the phase in asyncio.wait_for; this deadline is the tighter,
+    # phase-attributable bound so the search budget is never the analysis
+    # budget by accident (F-03 exit gate: telemetry reports planning,
+    # discovery, extraction and analysis separately).
+    FAN_OUT_DEADLINE_SECONDS = 120
+
     async def _fan_out_search(
         self,
         search_fn: Any,
@@ -1054,8 +1164,16 @@ class SubAgentRunner:
         *,
         drop_geography: bool = False,
     ) -> list[Any]:
-        """Run ``search_fn`` over each query variant, merging results and
-        deduplicating by URL (first-seen order preserved).
+        """Run ``search_fn`` over each query variant with bounded parallelism
+        and a deadline, merging and deduplicating by URL (first-seen order
+        preserved).
+
+        F-03: the audit found the previous implementation was serial. It now
+        dispatches up to :data:`FAN_OUT_CONCURRENCY` searches concurrently,
+        stops launching new queries once :data:`FAN_OUT_MIN_EVIDENCE` results
+        are merged, and cancels pending work when the phase deadline passes.
+        A per-query failure is logged and skipped, never fatal: one dead
+        query variant must not abort the leg.
 
         Shared by `_search_searxng`/`_search_jina` for both the normal pass
         and the fix-1.5 low-yield broadened retry, so the two callers cannot
@@ -1063,18 +1181,71 @@ class SubAgentRunner:
         """
         merged: list[Any] = []
         seen_urls: set[str] = set()
-        for query in queries:
-            kwargs: dict[str, Any] = {"num_results": num_results}
-            if drop_geography:
-                kwargs["drop_geography"] = True
-            variant_results = await search_fn(query, **kwargs)
-            for r in (variant_results or []):
+        if not queries:
+            return merged
+
+        deadline = time.monotonic() + self.FAN_OUT_DEADLINE_SECONDS
+        lock = asyncio.Lock()
+        iterator = iter(queries)
+
+        def _merge(query: str, variant_results: list[Any]) -> None:
+            """Merge one variant into the dedup set (caller holds ``lock``)."""
+            for r in variant_results:
                 url = getattr(r, "url", "") or ""
                 if url and url in seen_urls:
                     continue
                 if url:
                     seen_urls.add(url)
                 merged.append(r)
+
+        async def _worker() -> None:
+            """One bounded worker: grab the next undispatched query, search it,
+            merge its results. Exits when the iterator is exhausted, the phase
+            deadline passes, or the evidence minimum is met (F-03 early stop)."""
+            while True:
+                async with lock:
+                    # Stop conditions are checked under the lock so the
+                    # early-stop is strict: once ``merged`` reaches the
+                    # minimum, no worker may claim another query.
+                    if time.monotonic() >= deadline:
+                        logger.warning(
+                            "SubAgent fan-out deadline reached (%ds); "
+                            "%d result(s) so far",
+                            self.FAN_OUT_DEADLINE_SECONDS,
+                            len(merged),
+                        )
+                        return
+                    if len(merged) >= self.FAN_OUT_MIN_EVIDENCE:
+                        return
+                    try:
+                        query = next(iterator)
+                    except StopIteration:
+                        return
+                kwargs: dict[str, Any] = {"num_results": num_results}
+                if drop_geography:
+                    kwargs["drop_geography"] = True
+                try:
+                    variant_results = await search_fn(query, **kwargs)
+                except Exception as exc:  # noqa: BLE001 - one variant must not kill the leg
+                    logger.warning(
+                        "SubAgent fan-out query failed (%r): %s",
+                        query[:80], exc,
+                    )
+                    variant_results = []
+                async with lock:
+                    _merge(query, list(variant_results or []))
+
+        worker_count = min(self.FAN_OUT_CONCURRENCY, len(queries))
+        workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+        try:
+            await asyncio.gather(*workers)
+        except asyncio.CancelledError:
+            # Phase deadline or parent cancellation: cancel in-flight work so
+            # the event loop is not left holding orphaned searches.
+            for worker in workers:
+                worker.cancel()
+            raise
+
         return merged
 
     async def _search_searxng(self) -> tuple[str, list[str], str | None]:
@@ -1208,6 +1379,7 @@ class SubAgentRunner:
         return any(t.value == tool_name for t in self.spec.tools)
 
     async def _analyze_and_produce_findings(self, raw_data: str) -> list[KeyFinding]:
+        self._ensure_counters()
         """Analyze raw data and produce structured KeyFinding objects.
 
         This is the analysis phase of the sub-agent lifecycle. The LLM
@@ -1259,34 +1431,60 @@ class SubAgentRunner:
         )
 
         if not response.success or not response.content:
+            # F-07: a provider failure is a distinct outcome, never "the
+            # world has no evidence". The gap produced by run() now carries
+            # the reason, and ANALYSIS_FAILED is typed on the runner.
+            self.counters.provider_failures += 1
             return []
 
+        payload = response.content
         try:
-            data = json.loads(response.content)
+            data = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            # F-07: one bounded format-repair attempt before accepting an
+            # analysis failure. LLM JSON is frequently fenced or wrapped in
+            # prose; the shared extractor recovers the balanced payload that
+            # ``json.loads`` alone cannot see. If repair also fails, the run
+            # is a typed ANALYSIS_FAILED — never a silent ``[]`` that the
+            # caller mistakes for an empty world.
+            from hyperion.router.structured_validator import extract_json
 
-            # The LLM should return a JSON array of findings or an object
-            # with a "findings" key
-            if isinstance(data, list):
-                findings_data = data
-            elif isinstance(data, dict) and "findings" in data:
-                findings_data = data["findings"]
-            elif isinstance(data, dict):
-                findings_data = [data]
-            else:
+            repaired = extract_json(payload)
+            if repaired is None:
+                self.counters.invalid_findings += 1
+                return []
+            try:
+                data = json.loads(repaired)
+            except (json.JSONDecodeError, ValueError):
+                self.counters.invalid_findings += 1
                 return []
 
-            findings: list[KeyFinding] = []
-            for item in findings_data:
-                try:
-                    finding = KeyFinding.model_validate(item)
-                    findings.append(finding)
-                except (ValueError, TypeError):
-                    continue
-
-            return findings
-
-        except (json.JSONDecodeError, ValueError):
+        # The LLM should return a JSON array of findings or an object
+        # with a "findings" key
+        if isinstance(data, list):
+            findings_data = data
+        elif isinstance(data, dict) and "findings" in data:
+            findings_data = data["findings"]
+        elif isinstance(data, dict):
+            findings_data = [data]
+        else:
+            self.counters.invalid_findings += 1
             return []
+
+        findings: list[KeyFinding] = []
+        for item in findings_data:
+            try:
+                finding = KeyFinding.model_validate(item)
+                findings.append(finding)
+            except (ValueError, TypeError):
+                # F-07: invalid schema items are counted, not silently
+                # dropped. They are still excluded from substantive findings,
+                # but the count tells the operator the contract is broken.
+                self.counters.invalid_findings += 1
+                continue
+
+        self.counters.valid_findings = len(findings)
+        return findings
 
     def gap_finding(self, reason: str, elapsed: float) -> KeyFinding:
         """Build the explicit evidence gap returned on any research failure."""
@@ -1328,6 +1526,8 @@ class SubAgentRunner:
         LLM's time budget.
         """
         start = time.time()
+        search_timed_out = False
+        analysis_timed_out = False
 
         # Phase 1: Gather raw data — search fan-out + extraction. On a dead
         # pool this phase alone can exceed the whole budget before the LLM
@@ -1338,6 +1538,7 @@ class SubAgentRunner:
                 self._gather_raw_data(), timeout=search_budget
             )
         except TimeoutError:
+            search_timed_out = True
             raw_data = (
                 "No raw data available from tools — the search phase exceeded "
                 f"its {search_budget}s budget (dead engine pool or slow "
@@ -1353,17 +1554,57 @@ class SubAgentRunner:
                 timeout=analysis_budget,
             )
         except TimeoutError:
+            analysis_timed_out = True
             findings = []
 
         elapsed = time.time() - start
 
-        # If no findings were produced, return a gap finding
+        # F-01: type the outcome from what actually happened, BEFORE the
+        # synthetic gap is appended. ``len(findings)`` is not evidence yield;
+        # the parent reads ``runner.outcome`` and ``runner.counters`` instead.
+        if findings:
+            self.outcome = ResearchOutcome.SUCCESS
+        elif self.broadened:
+            # F-01/F-02: this pass already IS the one permitted broadened
+            # respawn (parent spawns it with ``broadened=True``). If it still
+            # produced no findings, every recovery path is spent — a typed
+            # RETRY_EXHAUSTED terminal state, never a fake success.
+            self.outcome = ResearchOutcome.RETRY_EXHAUSTED
+        elif search_timed_out or analysis_timed_out:
+            self.outcome = ResearchOutcome.TIMEOUT
+        elif self.counters.provider_failures > 0:
+            self.outcome = ResearchOutcome.ANALYSIS_FAILED
+        elif self.counters.invalid_findings > 0:
+            self.outcome = ResearchOutcome.ANALYSIS_FAILED
+        elif self.counters.raw_results == 0 or self.counters.extracted_documents == 0:
+            # Nothing came back from retrieval at all — either the pool is
+            # degraded (dead/cooled engines, budget exhaustion) or the world
+            # has no evidence. Check the engine-health telemetry to pick the
+            # honest label.
+            try:
+                from hyperion.tools.engine_health import get_engine_health
+
+                degraded = bool(get_engine_health().degradation_events())
+            except Exception:  # noqa: BLE001 - telemetry must not break typing
+                degraded = False
+            self.outcome = (
+                ResearchOutcome.RETRIEVAL_DEGRADED if degraded
+                else ResearchOutcome.NO_EVIDENCE
+            )
+        else:
+            self.outcome = ResearchOutcome.NO_EVIDENCE
+
+        # If no findings were produced, return a gap finding. The gap is a
+        # first-class citizen in the counters, never a fake "1 finding".
         if not findings:
+            reason = (
+                "search phase timed out" if search_timed_out else
+                "analysis phase timed out" if analysis_timed_out else
+                "retrieval or LLM analysis returned no validated findings"
+            )
             findings = [
-                self.gap_finding(
-                    "retrieval or LLM analysis returned no validated findings",
-                    elapsed,
-                )
+                self.gap_finding(reason, elapsed)
             ]
+            self.counters.gaps = 1
 
         return findings
