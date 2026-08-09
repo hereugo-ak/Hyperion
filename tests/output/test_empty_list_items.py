@@ -34,7 +34,21 @@ from jinja2 import BaseLoader, Environment
 from hyperion.agents.delivery.presentation_designer import HTML_TEMPLATE
 from hyperion.output.page_audit import _check_empty_list_items
 
-_DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+def _dejavu_or_platform_font() -> str:
+    """DejaVu on Linux; fall back to a Windows font (Arial carries U+2022)."""
+    from pathlib import Path
+
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    ]
+    for candidate in candidates:
+        if Path(candidate).is_file():
+            return candidate
+    raise RuntimeError("no usable TTF font for synthetic PDF tests")
+
+
+_DEJAVU = _dejavu_or_platform_font()
 
 _FOR_TAG_RE = re.compile(r"\{%\s*for\s+([^%]+?)\s*%\}")
 

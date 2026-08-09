@@ -1287,18 +1287,57 @@ class SearxNGClient:
         SearxNGClient._search_count += 1
         SearxNGClient._owner_counts[owner] = owner_used + 1
 
-        # F-06b: fail fast on a dead pool. If fewer than 2 engines across the
-        # whole referenced set are healthy, every query would burn its full
-        # timeout budget against dead upstreams before the LLM ever runs.
-        # Return the empty response immediately and say why — 45s × 7 queries
-        # of wasted wall-clock is exactly the Aug 9 "timeout at exactly 300s"
-        # failure mode.
+        # F-04/F-06b: fail fast ONLY when the PREFERRED PROFILE for this
+        # category is dead. The old gate checked the global referenced set, so
+        # a web profile with 4/4 crawlers 403/429ing still passed whenever two
+        # scholar API engines happened to be healthy — and then general
+        # queries burned the full web rotation budget proving the web pool
+        # was dead before the fleet fan-out ever ran (the Aug 9 failure).
+        #
+        # The per-profile gate has the opposite behaviour: when the preferred
+        # profile is dead but OTHER source classes are healthy, the query is
+        # NOT returned empty — it falls through to the full-pool fan-out,
+        # which serves it from the healthy profiles. The dead-pool guard now
+        # only fires when the fleet has fewer than two healthy engines
+        # anywhere, which is the true total-outage case.
         health = get_engine_health()
-        if health.healthy_count(referenced_engines()) < 2:
+        preferred_profile = self._pool.preferred_profile(categories or "general")
+        preferred_engines = set()
+        for endpoint in self._pool.endpoints:
+            if endpoint.profile == preferred_profile:
+                preferred_engines.update(endpoint.engines)
+        preferred_engines &= referenced_engines()
+
+        preferred_healthy = health.healthy_count(preferred_engines) if preferred_engines else 0
+        fleet_healthy = health.healthy_count(referenced_engines())
+
+        if preferred_engines and preferred_healthy == 0 and fleet_healthy >= 2:
+            logger.warning(
+                "SEARCH PROFILE FAIL-FAST: preferred profile '%s' has 0/%d "
+                "healthy engines but %d fleet engines are healthy — skipping "
+                "profile rotation and going straight to the full-pool fan-out",
+                preferred_profile,
+                len(preferred_engines),
+                fleet_healthy,
+            )
+            fanout_response = await self._search_all_replicas(
+                query=query,
+                num_results=num_results,
+                language=language,
+                time_range=time_range,
+                safesearch=safesearch,
+            )
+            if fanout_response and fanout_response.results:
+                await self._set_cached(cache_key, fanout_response)
+                return fanout_response
+            # The fleet fan-out also produced nothing — fall through to the
+            # normal degraded path below instead of returning a bare empty.
+
+        if fleet_healthy < 2:
             logger.error(
                 "SEARCH FAIL-FAST: only %d/%d referenced engines healthy — "
                 "returning empty without issuing queries",
-                health.healthy_count(referenced_engines()),
+                fleet_healthy,
                 len(referenced_engines()),
             )
             return SearchResponse(
@@ -1309,7 +1348,7 @@ class SearxNGClient:
                 retrieval_degraded=True,
                 degradation_events=[{
                     "type": "search_fail_fast_dead_pool",
-                    "healthy": health.healthy_count(referenced_engines()),
+                    "healthy": fleet_healthy,
                     "required": 2,
                 }],
             )

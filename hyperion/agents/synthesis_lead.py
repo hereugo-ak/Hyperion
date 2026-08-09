@@ -1115,7 +1115,7 @@ class SynthesisLead(BaseAgent):
                 if downgraded is not system_confidence:
                     logger.warning(
                         "DISHONEST CONFIDENCE GUARD: only %d/%d sections sourced "
-                        "(%.0f%% < 50%%) — system confidence downgraded %s -> %s",
+                        "(%.0f%% < 50%%): system confidence downgraded %s -> %s",
                         sourced, total_sections, coverage * 100,
                         system_confidence.value, downgraded.value,
                     )

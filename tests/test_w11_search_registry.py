@@ -170,6 +170,21 @@ async def test_token_bucket_is_process_wide_per_engine(
     async def fake_sleep(delay: float) -> None:
         waits.append(delay)
 
+    # The local process-wide fallback must be exercised deterministically.
+    # When a real Valkey container is running, the shared reservation path
+    # answers first and the fallback never runs — the test then flips between
+    # environments (and between test orderings, since the shared store keeps
+    # pre-warmed keys). Simulate "shared store unavailable" so this test
+    # always covers the path it is named after.
+    async def shared_store_unavailable(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "hyperion.tools.searxng.get_valkey_store",
+        lambda: type("NoValkey", (), {
+            "reserve_engine_window": shared_store_unavailable,
+        })(),
+    )
     EngineTokenBucket._lock = None
     EngineTokenBucket._next_allowed = {}
     monkeypatch.setattr(EngineTokenBucket, "interval_seconds", 0.05)
