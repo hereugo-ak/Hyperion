@@ -285,6 +285,9 @@ def searxng_spec(replica: SearxngReplica | None = None) -> ContainerSpec:
         volumes=volumes,
         named_volumes=[(f"{replica.name}-data", "/var/cache/searxng")],
         env={
+            # FIX0.3 §2: one documented timezone rule so container logs and
+            # host/TUI logs correlate without mental arithmetic.
+            "TZ": os.environ.get("HYPERION_TZ", "Asia/Kolkata"),
             "SEARXNG_BASE_URL": f"http://localhost:{replica.port}/",
             "SEARXNG_SECRET": _searxng_secret(replica.profile),
             "SEARXNG_SETTINGS_PATH": "/etc/searxng/settings.yml",

@@ -35,8 +35,8 @@ ui:
   themes:
   - simple
 outgoing:
-  request_timeout: 6.0
-  max_request_timeout: 12.0
+  request_timeout: 15.0
+  max_request_timeout: 25.0
   pool_connections: 20
   pool_maxsize: 10
   enable_http2: true
@@ -48,35 +48,35 @@ engines:
   shortcut: ar
   categories: science
   disabled: false
-  timeout: 10
+  timeout: 12
   weight: 1.0
 - name: crossref
   engine: crossref
   shortcut: cr
   categories: science
   disabled: false
-  timeout: 8
+  timeout: 12
   weight: 1.0
 - name: openalex
   engine: openalex
   shortcut: oa
   categories: science
   disabled: false
-  timeout: 8
+  timeout: 12
   weight: 1.0
 - name: semantic scholar
   engine: semantic_scholar
   shortcut: ss
   categories: science
   disabled: false
-  timeout: 8
+  timeout: 12
   weight: 1.0
 - name: pubmed
   engine: pubmed
   shortcut: pm
   categories: science
   disabled: false
-  timeout: 8
+  timeout: 12
   weight: 0.8
 valkey:
   url: valkey://valkey:6379/0

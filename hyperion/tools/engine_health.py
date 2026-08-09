@@ -42,9 +42,14 @@ from hyperion.infra.paths import project_root
 
 logger = logging.getLogger(__name__)
 
-# Base cooldown doubles on each consecutive failure, capped at 24h.
+# Base cooldown doubles on each consecutive failure, capped at 4h.
+#
+# F-04 (FIX0.3_RUNBOOK_2026-08-09): the cap was 24h, which let a single bad
+# session (a CAPTCHA storm, a suspended_time=86400 ban) waste a whole day of
+# capacity and poison the NEXT engagement's boot. 4h is enough to absorb a
+# real outage while guaranteeing the fleet recovers on its own.
 _BASE_COOLDOWN_SECONDS = 300  # 5 minutes
-_MAX_COOLDOWN_SECONDS = 86400  # 24 hours
+_MAX_COOLDOWN_SECONDS = 14400  # 4 hours
 
 _SUSPENDED_TIME_RE = re.compile(r"suspended_time=(\d+)")
 _CAPTCHA_MARKERS = ("captcha", "accessdenied", "access denied")
@@ -99,6 +104,32 @@ class EngineHealthTracker:
             self._failures = {}
             self._cooldowns = {}
             self._suspended = {}
+        # F-04: boot-time TTL sweep. Cooldowns whose ``until`` has already
+        # passed were written by an earlier session and must not be allowed to
+        # poison this one — the Aug 4 session's 24h bans were still active on
+        # Aug 9 purely because nothing aged them out at boot. ``state()``
+        # pops expired entries lazily per-engine; this sweeps every persisted
+        # engine once so a fresh process starts from a genuinely fresh state.
+        self.sweep_expired()
+
+    def sweep_expired(self) -> int:
+        """Drop every expired cooldown/suspension; return how many were dropped.
+
+        F-04: called at load time so a restart never inherits a stale ban, and
+        callable any time an operator wants to age out finished suspensions
+        without resetting healthy state.
+        """
+        now = time.time()
+        dropped = 0
+        for bucket in (self._cooldowns, self._suspended):
+            expired = [name for name, until in bucket.items() if until <= now]
+            for name in expired:
+                del bucket[name]
+                self._failures.pop(name, None)
+            dropped += len(expired)
+        if dropped:
+            self._save()
+        return dropped
 
     def _save(self) -> None:
         try:

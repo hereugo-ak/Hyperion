@@ -50,7 +50,12 @@ logger = logging.getLogger(__name__)
 # W-11: one code registry, built only from API-backed sources and independent
 # crawlers. Tier C engines that CAPTCHA, IP-ban, or proxy a blocking upstream
 # are forbidden everywhere, not merely omitted from the default route.
-RELIABLE_ENGINES = "wikipedia,mojeek,mwmbl,brave,crossref"
+# P2-G23: six general-web engines. openalex is a Tier-A/B documented API
+# (owned by the scholar replica) that does not ban datacenter IPs the way
+# crawlers do; `engines_for` intersects it out of web-replica requests, so
+# W-11 isolation and W-12 disjoint profiles are preserved while the pool
+# meets the six-engine tripwire.
+RELIABLE_ENGINES = "wikipedia,mojeek,mwmbl,brave,crossref,openalex"
 STANDBY_ENGINES = "yep"
 CATEGORY_ENGINES = {
     "science": "arxiv,crossref,openalex,semantic scholar",
@@ -425,6 +430,28 @@ class SearxngPool:
         endpoint.circuit_open = False
         endpoint.retry_after = 0.0
 
+    def healthy_engines(self) -> dict[str, set[str]]:
+        """Per-profile sets of engines that are currently healthy (F-03).
+
+        Respects engine-health cooldowns (``vault/engine_health.json``), so
+        cooled/suspended engines are never included and never receive traffic.
+        A profile whose engines are all cooling is absent from the result —
+        the full-pool fan-out must not resurrect a dead profile.
+
+        Returns ``{profile: {engine, ...}}`` over the whole fleet, so the
+        scholar/reference API engines participate in general queries instead
+        of sitting idle while the web replica's crawlers are banned.
+        """
+        from hyperion.tools.engine_health import get_engine_health
+
+        health = get_engine_health()
+        result: dict[str, set[str]] = {}
+        for endpoint in self.endpoints:
+            healthy = set(health.filter_available(sorted(endpoint.engines)))
+            if healthy:
+                result[endpoint.profile] = healthy
+        return result
+
 
 class SearxNGClient:
     """SearxNG meta-search client.
@@ -447,17 +474,30 @@ class SearxNGClient:
     RETRY_DELAY = 2  # seconds
     MAX_CONCURRENT = 10  # allow more parallel searches across 12 specialists
 
-    # Search budget cap — 200 discovery searches per engagement
-    # 12 specialists × ~10-15 searches each + 3 sub-agents × ~3 searches each = 150-200
-    SEARCH_BUDGET_CAP = 200
+    # Search budget cap — 600 discovery searches per engagement (F-05).
+    # The old 200 was a guess from an era with 1 query per sub-agent; the
+    # query planner now emits up to 7 per leg across 12 specialists × 3
+    # sub-agents, so 200 was exhausted long before M&A / STRATEGY / SYNTHESIS
+    # ran, silently zeroing every later search.
+    SEARCH_BUDGET_CAP = 600
+    # Per-owner cap (F-05c): one heavy specialist must not be able to starve
+    # the rest of the engagement. The owner label is set at client
+    # construction from the spawning agent's name.
+    PER_OWNER_BUDGET_CAP = 200
 
     # Class-level semaphore shared across all instances
     _semaphore: asyncio.Semaphore | None = None
     _search_count: int = 0
     _budget_exceeded: bool = False
+    _owner_counts: dict[str, int] = {}
+    _owners_exhausted: set[str] = set()
 
-    def __init__(self, settings: Any | None = None) -> None:
+    def __init__(self, settings: Any | None = None, *, owner: str = "") -> None:
         self.settings = settings
+        # F-05c: per-owner budget accounting. Set from the spawning agent's
+        # name (base.py / sub_agent.py) so one heavy specialist cannot
+        # silently consume the whole engagement budget.
+        self._owner = owner
         # The default is derived from the port the launcher actually publishes,
         # not a literal. Two hardcoded copies of "8888" (here and in the
         # container spec) meant a port change moved the container without moving
@@ -596,11 +636,29 @@ class SearxNGClient:
         """Reset the search budget counter — called at the start of each engagement."""
         cls._search_count = 0
         cls._budget_exceeded = False
+        cls._owner_counts = {}
+        cls._owners_exhausted = set()
 
     @classmethod
     def get_search_count(cls) -> int:
         """Return the current search count for this engagement."""
         return cls._search_count
+
+    @classmethod
+    def get_owner_count(cls, owner: str) -> int:
+        """Return the search count attributed to one owner (F-05c)."""
+        return cls._owner_counts.get(owner, 0)
+
+    @classmethod
+    def budget_snapshot(cls) -> dict[str, object]:
+        """Machine-readable budget status for the completion health table."""
+        return {
+            "used": cls._search_count,
+            "cap": cls.SEARCH_BUDGET_CAP,
+            "exhausted": cls._budget_exceeded,
+            "owners": dict(cls._owner_counts),
+            "owners_exhausted": sorted(cls._owners_exhausted),
+        }
 
     async def _search_searxng_json(
         self,
@@ -827,6 +885,85 @@ class SearxNGClient:
             return retry
         return None
 
+    async def _search_all_replicas(
+        self,
+        query: str,
+        num_results: int,
+        language: str,
+        time_range: str,
+        safesearch: int,
+    ) -> SearchResponse | None:
+        """FULL-POOL FAN-OUT (F-03): one parallel request per replica with
+        that replica's FULL set of currently-healthy engines, merge + dedup.
+
+        WHY THIS EXISTS. The Aug 9 session's web replica had 4/4 engines
+        403/429/timed-out while the scholar replica's documented API engines
+        (crossref/openalex/semantic scholar) were never asked for the general
+        query — they do not ban datacenter IPs the way crawlers do. The
+        sequential zero-result fallback only reached them with a NARROW
+        fallback set (``{wikipedia}`` / ``{crossref, openalex, semantic
+        scholar}``) AFTER the preferred profile had already failed.
+
+        This method flips the ordering: when the preferred profile + standby
+        rotation yield zero, fire ONE parallel request per replica using that
+        replica's FULL healthy engine set and merge the results. W-11
+        isolation is preserved because explicit engines are bound to the
+        replica that owns them — each request only ever contains engines
+        from a single replica's corpus.
+
+        Per-replica failures are logged, never fatal: a dead scholar replica
+        must not abort the reference replica's contribution.
+        """
+        per_profile = self._pool.healthy_engines()
+        if not per_profile:
+            return None
+
+        async def _fan_one(profile: str, engines: set[str]) -> SearchResponse | None:
+            try:
+                return await self._search_searxng_json(
+                    query=query,
+                    num_results=num_results,
+                    categories="general",
+                    language=language,
+                    time_range=time_range,
+                    engines=",".join(sorted(engines)),
+                    safesearch=safesearch,
+                    explicit_engines=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - one replica must not kill the fleet
+                logger.warning(
+                    "FULL-POOL FAN-OUT: %s replica failed for '%s': %s",
+                    profile, query[:80], exc,
+                )
+                return None
+
+        responses = await asyncio.gather(
+            *(_fan_one(profile, engines) for profile, engines in per_profile.items()),
+            return_exceptions=True,
+        )
+
+        merged: list[SearchResult] = []
+        engines_used: set[str] = set()
+        degradation_events: list[dict[str, object]] = []
+        for response in responses:
+            if isinstance(response, Exception) or response is None:
+                continue
+            merged.extend(response.results)
+            engines_used.update(response.engines_used)
+            degradation_events.extend(response.degradation_events)
+
+        if not merged:
+            return None
+        merged = self._deduplicate(merged)[:num_results]
+        return SearchResponse(
+            query=query,
+            results=merged,
+            total=len(merged),
+            engines_used=sorted(engines_used),
+            retrieval_degraded=bool(degradation_events),
+            degradation_events=degradation_events,
+        )
+
     async def _search_jina_fallback(
         self,
         query: str,
@@ -898,15 +1035,47 @@ class SearxNGClient:
             )
         except Exception as exc:  # noqa: BLE001 - final fallback must never abort search
             logger.warning("Gemini grounded fallback failed open: %s", exc)
+            # F-09: same visibility rule as the constraint path above.
+            try:
+                from hyperion.obs import trace
+
+                trace(
+                    "search",
+                    event="grounding_unavailable",
+                    tool="google_search_grounding",
+                    query=query[:120],
+                    reason=f"{type(exc).__name__}: {exc}",
+                    category=categories,
+                )
+            except Exception as exc:  # noqa: BLE001 - telemetry must not break search
+                logger.debug("search trace emission failed: %s", exc)
             return None
 
         if not outcome.results:
             if outcome.constraints:
+                reason = "; ".join(outcome.constraints)
                 logger.warning(
                     "Gemini grounded fallback unavailable for '%s': %s",
                     query[:80],
-                    "; ".join(outcome.constraints),
+                    reason,
                 )
+                # F-09: a grounding failure must be VISIBLE, not just a log
+                # line. Silent empty results are how this bug hid (no
+                # GOOGLE_API_KEY -> fallback is a no-op -> search returns
+                # empty with no trace).
+                try:
+                    from hyperion.obs import trace
+
+                    trace(
+                        "search",
+                        event="grounding_unavailable",
+                        tool="google_search_grounding",
+                        query=query[:120],
+                        reason=reason,
+                        category=categories,
+                    )
+                except Exception as exc:  # noqa: BLE001 - telemetry must not break search
+                    logger.debug("search trace emission failed: %s", exc)
             return None
 
         results = self._deduplicate(outcome.results)[:num_results]
@@ -1066,15 +1235,84 @@ class SearxNGClient:
         if cached:
             return cached
 
-        # Enforce search budget cap (cached results don't count)
+        # Enforce search budget caps (cached results don't count). F-05:
+        # per-owner first (one heavy specialist must not starve the rest),
+        # then the global cap. Exhaustion is LOUD: a trace event + error
+        # log, not a single quiet warning — silent empties are exactly how
+        # the Aug 9 session hid the plateau.
+        owner = self._owner or "ungrouped"
+        owner_used = SearxNGClient._owner_counts.get(owner, 0)
+        if owner_used >= SearxNGClient.PER_OWNER_BUDGET_CAP:
+            if owner not in SearxNGClient._owners_exhausted:
+                SearxNGClient._owners_exhausted.add(owner)
+                logger.error(
+                    "SEARCH BUDGET EXHAUSTED for owner %s (%d/%d) — returning empty",
+                    owner, owner_used, SearxNGClient.PER_OWNER_BUDGET_CAP,
+                )
+                try:
+                    from hyperion.obs import trace
+
+                    trace(
+                        "search",
+                        event="search_budget_owner_exhausted",
+                        owner=owner,
+                        used=owner_used,
+                        cap=SearxNGClient.PER_OWNER_BUDGET_CAP,
+                    )
+                except Exception as exc:  # noqa: BLE001 - telemetry must not break search
+                    logger.debug("search trace emission failed: %s", exc)
+            return SearchResponse(query=query, results=[], total=0, engines_used=[])
+
         if SearxNGClient._search_count >= SearxNGClient.SEARCH_BUDGET_CAP:
             if not SearxNGClient._budget_exceeded:
-                logger.warning("Search budget cap reached (%d searches) — returning cached/empty",
-                               SearxNGClient.SEARCH_BUDGET_CAP)
                 SearxNGClient._budget_exceeded = True
+                logger.error(
+                    "SEARCH BUDGET EXHAUSTED (%d/%d) — every later search returns empty",
+                    SearxNGClient._search_count,
+                    SearxNGClient.SEARCH_BUDGET_CAP,
+                )
+                try:
+                    from hyperion.obs import trace
+
+                    trace(
+                        "search",
+                        event="search_budget_exhausted",
+                        used=SearxNGClient._search_count,
+                        cap=SearxNGClient.SEARCH_BUDGET_CAP,
+                    )
+                except Exception as exc:  # noqa: BLE001 - telemetry must not break search
+                    logger.debug("search trace emission failed: %s", exc)
             return SearchResponse(query=query, results=[], total=0, engines_used=[])
 
         SearxNGClient._search_count += 1
+        SearxNGClient._owner_counts[owner] = owner_used + 1
+
+        # F-06b: fail fast on a dead pool. If fewer than 2 engines across the
+        # whole referenced set are healthy, every query would burn its full
+        # timeout budget against dead upstreams before the LLM ever runs.
+        # Return the empty response immediately and say why — 45s × 7 queries
+        # of wasted wall-clock is exactly the Aug 9 "timeout at exactly 300s"
+        # failure mode.
+        health = get_engine_health()
+        if health.healthy_count(referenced_engines()) < 2:
+            logger.error(
+                "SEARCH FAIL-FAST: only %d/%d referenced engines healthy — "
+                "returning empty without issuing queries",
+                health.healthy_count(referenced_engines()),
+                len(referenced_engines()),
+            )
+            return SearchResponse(
+                query=query,
+                results=[],
+                total=0,
+                engines_used=[],
+                retrieval_degraded=True,
+                degradation_events=[{
+                    "type": "search_fail_fast_dead_pool",
+                    "healthy": health.healthy_count(referenced_engines()),
+                    "required": 2,
+                }],
+            )
 
         assert SearxNGClient._semaphore is not None
         async with SearxNGClient._semaphore:
@@ -1095,6 +1333,32 @@ class SearxNGClient:
             if searxng_response and searxng_response.results:
                 await self._set_cached(cache_key, searxng_response)
                 return searxng_response
+
+            # ── F-03 FULL-POOL FAN-OUT ──
+            # The preferred profile AND its standby rotation produced nothing.
+            # Before leaving the local stack for Jina, ask the WHOLE fleet:
+            # one parallel request per replica with that replica's full set of
+            # currently-healthy engines. The scholar/reference API engines do
+            # not ban datacenter IPs the way crawlers do, so a dead web pool
+            # can still be rescued by crossref/openalex/wikipedia. W-11 stays
+            # intact: each request carries only engines owned by its replica.
+            # Explicit-engine callers are excluded — a caller that demanded a
+            # specific corpus must not have it silently replaced.
+            if not engines:
+                logger.info(
+                    "SearXNG rotation exhausted for '%s' — FULL-POOL FAN-OUT across replicas",
+                    query,
+                )
+                fanout_response = await self._search_all_replicas(
+                    query=query,
+                    num_results=num_results,
+                    language=language,
+                    time_range=time_range,
+                    safesearch=safesearch,
+                )
+                if fanout_response and fanout_response.results:
+                    await self._set_cached(cache_key, fanout_response)
+                    return fanout_response
 
             # ── FALLBACK: Jina Search (s.jina.ai) ──
             logger.info("SearXNG returned no results for '%s' — falling back to Jina", query)

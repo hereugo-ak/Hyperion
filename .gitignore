@@ -91,3 +91,6 @@ test_render*
 
 # Second Brain vector store, created at runtime by vector_brain.py
 vault/.embeddings.db
+
+# Engine-health tracker state, created at runtime (F-04 sweep/cooldown bookkeeping)
+vault/engine_health.json

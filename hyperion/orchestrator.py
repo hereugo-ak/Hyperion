@@ -324,6 +324,10 @@ class WorkflowEngine:
     MAX_QUALITY_ITERATIONS = 4  # W-08: raised from 2 (was 3, then P7 cap 2)
     TASK_TIMEOUT_SECONDS = 600  # 10 minutes — default for most agents
     SPECIALIST_TIMEOUT_SECONDS = 1200  # 20 minutes — specialists spawn up to 3 sub-agents
+    # F-10: the corpus-floor integrity blocker (quality_gate._CORPUS_FLOOR_DOMAINS)
+    # demands a targeted retrieval escalation with floor 8 before terminal
+    # state is computed, not only the generic configurable source floor.
+    _CORPUS_FLOOR_SOURCE_FLOOR = 8
     # L3 fix: the task reframer sits BENEATH the Director's STRONG-tier
     # strategic replanner and handles the common "thin query" case. Each
     # failed / zero-finding task may be reframed at most this many times
@@ -1164,7 +1168,7 @@ class WorkflowEngine:
         """
         try:
             from hyperion.tools.task_reframer import reframe_task
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - escalation fallback must not crash the loop
             logger.warning("task_reframer import failed: %s", exc)
             return
 
@@ -1233,7 +1237,7 @@ class WorkflowEngine:
                     dag.add_task(new_task)
                     spawned += 1
                     self._publish_task_update(new_task)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - reframing is best-effort
                     logger.warning("add_task(reframed) failed for %s: %s", new_id, exc)
                     continue
 
@@ -1247,8 +1251,8 @@ class WorkflowEngine:
                             f"{original.reframe_attempts + 1}/"
                             f"{self.MAX_REFRAMER_RETRIES}"
                         )
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001 - adaptation log is best-effort
+                    logger.warning("dag adaptation log append failed: %s", exc)
                 self._log(
                     f"REFRAMER: {original.id} ({original.agent.value}, "
                     f"{failure_signal}) → {spawned} reframed variant(s) "
@@ -1618,6 +1622,14 @@ class WorkflowEngine:
                 recovered,
             )
             return True
+        # F-10b: a failed escalation must be LOUD — silent empty recovery is
+        # how the Aug 9 run reached BLOCKED with no retrieval attempt visible.
+        logger.error(
+            "RETRIEVAL ESCALATION: recovered 0 source(s) for thin evidence "
+            "(needed %d) — reason: %s",
+            needed,
+            getattr(report, "question", "?")[:80],
+        )
         limitations = getattr(report, "limitations", None)
         if limitations is not None:
             entry = (
@@ -1643,8 +1655,9 @@ class WorkflowEngine:
 
             _, subject, geography = get_engagement_focus()
             if not subject:
+                logger.error("RETRIEVAL ESCALATION: recovered 0 — reason: no engagement subject")
                 return 0
-            client = SearxNGClient()
+            client = SearxNGClient(owner="retrieval_escalation")
 
             # L4 fix: route through the query planner's fan-out instead of
             # 3 hardcoded strings. When the corpus is at 1 domain the
@@ -1693,7 +1706,7 @@ class WorkflowEngine:
             for query in queries:
                 try:
                     response = await client.search(query=query, num_results=5)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - escalation is best-effort
                     logger.warning("escalate search '%s' failed: %s", query[:60], exc)
                     continue
                 if response and response.results:
@@ -1711,6 +1724,10 @@ class WorkflowEngine:
             elif getattr(report, "key_findings", None):
                 citation_target = report.key_findings[0]
             if citation_target is None:
+                logger.error(
+                    "RETRIEVAL ESCALATION: recovered 0 — reason: report has no "
+                    "sections or key_findings to attach recovered sources to"
+                )
                 return 0
 
             from hyperion.schemas.models import Source, SourceCredibility, SourceType
@@ -1752,9 +1769,17 @@ class WorkflowEngine:
                 ))
                 recovered += 1
             report.total_sources = len(existing_urls) + recovered
+            logger.info(
+                "RETRIEVAL ESCALATION: recovered %d new source(s) via targeted "
+                "round (queries=%d)",
+                recovered, len(queries),
+            )
             return recovered
         except Exception as exc:  # noqa: BLE001 - logged, treated as no recovery
-            logger.warning("retrieval escalation failed: %s", exc)
+            logger.error(
+                "RETRIEVAL ESCALATION: recovered 0 — reason: %s: %s",
+                type(exc).__name__, exc,
+            )
             return 0
 
     async def _execute_dag(self, dag: WorkflowDAG) -> dict[str, Any]:
@@ -1939,6 +1964,35 @@ class WorkflowEngine:
                 current_score.max_iterations_reached = True
                 break
             prev_total = current_score.total_score
+
+            # F-10: the CORPUS FLOOR integrity blocker is the strongest
+            # thin-evidence signal. When the gate reports it, run a targeted
+            # retrieval escalation with the corpus floor (8 distinct domains)
+            # BEFORE the generic source-count floor check — a report with
+            # many sources from one domain must still get a retrieval round
+            # instead of blocking.
+            if any(
+                "CORPUS FLOOR" in blocker
+                for blocker in (current_score.integrity_blockers or [])
+            ):
+                corpus_floor = self._CORPUS_FLOOR_SOURCE_FLOOR
+                self._log(
+                    f"QUALITY: CORPUS FLOOR blocker active — running targeted "
+                    f"retrieval escalation with floor {corpus_floor}"
+                )
+                proceeded = await self._handle_thin_evidence(
+                    current_report, corpus_floor
+                )
+                if not proceeded:
+                    self._log(
+                        f"QUALITY: corpus-floor retrieval escalation failed — "
+                        f"report remains below {corpus_floor} distinct domains."
+                    )
+                else:
+                    self._log(
+                        f"QUALITY: corpus-floor retrieval escalation recovered "
+                        f"sources (now {getattr(current_report, 'total_sources', 0)})"
+                    )
 
             # P2-25: thin evidence triggers retrieval escalation, not a stop.
             # The old content-aware stop broke here; now a below-floor source

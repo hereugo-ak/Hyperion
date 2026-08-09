@@ -34,8 +34,8 @@ ui:
   themes:
   - simple
 outgoing:
-  request_timeout: 6.0
-  max_request_timeout: 12.0
+  request_timeout: 15.0
+  max_request_timeout: 25.0
   pool_connections: 20
   pool_maxsize: 10
   enable_http2: true
@@ -46,25 +46,25 @@ engines:
   engine: mojeek
   shortcut: mj
   disabled: false
-  timeout: 10
+  timeout: 15
   weight: 1.0
 - name: mwmbl
   engine: mwmbl
   shortcut: mwm
   disabled: false
-  timeout: 10
+  timeout: 20
   weight: 0.8
 - name: brave
   engine: brave
   shortcut: br
   disabled: false
-  timeout: 8
+  timeout: 12
   weight: 1.0
 - name: yep
   engine: yep
   shortcut: yp
   disabled: false
-  timeout: 10
+  timeout: 15
   weight: 0.6
 valkey:
   url: valkey://valkey:6379/2
