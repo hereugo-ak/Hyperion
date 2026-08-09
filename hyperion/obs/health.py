@@ -68,27 +68,37 @@ _LOCAL_SEARXNG_HEADERS = {
 }
 
 
-def _searxng_probe_targets(settings: Any) -> list[tuple[str, str, str]]:
+def _searxng_probe_targets(settings: Any) -> list[tuple[str, str, str, float]]:
     """Return profile-aware smoke targets for the managed local stack.
 
     The configured compatibility URL points at the scholar replica on 8888.
     Probing only that endpoint with a general-web query produced the exact false
     OFFLINE refusal in the reported run even while the web and reference replicas
     were healthy. Custom/remote SearXNG deployments remain a single target.
+
+    F-02 (FIX0.3_RUNBOOK_2026-08-09): the web-profile smoke used to send the
+    full ``mojeek,mwmbl,brave,yep`` set — the exact engines the boot probe
+    tripped into 403/429 one minute before the engagement began. The web
+    smoke is now de-rated to a single cheap engine (``mwmbl`` only) with a
+    short timeout, and ``_check_searxng`` additionally gates it behind engine
+    health so a probe never issues traffic to engines that are already
+    cooling.
     """
     from urllib.parse import urlsplit
 
     configured = getattr(settings, "searxng_url", "") or "http://localhost:8888"
     parsed = urlsplit(configured if "://" in configured else f"http://{configured}")
     if (parsed.hostname or "").lower() not in {"127.0.0.1", "localhost", "::1"}:
-        return [(configured.rstrip("/"), SMOKE_QUERY, "")]
+        return [(configured.rstrip("/"), SMOKE_QUERY, "", 20.0)]
 
     from hyperion.infra.services import SEARXNG_REPLICAS
 
     queries = {
-        "scholar": ("india trade policy", "crossref,openalex"),
-        "reference": ("India", "wikipedia"),
-        "web": (SMOKE_QUERY, "mojeek,mwmbl,brave,yep"),
+        "scholar": ("india trade policy", "crossref,openalex", 20.0),
+        "reference": ("India", "wikipedia", 20.0),
+        # F-02: one cheap engine, short timeout — the probe must not be the
+        # thing that bans the fleet.
+        "web": (SMOKE_QUERY, "mwmbl", 6.0),
     }
     return [
         (f"http://127.0.0.1:{replica.port}", *queries[replica.profile])
@@ -217,7 +227,7 @@ def _check_searxng(settings: Any) -> ToolHealth:
         h.detail = f"smoke query unavailable: {exc}"
         return h
 
-    for url, query, engines in targets:
+    for url, query, engines, timeout in targets:
         from urllib.parse import urlsplit
 
         parsed = urlsplit(url if "://" in url else f"http://{url}")
@@ -227,6 +237,25 @@ def _check_searxng(settings: Any) -> ToolHealth:
         if not _check_port(host, port):
             failures.append(f"{label}: unreachable")
             continue
+        # F-02: gate the smoke behind engine health. If every engine this
+        # profile would query is already cooling/suspended (persisted from an
+        # earlier session), do NOT issue traffic — record the deferral and
+        # move on. The probe must never be the thing that re-triggers a ban.
+        if engines:
+            try:
+                from hyperion.tools.engine_health import get_engine_health
+
+                requested = [e.strip() for e in engines.split(",") if e.strip()]
+                if requested and not any(
+                    get_engine_health().is_available(e) for e in requested
+                ):
+                    failures.append(
+                        f"{label}: smoke deferred (engines cooling: {', '.join(requested)})"
+                    )
+                    continue
+            except Exception as exc:  # noqa: BLE001 - health lookup must not break boot
+                failures.append(f"{label}: health gate error ({type(exc).__name__})")
+                continue
         params = {"q": query, "format": "json"}
         if engines:
             params["engines"] = engines
@@ -235,7 +264,7 @@ def _check_searxng(settings: Any) -> ToolHealth:
                 f"{url.rstrip('/')}/search",
                 params=params,
                 headers=_LOCAL_SEARXNG_HEADERS if host in {"127.0.0.1", "localhost", "::1"} else None,
-                timeout=20.0,
+                timeout=timeout,
             )
             response.raise_for_status()
             body = response.json()
@@ -552,6 +581,26 @@ def print_completion_health(
             print("\n  TIER USAGE:")
             for tier, count in sorted(tier_usage.items()):
                 print(f"    {tier:<20} {count} calls")
+
+    # F-05b: surface the search budget so silent mid-engagement exhaustion
+    # (the Aug 9 "total collected: N" plateau) is visible at run end.
+    try:
+        from hyperion.tools.searxng import SearxNGClient
+
+        budget = SearxNGClient.budget_snapshot()
+        used = int(budget.get("used", 0))
+        cap = int(budget.get("cap", 0))
+        exhausted = bool(budget.get("exhausted"))
+        status = "EXHAUSTED" if exhausted else "OK"
+        print(f"  Search:      {used}/{cap} ({status})")
+        if exhausted:
+            print("  ⚠ SEARCH BUDGET EXHAUSTED — later searches returned empty; "
+                  "raise SEARCH_BUDGET_CAP or reduce query fan-out.")
+        owners = budget.get("owners_exhausted")
+        if owners:
+            print(f"  ⚠ Per-owner budget exhausted: {', '.join(sorted(owners))}")
+    except Exception as exc:  # noqa: BLE001 - health table must never crash
+        print(f"  ⚠ search budget render failed: {exc}")
 
     # Degraded status
     if not getattr(result, 'success', False):

@@ -485,7 +485,16 @@ class EngagementDirector(BaseAgent):
         # make and refuse to re-evaluate an issue it has already ruled on.
         self._seen_escalations: set[str] = set()
         self._escalations_evaluated: int = 0
+        # F-12: the cap is now proportional to the DAG task count
+        # (max(12, 2 × len(tasks))) instead of a flat 12, and it caps ONLY
+        # the LLM evaluation tier. Deterministic recovery paths — retrieval
+        # escalation (orchestrator._escalate_retrieval), sub-agent broadened
+        # respawn (F-07), engine rotation — live OUTSIDE the Director and
+        # never consume this budget, so a degraded run still gets its
+        # deterministic rescues after the LLM cap is reached.
         self._max_escalation_evaluations: int = 12
+        self._MIN_ESCALATION_CAP = 12
+        self._ESCALATION_CAP_PER_TASK = 2
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling, the Director is omniscient
@@ -555,10 +564,14 @@ class EngagementDirector(BaseAgent):
         # strategic re-planning. A run that escalates this much is degraded
         # already; the right move is to finish and deliver, not to keep
         # re-planning until the budget is gone and no PDF is produced.
-        if self._escalations_evaluated >= self._max_escalation_evaluations:
+        # F-12: the cap scales with the DAG (max(12, 2 × len(tasks))) so a
+        # larger engagement gets proportionally more evaluations; deterministic
+        # recovery paths never touch this budget.
+        cap = self._escalation_evaluation_cap()
+        if self._escalations_evaluated >= cap:
             self._log(
                 f"DIRECTOR: escalation evaluation cap reached "
-                f"({self._max_escalation_evaluations}); logging without LLM "
+                f"({cap}); logging without LLM "
                 f"re-planning: {issue[:100]}"
             )
             return
@@ -583,6 +596,26 @@ class EngagementDirector(BaseAgent):
                     f"DIRECTOR: applying adaptation failed "
                     f"({type(e).__name__}: {e!s:.150}); continuing"
                 )
+
+    def _escalation_evaluation_cap(self) -> int:
+        """F-12: LLM evaluation cap, proportional to the DAG task count.
+
+        A flat cap of 12 let a 30-task DAG burn all its evaluations on the
+        first third of the engagement, leaving later escalations (including
+        the Quality Gate BLOCKED) with no LLM re-planning. Cap =
+        ``max(12, 2 × len(dag.tasks))``: larger engagements get proportionally
+        more evaluations while the 12 floor keeps small runs protected.
+
+        Deterministic recovery (retrieval escalation, sub-agent respawn,
+        engine rotation) is deliberately NOT counted here — it lives outside
+        the Director and runs regardless of this budget.
+        """
+        if self._current_dag is None or not getattr(self._current_dag, "tasks", None):
+            return self._max_escalation_evaluations
+        return max(
+            self._MIN_ESCALATION_CAP,
+            self._ESCALATION_CAP_PER_TASK * len(self._current_dag.tasks),
+        )
 
     async def _evaluate_escalation(self, issue: str, suggested_action: str) -> dict[str, Any] | None:
         """Use LLM to evaluate an escalation and determine the adaptation.

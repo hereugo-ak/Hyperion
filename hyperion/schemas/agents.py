@@ -223,6 +223,14 @@ class SubAgentSpec(BaseModel):
         description="Name of the Pydantic model the sub-agent must produce"
     )
     timeout_seconds: int = Field(default=600, description="10-minute timeout per §4.7")
+    # F-07: True when this spec is a BROADENED respawn of a previous attempt
+    # that timed out or returned zero validated findings. Broadened mode is
+    # faster AND wider (deterministic query variants only, no geography
+    # anchor, capped extraction) and is never itself respawned again.
+    broadened: bool = Field(
+        default=False,
+        description="F-07: broadened respawn of a timed-out/zero-findings attempt"
+    )
     context: dict[str, Any] = Field(
         default_factory=dict,
         description="Context bundle from parent (prior findings, search terms, etc.)"

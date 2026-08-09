@@ -28,6 +28,18 @@ def _settings() -> SimpleNamespace:
     )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_engine_health():
+    """F-02: the smoke probe is now gated behind engine health. A leftover
+    cooldown from another test must not make the probe defer."""
+    from hyperion.tools.engine_health import get_engine_health, reset_engine_health
+
+    reset_engine_health()
+    get_engine_health().reset()
+    yield
+    reset_engine_health()
+
+
 @pytest.fixture
 def port_open(monkeypatch):
     monkeypatch.setattr("hyperion.obs.health._check_port", lambda *a, **k: True)

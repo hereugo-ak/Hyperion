@@ -121,8 +121,8 @@ async def _tcp_connect(host: str, port: int, timeout: float) -> bool:
         return False
     try:
         sock.close()
-    except Exception:  # noqa: BLE001 - close best effort
-        pass
+    except Exception as exc:  # noqa: BLE001 - close best effort
+        logger.debug("socket close failed: %s", exc)
     return True
 
 

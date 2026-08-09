@@ -637,6 +637,9 @@ class TestSubAgentFailureFindings:
         parent.bus = MagicMock()
         parent.router = MagicMock()
         parent._sub_agent_specs = []
+        # F-07: the broadened-respawn tracker (BaseAgent.__init__ initialises
+        # it; the fake parent bypasses __init__ so the test must too).
+        parent._sub_agent_respawned = set()
         parent.state = SimpleNamespace(
             sub_agents_spawned=0,
             sub_agents_active=0,

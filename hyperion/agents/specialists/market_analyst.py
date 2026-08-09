@@ -64,6 +64,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.tools.parse_or_none import parse_or_none
 from hyperion.tools.query_utils import resolve_subject
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -646,7 +647,9 @@ class MarketAnalyst(BaseAgent):
             )
 
         try:
-            data = json.loads(response.content)
+            data = parse_or_none(response.content)
+            if data is None:
+                raise ValueError("LLM output unparseable after lenient retry")
             return FinancialMetric(
                 name="TAM (Top-Down)",
                 value=data.get("tam_value", "Unknown"),
@@ -658,11 +661,14 @@ class MarketAnalyst(BaseAgent):
                 sources=[s for s in self._sources if s.credibility == SourceCredibility.INDUSTRY_REPORT][:5],
             )
         except (json.JSONDecodeError, ValueError):
+            # F-11: retry-and-omit — never emit the literal "Parse error"
+            # string that trips the meta-text blocklist. An omitted metric
+            # carries an empty value (renders as "insufficient data").
             return FinancialMetric(
                 name="TAM (Top-Down)",
-                value="Parse error",
+                value="",
                 unit="$",
-                assumptions=["Top-down sizing failed, LLM output parsing error"],
+                assumptions=["Top-down sizing failed, LLM output parsing error — metric omitted"],
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -737,7 +743,9 @@ class MarketAnalyst(BaseAgent):
             )
 
         try:
-            data = json.loads(response.content)
+            data = parse_or_none(response.content)
+            if data is None:
+                raise ValueError("LLM output unparseable after lenient retry")
             sensitivity = data.get("sensitivity")
             return FinancialMetric(
                 name="TAM (Bottom-Up)",
@@ -754,11 +762,12 @@ class MarketAnalyst(BaseAgent):
                 )][:5],
             )
         except (json.JSONDecodeError, ValueError):
+            # F-11: retry-and-omit — never emit the literal "Parse error".
             return FinancialMetric(
                 name="TAM (Bottom-Up)",
-                value="Parse error",
+                value="",
                 unit="$",
-                assumptions=["Bottom-up sizing failed, LLM output parsing error"],
+                assumptions=["Bottom-up sizing failed, LLM output parsing error — metric omitted"],
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -841,7 +850,9 @@ class MarketAnalyst(BaseAgent):
             )
 
         try:
-            data = json.loads(response.content)
+            data = parse_or_none(response.content)
+            if data is None:
+                raise ValueError("LLM output unparseable after lenient retry")
 
             # Extract contradictions as KeyFindings
             for c in data.get("contradictions", []):
@@ -879,18 +890,19 @@ class MarketAnalyst(BaseAgent):
                 contradictions,
             )
         except (json.JSONDecodeError, ValueError):
+            # F-11: retry-and-omit — never emit the literal "Parse error".
             return (
                 FinancialMetric(
                     name="TAM (Triangulated)",
-                    value="Parse error",
+                    value="",
                     unit="$",
-                    assumptions=["CAGR triangulation failed, parsing error"],
+                    assumptions=["CAGR triangulation failed, parsing error — metric omitted"],
                 ),
                 FinancialMetric(
                     name="CAGR",
-                    value="Parse error",
+                    value="",
                     unit="%",
-                    assumptions=["CAGR calculation failed, parsing error"],
+                    assumptions=["CAGR calculation failed, parsing error — metric omitted"],
                 ),
                 contradictions,
             )

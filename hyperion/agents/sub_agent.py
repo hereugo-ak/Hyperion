@@ -121,6 +121,17 @@ class SubAgentRunner:
         return self.spec.question
 
     @property
+    def broadened(self) -> bool:
+        """F-07: True when this is a broadened respawn pass.
+
+        Broadened mode is faster AND wider: the LLM query planner is skipped
+        (deterministic ``_condense_query_variants`` only), the geography
+        anchor is dropped on the primary search pass (whole-corpus breadth
+        around the main question), and extraction is capped at 3 URLs.
+        """
+        return getattr(self.spec, "broadened", False)
+
+    @property
     def parent_agent(self) -> str:
         return self.spec.parent_agent.value
 
@@ -197,7 +208,9 @@ class SubAgentRunner:
 
         if tool == ToolName.SEARXNG:
             from hyperion.tools.searxng import SearxNGClient
-            return SearxNGClient(settings=settings)
+            # F-05c: attribute sub-agent searches to the parent specialist so
+            # per-owner budget accounting covers the whole specialist stack.
+            return SearxNGClient(settings=settings, owner=self.parent_agent)
         elif tool == ToolName.JINA:
             from hyperion.tools.jina import JinaClient
             return JinaClient(settings=settings)
@@ -865,7 +878,10 @@ class SubAgentRunner:
         from hyperion.tools.unified_extract import UnifiedExtract
 
         tiers = self._extraction_tiers()
-        targets = urls[: self.MAX_EXTRACT_URLS]
+        # F-07c: a broadened respawn is a fast second pass — cap extraction at
+        # 3 URLs instead of the full ladder budget.
+        extract_cap = 3 if self.broadened else self.MAX_EXTRACT_URLS
+        targets = urls[:extract_cap]
         raw_data: list[str] = []
         errors: list[str] = []
 
@@ -969,6 +985,13 @@ class SubAgentRunner:
         # Deterministic baseline first, this is the pre-1.3 behaviour and
         # must survive planner failure untouched.
         baseline = self._condense_query_variants(self.spec.question)
+
+        # F-07c: a broadened respawn runs AFTER a full primary pass — it is
+        # a deterministic, fast, whole-corpus second attempt. Skip the LLM
+        # query planner entirely (one less call, no latency gamble) and use
+        # only the deterministic variants.
+        if self.broadened:
+            return baseline
 
         _focus_q, subject, geography = get_engagement_focus()
         try:
@@ -1083,8 +1106,13 @@ class SubAgentRunner:
         try:
             searxng = self._get_tool("searxng")
             queries = await self._plan_queries(leg="searxng")
-            all_results = await self._fan_out_search(searxng.search, queries, 15)
-            if len(all_results) < self.LOW_YIELD_THRESHOLD:
+            # F-07c: broadened mode drops the geography anchor on the PRIMARY
+            # pass (whole-corpus breadth around the main question) instead of
+            # only on the low-yield retry.
+            all_results = await self._fan_out_search(
+                searxng.search, queries, 15, drop_geography=self.broadened
+            )
+            if not self.broadened and len(all_results) < self.LOW_YIELD_THRESHOLD:
                 yield_before = len(all_results)
                 broadened = await self._fan_out_search(
                     searxng.search, queries, 15, drop_geography=True
@@ -1137,8 +1165,11 @@ class SubAgentRunner:
         try:
             jina = self._get_tool("jina")
             queries = await self._plan_queries(leg="jina")
-            all_results = await self._fan_out_search(jina.search, queries, 10)
-            if len(all_results) < self.LOW_YIELD_THRESHOLD:
+            # F-07c: same broadened geography-drop rule as _search_searxng.
+            all_results = await self._fan_out_search(
+                jina.search, queries, 10, drop_geography=self.broadened
+            )
+            if not self.broadened and len(all_results) < self.LOW_YIELD_THRESHOLD:
                 yield_before = len(all_results)
                 broadened = await self._fan_out_search(
                     jina.search, queries, 10, drop_geography=True
@@ -1291,15 +1322,38 @@ class SubAgentRunner:
         (§4.7).
 
         The 5-minute timeout is enforced by the parent via
-        asyncio.wait_for in BaseAgent._spawn_sub_agent.
+        asyncio.wait_for in BaseAgent._spawn_sub_agent. F-06: search gets
+        its OWN sub-budget (70% of the spec timeout) and the analysis LLM
+        call gets the remainder, so a stuck search phase can never eat the
+        LLM's time budget.
         """
         start = time.time()
 
-        # Phase 1: Gather raw data
-        raw_data = await self._gather_raw_data()
+        # Phase 1: Gather raw data — search fan-out + extraction. On a dead
+        # pool this phase alone can exceed the whole budget before the LLM
+        # ever runs; bound it to 70% of the sub-agent's wall-clock.
+        search_budget = max(60, int(self.spec.timeout_seconds * 0.7))
+        try:
+            raw_data = await asyncio.wait_for(
+                self._gather_raw_data(), timeout=search_budget
+            )
+        except TimeoutError:
+            raw_data = (
+                "No raw data available from tools — the search phase exceeded "
+                f"its {search_budget}s budget (dead engine pool or slow "
+                "extraction)."
+            )
 
-        # Phase 2: Analyze and produce structured findings
-        findings = await self._analyze_and_produce_findings(raw_data)
+        # Phase 2: Analyze and produce structured findings — the LLM call
+        # always gets at least the remainder of the budget.
+        analysis_budget = max(60, self.spec.timeout_seconds - search_budget)
+        try:
+            findings = await asyncio.wait_for(
+                self._analyze_and_produce_findings(raw_data),
+                timeout=analysis_budget,
+            )
+        except TimeoutError:
+            findings = []
 
         elapsed = time.time() - start
 

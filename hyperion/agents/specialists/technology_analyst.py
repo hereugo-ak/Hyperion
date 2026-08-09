@@ -79,6 +79,7 @@ from hyperion.schemas.models import (
     TechnologyAssessment,
     VendorComparison,
 )
+from hyperion.tools.parse_or_none import parse_or_none
 from hyperion.tools.query_utils import detect_geographies, resolve_subject
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -819,7 +820,9 @@ class TechnologyAnalyst(BaseAgent):
             )
 
         try:
-            data = json.loads(response.content)
+            data = parse_or_none(response.content)
+            if data is None:
+                raise ValueError("LLM output unparseable after lenient retry")
             return BuildVsBuyAnalysis(
                 recommendation=data.get("recommendation", "BUY"),
                 time_to_market_build=data.get("time_to_market_build", "Unknown"),
@@ -835,19 +838,23 @@ class TechnologyAnalyst(BaseAgent):
                 rationale=data.get("rationale", ""),
             )
         except (json.JSONDecodeError, ValueError, TypeError):
+            # F-11: retry-and-omit — never emit the literal "Parse error"
+            # string that trips the meta-text blocklist. Omitted fields are
+            # empty strings (rendered as blank rather than fake data).
             return BuildVsBuyAnalysis(
-                recommendation="BUY",
-                time_to_market_build="Parse error",
-                time_to_market_buy="Parse error",
+                recommendation="INVESTIGATE",
+                time_to_market_build="",
+                time_to_market_buy="",
                 tco_5yr_build=0,
                 tco_5yr_buy=0,
-                strategic_differentiation_build="Parse error",
-                strategic_differentiation_buy="Parse error",
-                maintenance_burden_build="Parse error",
-                maintenance_burden_buy="Parse error",
-                team_capability_assessment="Parse error",
-                opportunity_cost="Parse error",
-                rationale="Build-vs-buy analysis failed, parsing error",
+                strategic_differentiation_build="",
+                strategic_differentiation_buy="",
+                maintenance_burden_build="",
+                maintenance_burden_buy="",
+                team_capability_assessment="",
+                opportunity_cost="",
+                rationale="Build-vs-buy analysis could not be parsed from the LLM output — "
+                "fields omitted rather than filled with placeholder text.",
             )
 
     # ─────────────────────────────────────────────────────────────────────

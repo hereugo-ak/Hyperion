@@ -70,6 +70,7 @@ from hyperion.schemas.models import (
     Source,
     SourceCredibility,
 )
+from hyperion.tools.parse_or_none import parse_or_none
 from hyperion.tools.query_utils import resolve_subject
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -689,7 +690,9 @@ class FinancialAnalyst(BaseAgent):
             )
 
         try:
-            data = json.loads(response.content)
+            data = parse_or_none(response.content)
+            if data is None:
+                raise ValueError("LLM output unparseable after lenient retry")
 
             dcf = FinancialMetric(
                 name="DCF Valuation",
@@ -722,12 +725,13 @@ class FinancialAnalyst(BaseAgent):
             return dcf, sensitivity_metrics
 
         except (json.JSONDecodeError, ValueError):
+            # F-11: retry-and-omit — never emit the literal "Parse error".
             return (
                 FinancialMetric(
                     name="DCF Valuation",
-                    value="Parse error",
+                    value="",
                     unit="$",
-                    assumptions=["DCF model failed, parsing error"],
+                    assumptions=["DCF model failed, parsing error — metric omitted"],
                 ),
                 [],
             )
@@ -801,7 +805,9 @@ class FinancialAnalyst(BaseAgent):
             )
 
         try:
-            data = json.loads(response.content)
+            data = parse_or_none(response.content)
+            if data is None:
+                raise ValueError("LLM output unparseable after lenient retry")
             return FinancialMetric(
                 name="Comparable Company Analysis",
                 value=data.get("comp_value", "Unknown"),
@@ -817,11 +823,12 @@ class FinancialAnalyst(BaseAgent):
                 sources=[s for s in self._sources if "alpha_vantage" in s.url.lower() or "alphavantage" in s.url.lower()][:5],
             )
         except (json.JSONDecodeError, ValueError):
+            # F-11: retry-and-omit — never emit the literal "Parse error".
             return FinancialMetric(
                 name="Comparable Company Analysis",
-                value="Parse error",
+                value="",
                 unit="$",
-                assumptions=["Comp analysis failed, parsing error"],
+                assumptions=["Comp analysis failed, parsing error — metric omitted"],
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -1054,7 +1061,9 @@ class FinancialAnalyst(BaseAgent):
             )
 
         try:
-            data = json.loads(response.content)
+            data = parse_or_none(response.content)
+            if data is None:
+                raise ValueError("LLM output unparseable after lenient retry")
             return FinancialMetric(
                 name="Break-Even Analysis",
                 value=f"{data.get('break_even_units', 'Unknown')} units / ${data.get('break_even_revenue', 'Unknown')}",
@@ -1068,11 +1077,12 @@ class FinancialAnalyst(BaseAgent):
                 sources=self._sources[:3],
             )
         except (json.JSONDecodeError, ValueError):
+            # F-11: retry-and-omit — never emit the literal "Parse error".
             return FinancialMetric(
                 name="Break-Even Analysis",
-                value="Parse error",
+                value="",
                 unit="$",
-                assumptions=["Break-even calculation failed, parsing error"],
+                assumptions=["Break-even calculation failed, parsing error — metric omitted"],
             )
 
     # ─────────────────────────────────────────────────────────────────────
