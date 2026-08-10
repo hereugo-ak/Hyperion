@@ -166,7 +166,7 @@ class FlareSolverrClient:
         except httpx.HTTPError as e:
             return FlareSolverrResult(url=url, error=f"HTTP error: {e!s:.100}")
         except (KeyError, ValueError, TypeError) as e:
-            return FlareSolverrResult(url=url, error=f"Parse error: {e!s:.100}")
+            return FlareSolverrResult(url=url, error=f"Response parsing failed: {e!s:.100}")
         except Exception as e:  # noqa: BLE001 - best-effort, failure must not propagate
             return FlareSolverrResult(url=url, error=f"Unexpected: {e!s:.100}")
 

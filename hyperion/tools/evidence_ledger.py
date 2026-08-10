@@ -132,6 +132,13 @@ class EvidenceLedger:
         self.run_id = run_id
         self._lock = threading.Lock()
         self._items: dict[str, Evidence] = {}
+        #: P3: stable per-URL citation IDs assigned on first sighting, e.g.
+        #: ``E3``. ``by_evidence_id()`` maps a sub-agent's cited ID back to the
+        #: ledger record so ``Source`` objects are constructed in code, never
+        #: by the LLM. The counter is monotonically increasing so IDs are
+        #: stable even if the dict grows or shrinks.
+        self._ids: dict[str, str] = {}
+        self._next_id = 1
         self._created_at = time.time()
 
     # ── writes ─────────────
@@ -190,7 +197,36 @@ class EvidenceLedger:
                 run_id=self.run_id,
             )
             self._items[key] = evidence
+            self._ids[key] = f"E{self._next_id}"
+            self._next_id += 1
             return evidence
+
+    def evidence_id_for(self, url: str) -> str:
+        """P3: the stable citation ID (``E3``) for a URL, or ``""``.
+
+        Assigned on first sighting; used to label search results in the
+        sub-agent prompt block so the LLM cites IDs the code can bind.
+        """
+        if not url or not isinstance(url, str):
+            return ""
+        key = _url_hash(url.strip())
+        with self._lock:
+            return self._ids.get(key, "")
+
+    def by_evidence_id(self, evidence_id: str) -> Evidence | None:
+        """P3: the ``Evidence`` behind a cited ID, or ``None`` if unknown.
+
+        A sub-agent-cited ID that does not resolve here is dropped — the LLM
+        can no longer mint, drop, or mangle URLs (invariant I-3).
+        """
+        if not evidence_id:
+            return None
+        target = str(evidence_id).strip()
+        with self._lock:
+            for key, eid in self._ids.items():
+                if eid == target:
+                    return self._items.get(key)
+        return None
 
     # ── reads ───────────────
 
@@ -302,6 +338,19 @@ def set_active_ledger(ledger: EvidenceLedger | None) -> None:
 def reset_active_ledger() -> None:
     """Unbind the active ledger — next engagement opens its own."""
     _active.set(None)
+
+
+def reset_default_ledger() -> None:
+    """P6.2/iso: clear the module-level fallback ledger.
+
+    ``_DEFAULT_LEDGER`` is shared mutable state (a standalone tool/test wiring
+    target). Without a reset, ``record_evidence`` calls outside an engagement
+    accumulate records into it, so a later test asserting ``count()==0`` reads
+    the previous test's pollution. Tests that assert on the default ledger
+    must reset it in setup/teardown.
+    """
+    _DEFAULT_LEDGER._items.clear()
+    _DEFAULT_LEDGER._ids.clear()
 
 
 def new_ledger(run_id: str) -> EvidenceLedger:

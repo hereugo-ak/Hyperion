@@ -111,6 +111,19 @@ from hyperion.tools.wayback import WaybackClient
 
 logger = logging.getLogger(__name__)
 
+# F-0.1-8 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): shared per-engagement fetch
+# cache. Module-level so every UnifiedExtract instance (each specialist spawns
+# one) shares it — the same competitor page is fetched ONCE per engagement
+# instead of once per concurrently-running specialist. Engagement-scoped: call
+# clear_fetch_cache() at engagement start. Keys are URLs; values are shallow
+# copies of the first successful extraction result.
+_FETCH_CACHE: dict[str, UnifiedExtractResult] = {}
+
+
+def clear_fetch_cache() -> None:
+    """F-0.1-8: reset the shared fetch cache (call at engagement start)."""
+    _FETCH_CACHE.clear()
+
 
 @dataclass
 class UnifiedExtractResult:
@@ -1004,6 +1017,31 @@ class UnifiedExtract:
         if not pending_order:
             return outcome
 
+        # F-0.1-8 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): shared per-engagement
+        # fetch cache. Two concurrently running specialists scraping the same
+        # competitor page used to fetch it twice (one network call each). The
+        # cache is module-level (shared across UnifiedExtract instances) and
+        # engagement-scoped (cleared per engagement via clear_fetch_cache), so
+        # the same URL is fetched once per engagement. A cache hit skips the
+        # whole tier climb and marks the result cached.
+        cached_results: list[UnifiedExtractResult] = []
+        remaining: list[str] = []
+        for url in pending_order:
+            hit = _FETCH_CACHE.get(url)
+            if hit is not None:
+                cached_results.append(hit)
+            else:
+                remaining.append(url)
+        if cached_results:
+            outcome.results.extend(cached_results)
+            for _cached in cached_results:
+                outcome.tools_used.append("fetch_cache")
+            if not remaining:
+                outcome.tools_tried.append("fetch_cache")
+                outcome.tiers_unavailable = dict(self._skipped)
+                return outcome
+        pending_order = remaining
+
         extracted_urls: set[str] = set()
         semaphore = asyncio.Semaphore(concurrency or self.EXTRACTION_CONCURRENCY)
         is_available = tier_available or self._tier_available
@@ -1048,6 +1086,12 @@ class UnifiedExtract:
                     outcome.results.append(result)
                     extracted_urls.add(result.url)
                     produced += 1
+                    # F-0.1-8: cache the first successful fetch of this URL so a
+                    # concurrent specialist scraping the same page skips the
+                    # network call. Cache only successful, content-bearing
+                    # results (a 404 shell must not be cached as success).
+                    if result.url and (result.markdown or result.content):
+                        _FETCH_CACHE.setdefault(result.url, result)
                 elif result.error:
                     failures.append(result.error)
 

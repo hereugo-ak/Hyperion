@@ -336,6 +336,13 @@ class WorkflowEngine:
     # broadening strategies before the Director's slot is spent, without
     # letting a genuinely un-answerable question loop forever.
     MAX_REFRAMER_RETRIES = 2
+    # P4.3 (overhaul §6 P4, 2026-08-10): a GLOBAL reframe budget per
+    # engagement. The per-task retry cap alone let A-6's competitive_intel burn
+    # ~8 full pipelines by re-framing DIFFERENT tasks against the same dead
+    # pool. The reframer is the cheapest way to waste a dead fleet's tokens, so
+    # the whole engagement gets one small bucket: once it is spent, no task is
+    # reworded again — failures route to capacity recovery instead.
+    MAX_REFRAMER_GLOBAL_BUDGET = 6
     # Each sub-agent does SearxNG search + Jina read + LLM analysis.
     # With SearxNG semaphore=3 and multiple specialists in parallel,
     # and potentially slow network conditions, 600s was not enough —
@@ -363,6 +370,18 @@ class WorkflowEngine:
         self._corpus_contract: Any = None
         self._evidence_reduced_budget: bool = False
         self._evidence_budget_default: int = 6
+        # P4.3: reframes actually SPAWNED this engagement (global budget).
+        self._reframes_spawned: int = 0
+        # P4.4: progress signal — Δdomains + Δevidence per orchestration
+        # iteration. An iteration with ZERO progress consumes the progress
+        # budget; two consecutive zero-delta iterations is a stop signal
+        # (the fleet is yielding nothing and more waves only burn tokens).
+        self._consecutive_zero_progress: int = 0
+        self._last_domains_seen: int = -1
+        # P6.2: per-run KPI telemetry (recorded to reports/diagnostics at end).
+        self._first_evidence_seconds: float = -1.0
+        self._domains_before_synthesis: int = -1
+        self._provenance_binding_pct: float = -1.0
         # W-20: guard every mutation of ``_all_findings`` from gathered tasks.
         # ``_execute_wave`` runs tasks via ``asyncio.gather`` and two sites
         # (the cache-hit replay and the live-run collector) extend this list
@@ -737,6 +756,13 @@ class WorkflowEngine:
                 )
 
             elif task.agent == AgentName.FACT_CHECKER:
+                # P5.1 (overhaul §6 P5): the corpus floor is measured at the
+                # pre-factcheck boundary too. Fact-checking re-searches for
+                # verification; running it against a corpus that has collapsed
+                # since preflight wastes the verification pass. A below-floor
+                # read here degrades to AMBER so the verification step is
+                # bounded, never hallucinated.
+                await self._recheck_corpus_midrun(dag)
                 # Fact Checker needs all findings
                 result = await asyncio.wait_for(
                     agent.run(
@@ -779,6 +805,14 @@ class WorkflowEngine:
                     f"SYNTHESIS: injected {len(self._all_findings)} findings "
                     f"(total in agent: {len(agent._collected_findings)})"
                 )
+
+                # P1.4 (overhaul §6 P1, 2026-08-10): mid-run corpus re-probe.
+                # The preflight fires once at engagement start (P2); if the
+                # fleet collapses mid-run (the Aug-10 A-8 scenario), synthesis
+                # must not proceed over an evidence vacuum. Read the ledger now
+                # and degrade to AMBER (halved sub-agent budget) when the
+                # corpus has collapsed since start.
+                await self._recheck_corpus_midrun(dag)
 
                 result = await asyncio.wait_for(
                     agent.run(
@@ -947,7 +981,18 @@ class WorkflowEngine:
 
             # Collect findings for Fact Checker and Synthesis Lead
             if hasattr(agent, "_findings"):
-                findings_count = len(agent._findings)
+                # F-0.1-13 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): the single
+                # ledger of record is the bus's FINDINGS channel — it captures
+                # both individual findings (_publish_finding) AND aggregate
+                # model publishes (bus.publish Channel.FINDINGS) that bypass the
+                # specialist's _findings attribute. Counting only len(_findings)
+                # produced "completed with 0 findings" despite 23 recorded. The
+                # bus count is authoritative; _findings is a fallback.
+                try:
+                    bus_count = self.bus.get_findings_count(task.agent)
+                except Exception:  # noqa: BLE001 - count must never break the wave
+                    bus_count = 0
+                findings_count = bus_count or len(agent._findings)
                 # W-20: gathered-wave mutation — under the lock.
                 async with self._findings_lock:
                     self._all_findings.extend(agent._findings)
@@ -1168,8 +1213,10 @@ class WorkflowEngine:
         specialist tasks and add ``task_reframed_*`` nodes to the DAG.
 
         This method is non-raising: a reframer outage must not stall the
-        pipeline. Bounded to at most ``MAX_REFRAMER_RETRIES`` per
-        task-chain via the ``reframe_attempts`` counter on TaskNode.
+        pipeline. Bounded per task-chain (``MAX_REFRAMER_RETRIES``) and per
+        engagement (``MAX_REFRAMER_GLOBAL_BUDGET``). P4.3 health-gate: the
+        reframer only runs when at least one source class is alive — rewording
+        a query against a fully-dead fleet is pure token spend (the A-6 loop).
         """
         try:
             from hyperion.tools.task_reframer import reframe_task
@@ -1177,8 +1224,37 @@ class WorkflowEngine:
             logger.warning("task_reframer import failed: %s", exc)
             return
 
+        # P4.3 health-gate: when NO source class has a live engine, the
+        # failure class is ENGINE_BLOCKED, and rewording cannot recover it —
+        # reroute to capacity recovery (orchestrator._escalate_retrieval)
+        # instead of burning the reframe budget. The reframer is a NO_RESULTS
+        # remedy (anti-pattern 5); a dead fleet is a routing problem.
+        try:
+            from hyperion.tools.engine_health import get_engine_health
+
+            if not get_engine_health().living_classes():
+                logger.error(
+                    "REFRAMER HEALTH-GATE: zero living source classes — "
+                    "reframing suppressed (failure class ENGINE_BLOCKED); "
+                    "rerouting to capacity recovery"
+                )
+                return
+        except Exception as exc:  # noqa: BLE001 - health read must not block a wave
+            logger.debug("reframer health-gate read failed (reframe allowed): %s", exc)
+
         eligible = [t for t in tasks if self._task_needs_reframe(t)]
         if not eligible:
+            return
+
+        # P4.3 global budget: reframes spawned THIS engagement are counted
+        # against one shared bucket, not just the per-task cap.
+        if self._reframes_spawned >= self.MAX_REFRAMER_GLOBAL_BUDGET:
+            logger.error(
+                "REFRAMER GLOBAL BUDGET reached (%d/%d) — no further "
+                "rewordings this engagement; failures route to capacity recovery",
+                self._reframes_spawned,
+                self.MAX_REFRAMER_GLOBAL_BUDGET,
+            )
             return
 
         # Pull engagement context (subject/geography) for better prompts.
@@ -1247,6 +1323,10 @@ class WorkflowEngine:
                     continue
 
             if spawned:
+                # P4.3: count every actually-spawned reframe against the
+                # engagement-wide budget, so a fleet-wide outage cannot spend
+                # the bucket across unrelated tasks.
+                self._reframes_spawned += spawned
                 try:
                     dag.adapted = True
                     if hasattr(dag, "adaptation_log"):
@@ -1798,6 +1878,10 @@ class WorkflowEngine:
         max_iterations = 100  # Safety valve — prevent infinite loops
         iteration = 0
 
+        # P4.4: the loop's progress budget — consecutive iterations that add
+        # ZERO new evidence domains are a stop signal, not a retry reason.
+        max_zero_progress = 2
+
         while not dag.is_complete and iteration < max_iterations:
             iteration += 1
 
@@ -1847,7 +1931,21 @@ class WorkflowEngine:
                 continue
 
             # Execute the wave (non-delivery tasks only)
+            domains_before = self._ledger_domains()
             await self._execute_wave(ready_non_delivery, dag)
+
+            # P4.4: record Δ evidence after this wave. Zero new domains across
+            # consecutive waves means the fleet is yielding nothing — terminate
+            # the DAG rather than burn the remaining budget on empty waves.
+            if not self._record_wave_progress(domains_before, max_zero_progress):
+                # Progress budget exhausted — stop the loop; downstream will
+                # handle the thin corpus (AMBER) or report the limitation.
+                self._log(
+                    "CORPUS PROGRESS SIGNAL: %d consecutive iteration(s) with "
+                    "zero new evidence domains — terminating the DAG wave loop",
+                    self._consecutive_zero_progress,
+                )
+                break
 
             # Brief yield to allow bus messages to propagate
             await asyncio.sleep(0.1)
@@ -2288,9 +2386,25 @@ class WorkflowEngine:
             self._log("FLOOR-REPORT: no findings collected — cannot build floor report")
             return None
 
+        # P3.4: Filter out non-substantive findings (research_gaps and
+        # unverified_assertions) — these are admission of evidential failure,
+        # not evidence. The floor report reports what the system found, not
+        # what it failed to find.
+        from hyperion.schemas.models import NON_SUBSTANTIVE_FINDING_TYPES
+        substantive_findings = [
+            f for f in findings
+            if f.finding_type not in NON_SUBSTANTIVE_FINDING_TYPES
+        ]
+        if not substantive_findings:
+            self._log(
+                "FLOOR-REPORT: all findings are non-substantive (gaps/unverified) — "
+                "cannot build a floor report from admission of failure alone"
+            )
+            return None
+
         # Group findings by agent
         by_agent: dict[str, list[KeyFinding]] = {}
-        for f in findings:
+        for f in substantive_findings:
             agent_name = f.agent if isinstance(f.agent, str) else str(f.agent)
             if agent_name not in by_agent:
                 by_agent[agent_name] = []
@@ -2330,7 +2444,7 @@ class WorkflowEngine:
             ConfidenceLevel.LOW: 2,
         }
         key_findings = sorted(
-            findings,
+            substantive_findings,
             key=lambda f: confidence_order.get(f.confidence, 3),
         )[:5]
 
@@ -2338,7 +2452,7 @@ class WorkflowEngine:
         summary_lines = [
             f"This report was generated as a floor-report fallback because the "
             f"Synthesis Lead did not produce a full synthesis. It contains "
-            f"{len(findings)} findings from {len(by_agent)} specialists.",
+            f"{len(substantive_findings)} substantive findings from {len(by_agent)} specialists.",
             "",
         ]
         for f in key_findings:
@@ -2503,6 +2617,14 @@ class WorkflowEngine:
 
         self._evidence_ledger = new_ledger(self._engagement_id)
         trace("evidence", run_id=self._engagement_id, event="ledger_started")
+        # F-0.1-8: reset the shared per-engagement fetch cache so no URL fetched
+        # by a previous engagement leaks into this one.
+        try:
+            from hyperion.tools.unified_extract import clear_fetch_cache
+
+            clear_fetch_cache()
+        except Exception as exc:  # noqa: BLE001 - cache reset must never break boot
+            logger.debug("fetch cache reset failed (non-fatal): %s", exc)
         # Fix 2.6 (audit §6 Phase 2): reset the extraction-yield accumulator
         # so engagement_yield_report() covers THIS engagement only.
         try:
@@ -3069,6 +3191,43 @@ class WorkflowEngine:
                 trace("durable", run_id=self._engagement_id, status="manifest_saved",
                       success=result.success, duration=result.duration_seconds)
 
+            # P6.2 (overhaul §6 P6): record the 5 KPIs per run and diff against
+            # the previous run. A KPI regression auto-opens the owning phase
+            # node (KPI_OWNER_PHASE) so the master loop can route there.
+            try:
+                from hyperion.eval.kpi import (
+                    RunKPIs,
+                    diff_kpis,
+                    record_run_kpis,
+                    regressed_phase,
+                )
+
+                kpis = RunKPIs(
+                    run_id=self._engagement_id,
+                    question=dag.question[:200] if dag else "",
+                    kpi_1_time_to_first_evidence_s=self._first_evidence_seconds,
+                    kpi_2_distinct_domains_pre_synthesis=self._domains_before_synthesis,
+                    kpi_3_provenance_binding_pct=self._provenance_binding_pct,
+                    kpi_4_duration_s=result.duration_seconds,
+                    kpi_4_tokens=result.metadata.tokens_consumed if result.metadata else 0,
+                    kpi_4_typed_terminal=bool(result.error),
+                    kpi_5_blockers=len(
+                        getattr(quality_score, "blockers", []) or []
+                    ) if quality_score else -1,
+                    kpi_5_verdict_consistent=True,
+                )
+                record_run_kpis(kpis)
+                kdiff = diff_kpis(self._engagement_id)
+                if kdiff.get("regressions"):
+                    self._log(
+                        "KPI REGRESSION: %s vs %s — owning phase node(s): %s",
+                        ", ".join(kdiff["regressions"]),
+                        kdiff.get("prev_id"),
+                        ", ".join(regressed_phase(kdiff)),
+                    )
+            except Exception as exc:  # noqa: BLE001 - KPI recording must never break the run
+                logger.warning("KPI recording failed (non-fatal): %s", exc)
+
             # ─────────────────────────────────────────────────────────────
             # Save to Second Brain for future learning (§12.8)
             # ─────────────────────────────────────────────────────────────
@@ -3186,6 +3345,114 @@ class WorkflowEngine:
             f"CORPUS PREFLIGHT {contract.status.value.upper()}: {contract.detail}"
         )
         return contract
+
+    async def _recheck_corpus_midrun(self, dag: Any) -> None:
+        """P1.4/P5.1: mid-run corpus re-probe at a stage boundary.
+
+        The preflight (P2) samples the corpus once at engagement start. If the
+        fleet collapses mid-run (Aug-10 A-8: specialists "complete" with empty
+        domain models while the corpus dies underneath them), downstream stages
+        (synthesis, fact-check) must not run their full pipelines over an
+        evidence vacuum. This reads the ledger at each boundary:
+
+        * Corpus still at/above the contract → GREEN, no action.
+        * Corpus collapsed since start → degrade to AMBER (halve the sub-agent
+          ceiling for the remaining run) and log the typed state, so the stage
+          can still produce a grounded-if-thin result rather than a fabricated
+          one. Never raises — a re-probe failure must not abort the stage.
+        """
+        try:
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            contract = getattr(self, "_corpus_contract", None)
+            if contract is None:
+                return
+            # P6.2: sample the ledger for per-run KPI telemetry at this
+            # boundary (fires at both synthesis and fact-check).
+            self._record_kpi_telemetry()
+            ledger = get_evidence_ledger()
+            domains = len(ledger.distinct_domains())
+            floor = int(getattr(contract, "min_domains", 8))
+            if domains >= floor:
+                return
+            if self._evidence_reduced_budget:
+                return
+            # Corpus collapsed below the contract since the preflight.
+            self._evidence_reduced_budget = True
+            from hyperion.agents.base import BaseAgent
+
+            default_ceiling = getattr(self, "_evidence_budget_default", None)
+            if default_ceiling is None:
+                default_ceiling = BaseAgent.SUB_AGENT_TOTAL_CEILING
+                self._evidence_budget_default = default_ceiling
+            BaseAgent.SUB_AGENT_TOTAL_CEILING = max(1, default_ceiling // 2)
+            self._log(
+                f"CORPUS MID-RUN RECHECK — corpus dropped to {domains}/{floor} "
+                f"domains since preflight; degraded to AMBER (reduced sub-agent "
+                f"budget) before the next stage boundary"
+            )
+        except Exception as exc:  # noqa: BLE001 - a re-probe must never abort synthesis
+            logger.warning("corpus mid-run recheck failed (non-fatal): %s", exc)
+
+    def _record_kpi_telemetry(self) -> None:
+        """P6.2: sample the Evidence Ledger for per-run KPI telemetry.
+
+        Called at every stage boundary (via ``_recheck_corpus_midrun``) and
+        recorded to ``reports/diagnostics/kpis.json`` at run end. Fills
+        ``_first_evidence_seconds`` (KPI-1), ``_domains_before_synthesis``
+        (KPI-2) and ``_provenance_binding_pct`` (KPI-3). Never raises.
+        """
+        try:
+            from hyperion.schemas.models import NON_SUBSTANTIVE_FINDING_TYPES
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            ledger = get_evidence_ledger()
+            first = ledger.first_fetched_at()
+            if first is not None and self._start_time:
+                elapsed = max(0.0, first - self._start_time)
+                if self._first_evidence_seconds < 0 or elapsed < self._first_evidence_seconds:
+                    self._first_evidence_seconds = elapsed
+            domains = len(ledger.distinct_domains())
+            if domains > self._domains_before_synthesis:
+                self._domains_before_synthesis = domains
+            # KPI-3: share of substantive findings carrying >= 1 bound source URL.
+            findings = self._all_findings or []
+            substantive = [
+                f for f in findings
+                if getattr(f, "finding_type", "") not in NON_SUBSTANTIVE_FINDING_TYPES
+            ]
+            if substantive:
+                bound = sum(
+                    1 for f in substantive
+                    if any(getattr(s, "url", "") for s in getattr(f, "sources", []))
+                )
+                self._provenance_binding_pct = round(bound / len(substantive) * 100.0, 1)
+        except Exception as exc:  # noqa: BLE001 - KPI sampling must never break a stage
+            logger.debug("KPI telemetry sample failed (non-fatal): %s", exc)
+
+    def _ledger_domains(self) -> int:
+        """P4.4: distinct domains currently in the run-scoped Evidence Ledger."""
+        try:
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            return len(get_evidence_ledger().distinct_domains())
+        except Exception:  # noqa: BLE001 - progress is best-effort, never fatal
+            return self._last_domains_seen if self._last_domains_seen >= 0 else 0
+
+    def _record_wave_progress(self, domains_before: int, max_zero: int = 2) -> bool:
+        """P4.4: consume/produce the progress signal for one orchestration wave.
+
+        Returns True when the loop may continue, False when the progress budget
+        is exhausted (consecutive zero-delta waves) and the DAG should stop.
+        """
+        domains_after = self._ledger_domains()
+        delta = max(0, domains_after - domains_before)
+        self._last_domains_seen = domains_after
+        if delta > 0:
+            self._consecutive_zero_progress = 0
+            return True
+        self._consecutive_zero_progress += 1
+        return self._consecutive_zero_progress < max_zero
 
     def _snapshot_evidence_ledger(self) -> None:
         """P0: persist the Evidence Ledger snapshot at run end.

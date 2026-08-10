@@ -22,7 +22,6 @@ Each class maps to one fix item:
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,7 +30,6 @@ import pytest
 from hyperion.schemas.agents import AgentName, ModelTier, SubAgentSpec
 from hyperion.tools.parse_or_none import parse_or_none
 from hyperion.tools.searxng import SearchResult, SearxNGClient, SearxngPool
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # F-03a · FULL-POOL FAN-OUT
@@ -172,7 +170,6 @@ class TestFailFastDeadPool:
     @pytest.mark.asyncio
     async def test_dead_pool_returns_empty_without_searching(self) -> None:
         from hyperion.tools.engine_health import get_engine_health, reset_engine_health
-
         from hyperion.tools.searxng import referenced_engines
 
         reset_engine_health()
@@ -220,6 +217,8 @@ def _parent() -> MagicMock:
     parent.SUB_AGENT_TOTAL_CEILING = 6
     parent._sub_agent_specs = []
     parent._sub_agent_respawned = set()
+    # F-0.1-14: the distinct-work-item budget set (counts questions, not spawns).
+    parent._sub_agent_questions = set()
     parent.state = SimpleNamespace(sub_agents_spawned=0, sub_agents_active=0)
     parent._transition = AsyncMock()
     parent._log = MagicMock()
@@ -308,7 +307,7 @@ class TestYieldAwareBudget:
         from hyperion.agents.sub_agent import SubAgentRunner
 
         parent = _parent()
-        parent._sub_agent_specs = list(range(BaseAgent.SUB_AGENT_TOTAL_CEILING))
+        parent._sub_agent_questions = {f"q_{i}" for i in range(BaseAgent.SUB_AGENT_TOTAL_CEILING)}
         parent._spawn_sub_agent = BaseAgent._spawn_sub_agent.__get__(parent, type(parent))
         with patch.object(
             SubAgentRunner, "run", new=AsyncMock(return_value=[])
@@ -319,14 +318,18 @@ class TestYieldAwareBudget:
         assert any("total budget reached" in line for line in log_calls)
 
     @pytest.mark.asyncio
-    async def test_broadened_respawn_bypasses_budget_gate(self) -> None:
-        """F-07e: a respawn is a retry of the SAME logical sub-agent and is
-        allowed even when the total budget is exhausted."""
+    async def test_broadened_respawn_honors_total_ceiling(self) -> None:
+        """P4.6 (overhaul §6 P4, 2026-08-10): the TOTAL ceiling is a HARD
+        invariant that includes broadened respawns. The old behavior let a
+        broadened respawn ride in on top of an exhausted budget — the A-7
+        "SUB-AGENT total budget reached (8/6)" overshoot. A broadened respawn
+        is a retry of the same logical sub-agent, but it must not exceed the
+        sequential total ceiling; the concurrent cap alone is what it bypasses."""
         from hyperion.agents.base import BaseAgent
         from hyperion.agents.sub_agent import SubAgentRunner
 
         parent = _parent()
-        parent._sub_agent_specs = list(range(BaseAgent.SUB_AGENT_TOTAL_CEILING))
+        parent._sub_agent_questions = {f"q_{i}" for i in range(BaseAgent.SUB_AGENT_TOTAL_CEILING)}
         # Bind the real methods (the fake parent is a MagicMock, so every
         # attribute access would otherwise return a truthy mock and recurse).
         parent._spawn_sub_agent = BaseAgent._spawn_sub_agent.__get__(parent, type(parent))
@@ -337,11 +340,11 @@ class TestYieldAwareBudget:
         broadened.broadened = True
         with patch.object(SubAgentRunner, "run", new=AsyncMock(return_value=[])):
             findings = await parent._spawn_sub_agent(broadened)
-        # The broadened pass RUNS (returns the runner's []), proving the
-        # budget gate did not block it.
+        # The total ceiling is exhausted (6/6 distinct work items), so even a
+        # broadened respawn is refused — no "8/6" overshoot.
         assert findings == []
         log_calls = [c.args[0] for c in parent._log.call_args_list]
-        assert not any("budget reached" in line for line in log_calls)
+        assert any("total budget reached" in line for line in log_calls)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

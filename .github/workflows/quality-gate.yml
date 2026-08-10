@@ -33,3 +33,11 @@ jobs:
 
       - name: Run deterministic eval tests
         run: python -m pytest tests/test_eval.py tests/test_ci_gate_lint.py -q
+
+      - name: Run fault-injection canary suite (P6)
+        # P6.1 (overhaul §6 P6): the Aug-9/Aug-10 failure modes are permanent
+        # integration tests. A regression in any phase gate fails CI.
+        run: python -m hyperion.eval.canaries
+
+      - name: Run Phase 6 canary + KPI regression tests
+        run: python -m pytest tests/test_phase6_canaries.py -q

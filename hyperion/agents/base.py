@@ -54,7 +54,13 @@ from hyperion.schemas.agents import (
     SubAgentSpec,
     ToolName,
 )
-from hyperion.schemas.models import KeyFinding
+from hyperion.schemas.models import (
+    NON_SUBSTANTIVE_FINDING_TYPES,
+    UNVERIFIED_ASSERTION_TYPE,
+    ConfidenceLevel,
+    KeyFinding,
+    Source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -435,10 +441,90 @@ class BaseAgent(ABC):
         The Fact Checker verifies all findings.
         The Synthesis Lead collects all findings for reconciliation.
         The TUI displays findings in the findings stream (§8.7).
+
+        F-0.1-12 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): a placeholder-text
+        rejection is converted to a typed gap at this boundary, never surfaced
+        as a raw validation ERROR. If a specialist tried to publish a finding
+        whose title/content trips the P2-16 banned-filler guard, that finding is
+        an AnalysisGap by definition — record it as one and continue.
         """
+        try:
+            # Force validation up-front so a banned-filler ValueError is caught
+            # HERE, at the single publish boundary, instead of propagating as a
+            # raw ERROR row in the TUI.
+            finding.model_validate(finding)
+        except (ValueError, TypeError) as exc:
+            message = str(exc)
+            if "placeholder text is unrepresentable" in message:
+                logger.warning(
+                    "F-0.1-12: finding rejected as placeholder filler — "
+                    "converting to typed gap: %s", message[:120],
+                )
+                gap = KeyFinding(
+                    id=f"placeholder_gap_{len(self._findings)}_{int(time.time())}",
+                    agent=self.name.value,
+                    finding_type="research_gap",
+                    title="Placeholder rejected — converted to gap",
+                    content=(
+                        f"The {self.name.value} emitted a placeholder/unsupported "
+                        f"finding text that the banned-filler guard rejected. This "
+                        f"is an AnalysisGap, not evidence: {message[:160]}"
+                    ),
+                    confidence=ConfidenceLevel.LOW,
+                    sources=[],
+                )
+                self._findings.append(gap)
+                self.state.findings_count = len(self._findings)
+                await self.bus.publish_finding(self.name, gap)
+                return
+            logger.warning("finding validation failed at publish (dropped): %s", message)
+            return
         self._findings.append(finding)
         self.state.findings_count = len(self._findings)
         await self.bus.publish_finding(self.name, finding)
+
+    async def _publish_framework_gap(
+        self,
+        *,
+        mandatory_keys: list[str],
+        context_detail: str = "",
+    ) -> bool:
+        """F-0.1-11: framework-completeness gate (specialist tier).
+
+        A specialist that returns a structurally-valid but content-empty model
+        must NOT report "✓ complete" — that is the §0.3 fake-success class the
+        audit fought. When mandatory output keys are empty, this publishes a
+        typed ``research_gap`` finding carrying ``framework_insufficient:
+        <key>=0`` and returns True so the caller can skip the "complete"
+        transition and let the gap-closure loop re-dispatch. Returns False
+        when every mandatory key is non-empty (gate passed).
+        """
+        empty = [key for key in mandatory_keys if not key]
+        if not empty:
+            return False
+        reason = ", ".join(f"{k}=0" for k in empty)
+        try:
+            import time as _time
+
+            gap = KeyFinding(
+                id=f"framework_gap_{len(self._findings)}_{int(_time.time())}",
+                agent=self.name.value,
+                finding_type="research_gap",
+                title=f"Framework insufficient: {reason}",
+                content=(
+                    f"The {self.name.value} returned a structurally-valid but "
+                    f"content-empty analysis (mandatory output(s) missing: "
+                    f"{reason}). This is not a success; the analysis is "
+                    f"ungrounded and the gap-closure loop should re-dispatch. "
+                    f"context={context_detail}"
+                ),
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
+            await self._publish_finding(gap)
+        except Exception as exc:  # noqa: BLE001 - a gap must never break the specialist
+            logger.warning("_publish_framework_gap failed: %s", exc)
+        return True
 
     async def _log_tool_use(
         self,
@@ -514,6 +600,50 @@ class BaseAgent(ABC):
         """Publish multiple findings."""
         for finding in findings:
             await self._publish_finding(finding)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # P3.3: Zero-evidence gate — return True if the specialist collected
+    # no sources during its search phase, and publish a research_gap
+    # finding. Callers return a degraded model when True.
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _check_zero_evidence(self, context_detail: str = "") -> bool:
+        """P3.3: Check if the specialist collected zero evidence.
+
+        Call this after all search steps complete but before any analysis
+        LLM call. Returns True when:
+        - ``self._sources`` is empty (no URLs collected)
+        - AND no search results were gathered
+
+        When True, a ``research_gap`` finding is published so the gap-
+        closure loop can re-dispatch. The caller should return a degraded
+        model with LOW confidence and empty sources rather than running
+        expensive LLM pipelines over an empty corpus.
+        """
+        # Safe access: specialists init _sources in __init__; support agents
+        # that don't collect raw data never hit this code path.
+        if getattr(self, "_sources", None):
+            return False
+
+        import time
+
+        gap = KeyFinding(
+            id=f"zero_evidence_gap_{len(self._findings)}_{int(time.time())}",
+            agent=self.name.value,
+            finding_type="research_gap",
+            title=f"Zero evidence: {context_detail[:80]}" if context_detail else "Zero evidence "
+                "collected",
+            content=(
+                f"The {self.name.value} collected zero source documents during its search "
+                f"phase. All downstream analysis would be ungrounded, so the pipeline "
+                f"returned early to avoid wasting tokens on LLM calls over an empty "
+                f"corpus. context={context_detail}"
+            ),
+            confidence=ConfidenceLevel.LOW,
+            sources=[],
+        )
+        await self._publish_finding(gap)
+        return True
 
     async def _escalate(self, issue: str, suggested_action: str = "") -> None:
         """Escalate an issue to the Engagement Director.
@@ -971,6 +1101,152 @@ class BaseAgent(ABC):
     # to this ceiling so a released slot (timeout/zero yield) can be reused.
     SUB_AGENT_TOTAL_CEILING = 6
 
+    # ─────────────────────────────────────────────────────────────────────
+    # P-CORE (overhaul, 2026-08-10): evidence reconciliation — the proprietary
+    # core. Sub-agent findings MUST reach the parent's analysis; a wrapper
+    # drops them, a MBB-grade system funnels them. These two methods are the
+    # deterministic reconciliation every specialist inherits.
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _merge_evidence(
+        self,
+        sub_findings: list[KeyFinding],
+        own_sources: list[Source],
+    ) -> list[Source]:
+        """Merge sub-agent evidence into the parent's source set (MBB funnel).
+
+        Every sub-agent finding's ledger-bound sources are folded into the
+        parent's ``_sources``, deduplicated by URL. This is what makes KPI-2
+        (domains before synthesis) and KPI-3 (provenance binding) move
+        together BY CONSTRUCTION: sub-agent evidence now counts toward the
+        parent's corroboration, so the report's depth grows with the research
+        actually performed instead of being discarded at the storage line.
+
+        Returns the merged source list (the parent should assign it back to
+        ``self._sources``). Never raises — a merge failure returns the parent's
+        own sources unchanged so a sub-agent edge case cannot break analysis.
+        """
+        own_sources = list(own_sources or [])
+        seen: set[str] = {s.url for s in own_sources if s.url}
+        merged: list[Source] = list(own_sources)
+        try:
+            for finding in sub_findings or []:
+                if getattr(finding, "finding_type", "") in NON_SUBSTANTIVE_FINDING_TYPES:
+                    continue
+                for src in getattr(finding, "sources", []) or []:
+                    url = getattr(src, "url", "") or ""
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    merged.append(src)
+        except Exception as exc:  # noqa: BLE001 - merge must never break analysis
+            logger.warning("_merge_evidence failed (returning own sources): %s", exc)
+        return merged
+
+    def _reconcile_findings(
+        self,
+        sub_findings: list[KeyFinding],
+    ) -> list[KeyFinding]:
+        """Reconcile sub-agent findings into parent-visible substantive findings.
+
+        Filters out gaps/unverified assertions (they are typed limitations,
+        never yield), so the parent's published finding set includes every
+        sub-agent's corroborated evidence — not just the parent's own angle.
+        This closes the "sub-agents returned findings but parent reported 0"
+        gap: the parent's output is definitionally a superset of its
+        sub-agents' evidence.
+
+        Returns the reconciled list (the parent merges it into the findings it
+        publishes). Never raises — a reconciliation failure returns [].
+        """
+        try:
+            from hyperion.schemas.models import NON_SUBSTANTIVE_FINDING_TYPES
+
+            return [
+                f for f in sub_findings or []
+                if getattr(f, "finding_type", "") not in NON_SUBSTANTIVE_FINDING_TYPES
+            ]
+        except Exception as exc:  # noqa: BLE001 - reconcile must never break analysis
+            logger.warning("_reconcile_findings failed (returning []): %s", exc)
+            return []
+
+    def _detect_sub_agent_contradictions(
+        self,
+        sub_findings: list[KeyFinding],
+    ) -> list[str]:
+        """P-CORE: surface numeric contradictions BETWEEN sub-agent findings.
+
+        MBB-grade depth shows the disagreement and resolves it — it never
+        hides conflicting numbers. This extracts numeric claims from each
+        substantive sub-agent finding and flags pairs that disagree on the
+        same magnitude (e.g. one sub-agent cites "$2B TAM", another "$20B"),
+        so the parent's synthesis can either reconcile them evidence-weighted
+        or carry them as a typed limitation instead of silently averaging.
+
+        Returns a list of human-readable contradiction strings. Never raises —
+        a detection failure yields [] so a sub-agent edge case cannot break
+        the parent's analysis.
+        """
+        try:
+            import re
+
+            from hyperion.schemas.models import NON_SUBSTANTIVE_FINDING_TYPES
+
+            findings = [
+                f for f in sub_findings or []
+                if getattr(f, "finding_type", "") not in NON_SUBSTANTIVE_FINDING_TYPES
+            ]
+            if len(findings) < 2:
+                return []
+
+            def _numbers(f: KeyFinding) -> list[float]:
+                out: list[float] = []
+                for token in re.findall(r"\$?\d[\d,]*\.?\d*[bBmMkK]?", getattr(f, "content", "") or ""):
+                    try:
+                        cleaned = token.replace(",", "").replace("$", "")
+                        mult = 1.0
+                        if cleaned[-1] in "bB":
+                            mult, cleaned = 1e9, cleaned[:-1]
+                        elif cleaned[-1] in "mM":
+                            mult, cleaned = 1e6, cleaned[:-1]
+                        elif cleaned[-1] in "kK":
+                            mult, cleaned = 1e3, cleaned[:-1]
+                        out.append(float(cleaned) * mult)
+                    except ValueError:
+                        continue
+                return out
+
+            contradictions: list[str] = []
+            for i in range(len(findings)):
+                for j in range(i + 1, len(findings)):
+                    fa, fb = findings[i], findings[j]
+                    nums_a, nums_b = _numbers(fa), _numbers(fb)
+                    if not nums_a or not nums_b:
+                        continue
+                    for na in nums_a:
+                        for nb in nums_b:
+                            if na <= 0 or nb <= 0:
+                                continue
+                            ratio = max(na, nb) / min(na, nb)
+                            if ratio >= 2.0:
+                                contradictions.append(
+                                    f"SUB-AGENT NUMERIC CONTRADICTION: "
+                                    f"{getattr(fa, 'title', '')[:40]!r} cites {na:g} "
+                                    f"but {getattr(fb, 'title', '')[:40]!r} cites {nb:g} "
+                                    f"({ratio:.1f}x apart) — resolve evidence-weighted"
+                                )
+            # De-duplicate and cap for prompt budget.
+            seen: set[str] = set()
+            unique: list[str] = []
+            for c in contradictions:
+                if c not in seen:
+                    seen.add(c)
+                    unique.append(c)
+            return unique[:8]
+        except Exception as exc:  # noqa: BLE001 - contradiction detection must never break analysis
+            logger.warning("_detect_sub_agent_contradictions failed: %s", exc)
+            return []
+
     async def _spawn_sub_agent(self, spec: SubAgentSpec) -> list[KeyFinding]:
         """Spawn a junior sub-agent for a focused sub-question.
 
@@ -992,21 +1268,39 @@ class BaseAgent(ABC):
         # that produced >=1 non-gap finding; timeouts and zero-findings
         # RELEASE the slot (sequential refills up to SUB_AGENT_TOTAL_CEILING).
         # max_sub_agents is the CONCURRENT (resource) bound.
-        if not spec.broadened:
-            if self.state.sub_agents_active >= self.max_sub_agents:
-                self._log(
-                    f"SUB-AGENT concurrent budget reached "
-                    f"({self.state.sub_agents_active}/{self.max_sub_agents}); "
-                    f"proceeding without spawning: {spec.question[:80]}"
-                )
-                return []
-            if len(self._sub_agent_specs) >= self.SUB_AGENT_TOTAL_CEILING:
-                self._log(
-                    f"SUB-AGENT total budget reached "
-                    f"({len(self._sub_agent_specs)}/{self.SUB_AGENT_TOTAL_CEILING}); "
-                    f"proceeding without spawning: {spec.question[:80]}"
-                )
-                return []
+        # P4.6 (overhaul §6 P4, 2026-08-10): the TOTAL ceiling is a HARD
+        # invariant that includes broadened respawns. The old code skipped BOTH
+        # budget checks for `broadened=True` — the A-7 "SUB-AGENT total budget
+        # reached (8/6)" overshoot, where broadened respawns rode in on top of
+        # an already-full normal budget. Broadened spawns still bypass the
+        # CONCURRENT cap (they reuse a released slot sequentially), but the
+        # sequential total ceiling applies to every spawn.
+        if not spec.broadened and self.state.sub_agents_active >= self.max_sub_agents:
+            self._log(
+                f"SUB-AGENT concurrent budget reached "
+                f"({self.state.sub_agents_active}/{self.max_sub_agents}); "
+                f"proceeding without spawning: {spec.question[:80]}"
+            )
+            return []
+        # F-0.1-14 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): budget counts DISTINCT
+        # work items, not spawn attempts. A broadened respawn is a retry of the
+        # SAME logical question — it must not double-dip the budget (the 8/6
+        # starve: failed questions consumed the ceiling via original+respawn and
+        # late legitimate tasks never spawned). The gate checks a set of distinct
+        # questions; max_sub_agents remains the true concurrency bound.
+        distinct_questions = getattr(self, "_sub_agent_questions", None)
+        if distinct_questions is None:
+            distinct_questions = set()
+            self._sub_agent_questions = distinct_questions
+        if len(distinct_questions) >= self.SUB_AGENT_TOTAL_CEILING:
+            self._log(
+                f"SUB-AGENT total budget reached "
+                f"({len(distinct_questions)}/{self.SUB_AGENT_TOTAL_CEILING} "
+                f"distinct work items); "
+                f"proceeding without spawning: {spec.question[:80]}"
+            )
+            return []
+        distinct_questions.add(spec.question)
 
         # Research sub-agents need the context capacity of STANDARD or higher.
         if spec.model_tier not in (
@@ -1064,28 +1358,37 @@ class BaseAgent(ABC):
         finally:
             self.state.sub_agents_active = max(0, self.state.sub_agents_active - 1)
 
-        # P0 (overhaul §6 P0.3): never count a research gap as a finding at
-        # the display layer. "Sub-agent returned 1 findings" was the Aug-10
-        # lie — a synthetic gap placeholder masquerading as evidence yield.
+        # P0 (overhaul §6 P0.3) + P3 (I-3): never count a research gap or an
+        # unverified_assertion as a finding at the display layer. "Sub-agent
+        # returned 1 findings" was the Aug-10 lie — a synthetic gap
+        # placeholder masquerading as evidence yield, and an uncited claim is
+        # equally not evidence.
         n_substantive = sum(
-            1 for f in findings if f.finding_type != "research_gap"
+            1
+            for f in findings
+            if f.finding_type not in NON_SUBSTANTIVE_FINDING_TYPES
         )
-        n_gaps = len(findings) - n_substantive
+        n_gaps = sum(1 for f in findings if f.finding_type == "research_gap")
+        n_unverified = sum(
+            1 for f in findings if f.finding_type == UNVERIFIED_ASSERTION_TYPE
+        )
         gap_note = f" ({n_gaps} gap)" if n_gaps else ""
+        unverified_note = f" ({n_unverified} unverified)" if n_unverified else ""
         await self._transition(
             AgentState.WORKING,
-            f"Sub-agent returned {n_substantive} findings{gap_note}",
+            f"Sub-agent returned {n_substantive} findings{gap_note}{unverified_note}",
         )
 
-        # F-07: exactly ONE broadened respawn per question on timeout or on
-        # the runner's own synthetic "no validated findings" gap. NOT on a
-        # generic exception (a code bug must not be retried) and never on an
-        # already-broadened spec (no loops). The respawn is a retry of the
-        # same logical sub-agent, so it bypasses the budget gate.
-        if self._should_respawn_broadened(spec, findings, timed_out, generic_failure):
+        # F-07 + F-0.1-10: exactly ONE respawn per question, typed by failure
+        # class (recovery_hint). NOT on a generic exception (a code bug must
+        # not be retried) and never on an already-broadened spec (no loops).
+        hint = getattr(runner, "recovery_hint", "") or ""
+        if self._should_respawn_broadened(
+            spec, findings, timed_out, generic_failure, recovery_hint=hint
+        ):
             self._log(
                 f"SUB-AGENT RESPAWN (broadened, reason="
-                f"{'timeout' if timed_out else 'zero_findings'}): "
+                f"{'timeout' if timed_out else (hint or 'zero_findings')}): "
                 f"{spec.question[:80]}"
             )
             broadened = spec.model_copy(update={
@@ -1106,11 +1409,21 @@ class BaseAgent(ABC):
             from hyperion.schemas.models import ResearchOutcome
 
             runner.outcome = ResearchOutcome.RETRY_EXHAUSTED
+            # F-0.1-9 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): surface the raw
+            # discovery yield vs the extracted count on the terminal line so
+            # "raw=0 (no discovery)" reads differently from "raw=14,
+            # extracted=0 (fetched but blocked)". A fetch-blocked task is not
+            # cured by a wider query; the parent must see which one happened.
+            counters = getattr(runner, "counters", None)
+            raw_n = getattr(counters, "raw_results", 0) if counters else 0
+            extracted_n = getattr(counters, "extracted_documents", 0) if counters else 0
             self._log(
                 f"SUB-AGENT RETRY EXHAUSTED: {spec.question[:80]} — "
                 f"{len(findings)} finding(s), "
                 f"{sum(1 for f in findings if f.finding_type == 'research_gap')} "
-                "gap(s); ending with explicit insufficient evidence"
+                f"gap(s); raw={raw_n}, extracted={extracted_n}, "
+                f"recovery_hint={getattr(runner, 'recovery_hint', '')}; "
+                "ending with explicit insufficient evidence"
             )
 
         return findings
@@ -1121,18 +1434,27 @@ class BaseAgent(ABC):
         findings: list[KeyFinding],
         timed_out: bool,
         generic_failure: bool,
+        recovery_hint: str = "",
     ) -> bool:
-        """F-07/F-02: decide whether this sub-agent outcome earns one broadened respawn.
+        """F-07/F-02 + F-0.1-10: decide whether this sub-agent earns a respawn.
 
         True when ALL of:
         - not already a broadened respawn (bounded: exactly one per question)
         - a production budget (unit-test / stress configs stay deterministic)
         - the question was not already respawned
-        - the trigger is a TIMEOUT or the runner's own synthetic zero-yield gap
+        - the trigger is a TIMEOUT or a recovery-hint that broadening can cure
         - NOT a generic exception (a code bug must not be retried)
         - the retrieval dependency health gate is GREEN (F-02: never broaden
           into the same dead dependency; a 403/429/dead-pool outage is not
           cured by wider query text)
+
+        F-0.1-10 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): the recovery action is
+        typed by FAILURE CLASS, not by attempt count. Broadening (rewording)
+        cures LOW_YIELD (search ran, nothing found). It does NOT cure
+        FETCH_BLOCKED / FETCH_INSUFFICIENT (the page was fetched but blocked or
+        pricing-thin — those need the fallback data routes, not a wider query)
+        and never retries PROVIDER_FAILURE (a code/provider bug). TIMEOUT keeps
+        the halved-scope broaden.
         """
         if spec.broadened:
             return False
@@ -1149,7 +1471,21 @@ class BaseAgent(ABC):
                 f"path: {spec.question[:80]}"
             )
             return False
+        # F-0.1-10: failure-class routing. FETCH_BLOCKED / FETCH_INSUFFICIENT
+        # are NOT cured by rewording — they need the fallback data routes
+        # (F-0.1-6) or a labeled estimate (F-0.1-7), so no broaden. A
+        # PROVIDER_FAILURE is a code/provider bug and is never retried.
+        if recovery_hint in ("FETCH_BLOCKED", "FETCH_INSUFFICIENT", "PROVIDER_FAILURE"):
+            self._log(
+                "SUB-AGENT RESPAWN suppressed (F-0.1-10): failure class "
+                f"{recovery_hint} is not cured by broadening (rewording); "
+                f"routing to fallback/closure: {spec.question[:80]}"
+            )
+            return False
         if timed_out:
+            return True
+        # LOW_YIELD (search ran, nothing found) is the broaden-curable class.
+        if recovery_hint in ("LOW_YIELD", "ENGINE_BLOCKED"):
             return True
         if len(findings) == 1 and findings[0].finding_type == "research_gap":
             return "no validated findings" in findings[0].content

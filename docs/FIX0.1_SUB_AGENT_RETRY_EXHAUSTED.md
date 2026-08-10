@@ -2,7 +2,7 @@
 
 **Session under audit:** 2026-08-10 (TUI transcript, `COMPETE` pricing-scrape wave)
 **Branch policy:** cut on `fix0.3`. **NEVER touch `main`.** All fixes land on `fix0.3` in one commit per layer.
-**Status:** AUDIT COMPLETE — **no code changed in this session; this document is the remediation plan.**
+**Status:** **REMEDIATED 2026-08-10** — all 14 items (F-0.1-1..F-0.1-14) implemented and covered by `tests/test_fix01_sub_agent_retry.py`. See §9 for the implementation map.
 **Observed symptom:** the **majority** of respawned sub-agents — overwhelmingly the "Scrape <company> pricing page" class — terminate in `SUB-AGENT RETRY EXHAUSTED` with exactly `1 finding(s), 1 gap(s)`. The same session surfaced four companion specialist-tier defects this plan also closes: framework-empty "✓ complete" reports, a raw `KeyFinding` placeholder validation error instead of a gap, a finance run that "completed with 0 findings" despite recorded findings, and the sub-agent budget blowing through its ceiling (`8/6`) so legitimate late tasks never spawned.
 
 ---

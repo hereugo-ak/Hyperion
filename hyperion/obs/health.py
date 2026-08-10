@@ -31,6 +31,26 @@ from typing import Any
 from hyperion.infra.paths import obscura_bin_dir
 
 
+def _format_quality_line(
+    total_score: float,
+    *,
+    threshold: float = 4.0,
+    iterations: int | str = "?",
+) -> str:
+    """P5.2 (overhaul §6 P5 / A-12): ONE quality score scale everywhere.
+
+    The weighted total is a 1-5 rubric score; the approval threshold is a
+    comparison line, never a denominator. Returns ``score/5.0`` with the
+    threshold stated explicitly, so no surface can render the audit's broken
+    ``3.2/4.0`` (threshold-as-scale) against the CLI's ``3.2/5.0``.
+    """
+    threshold = threshold or 4.0
+    return (
+        f"  Quality:     {total_score:.1f}/5.0 "
+        f"(approve \u2265 {threshold:.1f}; iterations: {iterations})"
+    )
+
+
 @dataclass
 class ToolHealth:
     """Health status of a single tool."""
@@ -511,8 +531,17 @@ def print_completion_health(
 
     if hasattr(result, 'quality_score') and result.quality_score:
         qs = result.quality_score
-        print(f"  Quality:     {qs.total_score:.1f}/{qs.threshold:.1f} "
-              f"(iterations: {getattr(result, 'quality_iterations', '?')})")
+        # P5.2 (overhaul §6 P5 / A-12): ONE score scale everywhere. The
+        # weighted total is on a 1-5 rubric; the threshold (4.0) is a
+        # comparison line, not a denominator. Displaying "3.2/4.0" here while
+        # the CLI shows "3.2/5.0" is the audit's scale inconsistency. The
+        # scale is always /5.0; the threshold is stated next to it.
+        threshold = getattr(qs, "threshold", 4.0) or 4.0
+        print(_format_quality_line(
+            qs.total_score,
+            threshold=threshold,
+            iterations=getattr(result, 'quality_iterations', '?'),
+        ))
     else:
         print("  Quality:     N/A")
 

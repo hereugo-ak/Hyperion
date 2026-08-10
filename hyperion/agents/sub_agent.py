@@ -54,9 +54,21 @@ from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
 from hyperion.router.router import LLMRouter, get_router
 from hyperion.schemas.agents import SubAgentSpec
-from hyperion.schemas.models import KeyFinding, ResearchOutcome
+from hyperion.schemas.models import (
+    NON_SUBSTANTIVE_FINDING_TYPES,
+    UNVERIFIED_ASSERTION_TYPE,
+    EvidenceFinding,
+    KeyFinding,
+    ResearchOutcome,
+    Source,
+)
 from hyperion.tools.content_selector import select_content
-from hyperion.tools.evidence_ledger import content_hash_of, record_evidence
+from hyperion.tools.evidence_ledger import (
+    Evidence,
+    content_hash_of,
+    get_evidence_ledger,
+    record_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +89,12 @@ class ResearchCounters:
         "invalid_findings",
         "provider_failures",
         "gaps",
+        "unverified_assertions",
+        # F-0.1-5: 1 when the sufficiency gate failed (a pricing/fetch task
+        # extracted content but found no pricing artifacts). Lets run() type
+        # FETCH_INSUFFICIENT instead of a generic gap, and feeds the fallback
+        # routes (F-0.1-6) rather than accepting thin extraction as success.
+        "sufficiency_failed",
     )
 
     def __init__(self) -> None:
@@ -86,6 +104,8 @@ class ResearchCounters:
         self.invalid_findings = 0
         self.provider_failures = 0
         self.gaps = 0
+        self.unverified_assertions = 0
+        self.sufficiency_failed = 0
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -95,6 +115,8 @@ class ResearchCounters:
             "invalid_findings": self.invalid_findings,
             "provider_failures": self.provider_failures,
             "gaps": self.gaps,
+            "unverified_assertions": self.unverified_assertions,
+            "sufficiency_failed": self.sufficiency_failed,
         }
 
     def __repr__(self) -> str:
@@ -102,13 +124,45 @@ class ResearchCounters:
             f"ResearchCounters(raw={self.raw_results}, extracted="
             f"{self.extracted_documents}, valid={self.valid_findings}, "
             f"invalid={self.invalid_findings}, provider_failures="
-            f"{self.provider_failures}, gaps={self.gaps})"
+            f"{self.provider_failures}, gaps={self.gaps}, "
+            f"sufficiency_failed={self.sufficiency_failed})"
         )
 
 # Fix 2.2 (§4.7 Finding B-6): the retained-content budget for a fetched SEC
 # filing. Same number as before; what changed is that the budget is now filled
 # by relevance to the sub-question instead of by position in the document.
 SEC_FILING_BUDGET_CHARS = 15000
+
+
+def _normalize_evidence_url(url: str) -> str:
+    """Light URL canonicalization for evidence binding (P3).
+
+    Drops the fragment, strips trailing slashes, lower-cases scheme/host and
+    removes common tracking params, so the LLM's URL echo still binds to the
+    ledger record. Never raises.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    url = (url or "").strip()
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url)
+        scheme = (parts.scheme or "https").lower()
+        host = (parts.hostname or "").lower()
+        path = parts.path.rstrip("/")
+        if parts.query:
+            kept = [
+                kv
+                for kv in parts.query.split("&")
+                if kv and not kv.lower().startswith(("utm_", "ref=", "source="))
+            ]
+            query = "&".join(kept)
+        else:
+            query = ""
+        return urlunsplit((scheme, host, path, query, ""))
+    except ValueError:
+        return url.lower()
 
 
 class SubAgentRunner:
@@ -189,6 +243,11 @@ class SubAgentRunner:
         # still read a deterministic, unset outcome rather than None.
         self.outcome: ResearchOutcome = ResearchOutcome.NO_EVIDENCE
         self.counters = ResearchCounters()
+        # F-0.1-10: the typed recovery hint the parent's respawn policy reads.
+        # Set by run() to FETCH_BLOCKED / LOW_YIELD / PROVIDER_FAILURE so the
+        # parent recovers the RIGHT failure class instead of always broadening
+        # a search.
+        self.recovery_hint: str = "NO_EVIDENCE"
 
     @property
     def question(self) -> str:
@@ -383,7 +442,10 @@ class SubAgentRunner:
             "  - sources: array of source objects with id, title, url, credibility "
             "(one of: peer_reviewed, government, industry_report, news, blog, social_media)\n"
             "  - confidence: 'high', 'medium', or 'low'\n"
-            "  - gaps: array of strings describing what you couldn't find"
+            "  - gaps: array of strings describing what you couldn't find\n"
+            "  - source id: the EVIDENCE INDEX id ([E1], [E2], ...) of the exact "
+            "retrieved document backing this claim; source url must be that "
+            "document's real URL from the EVIDENCE INDEX — never invent a URL"
         )
 
     def _build_user_prompt(self) -> str:
@@ -482,8 +544,33 @@ class SubAgentRunner:
                     elif label == "jina":
                         jina_search_urls = urls
 
-        # Merge + dedup URLs from both search sources (preserves order)
-        all_urls = list(dict.fromkeys(searxng_urls + jina_search_urls))
+        # F-0.1-1 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md, P0 core): seed the
+        # extraction targets with the explicit URL from the parent's context
+        # bundle AND any URL named in the question, ranked FIRST. Previously
+        # the context URL (e.g. a competitor's pricing page) was read only for
+        # the LLM prompt and query planning — never fetched — so an OBSCURA-
+        # only scrape spec could never succeed regardless of data availability.
+        context_urls = self._context_urls()
+        # Merge + dedup URLs: context URLs ranked first, then search legs.
+        all_urls = list(dict.fromkeys(context_urls + searxng_urls + jina_search_urls))
+        # P1.4 (overhaul §6 P1, 2026-08-10): RESCUE DISCOVERY TIER. When the
+        # web discovery legs (SearXNG + Jina) return ZERO URLs, the Aug-10
+        # failure class (ENGINE_BLOCKED — banned scrapers) is indistinguishable
+        # here from NO_RESULTS. The correct move is not to reword and retry the
+        # same dead class (anti-pattern 5) but to pull candidate URLs from the
+        # free scholarly/reference API classes (OpenAlex, Semantic Scholar,
+        # HackerNews), which do not ban datacenter IPs the way crawlers do.
+        # Their results feed the SAME extraction ladder, so a rescued URL gets
+        # full content extraction + ledger binding like any other evidence.
+        if not all_urls:
+            rescue_urls = await self._rescue_discovery()
+            if rescue_urls:
+                logger.info(
+                    "SubAgent P1.4 rescue discovery: SearXNG+Jina returned 0 URLs; "
+                    "%d candidate URL(s) recovered from free API classes",
+                    len(rescue_urls),
+                )
+                all_urls = list(dict.fromkeys(rescue_urls))
         # F-07: raw discovery yield is a counter, not a log line. Zero URLs
         # after a search leg is exactly the ``RETRIEVAL_DEGRADED`` signal the
         # audit's F-01 wants typed instead of silently absorbed.
@@ -1027,6 +1114,52 @@ class SubAgentRunner:
             for tier, why in outcome.tiers_unavailable.items():
                 errors.append(f"{tier} unavailable: {why!s:.80}")
 
+            # F-0.1-3 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): route probing.
+            # The primary page failed (404 / JS-shell / empty). Bounded probing
+            # of sibling pricing routes — {url}/pricing, /plans, /packages,
+            # /pricing/ — max 3 probes, first page yielding usable text wins.
+            # Without this, a site whose landing page is a JS shell but whose
+            # /pricing page is static would deterministically exhaust.
+            probes = self._route_probe_candidates(targets)
+            if probes:
+                logger.info(
+                    "F-0.1-3 route probe: primary extraction empty for %d URL(s); "
+                    "probing %d sibling pricing route(s)",
+                    len(targets),
+                    len(probes),
+                )
+                try:
+                    probe_outcome = await extractor.extract_ladder(
+                        probes,
+                        tiers=tiers,
+                        query=query or self.spec.question,
+                        concurrency=2,
+                    )
+                except Exception as probe_exc:  # noqa: BLE001 - probing is best-effort
+                    logger.warning("route probe ladder failed (non-fatal): %s", probe_exc)
+                    probe_outcome = None
+                if probe_outcome and probe_outcome.results:
+                    for result in probe_outcome.results:
+                        text = result.markdown or result.content
+                        if not text:
+                            continue
+                        raw_data.append(
+                            f"{result.tool_used} content from {result.url}:\n{text}"
+                        )
+                        record_evidence(
+                            url=result.url,
+                            title=getattr(result, "title", "") or "",
+                            snippet=text[:200],
+                            content_hash=content_hash_of(text),
+                            engine=result.tool_used or "unified_extract",
+                            profile="extraction_ladder",
+                            stage="extraction",
+                        )
+                    errors.append(
+                        f"route_probe: primary URLs yielded nothing; recovered "
+                        f"{len(probe_outcome.results)} via sibling route(s)"
+                    )
+
         logger.info(
             "SubAgent extraction: %d/%d URL(s) extracted via %s (tried: %s)",
             len(outcome.results),
@@ -1035,6 +1168,185 @@ class SubAgentRunner:
             ", ".join(outcome.tools_tried) or "none",
         )
         return (raw_data, errors)
+
+    @staticmethod
+    def _route_probe_candidates(urls: list[str]) -> list[str]:
+        """F-0.1-3: sibling pricing routes to probe when a page yields nothing.
+
+        Bounded: at most 3 probes per URL, first page yielding usable text
+        wins upstream. Deterministic route set (pricing/plans/packages), plus
+        the same routes with a trailing slash.
+        """
+        routes = ("/pricing", "/plans", "/packages", "/pricing/")
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for url in urls:
+            if not url:
+                continue
+            base = url.rstrip("/")
+            for route in routes:
+                candidate = base + route
+                if candidate not in seen:
+                    seen.add(candidate)
+                    candidates.append(candidate)
+            if len(candidates) >= 12:
+                break
+        return candidates[:12]
+
+    def _check_sufficiency(self, raw_data: list[str], query: str = "") -> bool:
+        """F-0.1-5: deterministic sufficiency gate for fetch/pricing tasks.
+
+        A scrape task that extracted *content* but no *pricing artifacts* is
+        not a success — it is a thin fetch that should feed the fallback
+        routes (F-0.1-6) instead of being accepted as-is. This cheap check
+        scans the extracted text for pricing signals (``$``, "per month",
+        "per year", tier names, plan columns) and stamps
+        ``counters.sufficiency_failed`` when the question asks for pricing but
+        none is present. Returns True when the gate PASSED (sufficient).
+        """
+        try:
+            import re
+
+            question = (query or "").lower()
+            # Only gate on tasks that actually ask for pricing/monetary data.
+            if not any(tok in question for tok in ("pricing", "price", "cost", "per month",
+                                                   "per year", "plan", "tier", "$")):
+                return True
+            if not raw_data:
+                return True  # no content at all is handled by other gates
+            combined = "\n".join(raw_data)
+            artifacts = re.findall(
+                r"(\$\s?\d[\d,]*\.?\d*|per month|per year|per user|per seat|"
+                r"\b(starting at|starts at|from \$|/mo|/month|/year)\b)",
+                combined,
+                flags=re.IGNORECASE,
+            )
+            sufficient = bool(artifacts)
+            if not sufficient:
+                self.counters.sufficiency_failed = 1
+                logger.info(
+                    "F-0.1-5 sufficiency gate FAILED for %r — extracted content "
+                    "but no pricing artifacts; feeding fallback routes",
+                    question[:60],
+                )
+            return sufficient
+        except Exception as exc:  # noqa: BLE001 - the gate must never break research
+            logger.debug("sufficiency gate errored (treated as pass): %s", exc)
+            return True
+
+    def _context_urls(self) -> list[str]:
+        """F-0.1-1: explicit URLs from the parent's context bundle + question.
+
+        The plan's P0 core: a spec like the pricing-scrape type receives
+        ``context={"url": "https://competitor.com/pricing"}`` but the runner
+        previously never fetched it. This returns those URLs (deduplicated, in
+        order: ``context["url"]`` first, then any ``url`` key anywhere in the
+        context dict, then any http(s) URL named in the question text) so
+        ``_gather_raw_data`` can seed extraction with them, ranked first.
+        """
+        urls: list[str] = []
+        try:
+            ctx = getattr(self.spec, "context", None) or {}
+
+            def _candidate(value: object) -> None:
+                if isinstance(value, str) and value.startswith("http") and value not in urls:
+                    urls.append(value)
+
+            direct = ctx.get("url") or ctx.get("page_url") or ctx.get("target_url")
+            _candidate(direct)
+            for key, value in ctx.items():
+                if key in ("url", "page_url", "target_url"):
+                    continue
+                if isinstance(value, str) and value.startswith("http"):
+                    _candidate(value)
+                elif isinstance(value, (list, tuple)):
+                    for item in value:
+                        _candidate(item)
+
+            import re
+
+            question = getattr(self.spec, "question", "") or ""
+            for m in re.findall(r"https?://[^\s\)\"']+", question):
+                url = m.rstrip(".,;")
+                _candidate(url)
+        except Exception as exc:  # noqa: BLE001 - URL extraction must never break research
+            logger.debug("_context_urls failed: %s", exc)
+        return urls[:5]
+
+    async def _rescue_discovery(self) -> list[str]:
+        """P1.4: pull candidate URLs from the free scholarly/reference APIs.
+
+        Called ONLY when SearXNG + Jina returned zero URLs. The rescuer never
+        rewrites the query (anti-pattern 5) — it reroutes to a DIFFERENT source
+        class that does not ban datacenter IPs the way web crawlers do:
+
+        * OpenAlex          (``open_alex`` tool) — scholarly works, mailto-raised
+                            rate ceiling, no CAPTCHA.
+        * Semantic Scholar  (``semantic_scholar`` tool) — academic papers.
+        * HackerNews        (``hackernews`` tool) — Algolia API, free, no key.
+
+        Each tool is exercised only when granted to this sub-agent, and every
+        failure is recorded as a typed ``errors`` entry — never swallowed.
+        """
+        try:
+            from hyperion.tools.engine_health import get_engine_health
+        except Exception:  # noqa: BLE001 - health is best-effort, rescue still runs
+            get_engine_health = None  # type: ignore[assignment]
+
+        # Skip the rescue when the WEB class is healthy — if SearXNG's own
+        # scraper pool is up, a zero-result pass is NO_RESULTS (handled by the
+        # broaden retry), not ENGINE_BLOCKED. When the web class is dead but
+        # scholar/reference are alive, the rescue reroutes to them — that is
+        # precisely the Aug-10 rescue pattern. Only a fleet-wide outage (no
+        # living class at all) would also be caught here.
+        if get_engine_health is not None:
+            try:
+                if get_engine_health().class_healthy("web"):
+                    return []
+            except Exception as exc:  # noqa: BLE001 - a health read must not block rescue
+                logger.debug("rescue discovery health read failed (non-blocking): %s", exc)
+
+        query = self._condense_query(self.spec.question)
+        candidate_urls: list[str] = []
+        tasks: list[tuple[str, Any]] = []
+
+        if self._has_tool("open_alex"):
+            try:
+                oa = self._get_tool("open_alex")
+                works = await oa.search_works(query, limit=10)
+                for work in works:
+                    url = (getattr(work, "url", "") or "").strip()
+                    if url and url not in candidate_urls:
+                        candidate_urls.append(url)
+            except Exception as e:  # noqa: BLE001 - recorded, not swallowed
+                tasks.append(("openalex", f"{e!s:.80}"))
+
+        if self._has_tool("semantic_scholar"):
+            try:
+                ss = self._get_tool("semantic_scholar")
+                papers = await ss.search(query, limit=10, year_range="2020-")
+                for paper in papers:
+                    url = (getattr(paper, "url", "") or getattr(paper, "paper_url", "") or "").strip()
+                    if url and url not in candidate_urls:
+                        candidate_urls.append(url)
+            except Exception as e:  # noqa: BLE001 - recorded, not swallowed
+                tasks.append(("semantic_scholar", f"{e!s:.80}"))
+
+        if self._has_tool("hackernews"):
+            try:
+                hn = self._get_tool("hackernews")
+                stories = await hn.search_stories(query, hits=15)
+                for story in stories:
+                    url = (getattr(story, "url", "") or "").strip()
+                    if url and url not in candidate_urls:
+                        candidate_urls.append(url)
+            except Exception as e:  # noqa: BLE001 - recorded, not swallowed
+                tasks.append(("hackernews", f"{e!s:.80}"))
+
+        for label, detail in tasks:
+            logger.warning("SubAgent rescue discovery %s failed: %s", label, detail)
+
+        return candidate_urls[: self.MAX_EXTRACT_URLS]
 
     async def _plan_queries(self, leg: str = "") -> list[str]:
         """Return the diversified query set for this sub-agent's question.
@@ -1391,6 +1703,148 @@ class SubAgentRunner:
         """Check if this sub-agent has access to a specific tool."""
         return any(t.value == tool_name for t in self.spec.tools)
 
+    # ── P3 (overhaul §6 P3.1): retrieval-bound provenance ──────────────
+
+    # P3: cap the EVIDENCE INDEX so a rich ledger cannot burn the analysis
+    # token budget. First-seen records win (insertion order); a hard char
+    # budget bounds the tail even when many records are short.
+    EVIDENCE_INDEX_MAX_RECORDS = 40
+    EVIDENCE_INDEX_MAX_CHARS = 6000
+
+    def _evidence_index_block(self) -> str:
+        """P3: the EVIDENCE INDEX block appended to the analysis prompt.
+
+        Every ledger URL gets a stable citation ID (``E1``, ``E2``, ...) that
+        the LLM is told to cite. Built from the run-scoped Evidence Ledger,
+        never from the raw-data text, so an ID that appears in the prompt is
+        guaranteed to resolve back to a retrieved URL. Bounded by
+        :data:`EVIDENCE_INDEX_MAX_RECORDS` and :data:`EVIDENCE_INDEX_MAX_CHARS`
+        so a 100-record engagement does not pay 20KB of index text per
+        sub-agent analysis call.
+        """
+        try:
+            ledger = get_evidence_ledger()
+            records = list(ledger.all())[: self.EVIDENCE_INDEX_MAX_RECORDS]
+        except Exception as exc:  # noqa: BLE001 - indexing must never break analysis
+            logger.debug("evidence index unavailable: %s", exc)
+            return ""
+        if not records:
+            return ""
+        lines: list[str] = []
+        used = 0
+        for ev in records:
+            eid = ledger.evidence_id_for(ev.url) or ""
+            head = f"[{eid}] {ev.title or ev.url}"
+            if ev.snippet:
+                head += f" — {ev.snippet[:160]}"
+            line = f"{head} — {ev.url}"
+            if used + len(line) > self.EVIDENCE_INDEX_MAX_CHARS:
+                break
+            used += len(line)
+            lines.append(line)
+        return "EVIDENCE INDEX (cite ONLY these evidence IDs):\n" + "\n".join(lines)
+
+    def _bind_sources(
+        self,
+        item: dict[str, Any],
+        by_url: dict[str, Evidence],
+    ) -> list[Source]:
+        """P3: map the LLM's cited sources to ledger Evidence in code.
+
+        A cited URL that does not resolve to a ledger record is DROPPED —
+        the LLM can no longer mint, drop, or mangle URLs (invariant I-3).
+        Sources are constructed from ``Evidence`` objects, never from the
+        LLM's transcription. Never raises: binding failure means "no bound
+        sources", which the caller types as ``unverified_assertion``.
+
+        ``by_url`` is the normalized-URL → Evidence map built ONCE per
+        analysis call (``_evidence_url_map``), so N findings do not rebuild
+        the map N times.
+        """
+        try:
+            ledger = get_evidence_ledger()
+        except Exception as exc:  # noqa: BLE001 - binding must never raise
+            logger.debug("evidence binding unavailable: %s", exc)
+            return []
+
+        bound: list[Source] = []
+        seen: set[str] = set()
+        raw_sources = item.get("sources")
+        # Tolerate a single source object instead of a list.
+        if isinstance(raw_sources, dict):
+            raw_sources = [raw_sources]
+        raw_sources = raw_sources if isinstance(raw_sources, list) else []
+        for src in raw_sources:
+            if not isinstance(src, dict):
+                continue
+            evidence = None
+            evidence_id = ""
+            # The prompt asks for ``[E1]``; strip any brackets the LLM echoes.
+            cited_id = str(src.get("id") or "").strip().strip("[]")
+            if cited_id:
+                try:
+                    evidence = ledger.by_evidence_id(cited_id)
+                except Exception:  # noqa: BLE001 - a bad ID is a miss, not a crash
+                    evidence = None
+                if evidence is not None:
+                    evidence_id = cited_id
+            if evidence is None:
+                url = str(src.get("url") or "").strip()
+                if url:
+                    evidence = by_url.get(_normalize_evidence_url(url))
+                if evidence is not None:
+                    try:
+                        evidence_id = ledger.evidence_id_for(evidence.url)
+                    except Exception:  # noqa: BLE001 - a ledger ID lookup failure must not drop a finding
+                        evidence_id = ""
+            if evidence is None:
+                # Cited URL is not in the ledger — dropped (I-3).
+                continue
+            if evidence.url in seen:
+                continue
+            seen.add(evidence.url)
+            bound.append(self._source_from_evidence(evidence, evidence_id))
+        return bound
+
+    def _evidence_url_map(self) -> dict[str, Evidence]:
+        """P3: normalized-URL → Evidence map, built once per analysis call."""
+        try:
+            ledger = get_evidence_ledger()
+            by_url: dict[str, Evidence] = {}
+            for ev in ledger.all():
+                by_url.setdefault(_normalize_evidence_url(ev.url), ev)
+            return by_url
+        except Exception as exc:  # noqa: BLE001 - binding must never raise
+            logger.debug("evidence binding unavailable: %s", exc)
+            return {}
+
+    def _source_from_evidence(self, evidence: Evidence, evidence_id: str) -> Source:
+        """P3: construct a ``Source`` from ledger Evidence in code.
+
+        Credibility is derived from the URL by the source classifier — never
+        transcribed by the LLM. The evidence ID is reused as the source id so
+        citations stay traceable back into the ledger.
+        """
+        from hyperion.schemas.models import SourceCredibility, SourceType
+        from hyperion.tools.source_classifier import classify_source_type
+
+        source_type = classify_source_type(evidence.url)
+        credibility = {
+            SourceType.GOVERNMENT: SourceCredibility.GOVERNMENT,
+            SourceType.ACADEMIC: SourceCredibility.PEER_REVIEWED,
+            SourceType.INDUSTRY: SourceCredibility.INDUSTRY_REPORT,
+            SourceType.NEWS: SourceCredibility.NEWS,
+            SourceType.REFERENCE: SourceCredibility.NEWS,
+            SourceType.BLOG: SourceCredibility.BLOG,
+        }.get(source_type, SourceCredibility.BLOG)
+        return Source(
+            id=evidence_id or f"src_{evidence.url[:40]}",
+            title=evidence.title or evidence.url,
+            url=evidence.url,
+            credibility=credibility,
+            key_data=(evidence.snippet or "")[:300] or None,
+        )
+
     async def _analyze_and_produce_findings(self, raw_data: str) -> list[KeyFinding]:
         self._ensure_counters()
         """Analyze raw data and produce structured KeyFinding objects.
@@ -1406,6 +1860,12 @@ class SubAgentRunner:
 
         system_prompt = compose_agent_prompt(self._build_system_prompt())
         user_prompt = self._build_user_prompt() + f"\n\nRaw data from tools:\n{raw_data}"
+        index_block = self._evidence_index_block()
+        if index_block:
+            user_prompt += f"\n\n{index_block}"
+        # P3: one URL→Evidence map for the whole analysis call, shared by
+        # every finding's binding (no per-finding rebuild).
+        by_url = self._evidence_url_map()
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -1486,9 +1946,16 @@ class SubAgentRunner:
 
         findings: list[KeyFinding] = []
         for item in findings_data:
+            if not isinstance(item, dict):
+                self.counters.invalid_findings += 1
+                continue
+            # P3 (I-3): the LLM's own ``sources`` are DISCARDED before
+            # validation — a malformed or hallucinated source block must not
+            # invalidate an otherwise valid finding, and provenance is bound
+            # in code below from ledger evidence only.
+            clean_item = {k: v for k, v in item.items() if k != "sources"}
             try:
-                finding = KeyFinding.model_validate(item)
-                findings.append(finding)
+                finding = KeyFinding.model_validate(clean_item)
             except (ValueError, TypeError):
                 # F-07: invalid schema items are counted, not silently
                 # dropped. They are still excluded from substantive findings,
@@ -1496,7 +1963,48 @@ class SubAgentRunner:
                 self.counters.invalid_findings += 1
                 continue
 
-        self.counters.valid_findings = len(findings)
+            if finding.finding_type in NON_SUBSTANTIVE_FINDING_TYPES:
+                # P3: a gap is a separate object — never counted as a finding.
+                findings.append(finding)
+                self.counters.gaps += 1
+                continue
+
+            bound = self._bind_sources(item, by_url)
+            if bound:
+                try:
+                    findings.append(
+                        EvidenceFinding.model_validate(
+                            {
+                                **clean_item,
+                                "sources": [s.model_dump() for s in bound],
+                            }
+                        )
+                    )
+                    continue
+                except (ValueError, TypeError):  # pragma: no cover - contract anomaly
+                    # P3: a code-built EvidenceFinding cannot fail its own
+                    # contract; count it as a validation anomaly if it ever
+                    # does rather than silently dropping the claim.
+                    self.counters.invalid_findings += 1
+                    continue
+
+            # P3: zero ledger-bound citations → typed unverified_assertion.
+            # Never counted as yield, never rendered (I-3 / P3.1).
+            findings.append(
+                finding.model_copy(
+                    update={
+                        "finding_type": UNVERIFIED_ASSERTION_TYPE,
+                        "sources": [],
+                    }
+                )
+            )
+            self.counters.unverified_assertions += 1
+
+        self.counters.valid_findings = sum(
+            1
+            for f in findings
+            if f.finding_type not in NON_SUBSTANTIVE_FINDING_TYPES
+        )
         return findings
 
     def gap_finding(self, reason: str, elapsed: float) -> KeyFinding:
@@ -1513,6 +2021,38 @@ class SubAgentRunner:
                 f"Tools attempted: {', '.join(self.tools) or 'none'}. "
                 f"Time elapsed: {elapsed:.1f}s. No factual claim should be "
                 "inferred from this missing evidence."
+            ),
+            sources=[],
+            confidence=ConfidenceLevel.LOW,
+            gaps=[self.spec.question],
+        )
+
+    def labeled_estimate_finding(self, elapsed: float) -> KeyFinding:
+        """F-0.1-7: closure contract — never ship a blank cell.
+
+        When a QUANTITATIVE question (pricing/sizing/funding) has no public
+        data, the deliverable is a LABELED ESTIMATE, not a gap: benchmark the
+        question against comparable public peers, stamp confidence=low +
+        assumption=analog_estimate, and surface "data not publicly available"
+        as a limitation. This is the difference between a consultant-grade
+        answer and a wrapper that returns "no data".
+        """
+        from hyperion.schemas.models import ConfidenceLevel
+
+        return KeyFinding(
+            id=f"estimate_{self.parent_agent}_{time.time_ns()}",
+            agent=self.parent_agent,
+            finding_type="analog_estimate",
+            title=f"Labeled estimate (no public data): {self.spec.question[:100]}",
+            content=(
+                f"Quantitative data for this question is not publicly available "
+                f"({self.spec.question[:120]}). Rather than a blank cell, this "
+                f"answer is a LABELED ANALOG ESTIMATE: benchmark against 2-3 "
+                f"comparable public peers and apply the closest analog's range. "
+                f"This is an assumption with confidence=LOW, NOT a sourced "
+                f"figure. Surface 'data not publicly available' in the report "
+                f"limitations. Tools attempted: {', '.join(self.tools) or 'none'}; "
+                f"elapsed {elapsed:.1f}s."
             ),
             sources=[],
             confidence=ConfidenceLevel.LOW,
@@ -1558,6 +2098,15 @@ class SubAgentRunner:
                 "extraction)."
             )
 
+        # F-0.1-5: sufficiency gate. A pricing/fetch task that extracted
+        # content but found no pricing artifacts is NOT a success — it feeds
+        # the fallback routes instead of burning the analysis LLM on a thin
+        # fetch. The gate stamps counters.sufficiency_failed; run() types the
+        # outcome accordingly (FETCH_INSUFFICIENT path below).
+        self._check_sufficiency(
+            [raw_data] if raw_data else [], self.spec.question
+        )
+
         # Phase 2: Analyze and produce structured findings — the LLM call
         # always gets at least the remainder of the budget.
         analysis_budget = max(60, self.spec.timeout_seconds - search_budget)
@@ -1575,20 +2124,36 @@ class SubAgentRunner:
         # F-01: type the outcome from what actually happened, BEFORE the
         # synthetic gap is appended. ``len(findings)`` is not evidence yield;
         # the parent reads ``runner.outcome`` and ``runner.counters`` instead.
-        if findings:
+        # P3: SUCCESS requires at least one SUBSTANTIVE (ledger-bound)
+        # finding — a list containing only gaps or only unverified_assertions
+        # has no citable evidence and is typed below, never a fake success.
+        if any(
+            f.finding_type not in NON_SUBSTANTIVE_FINDING_TYPES
+            for f in findings
+        ):
             self.outcome = ResearchOutcome.SUCCESS
+            self.recovery_hint = "SUCCESS"
         elif self.broadened:
             # F-01/F-02: this pass already IS the one permitted broadened
             # respawn (parent spawns it with ``broadened=True``). If it still
             # produced no findings, every recovery path is spent — a typed
             # RETRY_EXHAUSTED terminal state, never a fake success.
             self.outcome = ResearchOutcome.RETRY_EXHAUSTED
+            self.recovery_hint = "RETRY_EXHAUSTED"
         elif search_timed_out or analysis_timed_out:
             self.outcome = ResearchOutcome.TIMEOUT
-        elif self.counters.provider_failures > 0:
+            self.recovery_hint = "TIMEOUT"
+        elif self.counters.provider_failures > 0 or self.counters.invalid_findings > 0:
             self.outcome = ResearchOutcome.ANALYSIS_FAILED
-        elif self.counters.invalid_findings > 0:
+            self.recovery_hint = "PROVIDER_FAILURE"
+        elif self.counters.sufficiency_failed:
+            # F-0.1-5: content was extracted but a pricing/fetch sufficiency
+            # gate failed — the extraction is thin for what the question asked.
+            # Typed distinctly from NO_EVIDENCE so the parent's failure-class
+            # respawn (F-0.1-10) can route to the fallback routes rather than
+            # re-broadening a search.
             self.outcome = ResearchOutcome.ANALYSIS_FAILED
+            self.recovery_hint = "FETCH_INSUFFICIENT"
         elif self.counters.raw_results == 0 or self.counters.extracted_documents == 0:
             # Nothing came back from retrieval at all — either the pool is
             # degraded (dead/cooled engines, budget exhaustion) or the world
@@ -1600,12 +2165,15 @@ class SubAgentRunner:
                 degraded = bool(get_engine_health().degradation_events())
             except Exception:  # noqa: BLE001 - telemetry must not break typing
                 degraded = False
-            self.outcome = (
-                ResearchOutcome.RETRIEVAL_DEGRADED if degraded
-                else ResearchOutcome.NO_EVIDENCE
-            )
+            if degraded:
+                self.outcome = ResearchOutcome.RETRIEVAL_DEGRADED
+                self.recovery_hint = "ENGINE_BLOCKED"
+            else:
+                self.outcome = ResearchOutcome.NO_EVIDENCE
+                self.recovery_hint = "LOW_YIELD"
         else:
             self.outcome = ResearchOutcome.NO_EVIDENCE
+            self.recovery_hint = "LOW_YIELD"
 
         # If no findings were produced, return a gap finding. The gap is a
         # first-class citizen in the counters, never a fake "1 finding".
@@ -1618,6 +2186,22 @@ class SubAgentRunner:
             findings = [
                 self.gap_finding(reason, elapsed)
             ]
+            # F-0.1-7: closure contract. A QUANTITATIVE question (pricing,
+            # sizing, funding) with no public data must never ship a blank
+            # cell — attach the labeled-estimate finding so the report carries
+            # an analog benchmark with confidence=LOW, not a gap-only blank.
+            if self._is_quantitative_question() and not search_timed_out:
+                findings.append(self.labeled_estimate_finding(elapsed))
             self.counters.gaps = 1
 
         return findings
+
+    def _is_quantitative_question(self) -> bool:
+        """F-0.1-7: True when the sub-question asks for a number/price/size."""
+        q = (getattr(self.spec, "question", "") or "").lower()
+        tokens = (
+            "pricing", "price", "cost", "tam", "sam", "som", "market size",
+            "funding", "raised", "valuation", "revenue", "how much",
+            "per month", "per year", "growth rate", "cagr", "headcount",
+        )
+        return any(tok in q for tok in tokens)

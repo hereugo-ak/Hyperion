@@ -22,13 +22,11 @@ Covers the code-level remediation for:
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from hyperion.schemas.models import KeyFinding, ResearchOutcome
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # F-01: typed outcome state machine
@@ -110,7 +108,23 @@ def test_f01_run_types_analysis_failed_on_provider_failure(monkeypatch) -> None:
 
 
 def test_f01_run_types_success_with_valid_findings(monkeypatch) -> None:
+    """F-01/P3: SUCCESS requires at least one ledger-bound finding.
+
+    P3 (overhaul §6 P3): provenance is bound in code. A finding whose cited
+    evidence ID resolves to the Evidence Ledger becomes an
+    ``EvidenceFinding`` and the run is SUCCESS; a finding with no
+    ledger-bound source is typed ``unverified_assertion`` and never counted
+    as yield.
+    """
     from hyperion.agents.sub_agent import SubAgentRunner
+    from hyperion.schemas.models import UNVERIFIED_ASSERTION_TYPE, EvidenceFinding
+    from hyperion.tools.evidence_ledger import (
+        new_ledger,
+        record_evidence,
+        reset_active_ledger,
+    )
+
+    new_ledger("test_eng_f01")
 
     class _Router:
         async def complete(self, **kwargs):  # noqa: ARG002 - stub interface
@@ -120,9 +134,24 @@ def test_f01_run_types_success_with_valid_findings(monkeypatch) -> None:
                     '{"findings": [{"id": "f1", "agent": "market_analyst", '
                     '"finding_type": "market_data", "title": "TAM", '
                     '"content": "The TAM is $4.2B with sources.", '
-                    '"sources": [], "confidence": "medium"}]}'
+                    '"sources": [{"id": "E1", '
+                    '"url": "https://example.com/tam-report"}], '
+                    '"confidence": "medium"}, '
+                    '{"id": "f2", "agent": "market_analyst", '
+                    '"finding_type": "market_data", "title": "Uncited", '
+                    '"content": "A claim with no citable document.", '
+                    '"sources": [], "confidence": "low"}]}'
                 ),
             )
+
+    record_evidence(
+        url="https://example.com/tam-report",
+        title="TAM report 2026",
+        snippet="The total addressable market is $4.2B.",
+        engine="searxng",
+        profile="web",
+        stage="discovery",
+    )
 
     runner = SubAgentRunner(spec=_make_spec(), router=_Router())  # type: ignore[arg-type]
 
@@ -130,12 +159,22 @@ def test_f01_run_types_success_with_valid_findings(monkeypatch) -> None:
         return "raw text with a number 4.2"
 
     monkeypatch.setattr(runner, "_gather_raw_data", data)
-    findings = asyncio.run(runner.run())
+    try:
+        findings = asyncio.run(runner.run())
+    finally:
+        reset_active_ledger()
 
     assert runner.outcome is ResearchOutcome.SUCCESS
     assert runner.counters.valid_findings == 1
     assert runner.counters.gaps == 0
+    assert runner.counters.unverified_assertions == 1
+    assert isinstance(findings[0], EvidenceFinding)
     assert findings[0].finding_type == "market_data"
+    assert len(findings[0].sources) == 1
+    assert findings[0].sources[0].url == "https://example.com/tam-report"
+    # The uncited claim is typed, not counted.
+    assert findings[1].finding_type == UNVERIFIED_ASSERTION_TYPE
+    assert findings[1].sources == []
 
 
 def test_f01_gap_finding_is_never_substantive() -> None:
@@ -219,8 +258,19 @@ def test_f07_invalid_json_is_counted_not_silently_dropped(monkeypatch) -> None:
 
 
 def test_f07_format_repair_recovers_fenced_json(monkeypatch) -> None:
-    """One bounded repair attempt: fenced JSON must survive extract_json."""
+    """One bounded repair attempt: fenced JSON must survive extract_json.
+
+    P3: the repaired finding must still bind to ledger evidence to count as
+    yield — provenance is enforced after repair, not before.
+    """
     from hyperion.agents.sub_agent import SubAgentRunner
+    from hyperion.tools.evidence_ledger import (
+        new_ledger,
+        record_evidence,
+        reset_active_ledger,
+    )
+
+    new_ledger("test_eng_f07_repair")
 
     class _Router:
         async def complete(self, **kwargs):  # noqa: ARG002 - stub interface
@@ -230,10 +280,21 @@ def test_f07_format_repair_recovers_fenced_json(monkeypatch) -> None:
                     "Here is the analysis:\\n```json\\n"
                     '{"findings": [{"id": "f1", "agent": "market_analyst", '
                     '"finding_type": "market_data", "title": "T", '
-                    '"content": "Data with 42.", "sources": [], '
+                    '"content": "Data with 42.", '
+                    '"sources": [{"id": "E1", '
+                    '"url": "https://example.com/report"}], '
                     '"confidence": "low"}]}\\n```'
                 ),
             )
+
+    record_evidence(
+        url="https://example.com/report",
+        title="Report",
+        snippet="Data with 42.",
+        engine="searxng",
+        profile="web",
+        stage="discovery",
+    )
 
     runner = SubAgentRunner(spec=_make_spec(), router=_Router())  # type: ignore[arg-type]
 
@@ -241,15 +302,30 @@ def test_f07_format_repair_recovers_fenced_json(monkeypatch) -> None:
         return "raw"
 
     monkeypatch.setattr(runner, "_gather_raw_data", data)
-    findings = asyncio.run(runner.run())
+    try:
+        findings = asyncio.run(runner.run())
+    finally:
+        reset_active_ledger()
 
     assert runner.outcome is ResearchOutcome.SUCCESS
     assert runner.counters.valid_findings == 1
     assert runner.counters.invalid_findings == 0
+    assert findings[0].sources[0].url == "https://example.com/report"
 
 
 def test_f07_invalid_schema_items_counted(monkeypatch) -> None:
+    """F-07: schema-invalid items are counted, not silently dropped.
+
+    P3: the schema-valid item must bind to ledger evidence to count as yield.
+    """
     from hyperion.agents.sub_agent import SubAgentRunner
+    from hyperion.tools.evidence_ledger import (
+        new_ledger,
+        record_evidence,
+        reset_active_ledger,
+    )
+
+    new_ledger("test_eng_f07_schema")
 
     class _Router:
         async def complete(self, **kwargs):  # noqa: ARG002 - stub interface
@@ -259,10 +335,21 @@ def test_f07_invalid_schema_items_counted(monkeypatch) -> None:
                     '{"findings": [{"id": "bad", "finding_type": "x"}, '
                     '{"id": "ok", "agent": "market_analyst", '
                     '"finding_type": "market_data", "title": "T", '
-                    '"content": "valid with 7", "sources": [], '
+                    '"content": "valid with 7", '
+                    '"sources": [{"id": "E1", '
+                    '"url": "https://example.com/ok"}], '
                     '"confidence": "medium"}]}'
                 ),
             )
+
+    record_evidence(
+        url="https://example.com/ok",
+        title="OK doc",
+        snippet="valid with 7",
+        engine="searxng",
+        profile="web",
+        stage="discovery",
+    )
 
     runner = SubAgentRunner(spec=_make_spec(), router=_Router())  # type: ignore[arg-type]
 
@@ -270,7 +357,10 @@ def test_f07_invalid_schema_items_counted(monkeypatch) -> None:
         return "raw"
 
     monkeypatch.setattr(runner, "_gather_raw_data", data)
-    findings = asyncio.run(runner.run())
+    try:
+        findings = asyncio.run(runner.run())
+    finally:
+        reset_active_ledger()
 
     assert runner.counters.invalid_findings == 1  # the schema-invalid one
     assert runner.counters.valid_findings == 1
@@ -444,7 +534,7 @@ async def test_f03_fan_out_stops_at_evidence_minimum() -> None:
 async def test_f04_dead_preferred_profile_goes_straight_to_fleet(monkeypatch) -> None:
     """A dead web profile with healthy scholar engines must NOT return empty
     and must NOT burn the web rotation first."""
-    from hyperion.tools.searxng import SearxngEndpoint, SearxngPool, SearxNGClient, SearchResponse
+    from hyperion.tools.searxng import SearchResponse, SearxNGClient, SearxngEndpoint, SearxngPool
 
     client = SearxNGClient()
     client._pool = SearxngPool([

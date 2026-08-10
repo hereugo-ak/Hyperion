@@ -15,7 +15,6 @@ import json
 import pytest
 
 from hyperion.tools.evidence_ledger import (
-    Evidence,
     EvidenceLedger,
     content_hash_of,
     domain_of,
@@ -23,7 +22,7 @@ from hyperion.tools.evidence_ledger import (
     new_ledger,
     record_evidence,
     reset_active_ledger,
-    set_active_ledger,
+    reset_default_ledger,
 )
 
 
@@ -141,6 +140,7 @@ def test_snapshot_writes_json(tmp_path) -> None:
 
 def test_run_scoped_context_binding() -> None:
     reset_active_ledger()
+    reset_default_ledger()
     try:
         assert get_evidence_ledger().run_id == "__default__"
         outer = contextvars.copy_context()
@@ -157,6 +157,7 @@ def test_run_scoped_context_binding() -> None:
         assert get_evidence_ledger().count() == 0
     finally:
         reset_active_ledger()
+        reset_default_ledger()
 
 
 def test_record_evidence_never_raises_without_an_active_run() -> None:

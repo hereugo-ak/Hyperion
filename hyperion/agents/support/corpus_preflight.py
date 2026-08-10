@@ -251,7 +251,7 @@ async def run_corpus_preflight(
             _fire_canaries(question, settings),
             timeout=_CANARY_TIMEOUT_SECONDS,
         )
-    except (asyncio.TimeoutError, TimeoutError):
+    except TimeoutError:
         logger.error(
             "CORPUS PREFLIGHT: canary battery exceeded %.0fs — treating the "
             "corpus as empty (conservative RED)",
