@@ -58,6 +58,7 @@ from typing import Any
 
 from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
 from hyperion.infra.provenance import banner as _provenance_banner
+from hyperion.infra.provenance import banner_lines as _provenance_banner_lines
 from hyperion.infra.provenance import collect_async as _collect_provenance_async
 from hyperion.infra.provenance import refusal_reason as _provenance_refusal
 from hyperion.infra.services import (
@@ -186,7 +187,17 @@ async def run_boot_sequence(
     # Banner goes to the transcript AND stderr — it must be on screen even
     # if the TUI crashes before the first frame paints.
     print(banner_text, file=sys.stderr, flush=True)
-    log.add_entry("BUILD", banner_text, spinner=False)
+    # The transcript row is the compact, badge-styled rendering; the full
+    # fingerprint (hashes + policy) stays on stderr so a screenshot of the
+    # boot log can still prove the running build.
+    build_content, build_detail = _provenance_banner_lines(provenance)
+    log.add_entry(
+        "BUILD",
+        build_content,
+        detail=build_detail,
+        spinner=False,
+        icon="✓",
+    )
     refusal = _provenance_refusal(provenance)
     if refusal is not None and get_settings().provenance_strict:
         print(f"BOOT REFUSED — {refusal}", file=sys.stderr, flush=True)

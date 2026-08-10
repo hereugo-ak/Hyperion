@@ -280,6 +280,11 @@ class FinancialAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1344,6 +1349,18 @@ class FinancialAnalyst(BaseAgent):
                 "collection sub-agents")
             sub_findings = await self._spawn_financial_sub_agents(tickers, industry, business_model)
             self._sub_agent_findings = sub_findings
+            self._sources = self._merge_evidence(sub_findings, self._sources)
+            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
+        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
+        if self._sub_agent_contradictions:
+            self._log(
+                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
+                    len(self._sub_agent_contradictions),
+                    "; ".join(self._sub_agent_contradictions[:3]),
+                )
+            )
+            for _reconciled in self._sub_agent_reconciled:
+                await self._publish_finding(_reconciled)
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 
@@ -1360,6 +1377,13 @@ class FinancialAnalyst(BaseAgent):
         if industry:
             await self._transition(AgentState.WORKING, f"Step 3: Searching industry benchmarks (SearxNG + Jina) for {industry}")
             self._industry_benchmarks = await self._search_industry_benchmarks(industry)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no financial data for {industry}"):
+            return FinancialAnalysis(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 4: Build DCF model with sensitivity tables
         await self._transition(AgentState.WORKING, "Step 4: Building DCF model with sensitivity "

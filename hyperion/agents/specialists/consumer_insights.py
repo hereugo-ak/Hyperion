@@ -300,6 +300,11 @@ class ConsumerInsightsAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
         # Total reviews analyzed
         self._total_reviews: int = 0
@@ -944,7 +949,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
                 question=f"Scrape reviews from G2, Capterra, Trustpilot for {company}, extract sentiment, pain points, buying triggers with frequency data",
                 parent_agent=self.name,
                 model_tier=ModelTier.STANDARD,
-                tools=[ToolName.OBSCURA],
+                tools=[ToolName.SEARXNG, ToolName.JINA, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=600,
                 context={"company": company, "sector": sector},
@@ -1064,6 +1069,18 @@ class ConsumerInsightsAnalyst(BaseAgent):
                 "collection sub-agents")
             sub_findings = await self._spawn_consumer_sub_agents(company, sector, product_category, segment)
             self._sub_agent_findings = sub_findings
+            self._sources = self._merge_evidence(sub_findings, self._sources)
+            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
+        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
+        if self._sub_agent_contradictions:
+            self._log(
+                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
+                    len(self._sub_agent_contradictions),
+                    "; ".join(self._sub_agent_contradictions[:3]),
+                )
+            )
+            for _reconciled in self._sub_agent_reconciled:
+                await self._publish_finding(_reconciled)
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 
@@ -1075,6 +1092,13 @@ class ConsumerInsightsAnalyst(BaseAgent):
         await self._transition(AgentState.WORKING, "Step 2: Scraping review sites (G2, Capterra, "
             "Trustpilot, Reddit)")
         self._review_data = await self._scrape_review_sites(company, sector)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no consumer data for {company or sector}"):
+            return ConsumerInsights(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 3: Build personas from data
         await self._transition(AgentState.WORKING, "Step 3: Building data-driven personas from "

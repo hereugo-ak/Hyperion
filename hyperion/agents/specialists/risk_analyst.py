@@ -268,6 +268,11 @@ class RiskAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1157,6 +1162,18 @@ class RiskAnalyst(BaseAgent):
                 "sub-agents")
             sub_findings = await self._spawn_risk_sub_agents(industry, jurisdiction, space)
             self._sub_agent_findings = sub_findings
+            self._sources = self._merge_evidence(sub_findings, self._sources)
+            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
+        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
+        if self._sub_agent_contradictions:
+            self._log(
+                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
+                    len(self._sub_agent_contradictions),
+                    "; ".join(self._sub_agent_contradictions[:3]),
+                )
+            )
+            for _reconciled in self._sub_agent_reconciled:
+                await self._publish_finding(_reconciled)
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 
@@ -1167,6 +1184,15 @@ class RiskAnalyst(BaseAgent):
         # Step 2: Scrape regulatory databases
         await self._transition(AgentState.WORKING, f"Step 2: Scraping regulatory databases for {jurisdiction}")
         self._regulatory_data = await self._scrape_regulatory_databases(jurisdiction)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no risk data for {self._question[:60]}"):
+            return RiskAnalysis(
+                risks=[],
+                residual_risk_summary="No risks identified — zero evidence collected",
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 3: Identify risks across 6 categories
         await self._transition(AgentState.WORKING, "Step 3: Identifying risks across 6 categories")

@@ -79,3 +79,20 @@ def _isolate_engine_health_state(
     reset_engine_health()
     yield
     reset_engine_health()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_fetch_cache() -> None:
+    """F-0.1-8: clear the shared per-engagement fetch cache between tests.
+
+    The cache is module-level (shared across UnifiedExtract instances) so a
+    test that seeds a cached URL would leak it into the next test's ladder
+    climb — exactly the same stale-state poisoning class the engine-health
+    isolation guards against. Clearing per test keeps the suite hermetic and
+    order-independent.
+    """
+    from hyperion.tools.unified_extract import clear_fetch_cache
+
+    clear_fetch_cache()
+    yield
+    clear_fetch_cache()

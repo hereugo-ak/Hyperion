@@ -273,6 +273,11 @@ class TechnologyAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1108,7 +1113,7 @@ class TechnologyAnalyst(BaseAgent):
                 question=f"Scrape {vendors[0]} pricing page and feature list. Extract pricing tiers, feature matrix, and any limitations.",
                 parent_agent=self.name,
                 model_tier=ModelTier.STANDARD,
-                tools=[ToolName.OBSCURA],
+                tools=[ToolName.SEARXNG, ToolName.JINA, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=600,
                 context={"vendor": vendors[0]},
@@ -1120,7 +1125,7 @@ class TechnologyAnalyst(BaseAgent):
                 question=f"Scrape {vendors[1]} pricing page and feature list. Extract pricing tiers, feature matrix, and any limitations.",
                 parent_agent=self.name,
                 model_tier=ModelTier.STANDARD,
-                tools=[ToolName.OBSCURA],
+                tools=[ToolName.SEARXNG, ToolName.JINA, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=600,
                 context={"vendor": vendors[1]},
@@ -1233,6 +1238,18 @@ class TechnologyAnalyst(BaseAgent):
                 "sub-agents")
             sub_findings = await self._spawn_vendor_sub_agents(vendors, technology)
             self._sub_agent_findings = sub_findings
+            self._sources = self._merge_evidence(sub_findings, self._sources)
+            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
+        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
+        if self._sub_agent_contradictions:
+            self._log(
+                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
+                    len(self._sub_agent_contradictions),
+                    "; ".join(self._sub_agent_contradictions[:3]),
+                )
+            )
+            for _reconciled in self._sub_agent_reconciled:
+                await self._publish_finding(_reconciled)
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 
@@ -1249,6 +1266,13 @@ class TechnologyAnalyst(BaseAgent):
         if technology:
             await self._transition(AgentState.WORKING, f"Step 3: Searching developer reviews for {technology}")
             self._developer_reviews = await self._search_developer_reviews(technology)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no technology data for {technology}"):
+            return TechnologyAssessment(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 4: Build vendor comparison matrix
         await self._transition(AgentState.WORKING, "Step 4: Building vendor comparison matrix (7 "

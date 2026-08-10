@@ -41,6 +41,7 @@ from typing import Any, cast
 import httpx
 
 from hyperion.tools.engine_health import get_engine_health
+from hyperion.tools.evidence_ledger import record_evidence
 from hyperion.tools.jina import JinaClient
 from hyperion.tools.query_utils import grounded_search_or_empty
 from hyperion.tools.valkey import get_valkey_store
@@ -50,25 +51,33 @@ logger = logging.getLogger(__name__)
 # W-11: one code registry, built only from API-backed sources and independent
 # crawlers. Tier C engines that CAPTCHA, IP-ban, or proxy a blocking upstream
 # are forbidden everywhere, not merely omitted from the default route.
-# P2-G23: six general-web engines. openalex is a Tier-A/B documented API
-# (owned by the scholar replica) that does not ban datacenter IPs the way
-# crawlers do; `engines_for` intersects it out of web-replica requests, so
-# W-11 isolation and W-12 disjoint profiles are preserved while the pool
-# meets the six-engine tripwire.
-RELIABLE_ENGINES = "wikipedia,mojeek,mwmbl,brave,crossref,openalex"
-STANDBY_ENGINES = "yep"
+# P2-G23: the general pool. openalex is a Tier-A/B documented API (owned by
+# the scholar replica) that does not ban datacenter IPs the way crawlers do;
+# `engines_for` intersects it out of web-replica requests, so W-11 isolation
+# and W-12 disjoint profiles are preserved.
+#
+# P1.2 (overhaul §6 P1, 2026-08-10): **mojeek and yep are removed from every
+# active engine set.** Both categorically 403 from a datacenter/VPS egress
+# after a week of daily runs (the Aug-10 autopsy: mojeek 403 x5+, yep 403
+# x4+ for the entire 40-minute run). They are also disabled in
+# `searxng_settings.yml` so no replica ever receives traffic for them again.
+# The web corpus is now served by `mwmbl` + `brave` behind the engine-health
+# circuit, with the scholar/reference API engines as the fan-out rescue path.
+RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex"
+STANDBY_ENGINES = ""
 CATEGORY_ENGINES = {
     "science": "arxiv,crossref,openalex,semantic scholar",
     "medical": "pubmed,openalex",
     "it": "github,stackexchange,hackernews",
     "geo": "openstreetmap",
-    "news": "mojeek,mwmbl",
+    "news": "mwmbl",
 }
 # Corpus-safe defaults when a request crosses profiles after an empty/error
 # response. These engines accept broad natural-language research queries;
 # profile-specific code/search/geo engines do not.
 PROFILE_FALLBACK_ENGINES = {
-    "web": frozenset({"mojeek", "mwmbl", "brave", "yep"}),
+    # P1.2: mojeek/yep removed — they 403 categorically from this egress.
+    "web": frozenset({"mwmbl", "brave"}),
     "reference": frozenset({"wikipedia"}),
     "scholar": frozenset({"crossref", "openalex", "semantic scholar"}),
 }
@@ -756,6 +765,17 @@ class SearxNGClient:
                         category=item.get("category", category),
                         published_date=item.get("publishedDate", ""),
                     ))
+                    # P0 (overhaul §6 P0.2): every retrieved URL becomes an
+                    # Evidence record in the run-scoped ledger BEFORE any LLM
+                    # sees it. Provenance starts here, in code.
+                    record_evidence(
+                        url=url,
+                        title=item.get("title", ""),
+                        snippet=item.get("content", ""),
+                        engine=engine_name,
+                        profile=endpoint.profile,
+                        stage="discovery",
+                    )
 
                 unresponsive = data.get("unresponsive_engines", [])
                 degradation_events: list[dict[str, object]] = []
@@ -917,6 +937,16 @@ class SearxNGClient:
         per_profile = self._pool.healthy_engines()
         if not per_profile:
             return None
+        # P1.2: never name an engine the code does not reference. The web
+        # replica still DECLARES (disabled) mojeek/yep so W-12 disjointness
+        # holds, but the fan-out must not carry their names either — SearXNG
+        # ignores disabled engines in a request, and keeping them out of the
+        # engine list makes the no-traffic guarantee explicit.
+        per_profile = {
+            profile: engines & referenced_engines()
+            for profile, engines in per_profile.items()
+        }
+        per_profile = {p: e for p, e in per_profile.items() if e}
 
         async def _fan_one(profile: str, engines: set[str]) -> SearchResponse | None:
             try:
@@ -994,6 +1024,14 @@ class SearxNGClient:
                         score=1.0,
                         category=categories,
                     ))
+                    record_evidence(
+                        url=jr.url,
+                        title=jr.title,
+                        snippet=jr.snippet,
+                        engine="jina",
+                        profile="jina_fallback",
+                        stage="discovery",
+                    )
 
                 if results:
                     results = self._deduplicate(results)[:num_results]
@@ -1079,6 +1117,15 @@ class SearxNGClient:
             return None
 
         results = self._deduplicate(outcome.results)[:num_results]
+        for r in results:
+            record_evidence(
+                url=r.url,
+                title=r.title,
+                snippet=r.snippet,
+                engine="google-search-grounding",
+                profile="grounding",
+                stage="grounding",
+            )
         return SearchResponse(
             query=query,
             results=results,

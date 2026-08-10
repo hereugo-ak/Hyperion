@@ -1787,7 +1787,7 @@ kitchen-sink afterthought.
 
 | Tool | Type | Used By | Description |
 |---|---|---|---|
-| SearxNG | Search | All specialists | Self-hosted meta-search, free, unlimited. Docker-based. Aggregates 70+ search engines. No API key, no rate limit, no tracking. |
+| SearxNG | Search | All specialists | Self-hosted meta-search, free. Docker-based. Web profile: `mwmbl` + `brave` only, behind the engine-health circuit (§5.2.1); scholar/reference API engines are the fan-out fallback. |
 | Jina | Search + Extract | All specialists | `s.jina.ai` search, `r.jina.ai` read. 500 RPM, 10M tokens/mo. Used for content extraction from URLs returned by SearxNG. |
 | Obscura | Browser | Competitive Intel, Consumer Insights, Technology, Regulatory, M&A, Market, Sustainability, Operations, Fact Checker | Rust headless browser. 70MB binary, 30MB RAM, instant cold start. CDP-compatible. Stealth mode. MCP server with 12 tools. **Primary browser for JS-heavy pages.** |
 | Crawl4AI | Deep Extract | Research Librarian, Fact Checker | Heavy page extraction. Fallback when Obscura unavailable. Transformers patch required. Used for PDF extraction and complex document parsing. |
@@ -1836,6 +1836,36 @@ Image task:
 
 This is not a generic "use whatever tool" approach. Each agent knows exactly
 which tool to use for which task, in what order, and when to fall back.
+
+#### 5.2.1 Egress & Corpus Capacity Policy (W-11 amendment, 2026-08-10)
+
+**Decision (overhaul.md §6 P1.4 — written record):** HYPERION does NOT use a
+third-party keyed web-search API (Brave, Tavily, Exa, SerpAPI, ...) and does
+NOT run a rotating residential proxy. Egress is the single host IP behind the
+Docker bridge. This is a deliberate, operator-chosen trade to keep the system
+self-contained and free-tier — not an unrecorded default.
+
+Consequences, enforced in code:
+
+| Policy | Enforcement |
+|---|---|
+| General web = `mwmbl` + `brave` only | `searxng_settings.web.yml` / `hyperion/infra/searxng_profiles.py` (P1.2: `mojeek`, `yep` disabled — categorical 403s from this egress) |
+| Scholar/reference is the fallback pool | crossref, openalex, wikipedia, semantic scholar joined via full-pool fan-out when web is dead |
+| Keyed fallbacks stay in place | Jina (keyed) and Gemini Search grounding (keyed, 20/day ledger) |
+| Boot does not burn capacity | readiness is local-only (`obs/health.py` — TCP + `/config` + persisted engine health) |
+| Bans are absorbed, not escalated | engine-health cooldown capped at 4h + boot-time TTL sweep (`engine_health.py`) |
+| Dead corpus is cheap | Phase-2 corpus preflight RED terminates < 60s / < 5k tokens |
+| Polite pools | `HYPERION_CONTACT_EMAIL` / `HYPERION_OPENALEX_EMAIL` mailto UA on openalex/crossref/wikipedia |
+
+**Explicitly NOT done** (overhaul.md §9 anti-patterns 1–2): no new anonymous
+scraper engines; no Tier-C engines (bing, duckduckgo, startpage, qwant)
+without a further written amendment; no raising of retry/timeout/iteration
+budgets. If upstream bans ever return to catastrophic levels, the capacity
+answer is a keyed API or different egress — never more scrapers or longer
+waits.
+
+Canonical machine-side record: the module docstring of
+`hyperion/infra/searxng_profiles.py` (same decision, recorded in code).
 
 ### 5.3 Obscura Integration — Deep Dive
 

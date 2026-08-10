@@ -31,7 +31,19 @@ def test_replica_registry_is_complete_and_disjoint() -> None:
         engines = set(replica.engines)
         assert not seen.intersection(engines)
         seen.update(engines)
-    assert seen == referenced_engines()
+    # P1.2 (overhaul §6 P1, 2026-08-10): mojeek/yep stay DECLARED in the
+    # registry so profile disjointness holds, but they are disabled in
+    # settings and removed from the active referenced set. Every ACTIVE
+    # engine must be owned by exactly one replica; declared-but-disabled
+    # engines may additionally exist.
+    assert referenced_engines() <= seen
+    base = yaml.safe_load((ROOT / "searxng_settings.yml").read_text(encoding="utf-8"))
+    disabled = {
+        str(engine["name"])
+        for engine in base["engines"]
+        if engine.get("disabled", False)
+    }
+    assert seen - referenced_engines() <= disabled
     assert [replica.port for replica in services.SEARXNG_REPLICAS] == [8888, 8889, 8890]
 
 

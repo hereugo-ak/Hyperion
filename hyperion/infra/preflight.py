@@ -29,8 +29,13 @@ def assert_research_stack_usable(
     when omitted, the check is run here.
 
     DEGRADED (some engines dead, some answering) is allowed through: breadth
-    is reduced but the engagement is still groundable. OFFLINE (port closed,
-    query failing, or fewer than MIN_SMOKE_RESULTS results) is not.
+    is reduced but the engagement is still groundable. OFFLINE (no replica
+    reachable, or /config failing — P1.5 local-only readiness) is not.
+
+    Note (P2): this gate measures LOCAL readiness only. A reachable fleet
+    whose engines produce zero evidence is caught by the Phase-2 corpus
+    preflight (``corpus_preflight.py``), which fires canary probes against
+    the ledger before the DAG is built.
     """
     if health_result is None:
         from hyperion.obs.health import _check_searxng

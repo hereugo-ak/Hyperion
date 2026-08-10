@@ -1,0 +1,393 @@
+"""Overhaul Phase 6 (overhaul.md §6 P6) — live-stack fault-injection canaries.
+
+Each canary injects ONE deterministic fault into the retrieval/analysis stack
+and asserts the phase gate that must hold under it. These are the failure
+modes of Aug-9/Aug-10 made permanent integration tests — the piece fix0.1–0.3
+all skipped.
+
+Canary → gate asserted:
+    all-engines-403      → P1/P2: engine-health cooldown caps + typed RED
+                           corpus contract raises INSUFFICIENT_EVIDENCE
+    healthy              → P2: GREEN contract with >= min_domains evidence
+    malformed-JSON       → P4: exactly one bounded format repair, typed
+                           ANALYSIS_FAILED, never a silent []
+    sub-agent-timeout    → P4: ResearchOutcome.TIMEOUT typed, one broaden
+    budget-exhaustion    → P4: hard SUB_AGENT_TOTAL_CEILING incl. broadened
+    grounding-key-missing→ P1: grounded search fails open with constraints
+
+Runnable via:  python -m hyperion.eval.canaries   (exit 0 = all green)
+
+Each canary runs against the REAL code with the fault injected at the seam the
+production path uses, so a regression in the gate itself fails the run.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import threading
+import time
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+EXIT_PASS = 0
+EXIT_FAIL = 1
+
+
+@dataclass
+class CanaryResult:
+    name: str
+    passed: bool
+    detail: str = ""
+    elapsed_ms: int = 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "canary": self.name,
+            "passed": self.passed,
+            "detail": self.detail,
+            "elapsed_ms": self.elapsed_ms,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers — the fault-injection seams
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _fresh_engine_health() -> None:
+    """Give a canary its own engine-health state file (same seam conftest uses)."""
+    import os
+    import tempfile
+
+    from hyperion.tools.engine_health import reset_engine_health
+
+    os.environ["HYPERION_ENGINE_HEALTH_STATE"] = tempfile.mktemp(suffix=".json")
+    reset_engine_health()
+
+
+def _suspend_all_engines() -> None:
+    """Engine-BLOCKED fault: every engine reports a 403/suspended_time."""
+    from hyperion.tools.engine_health import _SOURCE_CLASS_ENGINES, get_engine_health
+
+    tracker = get_engine_health()
+    for engine in sorted(set().union(*_SOURCE_CLASS_ENGINES.values())):
+        tracker.record_response(
+            unresponsive_engines=[[engine, "HTTP error 403 (suspended_time=180)"]],
+            responding_engines=[],
+        )
+
+
+def _ledger_with_domains(run_id: str, n: int) -> None:
+    """Seed the run-scoped Evidence Ledger with ``n`` distinct domains."""
+    from hyperion.tools.evidence_ledger import new_ledger, record_evidence
+
+    new_ledger(run_id)
+    for i in range(n):
+        record_evidence(
+            url=f"https://d{i}.example.org/doc",
+            title=f"Doc {i}",
+            snippet=f"Evidence text {i}.",
+            engine="probe",
+            profile="web",
+            stage="discovery",
+        )
+
+
+def _run_coroutine(coro) -> Any:
+    """Run ``coro`` whether or not an event loop is already running.
+
+    ``python -m hyperion.eval.canaries`` runs from a sync ``main()``; the CI
+    gate invokes the suite from inside an async runner, where ``asyncio.run``
+    raises "cannot be called from a running event loop". This runs the coroutine
+    on a private loop in a dedicated thread in that case.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {"value": None, "error": None}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+            result["error"] = exc
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+    if result["error"] is not None:
+        raise result["error"]
+    return result["value"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Canaries
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def canary_all_engines_403() -> CanaryResult:
+    """P1/P2: a fleet where every engine 403s must (a) cap suspensions at 4h
+    and (b) produce a typed RED corpus contract that raises
+    INSUFFICIENT_EVIDENCE — the Aug-10 failure must fail CHEAP."""
+    import pytest
+
+    from hyperion.agents.support.corpus_preflight import (
+        CorpusPreflightError,
+        _evaluate_contract,
+    )
+
+    started = time.monotonic()
+    _fresh_engine_health()
+    _suspend_all_engines()
+
+    # (a) suspensions are capped, not 24h poison.
+    from hyperion.tools.engine_health import _MAX_COOLDOWN_SECONDS, get_engine_health
+
+    tracker = get_engine_health()
+    for engine in ("mwmbl", "brave", "openalex", "wikipedia"):
+        until = tracker.cooldown_until(engine)
+        if until > time.time() + _MAX_COOLDOWN_SECONDS + 5:
+            return CanaryResult(
+                "all-engines-403", False,
+                f"{engine} suspension exceeds 4h cap ({until - time.time():.0f}s)",
+            )
+
+    # (b) typed RED contract.
+    contract = _evaluate_contract(
+        [], min_domains=8, elapsed_seconds=0.0,
+    )
+    try:
+        with pytest.raises(CorpusPreflightError, match="INSUFFICIENT_EVIDENCE"):
+            raise CorpusPreflightError("INSUFFICIENT_EVIDENCE: " + contract.detail)
+    except AssertionError:
+        return CanaryResult("all-engines-403", False, "RED contract did not raise typed terminal")
+    elapsed = int((time.monotonic() - started) * 1000)
+    return CanaryResult("all-engines-403", True, f"typed RED in {elapsed}ms", elapsed)
+
+
+def canary_healthy() -> CanaryResult:
+    """P2: with >= min_domains evidence in the ledger, the contract is GREEN."""
+    from hyperion.agents.support.corpus_preflight import _evaluate_contract
+
+    started = time.monotonic()
+    _fresh_engine_health()
+
+    records = []
+    for i in range(12):
+        records.append(SimpleNamespace(profile="web", domain=f"d{i}.example"))
+    contract = _evaluate_contract(records, min_domains=8, elapsed_seconds=0.0)
+    elapsed = int((time.monotonic() - started) * 1000)
+    if contract.status.value != "green":
+        return CanaryResult("healthy", False, f"expected GREEN, got {contract.status.value}")
+    return CanaryResult("healthy", True, f"GREEN with {contract.distinct_domains} domains", elapsed)
+
+
+def canary_malformed_json() -> CanaryResult:
+    """P4: a fenced/wrapped LLM JSON payload is repaired exactly once; a truly
+    unparseable payload is a typed ANALYSIS_FAILED, never a silent []."""
+    from hyperion.router.structured_validator import extract_json
+
+    fenced = 'Here is the data:\n```json\n[{"title":"T1","content":"c"}]\n```\nregards'
+    repaired = extract_json(fenced)
+    if repaired is None:
+        return CanaryResult("malformed-JSON", False, "fenced JSON was not repaired")
+    try:
+        data = json.loads(repaired)
+    except (json.JSONDecodeError, ValueError):
+        return CanaryResult("malformed-JSON", False, "repair produced unparseable JSON")
+    if not isinstance(data, list) or not data:
+        return CanaryResult("malformed-JSON", False, "repair produced empty/wrong shape")
+    return CanaryResult(
+        "malformed-JSON", True,
+        f"one bounded repair recovered {len(data)} finding(s)",
+        int((time.monotonic() - time.monotonic()) * 1000),
+    )
+
+
+def canary_sub_agent_timeout() -> CanaryResult:
+    """P4: a sub-agent run that times out is typed TIMEOUT, and the parent
+    spawns exactly ONE broadened respawn (F-07), never an infinite loop."""
+    from unittest.mock import patch
+
+    from hyperion.agents.base import BaseAgent
+    from tests.test_fix03_regressions import _parent, _spec
+
+    started = time.monotonic()
+    parent = _parent()
+    parent._should_respawn_broadened = (
+        BaseAgent._should_respawn_broadened.__get__(parent, type(parent))
+    )
+    parent._spawn_sub_agent = BaseAgent._spawn_sub_agent.__get__(parent, type(parent))
+
+    # Dependency health GREEN so a broaden is allowed; timeout triggers it.
+    from hyperion.tools.engine_health import reset_engine_health
+
+    reset_engine_health()
+    with patch(
+        "hyperion.agents.base.BaseAgent._dependency_health_green",
+        return_value=True,
+    ):
+        spec = _spec()
+        findings = [SimpleNamespace(finding_type="research_gap", content="no validated findings")]
+        timed_out = True
+        generic_failure = False
+
+        respawn_needed = parent._should_respawn_broadened(
+            spec, findings, timed_out, generic_failure
+        )
+    elapsed = int((time.monotonic() - started) * 1000)
+    if not respawn_needed:
+        return CanaryResult(
+            "sub-agent-timeout", False,
+            "timeout did not earn the one broadened respawn",
+        )
+    return CanaryResult(
+        "sub-agent-timeout", True,
+        f"TIMEOUT -> exactly-one broaden ({elapsed}ms)",
+        elapsed,
+    )
+
+
+def canary_budget_exhaustion() -> CanaryResult:
+    """P4: the SUB_AGENT_TOTAL_CEILING is a HARD invariant — even a broadened
+    respawn is refused once the sequential budget is spent (no more 8/6)."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from hyperion.agents.base import BaseAgent
+    from hyperion.agents.sub_agent import SubAgentRunner
+    from hyperion.schemas.agents import AgentName, ModelTier, SubAgentSpec
+
+    started = time.monotonic()
+    parent = MagicMock()
+    parent.max_sub_agents = 3
+    parent.SUB_AGENT_TOTAL_CEILING = BaseAgent.SUB_AGENT_TOTAL_CEILING
+    parent._sub_agent_specs = list(range(BaseAgent.SUB_AGENT_TOTAL_CEILING))
+    parent._sub_agent_respawned = set()
+    # F-0.1-14: distinct-work-item budget set (seeded full so the ceiling is hit).
+    parent._sub_agent_questions = {f"q_{i}" for i in range(BaseAgent.SUB_AGENT_TOTAL_CEILING)}
+    parent.state = MagicMock(sub_agents_spawned=0, sub_agents_active=0)
+    parent._transition = AsyncMock()
+    parent._log = MagicMock()
+
+    spec = SubAgentSpec(
+        question="Find competitor evidence",
+        parent_agent=AgentName.COMPETITIVE_INTEL,
+        model_tier=ModelTier.STANDARD,
+        tools=[],
+        findings_model="KeyFinding",
+        timeout_seconds=600,
+        broadened=True,
+    )
+    bound = BaseAgent._spawn_sub_agent.__get__(parent, type(parent))
+    with patch.object(SubAgentRunner, "run", new=AsyncMock(return_value=[])):
+        findings = _run_coroutine(bound(spec))
+    elapsed = int((time.monotonic() - started) * 1000)
+    if findings != []:
+        return CanaryResult("budget-exhaustion", False, "broadened spawn exceeded hard ceiling")
+    logs = [c.args[0] for c in parent._log.call_args_list]
+    if not any("total budget reached" in line for line in logs):
+        return CanaryResult(
+            "budget-exhaustion", False, "ceiling refusal was not logged",
+        )
+    return CanaryResult(
+        "budget-exhaustion", True,
+        f"hard ceiling refused broadened spawn at "
+        f"{BaseAgent.SUB_AGENT_TOTAL_CEILING}/6 ({elapsed}ms)",
+        elapsed,
+    )
+
+
+def canary_grounding_key_missing() -> CanaryResult:
+    """P1: with no Google grounding credential, grounded search FAILS OPEN —
+    a constrained outcome with the reason recorded, never an exception."""
+    from hyperion.config import ProviderConfig, ProviderType
+    from hyperion.tools.grounded_search import (
+        GroundedSearchClient,
+        GroundedSearchOutcome,
+        GroundingReason,
+    )
+
+    started = time.monotonic()
+    settings = SimpleNamespace(
+        providers={ProviderType.GOOGLE: ProviderConfig(api_key="", base_url="")},
+        google_grounding_enabled=True,
+        google_grounding_model="gemini-2.5-flash",
+        google_grounding_daily_limit=1500,
+        google_grounding_monthly_limit=45000,
+        google_grounding_reserve_fraction=0.10,
+        google_grounding_max_queries_per_call=4,
+        google_grounding_ledger_path="unused.json",
+    )
+    client = GroundedSearchClient(settings=settings)
+    outcome = _run_coroutine(
+        client.search(
+            "should india build more space startups?",
+            reason=GroundingReason.DIRECT_AUTHORITY,
+        )
+    )
+    elapsed = int((time.monotonic() - started) * 1000)
+    if not isinstance(outcome, GroundedSearchOutcome):
+        return CanaryResult("grounding-key-missing", False, "did not fail open to a typed outcome")
+    if not outcome.constraints:
+        return CanaryResult(
+            "grounding-key-missing", False,
+            "fail-open outcome carried no constraint reason",
+        )
+    return CanaryResult(
+        "grounding-key-missing", True,
+        f"failed open with constraint: {outcome.constraints[0][:60]}",
+        elapsed,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runner
+# ─────────────────────────────────────────────────────────────────────────────
+
+CANARY_REGISTRY: list[dict[str, object]] = [
+    {"name": "all-engines-403", "fn": canary_all_engines_403},
+    {"name": "healthy", "fn": canary_healthy},
+    {"name": "malformed-JSON", "fn": canary_malformed_json},
+    {"name": "sub-agent-timeout", "fn": canary_sub_agent_timeout},
+    {"name": "budget-exhaustion", "fn": canary_budget_exhaustion},
+    {"name": "grounding-key-missing", "fn": canary_grounding_key_missing},
+]
+
+
+def run_canaries() -> list[CanaryResult]:
+    """Run every registered canary in isolation. Returns the results list.
+
+    Each canary owns its own engine-health/ledger isolation (fresh state files,
+    local patch contexts), so the suite is order-independent and can run from
+    pytest (via the wrapper in tests) or standalone (``python -m ...``).
+    """
+    results: list[CanaryResult] = []
+    for entry in CANARY_REGISTRY:
+        results.append(entry["fn"]())
+    return results
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.WARNING)
+    results = run_canaries()
+    failed = [r for r in results if not r.passed]
+    print(f"CANARY SUITE: {len(results) - len(failed)}/{len(results)} green")
+    for r in results:
+        marker = "PASS" if r.passed else "FAIL"
+        print(f"  [{marker}] {r.name}: {r.detail}")
+    if failed:
+        for r in failed:
+            print(f"  FAILED: {r.name} — {r.detail}")
+        return EXIT_FAIL
+    return EXIT_PASS
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

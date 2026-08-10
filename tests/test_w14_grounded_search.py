@@ -274,3 +274,38 @@ def test_agents_do_not_branch_on_grounding_backend_identity() -> None:
             if "backend" in source.casefold() and "gemini" in source.casefold():
                 violations.append(f"{path.relative_to(agents)}:{node.lineno}: {source}")
     assert violations == []
+
+
+def test_grounding_default_quota_is_1500_per_day() -> None:
+    """P1.4 (overhaul §6 P1, 2026-08-10): the Gemini 2.5 Flash grounding tier
+    ships 1500 requests/day free. The shipped default must match — the old
+    20/day was a conservative guess that strangled the last-resort web class."""
+    from hyperion.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.google_grounding_daily_limit == 1500
+    assert settings.google_grounding_monthly_limit == 45000
+    assert settings.google_grounding_enabled is True
+
+
+def test_grounding_quota_is_no_longer_a_daily_drip(tmp_path: Path) -> None:
+    """P1.4: at 1500/day a routine grounded call reserves real budget, proving
+    the quota ledger was the bottleneck, not the engine."""
+    ledger = GroundingQuotaLedger(
+        tmp_path / "quota.json",
+        daily_limit=1500,
+        monthly_limit=45000,
+        reserve_fraction=0.10,
+    )
+    reservation = ledger.reserve(
+        4,
+        model="gemini-2.5-flash",
+        query="should india build more space startups",
+        engagement_id="eng_p14",
+    )
+    remaining = ledger.remaining("gemini-2.5", high_value=False)
+    # 1500/day minus 10% reserve (150) = 1350 routine budget; one 4-unit call
+    # leaves ~1346. The old 20/day cap would have left ~14 — the class is no
+    # longer a drip.
+    assert remaining["available"] >= 1300
+    assert reservation.units == 4

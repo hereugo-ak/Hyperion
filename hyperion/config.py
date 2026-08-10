@@ -772,10 +772,15 @@ class Settings(BaseSettings):
     # W-14: native Gemini grounding is intentionally separate from Google's
     # OpenAI-compatible completion endpoint. Quota units are provider-issued
     # search queries for Gemini 3 models, not ordinary completion requests.
+    # P1.4 (overhaul §6 P1, 2026-08-10): the Gemini 2.5 Flash grounding tier
+    # ships a 1500-request/day free quota (the old 20/day was a pre-overhaul
+    # conservative guess that strangled the last-resort web class). 1500/day is
+    # an order-of-magnitude real server-side index — the free-capacity answer
+    # to P1.1, so no keyed Brave/Tavily/Exa web API is needed.
     google_grounding_enabled: bool = True
     google_grounding_model: str = "gemini-2.5-flash"
-    google_grounding_daily_limit: int = 20
-    google_grounding_monthly_limit: int = 600
+    google_grounding_daily_limit: int = 1500
+    google_grounding_monthly_limit: int = 45000
     google_grounding_reserve_fraction: float = 0.10
     google_grounding_max_queries_per_call: int = 4
     google_grounding_ledger_path: Path = Path("./vault/grounding_quota.json")

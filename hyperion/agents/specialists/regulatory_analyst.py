@@ -270,6 +270,11 @@ class RegulatoryAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1308,6 +1313,18 @@ class RegulatoryAnalyst(BaseAgent):
                 "sub-agents")
             sub_findings = await self._spawn_regulatory_sub_agents(jurisdictions, industry)
             self._sub_agent_findings = sub_findings
+            self._sources = self._merge_evidence(sub_findings, self._sources)
+            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
+        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
+        if self._sub_agent_contradictions:
+            self._log(
+                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
+                    len(self._sub_agent_contradictions),
+                    "; ".join(self._sub_agent_contradictions[:3]),
+                )
+            )
+            for _reconciled in self._sub_agent_reconciled:
+                await self._publish_finding(_reconciled)
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 
@@ -1324,6 +1341,13 @@ class RegulatoryAnalyst(BaseAgent):
         await self._transition(AgentState.WORKING, "Step 3: Pulling historical regulatory "
             "snapshots (Wayback)")
         self._historical_snapshots = await self._pull_historical_data(jurisdictions, industry)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no regulatory data for {industry}"):
+            return RegulatoryAnalysis(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 4: Map regulations by jurisdiction
         await self._transition(AgentState.WORKING, "Step 4: Mapping regulations by jurisdiction")

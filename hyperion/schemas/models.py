@@ -308,6 +308,60 @@ class KeyFinding(BaseModel):
     )
 
 
+# P3 (overhaul §6 P3.2): provenance is bound in code, never transcribed by
+# the LLM. A substantive finding must carry at least one ledger-bound Source;
+# a "finding" with zero valid citations is typed ``unverified_assertion`` —
+# never counted as yield, never rendered. A gap is a separate type
+# (``AnalysisGap`` / ``research_gap`` finding_type) — never counted as a
+# finding. These three values are the complete non-substantive set, shared
+# by the sub-agent outcome typing, the spawn budget and the floor report.
+RESEARCH_GAP_TYPE = "research_gap"
+UNVERIFIED_ASSERTION_TYPE = "unverified_assertion"
+NON_SUBSTANTIVE_FINDING_TYPES = frozenset(
+    {RESEARCH_GAP_TYPE, UNVERIFIED_ASSERTION_TYPE}
+)
+
+
+class EvidenceFinding(KeyFinding):
+    """A substantive finding bound to at least one ledger-derived Source (I-3).
+
+    Inherits every ``KeyFinding`` field but hardens the provenance contract
+    at the schema layer:
+
+    - ``sources`` is REQUIRED and must be non-empty. The validators reject a
+      sourceless substantive finding at construction — the Aug-10
+      "86 findings → 0 domains" mechanism is unrepresentable in this type.
+    - ``finding_type`` must be substantive. A gap or unverified assertion is
+      a different typed object, never an ``EvidenceFinding``.
+    - The LLM's own ``sources`` are discarded upstream (``sub_agent.py``);
+      only code-constructed, ledger-bound ``Source`` objects may appear here.
+    """
+
+    sources: list[Source] = Field(
+        description="Ledger-bound evidence sources (>=1 required)"
+    )
+
+    @field_validator("sources")
+    @classmethod
+    def _require_bound_source(cls, v: list[Source]) -> list[Source]:
+        if not v:
+            raise ValueError(
+                "EvidenceFinding requires >=1 bound source; a sourceless "
+                "substantive finding is unrepresentable (I-3)"
+            )
+        return v
+
+    @field_validator("finding_type")
+    @classmethod
+    def _substantive_only(cls, v: str) -> str:
+        if v in NON_SUBSTANTIVE_FINDING_TYPES:
+            raise ValueError(
+                f"finding_type {v!r} is not substantive; a gap is an "
+                "AnalysisGap and an uncited assertion is unverified_assertion"
+            )
+        return v
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Risk — the Risk Analyst's output unit (§4.4, Agent 6)
 # ─────────────────────────────────────────────────────────────────────────────

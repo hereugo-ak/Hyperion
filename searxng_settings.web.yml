@@ -45,7 +45,7 @@ engines:
 - name: mojeek
   engine: mojeek
   shortcut: mj
-  disabled: false
+  disabled: true
   timeout: 15
   weight: 1.0
 - name: mwmbl
@@ -63,7 +63,7 @@ engines:
 - name: yep
   engine: yep
   shortcut: yp
-  disabled: false
+  disabled: true
   timeout: 15
   weight: 0.6
 valkey:

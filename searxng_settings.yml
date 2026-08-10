@@ -162,10 +162,15 @@ engines:
     weight: 0.6
 
   # Tier B: independent crawlers with their own indexes
+  # P1.2 (overhaul §6 P1, 2026-08-10): mojeek/yep disabled — categorical 403
+  # from this datacenter/VPS egress (Aug-10 autopsy: 403 for the whole run).
+  # Kept declared so the W-12 replica registry stays disjoint and the running
+  # instance still matches the code contract, but they must never receive
+  # traffic again. The web corpus is mwmbl + brave behind engine health.
   - name: mojeek
     engine: mojeek
     shortcut: mj
-    disabled: false
+    disabled: true
     timeout: 15
     weight: 1.0
 
@@ -186,6 +191,6 @@ engines:
   - name: yep
     engine: yep
     shortcut: yp
-    disabled: false
+    disabled: true
     timeout: 15
     weight: 0.6

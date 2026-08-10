@@ -1,10 +1,14 @@
-"""T-11 · D-06 · health reports OFFLINE when engines are dead.
+"""P1.5 · overhaul §6 P1 · boot smoke is LOCAL-ONLY.
 
-The 07-30 run booted ``✓ SearXNG ready · 13 data sources ready`` because the
-health check was a TCP port probe while every engine behind the open socket
-was dead (DuckDuckGo 24h 403 ban, Bing silent-zero). These tests replay the
-exact 07-30 state against a stubbed HTTP layer and assert the only honest
-answers: DEGRADED/OFFLINE, never OK.
+The Aug-9/10 boot smoke fired a live search query at every profile one minute
+before the engagement began — the exact traffic that tripped the fleet into
+403/429. The Aug-10 boot line ``SEARCH ✓ scholar:ok · reference:ok · web:ok``
+was a process check, not a corpus check: every engine behind the open sockets
+was already banned.
+
+P1.5 replaces the smoke with local-only readiness: TCP port + ``/config``
+(local, zero upstream) + persisted engine health. These tests pin the
+contract — most importantly that the probe NEVER issues a search query.
 """
 
 from __future__ import annotations
@@ -14,10 +18,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from hyperion.obs.health import (
-    MIN_SMOKE_RESULTS,
-    _check_searxng,
-)
+from hyperion.obs.health import _check_searxng
 
 
 def _settings() -> SimpleNamespace:
@@ -30,8 +31,7 @@ def _settings() -> SimpleNamespace:
 
 @pytest.fixture(autouse=True)
 def _fresh_engine_health():
-    """F-02: the smoke probe is now gated behind engine health. A leftover
-    cooldown from another test must not make the probe defer."""
+    """Isolate persisted engine health from other tests' state."""
     from hyperion.tools.engine_health import get_engine_health, reset_engine_health
 
     reset_engine_health()
@@ -54,77 +54,23 @@ class _MockResponse:
     def __init__(self, payload: dict):
         self._payload = payload
 
-    def raise_for_status(self) -> None:  # always 200 in these fixtures
+    def raise_for_status(self) -> None:
         return None
 
     def json(self) -> dict:
         return self._payload
 
 
-def _stub_get(payload: dict):
-    def _get(url, params=None, headers=None, timeout=None):
-        assert params["q"]
-        assert params["format"] == "json"
-        assert headers["X-Forwarded-For"] == "127.0.0.1"
-        return _MockResponse(payload)
-
-    return _get
-
-
-def test_health_offline_when_all_engines_banned(port_open, monkeypatch):
-    """Replays the exact 07-30 state: port open, 0 results, engines suspended."""
-    monkeypatch.setattr(
-        httpx,
-        "get",
-        _stub_get(
-            {
-                "results": [],
-                "unresponsive_engines": [
-                    ["duckduckgo", "CAPTCHA"],
-                    ["bing", "no results"],
-                ],
-            }
-        ),
-    )
-    h = _check_searxng(_settings())
-    assert h.status == "OFFLINE"  # was "OK" — the port was open
-    assert "duckduckgo" in h.detail
-    assert "bing" in h.detail
-
-
-def test_health_ok_when_engines_answer(port_open, monkeypatch):
-    results = [
-        {"title": f"r{i}", "engine": "mojeek" if i % 2 else "brave"}
-        for i in range(MIN_SMOKE_RESULTS + 2)
-    ]
-    monkeypatch.setattr(httpx, "get", _stub_get({"results": results}))
-    h = _check_searxng(_settings())
-    assert h.status == "OK"
-    assert "mojeek" in h.detail and "brave" in h.detail
-
-
-def test_health_degraded_when_some_engines_dead(port_open, monkeypatch):
-    results = [{"title": f"r{i}", "engine": "mojeek"} for i in range(MIN_SMOKE_RESULTS)]
-    monkeypatch.setattr(
-        httpx,
-        "get",
-        _stub_get(
-            {"results": results, "unresponsive_engines": [["duckduckgo", "CAPTCHA"]]}
-        ),
-    )
-    h = _check_searxng(_settings())
-    assert h.status == "DEGRADED"
-    assert "DEAD" in h.detail and "duckduckgo" in h.detail
-
-
 def test_health_offline_when_port_closed(port_closed):
+    """No replica reachable → OFFLINE, never a silent OK."""
     h = _check_searxng(_settings())
     assert h.status == "OFFLINE"
     assert "unreachable" in h.detail
 
 
-def test_health_offline_when_smoke_query_raises(port_open, monkeypatch):
-    def _boom(url, params=None, headers=None, timeout=None):
+def test_health_offline_when_config_unreachable(port_open, monkeypatch):
+    """The instance is up but /config fails → OFFLINE (was OK via port)."""
+    def _boom(url, timeout=None):
         raise httpx.ReadTimeout("timed out")
 
     monkeypatch.setattr(httpx, "get", _boom)
@@ -133,10 +79,75 @@ def test_health_offline_when_smoke_query_raises(port_open, monkeypatch):
     assert "ReadTimeout" in h.detail
 
 
-def test_health_degraded_when_few_results(port_open, monkeypatch):
-    """A thin response proves evidence exists but must not report full health."""
-    results = [{"title": "only one", "engine": "mojeek"}]
-    monkeypatch.setattr(httpx, "get", _stub_get({"results": results}))
+def test_config_probe_never_issues_a_search_query(port_open, monkeypatch):
+    """THE P1.5 contract: boot hits /config only — no /search, no q param.
+
+    A regression to a live smoke would send ``q=...&format=json`` to
+    ``/search``; this stub fails the test the moment that happens.
+    """
+    calls: list[dict] = []
+
+    def _get(url, timeout=None):
+        calls.append({"url": url, "timeout": timeout})
+        return _MockResponse({"engines": []})
+
+    monkeypatch.setattr(httpx, "get", _get)
+    h = _check_searxng(_settings())
+    assert calls, "boot must probe each replica's /config"
+    for call in calls:
+        assert call["url"].endswith("/config"), f"boot probe hit a search path: {call['url']}"
+    assert h.status == "OK"
+
+
+def test_health_ok_when_all_replicas_serve_locally(port_open, monkeypatch):
+    def _get(url, timeout=None):
+        return _MockResponse({"engines": []})
+
+    monkeypatch.setattr(httpx, "get", _get)
+    h = _check_searxng(_settings())
+    assert h.status == "OK"
+    assert "3/3 replicas local" in h.detail
+
+
+def test_health_degraded_when_replica_has_no_capacity(port_open, monkeypatch):
+    """A reachable replica whose engines are ALL suspended (persisted bans)
+    must report DEGRADED, not OK — readiness includes capacity."""
+    from hyperion.tools.engine_health import get_engine_health
+
+    health = get_engine_health()
+    # Suspend the web replica's whole engine set, as an earlier session's
+    # bans would leave behind.
+    health.record_response(
+        [
+            ["mojeek", "HTTP 403 suspended_time=180"],
+            ["mwmbl", "HTTP 429 suspended_time=180"],
+            ["brave", "HTTP 403 suspended_time=180"],
+            ["yep", "HTTP 403 suspended_time=180"],
+        ],
+        [],
+    )
+
+    def _get(url, timeout=None):
+        return _MockResponse({"engines": []})
+
+    monkeypatch.setattr(httpx, "get", _get)
     h = _check_searxng(_settings())
     assert h.status == "DEGRADED"
-    assert "1 results" in h.detail
+    assert "no capacity" in h.detail
+    assert "mwmbl" in h.detail
+
+
+def test_health_ok_lists_partially_cooling_engines(port_open, monkeypatch):
+    """A partially-cooling replica still has capacity → OK, with the cooling
+    engines named so the operator sees the persisted state."""
+    from hyperion.tools.engine_health import get_engine_health
+
+    get_engine_health().record_response([["mwmbl", "HTTP 429 suspended_time=180"]], [])
+
+    def _get(url, timeout=None):
+        return _MockResponse({"engines": []})
+
+    monkeypatch.setattr(httpx, "get", _get)
+    h = _check_searxng(_settings())
+    assert h.status == "OK"
+    assert "cooling: mwmbl" in h.detail

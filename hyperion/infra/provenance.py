@@ -30,11 +30,22 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 # Reuse the bounded command runner from services.py. It is async; the sync
 # wrapper drives it on a private loop for pre-loop callers.
 from hyperion.infra.services import detect_platform, run_command
+
+logger = logging.getLogger(__name__)
+
+# P5.2 (overhaul §6 P5): the corpus deliverability floor, mirrored from
+# QualityGate._CORPUS_FLOOR_DOMAINS so the boot POLICY line prints the SAME
+# number the gate enforces. Mirrored (not imported) to keep boot import-light
+# and to fail safe to the gate's own default if the import ever changes.
+try:
+    from hyperion.agents.support.quality_gate import QualityGate as _QualityGate
+
+    _CORPUS_FLOOR_DOMAINS = int(_QualityGate._CORPUS_FLOOR_DOMAINS)
+except Exception:  # noqa: BLE001 - boot must survive a missing gate module
+    _CORPUS_FLOOR_DOMAINS = 8
 
 _GIT_TIMEOUT_SECONDS = 5.0
 _MAX_ANCESTOR_LEVELS = 8
@@ -250,10 +261,27 @@ def _policy_snapshot() -> dict[str, object]:
         from hyperion.config import get_settings
 
         settings = get_settings()
-        policy.update({"quality_source_floor": settings.quality_source_floor})
+        policy.update({
+            "quality_source_floor": settings.quality_source_floor,
+            # P5.2 (overhaul §6 P5): both floors are part of ONE evidence
+            # contract, printed explicitly so the boot POLICY line and the gate
+            # cannot disagree. source floor (3) governs ITERATION effort;
+            # corpus floor (8, gate) governs DELIVERABILITY. See config.py
+            # F-09 comment.
+            "corpus_floor_domains": _CORPUS_FLOOR_DOMAINS,
+        })
     except Exception as exc:  # noqa: BLE001 - fingerprint must never crash boot
         logger.debug("policy: quality source floor unavailable: %s", exc)
     return policy
+
+
+def build_policy() -> dict[str, object]:
+    """Public alias for the boot POLICY snapshot (P5.2, overhaul §6 P5).
+
+    Named so the boot sequence and tests can read the SAME evidence contract
+    the runtime enforces, including both floors.
+    """
+    return _policy_snapshot()
 
 
 def _source_hash(package_dir: Path) -> str:
@@ -389,6 +417,36 @@ def banner(provenance: Provenance) -> str:
         f"settings={provenance.settings_hash or 'n/a'}{profile_bits}\n"
         f"POLICY {provenance.policy}"
     )
+
+
+def banner_lines(provenance: Provenance) -> tuple[str, list[str]]:
+    """Compact transcript rendering of the boot banner.
+
+    ``banner()`` stays the verbatim multi-line fingerprint for stderr and
+    audit captures; this returns the same facts shaped as ``(content, detail)``
+    for a TUI log row, so the BUILD entry reads like the other boot steps
+    (one content line plus ``└─`` detail lines) instead of a raw multi-line
+    dump of hashes and a Python dict.
+    """
+    sha = provenance.git_sha or "unknown"
+    dirty = " +dirty" if provenance.git_dirty else ""
+    content = (
+        f"HYPERION build {sha}{dirty} · {provenance.install_mode} · "
+        f"platform={detect_platform().value}"
+    )
+
+    fingerprint_bits = [
+        f"source={provenance.source_hash or 'n/a'}",
+        f"settings={provenance.settings_hash or 'n/a'}",
+    ]
+    fingerprint_bits.extend(
+        f"{name}={h}" for name, h in sorted(provenance.profile_hashes.items())
+    )
+    detail = [f"fingerprint · {' · '.join(fingerprint_bits)}"]
+
+    policy_bits = [f"{key}={value}" for key, value in (provenance.policy or {}).items()]
+    detail.append(f"policy · {' · '.join(policy_bits)}")
+    return content, detail
 
 
 def refusal_reason(provenance: Provenance) -> str | None:

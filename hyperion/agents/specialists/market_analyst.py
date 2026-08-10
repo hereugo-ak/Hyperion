@@ -255,6 +255,11 @@ class MarketAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published alongside
+        # the parent's own, so sub-agent evidence reaches the report).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1382,6 +1387,25 @@ class MarketAnalyst(BaseAgent):
         await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning data collection sub-agents")
         sub_findings = await self._spawn_data_collection_sub_agents(market_query)
         self._sub_agent_findings = sub_findings
+        # P-CORE (2026-08-10): funnel sub-agent evidence into the parent's
+        # analysis. Sub-agent sources become part of this specialist's
+        # corroboration (KPI-2/3 move together), and their substantive
+        # findings are reconciled so they are published alongside the parent's
+        # own — no more "sub-agents returned findings, parent reported 0".
+        self._sources = self._merge_evidence(sub_findings, self._sources)
+        self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
+        # P-CORE: surface numeric disagreements between sub-agents so the
+        # synthesis resolves them evidence-weighted instead of averaging.
+        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(
+            sub_findings
+        )
+        if self._sub_agent_contradictions:
+            self._log(
+                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
+                    len(self._sub_agent_contradictions),
+                    "; ".join(self._sub_agent_contradictions[:3]),
+                )
+            )
 
         await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
 
@@ -1415,6 +1439,24 @@ class MarketAnalyst(BaseAgent):
 
         # Combine all data for sizing
         all_search_data = self._search_results + self._scraped_data
+
+        # P3.3: Zero-evidence gate — market sizing over an empty corpus is
+        # invented numbers. Return a degraded model rather than burn 6 LLM
+        # calls grounding nothing.
+        if await self._check_zero_evidence(f"no market data for {market_query}"):
+            return MarketAnalysis(
+                tam_top_down=FinancialMetric(name="TAM (Top-Down)", value=""),
+                tam_bottom_up=FinancialMetric(name="TAM (Bottom-Up)", value=""),
+                tam_triangulated=FinancialMetric(name="TAM (Triangulated)", value=""),
+                sam=FinancialMetric(name="SAM", value=""),
+                som=FinancialMetric(name="SOM", value=""),
+                cagr=FinancialMetric(name="CAGR", value=""),
+                segments=[],
+                growth_drivers=[],
+                market_maturity="unknown",
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 5: Top-down sizing
         await self._transition(AgentState.WORKING, "Step 5: Top-down market sizing")
@@ -1482,7 +1524,13 @@ class MarketAnalyst(BaseAgent):
         )
 
         # Publish findings to bus for Synthesis Lead and Fact Checker
-        for finding in segments + growth_drivers + contradiction_findings:
+        # P-CORE: include reconciled sub-agent findings so their evidence
+        # reaches the Synthesis Lead — the parent's output is a superset of
+        # its sub-agents' evidence, never parallel to it.
+        for finding in (
+            self._sub_agent_reconciled
+            + segments + growth_drivers + contradiction_findings
+        ):
             await self._publish_finding(finding)
 
         # Publish the full MarketAnalysis as a finding

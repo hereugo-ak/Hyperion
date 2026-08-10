@@ -237,6 +237,11 @@ class CompetitiveIntel(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1088,24 +1093,34 @@ class CompetitiveIntel(BaseAgent):
         if len(competitors) < 3:
             return []
 
+        # F-0.1-4 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): scrape specs must
+        # carry a discovery leg (SEARXNG + JINA) alongside the browser tier
+        # (OBSCURA), and the parent passes the CONCRETE pricing page URL (not
+        # the bare website root) so the sub-agent's F-0.1-1 fetch targets the
+        # right page. Previously OBSCURA-only specs could never succeed: no
+        # discovery, and the context URL (root) was never fetched.
+        def _pricing_url(competitor: str) -> str:
+            root = (self._competitor_urls or {}).get(competitor, "")
+            return f"{root}/pricing" if root else ""
+
         sub_specs = [
             SubAgentSpec(
                 question=f"Scrape {competitors[0]} pricing page, extract pricing tiers, features per tier, and any discounts",
                 parent_agent=self.name,
                 model_tier=ModelTier.STANDARD,
-                tools=[ToolName.OBSCURA],
+                tools=[ToolName.SEARXNG, ToolName.JINA, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=600,
-                context={"competitor": competitors[0], "url": self._competitor_urls.get(competitors[0], "")},
+                context={"competitor": competitors[0], "url": _pricing_url(competitors[0])},
             ),
             SubAgentSpec(
                 question=f"Scrape {competitors[1]} pricing page, extract pricing tiers, features per tier, and any discounts",
                 parent_agent=self.name,
                 model_tier=ModelTier.STANDARD,
-                tools=[ToolName.OBSCURA],
+                tools=[ToolName.SEARXNG, ToolName.JINA, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=600,
-                context={"competitor": competitors[1], "url": self._competitor_urls.get(competitors[1], "")},
+                context={"competitor": competitors[1], "url": _pricing_url(competitors[1])},
             ),
             SubAgentSpec(
                 question=f"Find {competitors[2]} funding stage, total raised, headcount, and key investors",
@@ -1230,12 +1245,33 @@ class CompetitiveIntel(BaseAgent):
             "sub-agents")
         sub_findings = await self._spawn_competitor_sub_agents(self._competitor_names)
         self._sub_agent_findings = sub_findings
+        self._sources = self._merge_evidence(sub_findings, self._sources)
+        self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
+        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
+        if self._sub_agent_contradictions:
+            self._log(
+                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
+                    len(self._sub_agent_contradictions),
+                    "; ".join(self._sub_agent_contradictions[:3]),
+                )
+            )
+        for _reconciled in self._sub_agent_reconciled:
+            await self._publish_finding(_reconciled)
 
         await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
 
         # Step 3: Pull historical snapshots
         await self._transition(AgentState.WORKING, "Step 3: Pulling historical snapshots (Wayback)")
         await self._pull_historical_snapshots(self._competitor_names)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no competitor data for {self._question[:60]}"):
+            return CompetitiveLandscape(
+                competitors=[],
+                competitor_matrix={},
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 4: Build competitor matrix
         await self._transition(AgentState.WORKING, "Step 4: Building competitor matrix")

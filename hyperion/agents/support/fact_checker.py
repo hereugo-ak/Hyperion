@@ -633,6 +633,53 @@ class FactChecker(BaseAgent):
 
         return local_sources
 
+    def _check_ledger_corpus(self, claim: Claim) -> list[Source]:
+        """P5.4 (overhaul §6 P5): verify against the run-scoped Evidence Ledger.
+
+        The ledger holds every retrieved URL with its snippet/content hash
+        (P0/I-1); the same evidence the specialists synthesised from. When
+        the live pool is degraded, re-searching the web for verification is
+        expensive and unreliable; the ledger is the authoritative local corpus
+        and must be consumed first. Evidence records with a non-empty snippet
+        are tested with the same token-boundary matcher as web sources, so a
+        claim verified against ledger evidence is genuinely corroborated, never
+        circular (it matches the underlying retrieved text, not agent prose).
+        """
+        ledger_sources: list[Source] = []
+        seen_urls: set[str] = set()
+        try:
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            ledger = get_evidence_ledger()
+        except Exception as exc:  # noqa: BLE001 - ledger must never break fact-check
+            logger.warning("ledger corpus unavailable for fact-check: %s", exc)
+            return []
+
+        for evidence in ledger.all():
+            url = evidence.url or ""
+            text = evidence.snippet or ""
+            if not url or url in seen_urls or not text.strip():
+                continue
+            credibility = self._score_domain_credibility(url)
+            probe = Source(
+                id="",
+                title=evidence.title or url,
+                url=url,
+                credibility=credibility,
+                key_data=text,
+            )
+            if not self._source_supports_claim(claim, probe):
+                continue
+            seen_urls.add(url)
+            ledger_sources.append(Source(
+                id=f"ledger_{hashlib.md5(url.encode()).hexdigest()[:8]}",
+                title=evidence.title or url,
+                url=url,
+                credibility=credibility,
+                key_data=text,
+            ))
+        return ledger_sources
+
     async def _search_for_verification(self, claim: Claim) -> list[Source]:
         """Search for independent sources to verify a claim.
 
@@ -646,6 +693,9 @@ class FactChecker(BaseAgent):
         """
         # Step 1: Check local corpus first (no web search needed)
         local_sources = self._check_local_corpus(claim)
+        # P5.4: also check the Evidence Ledger — the authoritative local
+        # corpus that does not require the live web pool to be healthy.
+        local_sources = local_sources + self._check_ledger_corpus(claim)
         if len(local_sources) >= 2 and self._check_independence(local_sources):
             logger.debug("Claim '%s' verified via local corpus, skipping web search",
                          claim.claim[:50])
