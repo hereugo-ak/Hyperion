@@ -726,6 +726,7 @@ class BaseAgent(ABC):
         max_tokens: int | None = None,
         response_format: dict[str, str] | None = None,
         conversation_history: list[dict[str, str]] | None = None,
+        tier: ModelTier | None = None,
     ) -> RouterResponse:
         """Request an LLM completion at this agent's model tier.
 
@@ -733,7 +734,10 @@ class BaseAgent(ABC):
         tier and the router decides. This is the core abstraction that
         decouples agent intelligence from infrastructure. (§9)
 
-        The agent's system prompt is always prepended. If
+        ``tier`` optionally overrides the calling agent's own tier for a
+        single call — e.g. Stage-A competitor discovery escalates to STRONG
+        (Mistral Large) even though the specialist runs at STANDARD. The
+        agent's system prompt is always prepended. If
         system_prompt_override is provided, it replaces the default.
         """
         # W-16 (extends P2-32): the shared, versioned agent contract is
@@ -750,20 +754,21 @@ class BaseAgent(ABC):
             messages.extend(conversation_history)
         messages.append({"role": "user", "content": user_prompt})
 
+        effective_tier = tier or self.model_tier
         await self._transition(
             AgentState.WAITING,
-            f"Requesting {self.model_tier.value} tier completion",
+            f"Requesting {effective_tier.value} tier completion",
         )
 
         # D-17: every agent call owns an explicit output ceiling. Leaving this
         # as None delegates length to provider defaults, which are often only a
         # few hundred tokens and silently cap substantive analysis.
-        resolved_max_tokens = max_tokens or TIER_OUTPUT_BUDGET.get(self.model_tier, 4_000)
+        resolved_max_tokens = max_tokens or TIER_OUTPUT_BUDGET.get(effective_tier, 4_000)
         if resolved_max_tokens <= 0:
             resolved_max_tokens = 4_000
 
         response = await self.router.complete(
-            tier=self.model_tier,
+            tier=effective_tier,
             messages=messages,
             agent_name=self.name.value,
             urgency=urgency,
@@ -785,7 +790,7 @@ class BaseAgent(ABC):
                     "agent": self.name.value,
                     "tool": "llm",
                     "action": f"{provider_name}/{model_name}",
-                    "detail": f"{self.model_tier.value} tier · {'OK' if response.success else 'FAIL'} · {len(response.content or '')} chars",
+                    "detail": f"{effective_tier.value} tier · {'OK' if response.success else 'FAIL'} · {len(response.content or '')} chars",
                     "success": response.success,
                     "provider": provider_name,
                     "input_tokens": max(0, int(getattr(response, "input_tokens", 0) or 0)),
@@ -803,7 +808,7 @@ class BaseAgent(ABC):
             )
             # Escalate so the Director can reroute
             await self._escalate(
-                issue=f"LLM completion failed at {self.model_tier.value} tier: {response.error}",
+                issue=f"LLM completion failed at {effective_tier.value} tier: {response.error}",
                 suggested_action="Reroute to adjacent tier or retry with different provider",
             )
 
@@ -1383,6 +1388,43 @@ class BaseAgent(ABC):
         # class (recovery_hint). NOT on a generic exception (a code bug must
         # not be retried) and never on an already-broadened spec (no loops).
         hint = getattr(runner, "recovery_hint", "") or ""
+        # B1/B2 (self-healing): a PROVIDER_FAILURE means the router's whole
+        # tier chain failed. F-0.1-10 correctly refuses to REWORD a provider
+        # bug — but the system must still SELF-HEAL: escalate once to a
+        # STRONG-tier (Mistral Large) spec with a fresh router state. Only if
+        # that also fails is the run typed terminal. This converts a transient
+        # STANDARD-tier outage into a working result instead of a gap.
+        if (
+            hint == "PROVIDER_FAILURE"
+            and not spec.broadened
+            and spec.question not in getattr(self, "_sub_agent_provider_retried", set())
+        ):
+            self._log(
+                f"SUB-AGENT PROVIDER SELF-HEAL: STANDARD-tier provider chain "
+                f"failed for {spec.question[:80]} — escalating once to STRONG "
+                f"(Mistral Large) with fresh router state"
+            )
+            if not hasattr(self, "_sub_agent_provider_retried"):
+                self._sub_agent_provider_retried = set()
+            self._sub_agent_provider_retried.add(spec.question)
+            strong = spec.model_copy(update={
+                "model_tier": ModelTier.STRONG,
+                "broadened": False,
+                "timeout_seconds": spec.timeout_seconds,
+            })
+            healed = await self._spawn_sub_agent(strong)
+            if healed and not any(
+                f.finding_type == "research_gap" for f in healed
+            ):
+                self._log(
+                    f"SUB-AGENT PROVIDER SELF-HEAL SUCCEEDED: {spec.question[:80]} "
+                    f"recovered {len(healed)} finding(s) on STRONG tier"
+                )
+                return healed
+            self._log(
+                f"SUB-AGENT PROVIDER SELF-HEAL EXHAUSTED: {spec.question[:80]} "
+                f"still failed on STRONG tier — typed terminal"
+            )
         if self._should_respawn_broadened(
             spec, findings, timed_out, generic_failure, recovery_hint=hint
         ):

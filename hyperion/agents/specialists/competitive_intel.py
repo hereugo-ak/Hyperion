@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -61,6 +62,8 @@ from hyperion.schemas.models import (
     SourceCredibility,
 )
 from hyperion.tools.query_utils import resolve_subject
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
@@ -226,6 +229,7 @@ class CompetitiveIntel(BaseAgent):
 
         # Collected raw data
         self._competitor_names: list[str] = []
+        self._llm_competitor_candidates: list[dict[str, Any]] = []  # Stage-A model-knowledge names
         self._competitor_urls: dict[str, str] = {}  # name → website URL
         self._scraped_pages: dict[str, dict[str, Any]] = {}  # name → scraped data
         self._extracted_content: dict[str, str] = {}  # name → extracted text
@@ -361,18 +365,186 @@ class CompetitiveIntel(BaseAgent):
             "queries": clean_queries[:7],
         }
 
+    def _arena_class(self) -> str:
+        """A1: the entity class the COMPETITIVE ARENA operates on.
+
+        The Director's ``subject_class`` is what the question is ABOUT (India =
+        NATION_OR_REGION), but the competitive arena can be a different class
+        (a country's SPACE STARTUPS = COMPANY). COMPETE needs the arena class to
+        shape discovery queries. Defaults to the Director's subject_class when
+        no arena refinement is available.
+        """
+        arena = str((self._context or {}).get("competitive_arena_class", "") or "").strip()
+        if arena:
+            return arena
+        return str((self._context or {}).get("subject_class", "") or "company").strip()
+
+    def _build_discovery_queries(self, arena: str) -> list[str]:
+        """A2: entity-class-correct discovery queries.
+
+        The same arena needs DIFFERENT queries depending on what kind of entity
+        we are profiling: a country's players, a company's rivals, a
+        technology's vendors, a market's key players. The old code always asked
+        "<subject> direct competitors", which is wrong for a NATION_OR_REGION
+        arena (nobody calls countries "competitors" in search).
+        """
+        geo = str(self._context.get("geography") or self._context.get("jurisdiction") or "").strip()
+        geo_qualifier = f" {geo}" if geo else ""
+        arena_class = (self._arena_class() or "company").lower()
+
+        if "nation" in arena_class or "region" in arena_class:
+            # A country/region's players, not "competitors of a country".
+            base = [
+                f"{arena}{geo_qualifier} companies startups players".strip(),
+                f"top {arena} companies in {geo}".strip() if geo else f"top {arena} companies",
+                f"{arena}{geo_qualifier} industry landscape leading firms".strip(),
+                f"{arena}{geo_qualifier} public private players".strip(),
+            ]
+        elif "technology" in arena_class:
+            base = [
+                f"{arena} vendors providers manufacturers",
+                f"leading {arena} technology providers",
+                f"{arena} solution suppliers market leaders",
+            ]
+        elif "market" in arena_class:
+            base = [
+                f"{arena} key players market share",
+                f"leading companies in {arena} market",
+                f"{arena} market competitors leaders",
+            ]
+        elif "person" in arena_class or "org" in arena_class:
+            base = [
+                f"{arena} competitors alternatives",
+                f"organizations competing with {arena}",
+            ]
+        else:  # company / default
+            base = [
+                f"{arena} competitors alternatives rivals",
+                f"top {arena} companies in {geo}".strip() if geo else f"top {arena} companies",
+                f"{arena} competitive landscape key players",
+                f"who competes with {arena}",
+            ]
+        return list(dict.fromkeys(q.strip() for q in base if q.strip()))[:6]
+
+    async def _discover_competitors_llm(self, arena: str) -> list[dict[str, Any]]:
+        """A3 Stage A: model-knowledge competitor discovery (Mistral STRONG).
+
+        NOT gated on search. A STRONG-tier (Mistral Large) call names 3-5
+        concrete entities for the arena from the model's own knowledge and any
+        grounding, even when the live web pool returns zero results. The
+        output is later search-validated (Stage B) so provenance stays bound.
+        """
+        from hyperion.schemas.workflow import SubjectClass
+
+        subject_class = (self._arena_class() or "company").lower()
+        arena_class_name = {
+            "nation_or_region": SubjectClass.NATION_OR_REGION.value,
+            "technology": SubjectClass.TECHNOLOGY.value,
+            "market": SubjectClass.MARKET.value,
+            "person_or_org": SubjectClass.PERSON_OR_ORG.value,
+            "policy": SubjectClass.POLICY.value,
+        }.get(subject_class, SubjectClass.COMPANY.value)
+
+        geo = str(self._context.get("geography") or self._context.get("jurisdiction") or "").strip()
+        prompt = (
+            "You are a competitive-intelligence analyst naming the KEY PLAYERS in a "
+            "precise arena. The arena's entity class is: "
+            f"{arena_class_name.upper()}.\n\n"
+            f"User question: {self._question}\n"
+            f"Arena / subject: {arena}\n"
+            f"Geography: {geo or 'global/unspecified'}\n\n"
+            "Name 3-5 concrete, real organizations that are the most relevant "
+            "players in THIS arena. The entity class matters:"
+            "\n- if NATION_OR_REGION: name the country's companies / startups / "
+            "agencies / players IN that sector (NOT 'the country as a competitor')."
+            "\n- if COMPANY: name its direct and adjacent competitors."
+            "\n- if TECHNOLOGY: name the vendors / providers / manufacturers."
+            "\n- if MARKET: name the key players and their market role."
+            "\n- if PERSON_OR_ORG: name the rivals or alternatives.\n\n"
+            "Prefer organizations with verifiable public presence. Do NOT invent "
+            "entities; if you cannot name real ones, return an empty list. Every "
+            "name must be a specific organization, never a category.\n\n"
+            "Return JSON:\n"
+            "{\n"
+            '  "competitors": [\n'
+            '    {"name": "organization name", "arena_role": "why it is a key player"}\n'
+            "  ]\n"
+            "}\n"
+        )
+        # Stage A escalates to STRONG (Mistral Large leads the STRONG tier).
+        response = await self._llm_complete(
+            user_prompt=prompt,
+            urgency=TaskUrgency.HIGH,
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            tier=ModelTier.STRONG,
+        )
+        if not response.success or not response.content:
+            return []
+
+        try:
+            data = json.loads(response.content)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return []
+
+        competitors = []
+        seen: set[str] = set()
+        for candidate in (data.get("competitors") or []) if isinstance(data, dict) else []:
+            if not isinstance(candidate, dict):
+                continue
+            name = candidate.get("name")
+            role = candidate.get("arena_role")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            key = name.strip().casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            competitors.append({
+                "name": name.strip(),
+                "arena_role": role if isinstance(role, str) and role.strip() else "",
+            })
+        return competitors[:6]
+
     async def _identify_competitors(self, market_query: str) -> list[dict[str, Any]]:
-        """Plan searches and let the LLM judge result relevance with citations."""
+        """A2/A3: entity-aware two-stage competitor discovery.
+
+        Stage A: a STRONG-tier (Mistral Large) call names 3-5 concrete entities
+        from model knowledge — NOT gated on the live web pool.
+        Stage B: the search-validated pass binds each name to real URLs via
+        entity-class-correct queries, so provenance stays ledger-bound.
+
+        The zero-competitor gap is now unreachable unless BOTH stages fail —
+        a real total outage the corpus preflight handles.
+        """
         subject = resolve_subject(
             self._context, "company", "sector", "industry", question=self._question
         ) or market_query
-        plan = await self._plan_competitor_searches(subject)
-        results: list[dict[str, Any]] = []
+        arena = subject
 
+        # ── Stage A: model-knowledge discovery (always runs) ───────────────
+        llm_candidates = await self._discover_competitors_llm(arena)
+        self._llm_competitor_candidates = llm_candidates
+        if llm_candidates:
+            self._log(
+                "COMPETE Stage A: model-knowledge discovery named %d candidate(s)",
+                len(llm_candidates),
+            )
+
+        # ── Stage B: search validation + URL binding ───────────────────────
+        # Entity-class-correct queries (country's players, company rivals,
+        # technology vendors, ...) instead of the old generic "direct
+        # competitors" that returned nothing for a NATION_OR_REGION arena.
+        queries = self._build_discovery_queries(arena)
+        results: list[dict[str, Any]] = []
         try:
             searxng = self.get_tool(ToolName.SEARXNG)
-            for pattern in plan["queries"]:
-                search_results = await searxng.search(pattern, max_results=10)
+            for pattern in queries:
+                try:
+                    search_results = await searxng.search(pattern, max_results=10)
+                except Exception as exc:  # noqa: BLE001 - one bad query must not kill discovery
+                    logger.warning("COMPETE search '%s' failed: %s", pattern, exc)
+                    continue
                 for row in search_results:
                     results.append({
                         "result_id": len(results),
@@ -381,10 +553,24 @@ class CompetitiveIntel(BaseAgent):
                         "snippet": row.get("content", ""),
                         "query": pattern,
                     })
-        except (ValueError, AttributeError, RuntimeError):
-            pass
+        except (ValueError, AttributeError, RuntimeError) as exc:
+            logger.warning("COMPETE search layer unavailable: %s", exc)
 
-        competitors, evidence_ids = await self._extract_competitor_names(plan, results)
+        # Stage B judge: reconcile search evidence against the arena; the
+        # model-knowledge candidates are pre-seeded so even thin search can
+        # confirm them.
+        competitors, evidence_ids = await self._extract_competitor_names(plan=None, search_results=results)
+
+        # If search-validated names are empty but Stage A named real entities,
+        # fall back to the model-knowledge set (typed LOW confidence upstream).
+        if not competitors and llm_candidates:
+            competitors = [c["name"] for c in llm_candidates]
+            self._log(
+                "COMPETE Stage B: search yielded no citable rows — using "
+                "%d model-knowledge candidate(s); provenance will be "
+                "search-bound downstream or typed unverified",
+                len(competitors),
+            )
         self._competitor_names = competitors
 
         relevant_results = [
@@ -401,7 +587,7 @@ class CompetitiveIntel(BaseAgent):
 
     async def _extract_competitor_names(
         self,
-        plan: dict[str, Any],
+        plan: dict[str, Any] | None,
         search_results: list[dict[str, Any]],
     ) -> tuple[list[str], set[int]]:
         """Use an LLM semantic judge to select competitors and cite evidence rows."""
@@ -410,11 +596,19 @@ class CompetitiveIntel(BaseAgent):
             f"{result.get('snippet', '')[:300]} ({result.get('url', '')})"
             for result in search_results[:60]
         )
+        # A3: seed the judge with Stage-A model-knowledge candidates so even a
+        # thin search can confirm/rank them instead of returning nothing.
+        seed_candidates = [
+            (c.get("name") if isinstance(c, dict) else c)
+            for c in getattr(self, "_llm_competitor_candidates", []) or []
+            if isinstance(c, dict) and c.get("name")
+        ]
         prompt = (
             "You are the senior semantic relevance judge for competitive intelligence.\n\n"
             f"Original user question: {self._question}\n"
-            f"Research plan: {json.dumps(plan, default=str)}\n"
-            f"Director-suggested candidates: {json.dumps(self._competitor_names)}\n\n"
+            f"Research plan: {json.dumps(plan or {}, default=str)}\n"
+            f"Director-suggested candidates: {json.dumps(self._competitor_names)}\n"
+            f"Model-knowledge candidate names: {json.dumps(seed_candidates)}\n\n"
             f"Numbered search results:\n{search_summary}\n\n"
             "Determine which organizations are direct competitors or strategically "
             "relevant adjacent competitors in the precise arena defined by the user. "

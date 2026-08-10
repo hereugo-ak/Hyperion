@@ -586,6 +586,16 @@ class WorkflowEngine:
             for key in ("industry", "sector", "space"):
                 ctx.setdefault(key, subject)
 
+        # W-06 / A1 (competitor discovery): thread the Director's subject_class
+        # through to every specialist. COMPETE's discovery queries must be
+        # shaped by what kind of entity the arena is (a company, a country's
+        # players, a technology, a market) — "space startups in India" is a
+        # COMPANY-class arena even when the question's subject is a
+        # NATION_OR_REGION.
+        dag_subject_class = str(getattr(dag, "subject_class", "") or "").strip()
+        if dag_subject_class:
+            ctx["subject_class"] = dag_subject_class
+
         ctx.setdefault("question", dag.question)
         self._engagement_context = ctx
 
