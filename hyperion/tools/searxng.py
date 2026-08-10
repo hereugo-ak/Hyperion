@@ -124,6 +124,38 @@ class EngineRegistryReport:
         return not self.missing and not self.forbidden
 
 
+def profile_enabled_engines(profile: str) -> set[str]:
+    """P1.2-fix: the ENABLED engines for a SearXNG replica profile.
+
+    Reads the generated per-profile settings file (``searxng_settings.<profile>.yml``)
+    and returns only the engines that are NOT ``disabled: true``. This exists
+    because the W-12 replica registry deliberately keeps DISABLED engines
+    declared (mojeek/yep stay in ``SEARXNG_REPLICAS`` so profile disjointness
+    and the P1.2 decision record hold), but a boot reconcile that expects the
+    full declared tuple reports a spurious mismatch against the running config,
+    which only serves the enabled set. The reconcile must expect exactly the
+    enabled engines.
+    """
+    try:
+        import yaml
+
+        from hyperion.infra.paths import project_root
+
+        path = project_root() / f"searxng_settings.{profile}.yml"
+        if not path.exists():
+            return set()
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        enabled = {
+            str(e.get("name", "")).strip()
+            for e in data.get("engines", [])
+            if str(e.get("name", "")).strip() and not e.get("disabled", False)
+        }
+        return enabled
+    except Exception as exc:  # noqa: BLE001 - a read failure must not break boot
+        logger.warning("profile_enabled_engines(%r) failed: %s", profile, exc)
+        return set()
+
+
 async def reconcile_engine_registry(
     base_url: str,
     *,
