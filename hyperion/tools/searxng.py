@@ -1600,6 +1600,51 @@ class SearxNGClient:
                     await self._set_cached(cache_key, fanout_response)
                     return fanout_response
 
+            # ── MULTI-PROVIDER PAID CHAIN (OVERHAUL4 P8) ──
+            # Canonical fallback: SearXNG -> You -> Exa (loop once) -> Tavily
+            # -> Yep. Search-only (title+url+snippet; no contents/answer
+            # flags). Runs for web-class queries only, after the free SearXNG
+            # stack (rotation + full-pool fan-out) produced nothing. This is
+            # the spec's exact order — the paid chain never precedes SearXNG.
+            if (categories or "general").lower() in ("general", "news", ""):
+                try:
+                    from hyperion.search.orchestrator import get_search_orchestrator
+
+                    orchestrator = get_search_orchestrator(self.settings)
+                    paid_results = await orchestrator.search(query, num_results)
+                    if paid_results:
+                        converted = [
+                            SearchResult(
+                                title=r.title,
+                                url=r.url,
+                                snippet=r.snippet,
+                                engine=r.engine,
+                                score=r.score,
+                                category=r.category,
+                                published_date=r.published_date or "",
+                                backend=r.backend,
+                            )
+                            for r in paid_results
+                        ]
+                        paid_response = SearchResponse(
+                            query=query,
+                            results=converted,
+                            total=len(converted),
+                            engines_used=sorted({r.engine for r in converted}),
+                            retrieval_degraded=True,
+                            degradation_events=[{
+                                "type": "multi_provider_paid_chain",
+                                "metrics": orchestrator.metrics_snapshot(),
+                            }],
+                        )
+                        await self._set_cached(cache_key, paid_response)
+                        return paid_response
+                except Exception as exc:  # noqa: BLE001 - paid chain is best-effort
+                    logger.warning(
+                        "multi-provider paid chain failed for '%s': %s",
+                        query[:80], exc,
+                    )
+
             # ── FALLBACK: Jina Search (s.jina.ai) ──
             logger.info("SearXNG returned no results for '%s' — falling back to Jina", query)
             jina_response = await self._search_jina_fallback(

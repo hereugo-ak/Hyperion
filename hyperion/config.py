@@ -633,6 +633,13 @@ class ToolPathsConfig(BaseModel):
     # Unsplash — image search API (§5.1)
     unsplash_access_key: str = ""
 
+    # OVERHAUL4 P8 — multi-provider web search layer (search-only fallback
+    # chain: SearXNG -> You -> Exa -> Tavily -> Yep). Empty = adapter skips.
+    you_api_key: str = ""
+    exa_api_key: str = ""
+    tavily_api_key: str = ""
+    yep_api_key: str = ""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Color System (ARCHITECTURE.md §7)
@@ -890,6 +897,12 @@ class Settings(BaseSettings):
     # OVERHAUL4 G2: OpenAlex polite-pool mailto — NO API key exists; a real
     # email raises the rate ceiling ~10x (falls back to HYPERION_CONTACT_EMAIL).
     openalex_email: str = ""
+    # OVERHAUL4 P8 — multi-provider web search layer (search-only fallback
+    # chain: SearXNG -> You -> Exa -> Tavily -> Yep). Keys added by operator.
+    you_api_key: str = ""
+    exa_api_key: str = ""
+    tavily_api_key: str = ""
+    yep_api_key: str = ""
 
     # ── Computed Configurations ──
     # These are not loaded from env — they are derived from the architecture

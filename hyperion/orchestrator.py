@@ -3403,6 +3403,14 @@ class WorkflowEngine:
         # Reset SearxNG search budget for this engagement
         from hyperion.tools.searxng import SearxNGClient
         SearxNGClient.reset_budget()
+        # OVERHAUL4 P8: reset the multi-provider paid search chain (per-run
+        # budget buckets + suspension + metrics) at the same boundary.
+        try:
+            from hyperion.search.orchestrator import reset_search_run
+
+            reset_search_run()
+        except Exception as exc:  # noqa: BLE001 - reset is best-effort
+            logger.debug("search layer run-reset failed: %s", exc)
 
         # Use the existing bus if it's already running (TUI scenario),
         # otherwise create a fresh one for headless mode
