@@ -261,7 +261,32 @@ honest) completeness/structural scores — and Phase 3 removes those.
 **VERIFY:** force-suspend all engines in a test; `_escalate_retrieval` must
 recover sources via OpenAlex/Jina, and the quality loop must proceed.
 
-### Phase 6 — Restore a working web class without keyed APIs (RC-1.1) — 🔧 code done, host verification pending
+### Phase 6 — Restore a working web class without keyed APIs (RC-1.1) — ✅ probe done, deployed (home-IP egress)
+
+**P6.1 probe result (2026-08-11, live `/config` on the running image
+`searxng:2026.7.19-6da6eee26`):**
+
+- `marginalia` / `wiby` are **NOT in the image** (`wiby` → `FileNotFoundError:
+  .../searx/engines/wiby.py` in the container log) — the original plan was
+  reverted; do not declare them.
+- `wikidata` **IS in the image** → enabled on the reference replica.
+- **Egress is a HOME IP, not the VPS** — P1.2's reason for disabling
+  mojeek/yep (datacenter 403s) no longer applies → mojeek/yep re-enabled on
+  the web replica (watch logs; revert if 403s return).
+- Live smoke test (web replica, home IP): **mwmbl = 50 results** (Fortune
+  Business Insights, Statista — real report domains); **brave = 429
+  (suspended, cools)**, **yep = access denied (cools)**, **mojeek = silent 0
+  (no error, no log — investigate or disable later)**.
+- Web class is now ALIVE from this egress (`web` > 0 domains achievable via
+  mwmbl), replacing the VPS-era `web=0d/0e` every run.
+- **Ops fix:** `docker-compose.yml` valkey service was missing `cap_add` —
+  with `cap_drop: [ALL]` + `no-new-privileges`, the entrypoint's `setpriv`
+  crash-looped on WSL2/Docker Desktop (`setresuid: Operation not permitted`);
+  added `cap_add: [CHOWN, SETGID, SETUID]` (mirrors the searxng replicas).
+- **Policy fix (Semantic Scholar):** documented ceiling is 1 request/second
+  CUMULATIVE across all endpoints. Client pacing was per-instance and exactly
+  1.0s (on the threshold); now process-wide shared lock + 1.5s delay
+  (~0.67 req/s), safely below.
 **Files:** `hyperion/infra/searxng_profiles.py` (generator),
 `searxng_settings.*.yml` (generated), `docker-compose.yml`
 
