@@ -496,6 +496,76 @@ class ObscuraClient:
                 error=f"Obscura unavailable ({type(e).__name__}): {e}",
             )
 
+    async def fetch_assets(
+        self,
+        url: str,
+        stealth: bool = True,
+    ) -> list[str]:
+        """OVERHAUL4 P7: enumerate the rendered page's sub-resource URLs
+        (``obscura fetch URL --dump assets``).
+
+        Returns the image/media URLs the page actually references after JS
+        execution — the capability that answers "the page contains media".
+        A plain fetch (markdown) embeds images as markdown links at best;
+        this returns the real asset graph (img src, media sources,
+        embed/object data). Best-effort and never raises: any failure
+        returns an empty list and the caller keeps its text result.
+        """
+        if not self._binary_available():
+            return []
+        obscura_bin = self._find_obscura()
+        if not obscura_bin:
+            return []
+        cmd = [obscura_bin, "fetch", url, "--dump", "assets"]
+        if stealth or self._stealth:
+            cmd.append("--stealth")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.CLI_TIMEOUT
+            )
+            if proc.returncode != 0:
+                logger.debug(
+                    "obscura assets failed for %s: %s",
+                    url, stderr.decode("utf-8", errors="replace")[:200],
+                )
+                return []
+            media: list[str] = []
+            seen: set[str] = set()
+            for line in stdout.decode("utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    import json as _json
+
+                    entry = _json.loads(line)
+                    asset_url = str(entry.get("url", "") or "").strip()
+                    asset_type = str(entry.get("type", "") or "").lower()
+                except Exception:  # noqa: BLE001 - one bad line must not kill the dump
+                    asset_url = ""
+                    asset_type = ""
+                if not asset_url:
+                    continue
+                is_media = (
+                    "img" in asset_type
+                    or "media" in asset_type
+                    or asset_url.lower().split("?")[0].endswith(
+                        (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
+                    )
+                )
+                if is_media and asset_url not in seen:
+                    seen.add(asset_url)
+                    media.append(asset_url)
+            return media[:50]
+        except Exception as exc:  # noqa: BLE001 - assets are best-effort
+            logger.debug("obscura assets failed for %s: %s", url, exc)
+            return []
+
     async def scrape(
         self,
         urls: list[str],

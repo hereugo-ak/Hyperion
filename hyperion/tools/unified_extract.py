@@ -154,6 +154,10 @@ class UnifiedExtractResult:
     html: str = ""
     links: list[dict[str, str]] = field(default_factory=list)
     tables: list[dict[str, Any]] = field(default_factory=list)
+    # OVERHAUL4 P7: media URLs found ON the page (img/media sub-resources)
+    # — populated by tiers that can enumerate rendered assets (obscura
+    # --dump assets). Pure media FILE urls still fail fast as "media".
+    images: list[str] = field(default_factory=list)
     tool_used: str = ""
     tools_tried: list[str] = field(default_factory=list)
     success: bool = False
@@ -178,6 +182,7 @@ class UnifiedExtractResult:
             "html": self.html,
             "links": self.links,
             "tables": self.tables,
+            "images": self.images,
             "tool_used": self.tool_used,
             "tools_tried": self.tools_tried,
             "success": self.success,
@@ -277,6 +282,23 @@ class UnifiedExtract:
     # connection / 5xx / 429) — a deterministic "not installed" or
     # "no usable content" is not retried.
     TIER_MAX_ATTEMPTS = 3
+
+    # OVERHAUL4 P7 (capability-based assignment): for js_heavy pages, the
+    # tier order is by CAPACITY, not raw cheapness — obscura leads (instant
+    # Rust browser, stealth TLS impersonation, JS rendering, cheaper than
+    # firecrawl's node/playwright stack), then the HTTP-based firecrawl, then
+    # the anti-bot fetchers in increasing stealth/heaviness, cloudflare
+    # solver, and the archive as the true last resort.
+    JS_HEAVY_TIER_ORDER: tuple[str, ...] = (
+        "obscura",
+        "firecrawl",
+        "scrapling",
+        "nodriver",
+        "crawl4ai",
+        "camoufox",
+        "flaresolverr",
+        "wayback",
+    )
 
     # Known JS-rendered / anti-bot hostname fragments. Pages from these hosts
     # skip the non-JS tiers entirely (their HTML is an empty shell).
@@ -742,7 +764,14 @@ class UnifiedExtract:
     async def _extract_obscura(
         self, url: str, *, extract_tables: bool = True, extract_links: bool = True
     ) -> UnifiedExtractResult:
-        """Tier 3 — Obscura. Stealth local binary with JS rendering."""
+        """Tier — Obscura. Stealth local Rust browser with JS rendering.
+
+        OVERHAUL4 P7: obscura is the cheap-and-capable browser tier for
+        js_heavy pages — instant cold start, 30MB RAM, ``--stealth`` TLS
+        impersonation. After the text fetch it also enumerates the rendered
+        page's media assets (``--dump assets``) into ``result.images``, so a
+        page CONTAINING media contributes those URLs downstream.
+        """
         obscura = await self._get_obscura()
         r = await obscura.fetch(url, output_format="markdown")
         if getattr(r, "status_code", 0) != 200:
@@ -753,7 +782,7 @@ class UnifiedExtract:
                 error=getattr(r, "error", "") or f"HTTP {getattr(r, 'status_code', 0)}",
             )
         primary = r.markdown or r.content
-        return self._finish(
+        result = self._finish(
             url,
             "obscura",
             primary=primary,
@@ -762,6 +791,13 @@ class UnifiedExtract:
             markdown=r.markdown,
             error=r.error,
         )
+        if result.success and extract_links:
+            # Media-on-page: the rendered asset graph (img/media URLs).
+            try:
+                result.images = await obscura.fetch_assets(url)
+            except Exception as exc:  # noqa: BLE001 - assets are best-effort
+                logger.debug("obscura asset enumeration failed for %s: %s", url, exc)
+        return result
 
     async def _extract_nodriver(
         self, url: str, *, extract_tables: bool = True, extract_links: bool = True
@@ -962,9 +998,23 @@ class UnifiedExtract:
             "unreachable", "unavailable", "read error", "broken pipe",
         ))
 
-    def _eligible_tiers(self, force_js_render: bool) -> list[str]:
-        tiers = list(self.tier_order)
-        if force_js_render:
+    def _tier_order_for(self, profile: str) -> tuple[str, ...]:
+        """OVERHAUL4 P7: capability-based tier order for a URL profile.
+
+        - ``js_heavy`` -> :attr:`JS_HEAVY_TIER_ORDER` (obscura leads: instant
+          Rust browser with stealth TLS impersonation, then firecrawl, then
+          the anti-bot fetchers by increasing stealth/heaviness)
+        - ``pdf`` / ``media`` / ``default`` -> :attr:`TIER_ORDER` (cheap-first
+          ladder; pdf/media are handled by their dedicated paths before the
+          ladder runs anyway)
+        """
+        if profile == "js_heavy":
+            return self.JS_HEAVY_TIER_ORDER
+        return self.tier_order
+
+    def _eligible_tiers(self, force_js_render: bool, profile: str = "default") -> list[str]:
+        tiers = list(self._tier_order_for(profile))
+        if force_js_render or profile == "js_heavy":
             tiers = [t for t in tiers if t not in self.NON_JS_TIERS]
         return tiers
 
@@ -1037,7 +1087,7 @@ class UnifiedExtract:
                 logger.debug("pdf extraction failed for %s: %s", url, exc)
                 errors.append(f"pdf: {type(exc).__name__}: {exc}")
 
-        for tier in self._eligible_tiers(force_js_render or profile == "js_heavy"):
+        for tier in self._eligible_tiers(force_js_render, profile):
             if not self._tier_available(tier):
                 continue
             extractor = getattr(self, f"_extract_{tier}", None)
@@ -1230,7 +1280,18 @@ class UnifiedExtract:
         semaphore = asyncio.Semaphore(concurrency or self.EXTRACTION_CONCURRENCY)
         is_available = tier_available or self._tier_available
         resolve = tier_resolver or self._default_resolver
-        ladder = self._eligible_tiers(force_js_render)
+        # OVERHAUL4 P7: all-js_heavy batches climb the capability-ordered
+        # js_heavy ladder (obscura first); mixed/default batches keep the
+        # cheap-first order (per-URL filtering still skips non-JS on
+        # js_heavy URLs).
+        _batch_profile = (
+            "js_heavy"
+            if pending_order and all(
+                self._classify_url(u) == "js_heavy" for u in pending_order
+            )
+            else "default"
+        )
+        ladder = self._eligible_tiers(force_js_render, _batch_profile)
         if tiers:
             allowed = set(tiers)
             ladder = [t for t in ladder if t in allowed]
