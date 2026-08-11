@@ -1147,6 +1147,21 @@ class UnifiedExtract:
             if result is not None and result.success:
                 result.tools_tried = tools_tried
                 result.tool_used = tier
+                # OVERHAUL4 P7: media enrichment — a cheap tier (curl_cffi/
+                # jina/http/firecrawl) returns TEXT but no media. When the
+                # caller wants links, ask obscura for the rendered asset
+                # graph (~1 fast local call; skipped when obscura is
+                # unavailable or the tier already produced images). This is
+                # what makes "a page containing media and infographics"
+                # contribute its image URLs on EVERY profile, not just
+                # js_heavy.
+                if extract_links and not result.images and tier != "obscura":
+                    try:
+                        if self._tier_available("obscura"):
+                            obscura = await self._get_obscura()
+                            result.images = await obscura.fetch_assets(url)
+                    except Exception as exc:  # noqa: BLE001 - enrichment is best-effort
+                        logger.debug("media enrichment failed for %s: %s", url, exc)
                 return result
             if result is not None and result.error:
                 errors.append(f"{tier}: {result.error}")
