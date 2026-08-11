@@ -51,8 +51,11 @@ def test_orchestrator_rechecks_corpus_before_fact_check() -> None:
     import inspect
 
     src = inspect.getsource(WorkflowEngine._execute_task)
+    # Slice on the branch markers (unique in the method) so the S4 partial-
+    # context block that mentions both agent names cannot skew the slice.
     # The FACT_CHECKER branch contains the same recheck the SYNTHESIS branch has.
-    fact_check_slice = src.split("FACT_CHECKER")[1].split("SYNTHESIS_LEAD")[0]
+    fact_check_slice = src.split("task.agent == AgentName.FACT_CHECKER:")[1] \
+        .split("task.agent == AgentName.SYNTHESIS_LEAD:")[0]
     assert "_recheck_corpus_midrun" in fact_check_slice
 
 
@@ -73,7 +76,15 @@ def test_recheck_corpus_midrun_degrades_on_collapse(monkeypatch) -> None:
         # Patch the ledger read at the import site the method uses.
         monkeypatch.setattr(
             "hyperion.tools.evidence_ledger.get_evidence_ledger",
-            lambda: SimpleNamespace(distinct_domains=lambda: {"a.example", "b.example"}),
+            lambda: SimpleNamespace(
+                # S7: the mid-run recheck reads ENGAGEMENT evidence only via
+                # ledger.all(), so the mock must expose it.
+                all=lambda: [
+                    SimpleNamespace(domain="a.example", stage="discovery"),
+                    SimpleNamespace(domain="b.example", stage="discovery"),
+                ],
+                distinct_domains=lambda: {"a.example", "b.example"},
+            ),
         )
         import asyncio
 
@@ -99,6 +110,10 @@ def test_recheck_corpus_midrun_noop_when_at_floor(monkeypatch) -> None:
         monkeypatch.setattr(
             "hyperion.tools.evidence_ledger.get_evidence_ledger",
             lambda: SimpleNamespace(  # >= floor: 12 distinct domains
+                all=lambda: [
+                    SimpleNamespace(domain=f"d{i}.example", stage="discovery")
+                    for i in range(12)
+                ],
                 distinct_domains=lambda: {f"d{i}.example" for i in range(12)},
             ),
         )

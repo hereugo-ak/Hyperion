@@ -29,7 +29,7 @@ from enum import Enum
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # W-10. Safe to import at module level: hyperion.schemas.methodology is a leaf
 # (stdlib + pydantic only) and defers its ClientProse import into the validator
@@ -268,6 +268,23 @@ class Source(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# P3 (overhaul §6 P3.2): provenance is bound in code, never transcribed by
+# the LLM. A substantive finding must carry at least one ledger-bound Source;
+# a "finding" with zero valid citations is typed ``unverified_assertion`` —
+# never counted as yield, never rendered. A gap is a separate type
+# (``AnalysisGap`` / ``research_gap`` finding_type) — never counted as a
+# finding. These three values are the complete non-substantive set, shared
+# by the sub-agent outcome typing, the spawn budget and the floor report.
+# OVERHAUL2 S8: defined ABOVE ``KeyFinding`` so the model validator can
+# reference them at validation time (module order matters for class-level
+# defaults; ``mode="after"`` validators read them at call time).
+RESEARCH_GAP_TYPE = "research_gap"
+UNVERIFIED_ASSERTION_TYPE = "unverified_assertion"
+NON_SUBSTANTIVE_FINDING_TYPES = frozenset(
+    {RESEARCH_GAP_TYPE, UNVERIFIED_ASSERTION_TYPE}
+)
+
+
 class KeyFinding(BaseModel):
     """A single finding from any agent.
 
@@ -307,6 +324,24 @@ class KeyFinding(BaseModel):
         _reject_banned_filler
     )
 
+    @model_validator(mode="after")
+    def _enforce_provenance(self) -> "KeyFinding":
+        """OVERHAUL2 S8: provenance is schema-enforced, not advisory.
+
+        The 17:52 block: 87 findings → 0 report domains, because substantive
+        findings shipped with ``sources=[]`` whenever the author's searches
+        failed. A substantive finding with no usable source URL is retyped
+        ``unverified_assertion`` at construction — it is then excluded from
+        yield, floor reports and the corpus floor BY the existing
+        NON_SUBSTANTIVE filters, everywhere, automatically.
+        """
+        if self.finding_type in NON_SUBSTANTIVE_FINDING_TYPES:
+            return self
+        if not any(getattr(s, "url", "") for s in self.sources):
+            object.__setattr__(self, "finding_type", UNVERIFIED_ASSERTION_TYPE)
+            object.__setattr__(self, "confidence", ConfidenceLevel.LOW)
+        return self
+
 
 # P3 (overhaul §6 P3.2): provenance is bound in code, never transcribed by
 # the LLM. A substantive finding must carry at least one ledger-bound Source;
@@ -315,6 +350,9 @@ class KeyFinding(BaseModel):
 # (``AnalysisGap`` / ``research_gap`` finding_type) — never counted as a
 # finding. These three values are the complete non-substantive set, shared
 # by the sub-agent outcome typing, the spawn budget and the floor report.
+# OVERHAUL2 S8: defined ABOVE ``KeyFinding`` so the model validator can
+# reference them at validation time (module order matters for class-level
+# defaults; ``mode="after"`` validators read them at call time).
 RESEARCH_GAP_TYPE = "research_gap"
 UNVERIFIED_ASSERTION_TYPE = "unverified_assertion"
 NON_SUBSTANTIVE_FINDING_TYPES = frozenset(

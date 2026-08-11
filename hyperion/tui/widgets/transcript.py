@@ -287,10 +287,24 @@ class Transcript(ScrollView):
         """
         return list(self._plain)
 
+    def full_text(self) -> str:
+        """The ENTIRE transcript as plain text, including scrolled-off history.
+
+        This is the no-selection-needed copy surface: the full physical-line
+        mirror joined back together, exactly what the user would see if they
+        scrolled the whole scrollback. ``Ctrl+Shift+S`` and ``/export`` write
+        this to a file, so the whole log is copyable even in terminals where
+        Textual's mouse capture or OSC-52 clipboard support makes drag-select
+        reach only the visible screen.
+        """
+        return "\n".join(self._plain)
+
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return ``(text, ending)`` for the selected region."""
         try:
-            text = "\n".join(self._plain)
+            # Same surface as full_text(): selection extraction and whole-log
+            # export can never disagree about what "the log" is.
+            text = self.full_text()
             return selection.extract(text), "\n"
         except Exception:  # noqa: BLE001 - best-effort, returns a safe default
             return None
@@ -403,7 +417,17 @@ class Transcript(ScrollView):
         self.virtual_size = Size(self._widest, len(self.lines))
         self._line_render_cache.clear()
         if self.auto_scroll:
-            self.scroll_end(animate=False, immediate=False, x_axis=False)
+            # immediate=True (runtime path, not just a test fix): with
+            # immediate=False, Textual DEFERS the scroll via call_after_refresh.
+            # A burst of writes (a dense bus storm in production; _fill in
+            # tests) queues one deferred scroll per refresh; they land on later
+            # frames and clobber an explicit scroll made in between — the view
+            # snaps back to the bottom right after the user scrolled up (flaky
+            # test_offsets_track_the_scroll_position on HEAD: scroll_y 0→48 on
+            # the second frame). This runs on every auto-scroll: live row
+            # rewrites, resize reflow and burst appends all pin the view to the
+            # bottom NOW, leaving no stale queue behind.
+            self.scroll_end(animate=False, immediate=True, x_axis=False)
         self.refresh()
 
     def _reflow(self) -> None:

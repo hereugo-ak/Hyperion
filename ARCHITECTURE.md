@@ -3040,3 +3040,47 @@ proprietary consulting model with:
 
 Every component is the best version of itself. No bullshit. No filler.
 No idle components. This is the engine that powers HYPERION Consulting.
+
+---
+
+## 14. The Output Contract (OVERHAUL2, 2026-08-11)
+
+Overhaul 1 built the **Evidence Control Plane** (ledger, preflight, KPIs).
+Overhaul 2 builds the **Output Contract**: the guarantee that
+`task completed ⇒ output object exists ⇒ synthesis consumes it ⇒ report
+carries its sources`. These five invariants hold **by construction**, not by
+convention. They are load-bearing; do not weaken them.
+
+- **OC-1 · Single writer.** Only the orchestrator's execution record writes
+  `task.status = COMPLETED/FAILED` and `_task_outputs` (`orchestrator.py`
+  `_execute_task`). The Director's bus handler is display-only
+  (`engagement_director.py` `_handle_status_update` — PENDING→RUNNING only).
+  A task cannot be "completed" without an output object.
+- **OC-2 · Dependency outputs are aliased, never lost.** A successful reframed
+  variant backfills its origin's output slot (`orchestrator.py` `_execute_task`,
+  walking the `reframed_from` chain to the root origin). Synthesis and
+  fact-check run on partial context **by design** — they receive available
+  outputs plus the findings channel plus a typed `missing_dependencies` list,
+  and never crash with `MissingDependencyOutput`.
+- **OC-3 · Findings are source-bound in the schema.** A substantive
+  `KeyFinding` with zero usable source URLs is retyped `unverified_assertion`
+  at construction (`schemas/models.py` `_enforce_provenance`). Floor reports,
+  KPI-3 and the corpus floor all read the same enforced truth. Sub-agents bind
+  sources in code BEFORE validating the finding (`sub_agent.py`
+  `_analyze_and_produce_findings`).
+- **OC-4 · Corpus gates measure per-class and delta.** Preflight GREEN
+  requires every source class alive (`corpus_preflight.py` `_evaluate_contract`
+  per-class floors: web≥1, scholar≥2, reference≥1) AND the total floor. Canary
+  evidence is stage-tagged `preflight` (`evidence_ledger.py` `retag_stage`); the
+  mid-run recheck counts engagement-only evidence.
+- **OC-5 · Budgets degrade loudly and recover.** Concurrent sub-agent cap
+  pressure auto-raises 3→5 (bounded) and defers—never silently drops—specs
+  (`base.py` `_spawn_sub_agent` + `_deferred_specs`). A corpus-floor integrity
+  blocker skips quality iteration entirely (`orchestrator.py`
+  `_quality_iteration_loop`).
+
+Also load-bearing: the reference-replica category contract
+(`searxng_settings.reference.yml` declares `reference` on every engine; guarded
+by `tests/test_searxng_category_contract.py`), and the single ingestion path
+for sub-agent findings (`base.py` `_ingest_sub_findings` — no specialist may
+hand-wire its own merge/reconcile/contradiction/publish block).

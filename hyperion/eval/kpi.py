@@ -43,6 +43,19 @@ class RunKPIs:
     kpi_5_blockers: int = -1
     kpi_5_verdict_consistent: bool = False
 
+    # OVERHAUL2 S15: gates for the Output Contract invariants.
+    #   kpi_6_pct_tasks_completed_with_output — OC-1/OC-2: every COMPLETED task
+    #     must have a real output object; a "completed but no output" task is
+    #     the status-writer bug that crashed synthesis (B-5). Must be 100.
+    #   kpi_7_synthesis_produced_final_report — S4: any run that reaches the
+    #     synthesis boundary must produce a FinalReport from the findings
+    #     channel, never die on MissingDependencyOutput.
+    #   kpi_8_off_topic_dropped — S11: counter of topicality-guard drops,
+    #     visible in telemetry (B-9 "money laundering in a space report").
+    kpi_6_pct_tasks_completed_with_output: float = -1.0
+    kpi_7_synthesis_produced_final_report: bool = False
+    kpi_8_off_topic_dropped: int = -1
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -58,6 +71,14 @@ class RunKPIs:
                 and self.kpi_4_typed_terminal
             ),
             "kpi_5": self.kpi_5_blockers == 0 and self.kpi_5_verdict_consistent,
+            # OVERHAUL2 S15 (OC-1): 100% of completed tasks carry an output.
+            "kpi_6": self.kpi_6_pct_tasks_completed_with_output >= 100.0,
+            # OVERHAUL2 S15 (OC-2): synthesis at the boundary always yields a
+            # FinalReport — either directly or via the floor fallback, never a
+            # MissingDependencyOutput crash.
+            "kpi_7": self.kpi_7_synthesis_produced_final_report,
+            # OVERHAUL2 S15 (S11): off-topic drops are tracked, not hidden.
+            "kpi_8": self.kpi_8_off_topic_dropped >= 0,
         }
 
 
@@ -133,6 +154,12 @@ def diff_kpis(run_id: str, base: str | Path = "") -> dict[str, Any]:
             int(data.get("kpi_5_blockers", -1)) == 0
             and bool(data.get("kpi_5_verdict_consistent", False))
         )
+        # OVERHAUL2 S15
+        gates["kpi_6"] = (
+            float(data.get("kpi_6_pct_tasks_completed_with_output", -1)) >= 100.0
+        )
+        gates["kpi_7"] = bool(data.get("kpi_7_synthesis_produced_final_report", False))
+        gates["kpi_8"] = int(data.get("kpi_8_off_topic_dropped", -1)) >= 0
         return gates
 
     cur_g = _green(current)
@@ -155,6 +182,10 @@ KPI_OWNER_PHASE: dict[str, str] = {
     "kpi_3": "P3",  # provenance binding → retrieval-bound provenance (P3)
     "kpi_4": "P2",  # cheap degraded terminal → corpus preflight (P2) + loops (P4)
     "kpi_5": "P5",  # report integrity → verification repositioned (P5)
+    # OVERHAUL2 S15: the Output Contract invariants.
+    "kpi_6": "P2",  # tasks-completed-with-output → output contract (OC-1/OC-2)
+    "kpi_7": "P2",  # synthesis-produced-final-report → partial-context (S4)
+    "kpi_8": "P3",  # off-topic drops → funnel hygiene (S11)
 }
 
 

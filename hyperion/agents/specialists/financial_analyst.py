@@ -1344,23 +1344,13 @@ class FinancialAnalyst(BaseAgent):
         tam_from_market = self._context.get("tam")
 
         # Spawn sub-agents for parallel data collection
+        sub_findings: list[KeyFinding] = []
         if tickers or industry:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning financial data "
                 "collection sub-agents")
             sub_findings = await self._spawn_financial_sub_agents(tickers, industry, business_model)
-            self._sub_agent_findings = sub_findings
-            self._sources = self._merge_evidence(sub_findings, self._sources)
-            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
-        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
-        if self._sub_agent_contradictions:
-            self._log(
-                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
-                    len(self._sub_agent_contradictions),
-                    "; ".join(self._sub_agent_contradictions[:3]),
-                )
-            )
-            for _reconciled in self._sub_agent_reconciled:
-                await self._publish_finding(_reconciled)
+        await self._ingest_sub_findings(sub_findings)
+        if tickers or industry:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 

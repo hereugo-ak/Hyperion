@@ -1224,23 +1224,13 @@ class MAAnalyst(BaseAgent):
         )
 
         # Spawn sub-agents for parallel data collection on short-listed targets
+        sub_findings: list[KeyFinding] = []
         if short_list:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning M&A data collection "
                 "sub-agents")
             sub_findings = await self._spawn_ma_sub_agents(self._acquisition_criteria, sector, short_list)
-            self._sub_agent_findings = sub_findings
-            self._sources = self._merge_evidence(sub_findings, self._sources)
-            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
-        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
-        if self._sub_agent_contradictions:
-            self._log(
-                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
-                    len(self._sub_agent_contradictions),
-                    "; ".join(self._sub_agent_contradictions[:3]),
-                )
-            )
-            for _reconciled in self._sub_agent_reconciled:
-                await self._publish_finding(_reconciled)
+        await self._ingest_sub_findings(sub_findings)
+        if short_list:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 

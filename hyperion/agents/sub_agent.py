@@ -1954,21 +1954,32 @@ class SubAgentRunner:
             # invalidate an otherwise valid finding, and provenance is bound
             # in code below from ledger evidence only.
             clean_item = {k: v for k, v in item.items() if k != "sources"}
-            try:
-                finding = KeyFinding.model_validate(clean_item)
-            except (ValueError, TypeError):
-                # F-07: invalid schema items are counted, not silently
-                # dropped. They are still excluded from substantive findings,
-                # but the count tells the operator the contract is broken.
-                self.counters.invalid_findings += 1
-                continue
+            payload_type = str(item.get("finding_type") or "").strip()
 
-            if finding.finding_type in NON_SUBSTANTIVE_FINDING_TYPES:
-                # P3: a gap is a separate object — never counted as a finding.
+            if payload_type in NON_SUBSTANTIVE_FINDING_TYPES:
+                # P3: a gap/unverified payload is a separate typed object —
+                # never counted as a finding. OVERHAUL2 S8: validating this
+                # bare finding is safe here (non-substantive passes the
+                # provenance validator unchanged).
+                try:
+                    finding = KeyFinding.model_validate(clean_item)
+                except (ValueError, TypeError):
+                    # F-07: invalid schema items are counted, not silently
+                    # dropped. They are still excluded from substantive
+                    # findings, but the count tells the operator the contract
+                    # is broken.
+                    self.counters.invalid_findings += 1
+                    continue
                 findings.append(finding)
                 self.counters.gaps += 1
                 continue
 
+            # OVERHAUL2 S8: a substantive payload must NOT be validated as a
+            # bare KeyFinding here — its sources were stripped for code-bound
+            # attachment, and the provenance validator would retype it
+            # ``unverified_assertion`` BEFORE the ledger-bound sources exist
+            # (the Aug-10 "87 findings → 0 sources" mechanism). Bind first,
+            # then validate the fully-attached object.
             bound = self._bind_sources(item, by_url)
             if bound:
                 try:
@@ -1989,7 +2000,14 @@ class SubAgentRunner:
                     continue
 
             # P3: zero ledger-bound citations → typed unverified_assertion.
-            # Never counted as yield, never rendered (I-3 / P3.1).
+            # Never counted as yield, never rendered (I-3 / P3.1). Validating
+            # the bare object here is correct: there is nothing to bind, so
+            # S8's retype is the truthful final type.
+            try:
+                finding = KeyFinding.model_validate(clean_item)
+            except (ValueError, TypeError):  # pragma: no cover - contract anomaly
+                self.counters.invalid_findings += 1
+                continue
             findings.append(
                 finding.model_copy(
                     update={

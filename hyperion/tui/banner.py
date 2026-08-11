@@ -152,6 +152,8 @@ def hint_content() -> Content:
                 span("/agents /providers /demo /clear /help", TEXT_GHOST),
                 span("   copy  ", TEXT_DIM),
                 span("drag + Ctrl+Shift+C", TEXT_GHOST),
+                span("   save  ", TEXT_DIM),
+                span("Ctrl+Shift+S", TEXT_GHOST),
             ],
         ]
     )

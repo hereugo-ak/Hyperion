@@ -46,33 +46,46 @@ engines:
 - name: wikipedia
   engine: wikipedia
   shortcut: wp
+  categories:
+  - general
+  - reference
   disabled: false
   timeout: 10
   weight: 1.0
 - name: openstreetmap
   engine: openstreetmap
   shortcut: osm
+  categories:
+  - geo
+  - general
+  - reference
   disabled: false
   timeout: 12
   weight: 0.6
 - name: github
   engine: github
   shortcut: gh
-  categories: it
+  categories:
+  - it
+  - reference
   disabled: false
   timeout: 12
   weight: 0.8
 - name: stackexchange
   engine: stackexchange
   shortcut: se
-  categories: it
+  categories:
+  - it
+  - reference
   disabled: false
   timeout: 12
   weight: 0.8
 - name: hackernews
   engine: hackernews
   shortcut: hn
-  categories: it
+  categories:
+  - it
+  - reference
   disabled: false
   timeout: 10
   weight: 0.6

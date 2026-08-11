@@ -21,7 +21,7 @@ from hyperion.eval.kpi import (
 
 def test_all_canaries_are_registered() -> None:
     """P6.1: the canary registry carries every named failure mode from the
-    overhaul §6 P6 list."""
+    overhaul §6 P6 list, plus the OVERHAUL2 S14 fault-injection canaries."""
     names = {entry["name"] for entry in CANARY_REGISTRY}
     required = {
         "all-engines-403",
@@ -30,6 +30,9 @@ def test_all_canaries_are_registered() -> None:
         "sub-agent-timeout",
         "budget-exhaustion",
         "grounding-key-missing",
+        # OVERHAUL2 S14
+        "reference-category-400",
+        "missing-dep-output",
     }
     assert required <= names
 
@@ -80,6 +83,10 @@ def test_kpi_gates_classify_green_run() -> None:
         kpi_4_typed_terminal=True,
         kpi_5_blockers=0,
         kpi_5_verdict_consistent=True,
+        # OVERHAUL2 S15: the Output Contract gates must be green on a healthy run.
+        kpi_6_pct_tasks_completed_with_output=100.0,
+        kpi_7_synthesis_produced_final_report=True,
+        kpi_8_off_topic_dropped=0,
     )
     assert all(good.gates().values())
 
@@ -95,13 +102,22 @@ def test_kpi_gates_classify_degraded_run() -> None:
         kpi_4_typed_terminal=False,
         kpi_5_blockers=1,
         kpi_5_verdict_consistent=False,
+        # OVERHAUL2 S15: a run with completed-but-no-output tasks fails kpi_6,
+        # a synthesis that never produced a report fails kpi_7, and a
+        # non-negative off-topic counter always passes the tracking gate.
+        kpi_6_pct_tasks_completed_with_output=87.5,
+        kpi_7_synthesis_produced_final_report=False,
+        kpi_8_off_topic_dropped=7,
     )
-    assert not any(bad.gates().values())
+    gates = bad.gates()
+    assert not gates["kpi_6"]
+    assert not gates["kpi_7"]
+    assert gates["kpi_8"]
 
 
 def test_kpi_record_and_diff(tmp_path) -> None:
     """P6.2: recording two runs lets the differ name regressions and their
-    owning phase nodes."""
+    owning phase nodes. OVERHAUL2 S15 adds the Output Contract gates."""
     good = RunKPIs(
         run_id="eng_good",
         kpi_1_time_to_first_evidence_s=30,
@@ -112,6 +128,9 @@ def test_kpi_record_and_diff(tmp_path) -> None:
         kpi_4_typed_terminal=True,
         kpi_5_blockers=0,
         kpi_5_verdict_consistent=True,
+        kpi_6_pct_tasks_completed_with_output=100.0,
+        kpi_7_synthesis_produced_final_report=True,
+        kpi_8_off_topic_dropped=0,
     )
     bad = RunKPIs(
         run_id="eng_bad",
@@ -123,20 +142,26 @@ def test_kpi_record_and_diff(tmp_path) -> None:
         kpi_4_typed_terminal=False,
         kpi_5_blockers=2,
         kpi_5_verdict_consistent=False,
+        kpi_6_pct_tasks_completed_with_output=87.5,
+        kpi_7_synthesis_produced_final_report=False,
+        kpi_8_off_topic_dropped=5,
     )
     record_run_kpis(good, base=str(tmp_path))
     record_run_kpis(bad, base=str(tmp_path))
 
     diff = diff_kpis("eng_bad", base=str(tmp_path))
     assert diff["prev_id"] == "eng_good"
-    assert set(diff["regressions"]) == {"kpi_1", "kpi_2", "kpi_3", "kpi_4", "kpi_5"}
+    assert set(diff["regressions"]) == {"kpi_1", "kpi_2", "kpi_3", "kpi_4", "kpi_5", "kpi_6", "kpi_7"}
     # A regression auto-opens the owning phase node.
     assert regressed_phase(diff) == ["P1", "P2", "P3", "P5"]
 
 
 def test_kpi_owner_phase_mapping_covered() -> None:
     """Every KPI maps to an owning phase node; the map is complete."""
-    assert set(KPI_OWNER_PHASE) == {"kpi_1", "kpi_2", "kpi_3", "kpi_4", "kpi_5"}
+    assert set(KPI_OWNER_PHASE) == {
+        "kpi_1", "kpi_2", "kpi_3", "kpi_4", "kpi_5",
+        "kpi_6", "kpi_7", "kpi_8",
+    }
 
 
 # ── P6.3 · weekly healthy-engagement gate ──────────────────────────────────

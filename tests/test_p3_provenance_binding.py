@@ -492,12 +492,21 @@ def test_floor_report_requires_substantive_findings() -> None:
 
 def test_floor_report_keeps_substantive_findings() -> None:
     """A floor report with mixed substantive and non-substantive findings
-    must keep only the substantive ones."""
+    must keep only the substantive ones. OVERHAUL2 S8: a substantive finding
+    with no source URL is retyped ``unverified_assertion`` AT CONSTRUCTION,
+    so a "substantive" fixture must carry a bound source to stay substantive."""
+    from hyperion.schemas.models import Source, SourceCredibility
+
     findings = [
         KeyFinding(
             id="a1", agent="market", finding_type="market_data",
             title="Size", content="$4.2B",
-            confidence=ConfidenceLevel.MEDIUM, sources=[],
+            confidence=ConfidenceLevel.MEDIUM,
+            sources=[Source(
+                id="src_a1", title="Market report",
+                url="https://example.com/market",
+                credibility=SourceCredibility.INDUSTRY_REPORT,
+            )],
         ),
         KeyFinding(
             id="g1", agent="market", finding_type="research_gap",

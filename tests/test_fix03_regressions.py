@@ -348,6 +348,120 @@ class TestYieldAwareBudget:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# OVERHAUL2 S9 · concurrent budget auto-raises 3→5 under cap pressure
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestAdaptiveConcurrentBudget:
+    def test_concurrent_max_is_five(self) -> None:
+        from hyperion.agents.base import BaseAgent
+
+        # Operator requirement: concurrent pressure raises 3→…→5, bounded.
+        assert BaseAgent.SUB_AGENT_CONCURRENT_MAX == 5
+
+    @pytest.mark.asyncio
+    async def test_cap_pressure_raises_budget_and_defers_spec(self) -> None:
+        """Cap 3, three active sub-agents, fourth spec arrives → budget
+        becomes 4, spec lands in _deferred_specs, nothing is dropped."""
+        from hyperion.agents.base import BaseAgent
+        from hyperion.agents.specialists.competitive_intel import COMPETITIVE_INTEL_SPEC, CompetitiveIntel
+
+        parent = object.__new__(CompetitiveIntel)
+        parent.spec = COMPETITIVE_INTEL_SPEC
+        parent.SUB_AGENT_TOTAL_CEILING = BaseAgent.SUB_AGENT_TOTAL_CEILING
+        parent.SUB_AGENT_CONCURRENT_MAX = 5
+        parent._concurrent_boost = 0
+        parent._deferred_specs = None
+        parent._sub_agent_questions = set()
+        parent._sub_agent_respawned = set()
+        parent._spawn_sub_agent = BaseAgent._spawn_sub_agent.__get__(parent, type(parent))
+        parent._should_respawn_broadened = (
+            BaseAgent._should_respawn_broadened.__get__(parent, type(parent))
+        )
+        parent.state = SimpleNamespace(sub_agents_spawned=0, sub_agents_active=3)
+        parent._log = MagicMock()
+        parent._transition = AsyncMock()
+
+        findings = await parent._spawn_sub_agent(_spec(question="Fourth spec"))
+        assert findings == []
+        # Nothing dropped: the spec is deferred.
+        assert len(parent._deferred_specs) == 1
+        assert parent._deferred_specs[0].question == "Fourth spec"
+        # Budget raised toward the ceiling.
+        assert parent._concurrent_boost == 1
+        assert parent.max_sub_agents == 4
+        log_calls = [c.args[0] for c in parent._log.call_args_list]
+        assert any("concurrent budget raised to 4" in line for line in log_calls)
+
+    @pytest.mark.asyncio
+    async def test_released_slot_drains_deferred_queue(self) -> None:
+        """After a completion frees a slot, the deferred spec is dispatched."""
+        from hyperion.agents.base import BaseAgent
+        from hyperion.agents.specialists.competitive_intel import COMPETITIVE_INTEL_SPEC, CompetitiveIntel
+        from hyperion.agents.sub_agent import SubAgentRunner
+
+        parent = object.__new__(CompetitiveIntel)
+        parent.spec = COMPETITIVE_INTEL_SPEC
+        parent.SUB_AGENT_TOTAL_CEILING = BaseAgent.SUB_AGENT_TOTAL_CEILING
+        parent.SUB_AGENT_CONCURRENT_MAX = 5
+        parent._concurrent_boost = 0
+        parent._sub_agent_specs = []
+        parent._sub_agent_questions = set()
+        parent._sub_agent_respawned = set()
+        parent._spawn_sub_agent = BaseAgent._spawn_sub_agent.__get__(parent, type(parent))
+        parent._should_respawn_broadened = (
+            BaseAgent._should_respawn_broadened.__get__(parent, type(parent))
+        )
+        parent._deferred_specs = [_spec(question="Deferred work")]
+        parent.state = SimpleNamespace(sub_agents_spawned=0, sub_agents_active=0)
+        parent.bus = MagicMock()
+        parent.router = MagicMock()
+        parent._log = MagicMock()
+        parent._transition = AsyncMock()
+
+        # A spawned sub-agent must succeed without recursing infinitely:
+        # the deferred dispatch spawns a runner whose run() returns [].
+        with patch.object(SubAgentRunner, "run", new=AsyncMock(return_value=[])):
+            await parent._spawn_sub_agent(_spec(question="Active work"))
+
+        assert parent._deferred_specs == []
+        log_calls = [c.args[0] for c in parent._log.call_args_list]
+        assert any("deferred spawn dispatched" in line for line in log_calls)
+
+    @pytest.mark.asyncio
+    async def test_broadened_respawn_jumps_to_ceiling(self) -> None:
+        """A broadened (retry) spawn jumps straight to the concurrent ceiling."""
+        from hyperion.agents.base import BaseAgent
+        from hyperion.agents.specialists.competitive_intel import COMPETITIVE_INTEL_SPEC, CompetitiveIntel
+
+        parent = object.__new__(CompetitiveIntel)
+        parent.spec = COMPETITIVE_INTEL_SPEC
+        parent.SUB_AGENT_TOTAL_CEILING = BaseAgent.SUB_AGENT_TOTAL_CEILING
+        parent.SUB_AGENT_CONCURRENT_MAX = 5
+        parent._concurrent_boost = 0
+        parent._sub_agent_specs = []
+        parent._sub_agent_questions = set()
+        parent._sub_agent_respawned = set()
+        parent._spawn_sub_agent = BaseAgent._spawn_sub_agent.__get__(parent, type(parent))
+        parent._should_respawn_broadened = (
+            BaseAgent._should_respawn_broadened.__get__(parent, type(parent))
+        )
+        parent.state = SimpleNamespace(sub_agents_spawned=0, sub_agents_active=0)
+        parent.bus = MagicMock()
+        parent.router = MagicMock()
+        parent._log = MagicMock()
+        parent._transition = AsyncMock()
+        broadened = _spec()
+        broadened.broadened = True
+
+        with patch("hyperion.agents.sub_agent.SubAgentRunner.run", new=AsyncMock(return_value=[])):
+            await parent._spawn_sub_agent(broadened)
+
+        assert parent.max_sub_agents == 5
+        assert parent._concurrent_boost == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # F-10 · Corpus-floor blocker → thin-evidence escalation with floor 8
 # ─────────────────────────────────────────────────────────────────────────────
 

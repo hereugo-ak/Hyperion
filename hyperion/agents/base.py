@@ -162,7 +162,11 @@ class BaseAgent(ABC):
 
     @property
     def max_sub_agents(self) -> int:
-        return self.spec.max_sub_agents
+        # OVERHAUL2 S9: concurrent-cap pressure raises the concurrent budget
+        # (3→…→5, bounded by SUB_AGENT_CONCURRENT_MAX). The sequential TOTAL
+        # ceiling is untouched.
+        boost = getattr(self, "_concurrent_boost", 0)
+        return min(self.spec.max_sub_agents + boost, self.SUB_AGENT_CONCURRENT_MAX)
 
     @property
     def system_prompt(self) -> str:
@@ -726,6 +730,7 @@ class BaseAgent(ABC):
         max_tokens: int | None = None,
         response_format: dict[str, str] | None = None,
         conversation_history: list[dict[str, str]] | None = None,
+        tier: ModelTier | None = None,
     ) -> RouterResponse:
         """Request an LLM completion at this agent's model tier.
 
@@ -733,7 +738,10 @@ class BaseAgent(ABC):
         tier and the router decides. This is the core abstraction that
         decouples agent intelligence from infrastructure. (§9)
 
-        The agent's system prompt is always prepended. If
+        ``tier`` optionally overrides the calling agent's own tier for a
+        single call — e.g. Stage-A competitor discovery escalates to STRONG
+        (Mistral Large) even though the specialist runs at STANDARD. The
+        agent's system prompt is always prepended. If
         system_prompt_override is provided, it replaces the default.
         """
         # W-16 (extends P2-32): the shared, versioned agent contract is
@@ -750,20 +758,21 @@ class BaseAgent(ABC):
             messages.extend(conversation_history)
         messages.append({"role": "user", "content": user_prompt})
 
+        effective_tier = tier or self.model_tier
         await self._transition(
             AgentState.WAITING,
-            f"Requesting {self.model_tier.value} tier completion",
+            f"Requesting {effective_tier.value} tier completion",
         )
 
         # D-17: every agent call owns an explicit output ceiling. Leaving this
         # as None delegates length to provider defaults, which are often only a
         # few hundred tokens and silently cap substantive analysis.
-        resolved_max_tokens = max_tokens or TIER_OUTPUT_BUDGET.get(self.model_tier, 4_000)
+        resolved_max_tokens = max_tokens or TIER_OUTPUT_BUDGET.get(effective_tier, 4_000)
         if resolved_max_tokens <= 0:
             resolved_max_tokens = 4_000
 
         response = await self.router.complete(
-            tier=self.model_tier,
+            tier=effective_tier,
             messages=messages,
             agent_name=self.name.value,
             urgency=urgency,
@@ -785,7 +794,7 @@ class BaseAgent(ABC):
                     "agent": self.name.value,
                     "tool": "llm",
                     "action": f"{provider_name}/{model_name}",
-                    "detail": f"{self.model_tier.value} tier · {'OK' if response.success else 'FAIL'} · {len(response.content or '')} chars",
+                    "detail": f"{effective_tier.value} tier · {'OK' if response.success else 'FAIL'} · {len(response.content or '')} chars",
                     "success": response.success,
                     "provider": provider_name,
                     "input_tokens": max(0, int(getattr(response, "input_tokens", 0) or 0)),
@@ -803,7 +812,7 @@ class BaseAgent(ABC):
             )
             # Escalate so the Director can reroute
             await self._escalate(
-                issue=f"LLM completion failed at {self.model_tier.value} tier: {response.error}",
+                issue=f"LLM completion failed at {effective_tier.value} tier: {response.error}",
                 suggested_action="Reroute to adjacent tier or retry with different provider",
             )
 
@@ -1101,6 +1110,10 @@ class BaseAgent(ABC):
     # to this ceiling so a released slot (timeout/zero yield) can be reused.
     SUB_AGENT_TOTAL_CEILING = 6
 
+    #: OVERHAUL2 S9: concurrent-cap pressure raises the concurrent budget
+    #: toward this bound; the sequential TOTAL ceiling above is unaffected.
+    SUB_AGENT_CONCURRENT_MAX = 5
+
     # ─────────────────────────────────────────────────────────────────────
     # P-CORE (overhaul, 2026-08-10): evidence reconciliation — the proprietary
     # core. Sub-agent findings MUST reach the parent's analysis; a wrapper
@@ -1247,6 +1260,65 @@ class BaseAgent(ABC):
             logger.warning("_detect_sub_agent_contradictions failed: %s", exc)
             return []
 
+    async def _ingest_sub_findings(self, sub_findings: list[KeyFinding] | None) -> None:
+        """OVERHAUL2 S2/S11: the single sub-agent ingestion path.
+
+        Replaces the 10 hand-wired assign/merge/reconcile/contradiction
+        blocks whose ``sub_findings`` was assigned inside an ``if`` guard and
+        consumed outside it (UnboundLocalError on empty collections), and
+        whose publish loop was in one file gated on contradictions existing.
+        Also runs the topicality guard (S11): off-topic sub-agent yield is
+        dropped BEFORE merge/reconcile so a broadened query that drifted
+        ("money laundering in real estate" inside a space-sector run) cannot
+        be summarized and counted as evidence. Never raises; always
+        publishes reconciled findings.
+        """
+        sub_findings = list(sub_findings or [])
+        # OVERHAUL2 S11: drop off-topic sub-agent yield BEFORE merge/reconcile.
+        # Broadened queries drift until *something* returns; without a guard
+        # that something is summarized and counted (B-9: real-estate money
+        # laundering inside a space-sector risk analysis). v1 is a blunt,
+        # deterministic lexical overlap check against the engagement focus.
+        try:
+            from hyperion.tools.query_utils import get_engagement_focus
+            _fq, _subject, _geo = get_engagement_focus()
+            focus_tokens = {
+                t.lower() for t in f"{_subject} {_geo}".split() if len(t) >= 4
+            }
+            if focus_tokens:
+                kept, dropped = [], 0
+                for f in sub_findings:
+                    hay = f"{getattr(f, 'title', '')} {getattr(f, 'content', '')}".lower()
+                    if any(tok in hay for tok in focus_tokens):
+                        kept.append(f)
+                    else:
+                        dropped += 1
+                if dropped:
+                    self._log(f"TOPICALITY: dropped {dropped} off-topic sub-agent finding(s)")
+                    # OVERHAUL2 S15: the drop is telemetry, not just a log line.
+                    self._off_topic_dropped = getattr(self, "_off_topic_dropped", 0) + dropped
+                sub_findings = kept
+        except Exception as exc:  # noqa: BLE001 - guard must never break ingestion
+            logger.debug("topicality guard skipped: %s", exc)
+        self._sub_agent_findings = sub_findings
+        try:
+            self._sources = self._merge_evidence(sub_findings, getattr(self, "_sources", []))
+            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
+            self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
+        except Exception as exc:  # noqa: BLE001 - ingestion must never break analysis
+            logger.warning("_ingest_sub_findings failed: %s", exc)
+            self._sub_agent_reconciled = []
+            self._sub_agent_contradictions = []
+        if self._sub_agent_contradictions:
+            self._log(
+                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
+                    len(self._sub_agent_contradictions),
+                    "; ".join(self._sub_agent_contradictions[:3]),
+                )
+            )
+        for _reconciled in self._sub_agent_reconciled:
+            await self._publish_finding(_reconciled)
+
     async def _spawn_sub_agent(self, spec: SubAgentSpec) -> list[KeyFinding]:
         """Spawn a junior sub-agent for a focused sub-question.
 
@@ -1276,11 +1348,21 @@ class BaseAgent(ABC):
         # CONCURRENT cap (they reuse a released slot sequentially), but the
         # sequential total ceiling applies to every spawn.
         if not spec.broadened and self.state.sub_agents_active >= self.max_sub_agents:
-            self._log(
-                f"SUB-AGENT concurrent budget reached "
-                f"({self.state.sub_agents_active}/{self.max_sub_agents}); "
-                f"proceeding without spawning: {spec.question[:80]}"
-            )
+            # OVERHAUL2 S9: pressure raises the budget (3→…→5) and DEFERS
+            # the spec — the old branch silently discarded the work item
+            # (B-8: "SUB-AGENT concurrent budget reached (3/3); proceeding
+            # without spawning" ×3 on RISK, lost work, thinner parent).
+            if self.max_sub_agents < self.SUB_AGENT_CONCURRENT_MAX:
+                self._concurrent_boost = getattr(self, "_concurrent_boost", 0) + 1
+                self._log(
+                    f"SUB-AGENT concurrent budget raised to {self.max_sub_agents} "
+                    f"(cap pressure; deferred: {spec.question[:60]})"
+                )
+            deferred = getattr(self, "_deferred_specs", None)
+            if deferred is None:
+                deferred = []
+                self._deferred_specs = deferred
+            deferred.append(spec)
             return []
         # F-0.1-14 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): budget counts DISTINCT
         # work items, not spawn attempts. A broadened respawn is a retry of the
@@ -1301,6 +1383,14 @@ class BaseAgent(ABC):
             )
             return []
         distinct_questions.add(spec.question)
+
+        # OVERHAUL2 S9 step 4: a BROADENED (retry) spawn jumps straight to the
+        # concurrent ceiling — operator requirement: "increase to 5 in the next
+        # attempt or retry". A retry reuses a released slot sequentially, so
+        # raising the cap costs no additional concurrency; it just stops the
+        # next legitimate task from being dropped.
+        if spec.broadened and self.max_sub_agents < self.SUB_AGENT_CONCURRENT_MAX:
+            self._concurrent_boost = self.SUB_AGENT_CONCURRENT_MAX - self.spec.max_sub_agents
 
         # Research sub-agents need the context capacity of STANDARD or higher.
         if spec.model_tier not in (
@@ -1358,6 +1448,17 @@ class BaseAgent(ABC):
         finally:
             self.state.sub_agents_active = max(0, self.state.sub_agents_active - 1)
 
+        # OVERHAUL2 S9: a released slot drains the deferred queue first.
+        # The old code silently discarded specs that hit the concurrent cap;
+        # the queue is drained here (the single slot-release site) so deferred
+        # work is eventually dispatched instead of lost. Recursion depth is
+        # naturally bounded by the queue.
+        deferred = getattr(self, "_deferred_specs", None)
+        if deferred and self.state.sub_agents_active < self.max_sub_agents:
+            next_spec = deferred.pop(0)
+            self._log(f"SUB-AGENT deferred spawn dispatched: {next_spec.question[:60]}")
+            await self._spawn_sub_agent(next_spec)
+
         # P0 (overhaul §6 P0.3) + P3 (I-3): never count a research gap or an
         # unverified_assertion as a finding at the display layer. "Sub-agent
         # returned 1 findings" was the Aug-10 lie — a synthetic gap
@@ -1383,6 +1484,43 @@ class BaseAgent(ABC):
         # class (recovery_hint). NOT on a generic exception (a code bug must
         # not be retried) and never on an already-broadened spec (no loops).
         hint = getattr(runner, "recovery_hint", "") or ""
+        # B1/B2 (self-healing): a PROVIDER_FAILURE means the router's whole
+        # tier chain failed. F-0.1-10 correctly refuses to REWORD a provider
+        # bug — but the system must still SELF-HEAL: escalate once to a
+        # STRONG-tier (Mistral Large) spec with a fresh router state. Only if
+        # that also fails is the run typed terminal. This converts a transient
+        # STANDARD-tier outage into a working result instead of a gap.
+        if (
+            hint == "PROVIDER_FAILURE"
+            and not spec.broadened
+            and spec.question not in getattr(self, "_sub_agent_provider_retried", set())
+        ):
+            self._log(
+                f"SUB-AGENT PROVIDER SELF-HEAL: STANDARD-tier provider chain "
+                f"failed for {spec.question[:80]} — escalating once to STRONG "
+                f"(Mistral Large) with fresh router state"
+            )
+            if not hasattr(self, "_sub_agent_provider_retried"):
+                self._sub_agent_provider_retried = set()
+            self._sub_agent_provider_retried.add(spec.question)
+            strong = spec.model_copy(update={
+                "model_tier": ModelTier.STRONG,
+                "broadened": False,
+                "timeout_seconds": spec.timeout_seconds,
+            })
+            healed = await self._spawn_sub_agent(strong)
+            if healed and not any(
+                f.finding_type == "research_gap" for f in healed
+            ):
+                self._log(
+                    f"SUB-AGENT PROVIDER SELF-HEAL SUCCEEDED: {spec.question[:80]} "
+                    f"recovered {len(healed)} finding(s) on STRONG tier"
+                )
+                return healed
+            self._log(
+                f"SUB-AGENT PROVIDER SELF-HEAL EXHAUSTED: {spec.question[:80]} "
+                f"still failed on STRONG tier — typed terminal"
+            )
         if self._should_respawn_broadened(
             spec, findings, timed_out, generic_failure, recovery_hint=hint
         ):
