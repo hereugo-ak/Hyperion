@@ -35,6 +35,9 @@ Status legend: ⬜ pending · 🔧 in progress · ✅ done · ❌ blocked (state
 - [x] ✅ P6.4 deployed to WSL; live smoke test: mwmbl 50 results, brave 429 (cools), yep denied (cools), mojeek silent-0 (note: investigate/disable later)
 - [x] ✅ P6.5 ops fix: valkey `cap_add` (WSL2 setpriv crash-loop) — compose updated + containers healthy
 - [x] ✅ P6.6 rate-limit policy: Semantic Scholar pacing process-wide + 1.5s (below the 1 req/s cumulative ceiling)
+- [x] ✅ P7.0 extraction tiers availability-based (not tool-grant-based) — obscura/jina/etc reach every sub-agent
+- [x] ✅ P7.0b Firecrawl tier wired: `firecrawl` in TIER_ORDER after `http`; FirecrawlClient (single + parallel `/batch/scrape`); config `firecrawl_url`; compose services (firecrawl + firecrawl-redis + playwright-service, correct ghcr refs); fail-open verified
+- [ ] ⬜ P7.0c WSL: images pulled, firecrawl container up, `/test` + live tier test (pulls in progress)
 
 ## Phase 7 — Regression lock
 - [ ] ⬜ P7.1 empty-report canary

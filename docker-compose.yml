@@ -134,8 +134,92 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+  # OVERHAUL4 P7: self-hosted Firecrawl — extraction ladder tier between
+  # `http` and the local browser tiers. Server-side JS rendering + parallel
+  # /batch/scrape. Reuses the valkey image (redis-compatible) as its cache;
+  # playwright-service is optional (remove it to save ~2GB RAM — firecrawl
+  # then serves non-JS pages only, curl_cffi/http still cover those).
+  firecrawl-redis:
+    image: valkey/valkey:8.1.3-alpine
+    container_name: firecrawl-redis
+    command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning"]
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: ${TZ:-Asia/Kolkata}
+    volumes: [hyperion-firecrawl-redis-data:/data]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  playwright-service:
+    # OVERHAUL4 P7: correct prebuilt ref (verified via the firecrawl repo's
+    # docker-compose.yaml) — the mendableai org path 403s.
+    image: ghcr.io/firecrawl/playwright-service:latest
+    container_name: playwright-service
+    restart: unless-stopped
+    mem_limit: 2048m
+    cpus: 2.0
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: ${TZ:-Asia/Kolkata}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  firecrawl:
+    # OVERHAUL4 P7: correct prebuilt ref (verified via the firecrawl repo's
+    # docker-compose.yaml) — no official image exists on Docker Hub.
+    image: ghcr.io/firecrawl/firecrawl:latest
+    container_name: firecrawl
+    ports: ["127.0.0.1:3002:3002"]
+    depends_on:
+      firecrawl-redis:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 1024m
+    cpus: 1.0
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: ${TZ:-Asia/Kolkata}
+      HOST: 0.0.0.0
+      PORT: "3002"
+      REDIS_URL: redis://firecrawl-redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000
+      USE_DB_AUTHENTICATION: "false"
+      NUM_WORKERS_PER_QUEUE: "10"
+      PLAYWRIGHT_WORKERS: "10"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3002/test"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
 volumes:
   hyperion-valkey-data:
   hyperion-searxng-scholar-data:
   hyperion-searxng-reference-data:
   hyperion-searxng-web-data:
+  hyperion-firecrawl-redis-data:

@@ -235,6 +235,11 @@ class UnifiedExtract:
         "curl_cffi",
         "jina",
         "http",
+        # OVERHAUL4 P7: firecrawl self-host — one HTTP call with server-side
+        # JS rendering + parallel batch, cheaper per page than any local
+        # browser tier, so it sits right after the no-JS tiers and before
+        # obscura/nodriver/crawl4ai/camoufox.
+        "firecrawl",
         "obscura",
         "nodriver",
         "crawl4ai",
@@ -435,6 +440,25 @@ class UnifiedExtract:
             if tool == "curl_cffi":
                 available = CurlCffiClient(settings=self.settings)._check_available()
                 detail = "" if available else "curl_cffi not installed"
+            elif tool == "firecrawl":
+                # OVERHAUL4 P7: self-host reachability probe (short timeout —
+                # a dead instance must be skipped, not waited on for 30s).
+                try:
+                    import httpx as _httpx
+
+                    from hyperion.tools.firecrawl_client import FIRECRAWL_DEFAULT_URL
+
+                    base = (
+                        str(getattr(self.settings, "firecrawl_url", "") or "")
+                        or FIRECRAWL_DEFAULT_URL
+                    ).rstrip("/")
+                    with _httpx.Client(timeout=3.0) as _c:
+                        _r = _c.get(f"{base}/test")
+                    available = _r.status_code < 500
+                    detail = "" if available else "firecrawl not reachable"
+                except Exception as _exc:  # noqa: BLE001 - probe must not raise
+                    available = False
+                    detail = f"firecrawl not reachable ({type(_exc).__name__})"
             elif tool == "nodriver":
                 available = NodriverClient(settings=self.settings)._check_available()
                 detail = "" if available else "nodriver not installed"
@@ -646,6 +670,34 @@ class UnifiedExtract:
             content=r.content,
             markdown=r.markdown,
             error=r.error,
+        )
+
+    async def _extract_firecrawl(
+        self, url: str, *, extract_tables: bool = True, extract_links: bool = True
+    ) -> UnifiedExtractResult:
+        """OVERHAUL4 P7 — firecrawl tier. Self-hosted crawl/scrape engine with
+        server-side JS rendering; one HTTP call, cheaper per page than any
+        local browser tier. ``extract_tables`` is intentionally ignored here:
+        the tier requests ``onlyMainContent`` markdown (tables arrive inline);
+        local browser tiers remain the table-structured fallback."""
+        from hyperion.tools.firecrawl_client import FirecrawlClient
+
+        client = FirecrawlClient(settings=self.settings)
+        try:
+            r = await client.scrape(url)
+        finally:
+            await client.close()
+        if not r.success:
+            return self._finish(url, "firecrawl", primary="", error=r.error or "no content")
+        links = [dict(l) for l in r.links] if extract_links else []
+        return self._finish(
+            url,
+            "firecrawl",
+            primary=r.markdown or r.html,
+            title=r.title,
+            markdown=r.markdown,
+            html=r.html,
+            links=links,
         )
 
     async def _extract_obscura(
