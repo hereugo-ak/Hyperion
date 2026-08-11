@@ -1245,6 +1245,15 @@ class QualityGate(BaseAgent):
         Counts distinct registrable domains across every cited source URL.
         Below ``_CORPUS_FLOOR_DOMAINS`` the evidence base cannot support a
         client report regardless of how polished the prose is.
+
+        OVERHAUL4 P4.1: the floor must count the EVIDENCE BASE, not only the
+        report's citations. The Aug-11 run held 2,838 ledger records / 542
+        domains and still hard-blocked on ``CORPUS FLOOR: 0`` because the
+        report was assembled empty — a synthesis defect misreported as a
+        retrieval outage. When report citations are below the floor but the
+        run ledger clears it, return no hard blocker (the deficiency is
+        synthesis citation, which the evidence_sufficiency dimension already
+        penalizes). The hard blocker is reserved for a genuinely thin base.
         """
         from urllib.parse import urlparse
 
@@ -1257,6 +1266,25 @@ class QualityGate(BaseAgent):
                 domains.add(host)
         if len(domains) >= self._CORPUS_FLOOR_DOMAINS:
             return []
+
+        # Ledger-aware check: a rich run ledger means the evidence EXISTS and
+        # the report failed to cite it — penalize, do not hard-block.
+        try:
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            ledger_domains = get_evidence_ledger().distinct_domains()
+            normalized: set[str] = set()
+            for raw in ledger_domains or set():
+                host = (raw or "").strip().lower().split(":")[0]
+                if host.startswith("www."):
+                    host = host[4:]
+                if host:
+                    normalized.add(host)
+            if len(normalized) >= self._CORPUS_FLOOR_DOMAINS:
+                return []
+        except Exception as exc:  # noqa: BLE001 - ledger read is advisory
+            logger.debug("corpus floor ledger check failed: %s", exc)
+
         return [
             f"CORPUS FLOOR: only {len(domains)} distinct source domain(s) "
             f"(minimum {self._CORPUS_FLOOR_DOMAINS}): the evidence base is "

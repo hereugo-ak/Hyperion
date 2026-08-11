@@ -1973,17 +1973,90 @@ class WorkflowEngine:
                     f"{subject} {geography} news".strip(),
                 ]
 
+            # OVERHAUL4 P5.1: when the whole fleet is suspended/cooling, the
+            # SearxNG loop below is a <1s ritual that recovers nothing (the
+            # 11:58:53 -> 11:58:54 failure). Skip it and go straight to the
+            # direct API legs that bypass the suspensions entirely.
+            from hyperion.tools.engine_health import get_engine_health
+            from hyperion.tools.searxng import referenced_engines
+
+            fleet_healthy = get_engine_health().healthy_count(referenced_engines())
             found: dict[str, Any] = {}
-            for query in queries:
+            if fleet_healthy >= 2:
+                for query in queries:
+                    try:
+                        response = await client.search(query=query, num_results=5)
+                    except Exception as exc:  # noqa: BLE001 - escalation is best-effort
+                        logger.warning("escalate search '%s' failed: %s", query[:60], exc)
+                        continue
+                    if response and response.results:
+                        for r in response.results:
+                            if r.url:
+                                found.setdefault(r.url, r)
+            else:
+                logger.warning(
+                    "RETRIEVAL ESCALATION: only %d/%d fleet engines healthy — "
+                    "skipping SearxNG, using direct API legs",
+                    fleet_healthy, len(referenced_engines()),
+                )
+
+            # OVERHAUL4 P5.2/P5.3: direct-API recovery legs (they bypass the
+            # SearxNG suspensions entirely — the same engines that are dead in
+            # the pool are healthy through their own clients) + a wall-clock
+            # cap so the escalation cannot consume the quality-loop budget.
+            from types import SimpleNamespace
+
+            def _as_hit(item: Any) -> SimpleNamespace:
+                """Normalize any direct-API item to title/url/snippet."""
+                return SimpleNamespace(
+                    title=getattr(item, "title", "") or "",
+                    url=getattr(item, "url", "") or "",
+                    snippet=(
+                        getattr(item, "abstract", "")
+                        or getattr(item, "tldr", "")
+                        or ""
+                    ),
+                )
+
+            deadline = time.monotonic() + 45.0
+            primary = queries[0] if queries else subject
+
+            async def _api_leg(name: str, builder: Any) -> None:
+                if time.monotonic() >= deadline:
+                    return
                 try:
-                    response = await client.search(query=query, num_results=5)
-                except Exception as exc:  # noqa: BLE001 - escalation is best-effort
-                    logger.warning("escalate search '%s' failed: %s", query[:60], exc)
-                    continue
-                if response and response.results:
-                    for r in response.results:
-                        if r.url:
-                            found.setdefault(r.url, r)
+                    items = await builder
+                except Exception as exc:  # noqa: BLE001 - one leg must not kill escalation
+                    logger.warning("escalate %s leg failed: %s", name, exc)
+                    return
+                seq = getattr(items, "results", None)
+                if seq is None:
+                    seq = items
+                for item in seq or []:
+                    hit = _as_hit(item)
+                    if hit.url:
+                        found.setdefault(hit.url, hit)
+
+            from hyperion.tools.openalex import OpenAlexClient
+            from hyperion.tools.semantic_scholar import SemanticScholarClient
+
+            await _api_leg(
+                "openalex",
+                OpenAlexClient().search_works(primary, limit=5),
+            )
+            await _api_leg(
+                "semantic-scholar",
+                SemanticScholarClient().search(primary, limit=5),
+            )
+            try:
+                from hyperion.config import get_settings
+                from hyperion.tools.jina import JinaClient
+
+                jina = JinaClient(settings=get_settings())
+                await _api_leg("jina", jina.search(query=primary, num_results=5))
+                await jina.close()
+            except Exception as exc:  # noqa: BLE001 - Jina is optional
+                logger.warning("escalate jina leg failed: %s", exc)
 
             # A count is not evidence. The previous implementation incremented
             # total_sources but discarded every recovered URL, so QualityGate

@@ -169,13 +169,19 @@ SEARXNG_REPLICAS = (
         "hyperion-searxng-reference",
         8889,
         "reference",
-        ("wikipedia", "openstreetmap", "github", "stackexchange", "hackernews"),
+        ("wikipedia", "openstreetmap", "github", "stackexchange", "hackernews",
+         # OVERHAUL4 P6.2: wikidata — keyless structured-facts API engine.
+         "wikidata"),
     ),
     SearxngReplica(
         "hyperion-searxng-web",
         8890,
         "web",
-        ("mojeek", "mwmbl", "brave", "yep"),
+        ("mojeek", "mwmbl", "brave", "yep",
+         # OVERHAUL4 P6.2: tolerant, keyless web engines (marginalia/wiby).
+         # Probe the running image's /config first — if absent, revert these
+         # two entries + the base settings blocks + the searxng.py constant.
+         "marginalia", "wiby"),
     ),
 )
 SEARXNG_PRIMARY_PORT = SEARXNG_REPLICAS[0].port

@@ -6,6 +6,8 @@ use_default_settings:
     - mwmbl
     - brave
     - yep
+    - marginalia
+    - wiby
 general:
   instance_name: HYPERION Web Search
   debug: false
@@ -76,5 +78,21 @@ engines:
   disabled: true
   timeout: 15
   weight: 0.6
+- name: marginalia
+  engine: marginalia
+  shortcut: mg
+  categories:
+  - general
+  disabled: false
+  timeout: 15
+  weight: 0.7
+- name: wiby
+  engine: wiby
+  shortcut: wb
+  categories:
+  - general
+  disabled: false
+  timeout: 15
+  weight: 0.5
 valkey:
   url: valkey://valkey:6379/2

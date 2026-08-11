@@ -318,7 +318,10 @@ _SYSTEM_PROMPT = (
     f"6. Cover at least {MIN_DISTINCT_ANGLES} different angles.\n"
     "7. Never invent facts, entity names, or numbers that are not implied by the "
     "sub-question or the provided context. If you do not know the incumbents, "
-    "write a query that would FIND them, do not name a guess.\n\n"
+    "write a query that would FIND them, do not name a guess.\n"
+    "8. Never include instructions to scrape or extract a page, and never include "
+    "operators like site: or OR/AND — these queries are dispatched to academic "
+    "APIs that reject them. A query is keywords only.\n\n"
     'Return ONLY a JSON object of the form {"queries": [{"query": "...", '
     '"angle": "...", "rationale": "..."}]}'
 )

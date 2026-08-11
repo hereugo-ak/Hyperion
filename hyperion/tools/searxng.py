@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -63,7 +64,7 @@ logger = logging.getLogger(__name__)
 # `searxng_settings.yml` so no replica ever receives traffic for them again.
 # The web corpus is now served by `mwmbl` + `brave` behind the engine-health
 # circuit, with the scholar/reference API engines as the fan-out rescue path.
-RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex"
+RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex,marginalia,wiby,wikidata"
 STANDBY_ENGINES = ""
 CATEGORY_ENGINES = {
     "science": "arxiv,crossref,openalex,semantic scholar",
@@ -77,8 +78,10 @@ CATEGORY_ENGINES = {
 # profile-specific code/search/geo engines do not.
 PROFILE_FALLBACK_ENGINES = {
     # P1.2: mojeek/yep removed — they 403 categorically from this egress.
-    "web": frozenset({"mwmbl", "brave"}),
-    "reference": frozenset({"wikipedia"}),
+    # OVERHAUL4 P6.2: marginalia/wiby are keyless, IP-tolerant web engines
+    # (unlike the crawler class); wikidata pads the reference fallback.
+    "web": frozenset({"mwmbl", "brave", "marginalia", "wiby"}),
+    "reference": frozenset({"wikipedia", "wikidata"}),
     "scholar": frozenset({"crossref", "openalex", "semantic scholar"}),
 }
 TIER_C_ENGINES = frozenset({
@@ -217,7 +220,13 @@ class EngineTokenBucket:
 
     _lock: asyncio.Lock | None = None
     _next_allowed: dict[str, float] = {}
-    interval_seconds = 2.0
+    # OVERHAUL4 P1.1: 2.0s was the rate-limit death spiral — 12 specialists ×
+    # 3 sub-agents × ~7 queries × 3-way concurrency guaranteed upstream 429s
+    # (brave/crossref/openalex suspended_time=180 in every 2026-08-11 run).
+    # 6.0s per engine is still fast enough for a full engagement (~2 min for
+    # a 20-query leg) and slow enough that API engines stop tripping their
+    # own suspension windows mid-run.
+    interval_seconds = 6.0
 
     @classmethod
     async def acquire(cls, engines: set[str]) -> None:
@@ -702,6 +711,34 @@ class SearxNGClient:
         }
 
     @staticmethod
+    def _strip_instruction_debris(query: str, *, strict: bool = False) -> str:
+        """OVERHAUL4 P2.1: remove instruction/operator debris before dispatch.
+
+        Specialist prompts and the LLM query planner leak command-style words
+        ("Scrape Circle pricing page extract tiers") and web operators
+        ("site:crunchbase.com OR site:techcrunch.com OR") into query strings.
+        Scholar APIs (crossref/openalex/arxiv) 400 on ``site:`` / standalone
+        ``OR``/``AND`` (the trailing-``OR`` arxiv 400 in the 17:09 run is the
+        signature failure) and 429 faster under volume. This strips:
+
+        - ``scrape``/``scraping``/``extract``/``extracting`` (all profiles)
+        - ``site:<domain>`` operators (all profiles)
+        - standalone ``OR`` / ``AND`` (``strict=True`` — scholar/API profiles
+          only; they are legitimate boolean operators for web crawlers)
+        """
+        q = (query or "").strip()
+        q = re.sub(
+            r"\b(?:scrape|scraping|extract|extracting)\b",
+            " ",
+            q,
+            flags=re.IGNORECASE,
+        )
+        q = re.sub(r"\bsite:[^\s]+", " ", q, flags=re.IGNORECASE)
+        if strict:
+            q = re.sub(r"\b(?:OR|AND)\b", " ", q, flags=re.IGNORECASE)
+        return " ".join(q.split())
+
+    @staticmethod
     def _sanitize_scholar_query(query: str, max_len: int = 120) -> str:
         """OVERHAUL3 D-H (overhaul3_audit.md W3/S7): scholar APIs reject
         punctuation-heavy ``search=`` expressions.
@@ -741,10 +778,14 @@ class SearxNGClient:
             except Exception as exc:  # noqa: BLE001 - degrade to the generic clamp
                 logger.debug("reference query condensation unavailable (%s)", exc)
         elif profile == "scholar":
-            return SearxNGClient._sanitize_scholar_query(query)
-        if len(query) > 200:
-            return query[:200].rsplit(" ", 1)[0]
-        return query
+            q = SearxNGClient._sanitize_scholar_query(query)
+            return SearxNGClient._strip_instruction_debris(q, strict=True)
+        # web and everything else: drop instruction debris but keep boolean
+        # operators (web crawlers can use OR/AND legitimately).
+        q = SearxNGClient._strip_instruction_debris(query, strict=False)
+        if len(q) > 200:
+            return q[:200].rsplit(" ", 1)[0]
+        return q
 
     async def _search_searxng_json(
         self,
