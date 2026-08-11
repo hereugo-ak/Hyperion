@@ -125,6 +125,24 @@ def clear_fetch_cache() -> None:
     _FETCH_CACHE.clear()
 
 
+def _batch_result_ok(result: Any) -> bool:
+    """OVERHAUL4 P7: True when a batch-tier result is a successful extraction
+    (an exception is never OK)."""
+    return not isinstance(result, BaseException) and bool(
+        getattr(result, "success", False)
+    )
+
+
+def _batch_result_transient(result: Any) -> bool:
+    """OVERHAUL4 P7: True when a batch-tier failure looks transient
+    (timeout/connection/5xx/429) and is worth a same-tier retry."""
+    if isinstance(result, BaseException):
+        msg = f"{type(result).__name__}: {result}"
+    else:
+        msg = getattr(result, "error", "") or ""
+    return UnifiedExtract._is_transient_error(msg)
+
+
 @dataclass
 class UnifiedExtractResult:
     """A unified extraction result from the fallback chain."""
@@ -136,6 +154,10 @@ class UnifiedExtractResult:
     html: str = ""
     links: list[dict[str, str]] = field(default_factory=list)
     tables: list[dict[str, Any]] = field(default_factory=list)
+    # OVERHAUL4 P7: media URLs found ON the page (img/media sub-resources)
+    # — populated by tiers that can enumerate rendered assets (obscura
+    # --dump assets). Pure media FILE urls still fail fast as "media".
+    images: list[str] = field(default_factory=list)
     tool_used: str = ""
     tools_tried: list[str] = field(default_factory=list)
     success: bool = False
@@ -160,6 +182,7 @@ class UnifiedExtractResult:
             "html": self.html,
             "links": self.links,
             "tables": self.tables,
+            "images": self.images,
             "tool_used": self.tool_used,
             "tools_tried": self.tools_tried,
             "success": self.success,
@@ -235,6 +258,11 @@ class UnifiedExtract:
         "curl_cffi",
         "jina",
         "http",
+        # OVERHAUL4 P7: firecrawl self-host — one HTTP call with server-side
+        # JS rendering + parallel batch, cheaper per page than any local
+        # browser tier, so it sits right after the no-JS tiers and before
+        # obscura/nodriver/crawl4ai/camoufox.
+        "firecrawl",
         "obscura",
         "nodriver",
         "crawl4ai",
@@ -248,6 +276,44 @@ class UnifiedExtract:
     # page needs rendering (pricing calculators, interactive dashboards), since
     # attempting them can only return a shell of the document.
     NON_JS_TIERS: tuple[str, ...] = ("curl_cffi", "jina", "http")
+
+    # OVERHAUL4 P7 (URL-aware ladder): how many attempts each tier gets before
+    # the ladder moves on. Retries only fire on TRANSIENT failures (timeout /
+    # connection / 5xx / 429) — a deterministic "not installed" or
+    # "no usable content" is not retried.
+    TIER_MAX_ATTEMPTS = 3
+
+    # OVERHAUL4 P7 (capability-based assignment): for js_heavy pages, the
+    # tier order is by CAPACITY, not raw cheapness — obscura leads (instant
+    # Rust browser, stealth TLS impersonation, JS rendering, cheaper than
+    # firecrawl's node/playwright stack), then the HTTP-based firecrawl, then
+    # the anti-bot fetchers in increasing stealth/heaviness, cloudflare
+    # solver, and the archive as the true last resort.
+    JS_HEAVY_TIER_ORDER: tuple[str, ...] = (
+        "obscura",
+        "firecrawl",
+        "scrapling",
+        "nodriver",
+        "crawl4ai",
+        "camoufox",
+        "flaresolverr",
+        "wayback",
+    )
+
+    # Known JS-rendered / anti-bot hostname fragments. Pages from these hosts
+    # skip the non-JS tiers entirely (their HTML is an empty shell).
+    JS_HEAVY_HOST_HINTS: frozenset[str] = frozenset({
+        "twitter.com", "x.com", "linkedin.com", "facebook.com",
+        "instagram.com", "tiktok.com", "glassdoor.com", "indeed.com",
+        "producthunt.com", "statista.com", "crunchbase.com",
+        "g2.com", "capterra.com", "trustpilot.com", "etmoney.com",
+        "investing.com", "tradingview.com", "app.", "dashboards.",
+    })
+    # URL path fragments that indicate a JS-heavy interactive page.
+    JS_HEAVY_PATH_HINTS: frozenset[str] = frozenset({
+        "/pricing", "/features", "/compare", "/dashboard", "/calculator",
+        "/explore", "/products", "/app", "/chart", "/interactive",
+    })
 
     def __init__(
         self,
@@ -435,6 +501,25 @@ class UnifiedExtract:
             if tool == "curl_cffi":
                 available = CurlCffiClient(settings=self.settings)._check_available()
                 detail = "" if available else "curl_cffi not installed"
+            elif tool == "firecrawl":
+                # OVERHAUL4 P7: self-host reachability probe (short timeout —
+                # a dead instance must be skipped, not waited on for 30s).
+                try:
+                    import httpx as _httpx
+
+                    from hyperion.tools.firecrawl_client import FIRECRAWL_DEFAULT_URL
+
+                    base = (
+                        str(getattr(self.settings, "firecrawl_url", "") or "")
+                        or FIRECRAWL_DEFAULT_URL
+                    ).rstrip("/")
+                    with _httpx.Client(timeout=3.0) as _c:
+                        _r = _c.get(f"{base}/test")
+                    available = _r.status_code < 500
+                    detail = "" if available else "firecrawl not reachable"
+                except Exception as _exc:  # noqa: BLE001 - probe must not raise
+                    available = False
+                    detail = f"firecrawl not reachable ({type(_exc).__name__})"
             elif tool == "nodriver":
                 available = NodriverClient(settings=self.settings)._check_available()
                 detail = "" if available else "nodriver not installed"
@@ -648,10 +733,45 @@ class UnifiedExtract:
             error=r.error,
         )
 
+    async def _extract_firecrawl(
+        self, url: str, *, extract_tables: bool = True, extract_links: bool = True
+    ) -> UnifiedExtractResult:
+        """OVERHAUL4 P7 — firecrawl tier. Self-hosted crawl/scrape engine with
+        server-side JS rendering; one HTTP call, cheaper per page than any
+        local browser tier. ``extract_tables`` is intentionally ignored here:
+        the tier requests ``onlyMainContent`` markdown (tables arrive inline);
+        local browser tiers remain the table-structured fallback."""
+        from hyperion.tools.firecrawl_client import FirecrawlClient
+
+        client = FirecrawlClient(settings=self.settings)
+        try:
+            r = await client.scrape(url)
+        finally:
+            await client.close()
+        if not r.success:
+            return self._finish(url, "firecrawl", primary="", error=r.error or "no content")
+        links = [dict(l) for l in r.links] if extract_links else []
+        return self._finish(
+            url,
+            "firecrawl",
+            primary=r.markdown or r.html,
+            title=r.title,
+            markdown=r.markdown,
+            html=r.html,
+            links=links,
+        )
+
     async def _extract_obscura(
         self, url: str, *, extract_tables: bool = True, extract_links: bool = True
     ) -> UnifiedExtractResult:
-        """Tier 3 — Obscura. Stealth local binary with JS rendering."""
+        """Tier — Obscura. Stealth local Rust browser with JS rendering.
+
+        OVERHAUL4 P7: obscura is the cheap-and-capable browser tier for
+        js_heavy pages — instant cold start, 30MB RAM, ``--stealth`` TLS
+        impersonation. After the text fetch it also enumerates the rendered
+        page's media assets (``--dump assets``) into ``result.images``, so a
+        page CONTAINING media contributes those URLs downstream.
+        """
         obscura = await self._get_obscura()
         r = await obscura.fetch(url, output_format="markdown")
         if getattr(r, "status_code", 0) != 200:
@@ -662,7 +782,7 @@ class UnifiedExtract:
                 error=getattr(r, "error", "") or f"HTTP {getattr(r, 'status_code', 0)}",
             )
         primary = r.markdown or r.content
-        return self._finish(
+        result = self._finish(
             url,
             "obscura",
             primary=primary,
@@ -671,6 +791,13 @@ class UnifiedExtract:
             markdown=r.markdown,
             error=r.error,
         )
+        if result.success and extract_links:
+            # Media-on-page: the rendered asset graph (img/media URLs).
+            try:
+                result.images = await obscura.fetch_assets(url)
+            except Exception as exc:  # noqa: BLE001 - assets are best-effort
+                logger.debug("obscura asset enumeration failed for %s: %s", url, exc)
+        return result
 
     async def _extract_nodriver(
         self, url: str, *, extract_tables: bool = True, extract_links: bool = True
@@ -824,9 +951,70 @@ class UnifiedExtract:
 
     # ── Driver 1: single URL ────────────────────────────────────────────────
 
-    def _eligible_tiers(self, force_js_render: bool) -> list[str]:
-        tiers = list(self.tier_order)
-        if force_js_render:
+    def _classify_url(self, url: str) -> str:
+        """OVERHAUL4 P7: URL/page-type profile for tier selection.
+
+        Returns one of ``pdf`` / ``media`` / ``js_heavy`` / ``default``:
+
+        - ``pdf``      -> dedicated PDF text+table extraction first
+        - ``media``    -> an image/video file: nothing to extract, fail fast
+        - ``js_heavy`` -> known JS/anti-bot host or interactive path: skip the
+          non-JS tiers (their HTML is an empty shell) and start at the first
+          rendering tier (firecrawl/obscura)
+        - ``default``  -> cheap-first ladder as before
+        """
+        raw = (url or "").strip()
+        lowered = raw.lower()
+        path = lowered.split("?", 1)[0].split("#", 1)[0]
+        host = lowered.split("//")[-1].split("/")[0]
+        host = host[4:] if host.startswith("www.") else host
+
+        if path.endswith(".pdf") or ".pdf?" in lowered:
+            return "pdf"
+        if path.endswith((
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp",
+            ".mp4", ".mp3", ".avi", ".mov", ".webm", ".zip", ".gz",
+        )):
+            return "media"
+        if any(h in host for h in self.JS_HEAVY_HOST_HINTS) or any(
+            h in path for h in self.JS_HEAVY_PATH_HINTS
+        ):
+            return "js_heavy"
+        return "default"
+
+    @staticmethod
+    def _is_transient_error(error: str) -> bool:
+        """OVERHAUL4 P7: whether a tier failure is worth a same-tier retry.
+
+        Transient = timeout / connection / 5xx / 429 / rate limit. A
+        deterministic failure ("not installed", "no usable content",
+        "HTTP 404") is not retried — it will fail identically.
+        """
+        msg = (error or "").lower()
+        return any(k in msg for k in (
+            "timeout", "timed out", "time out", "connection", "refused",
+            "reset", "temporarily", "too many requests", "rate limit",
+            "429", "500", "502", "503", "504", "5xx", "connect error",
+            "unreachable", "unavailable", "read error", "broken pipe",
+        ))
+
+    def _tier_order_for(self, profile: str) -> tuple[str, ...]:
+        """OVERHAUL4 P7: capability-based tier order for a URL profile.
+
+        - ``js_heavy`` -> :attr:`JS_HEAVY_TIER_ORDER` (obscura leads: instant
+          Rust browser with stealth TLS impersonation, then firecrawl, then
+          the anti-bot fetchers by increasing stealth/heaviness)
+        - ``pdf`` / ``media`` / ``default`` -> :attr:`TIER_ORDER` (cheap-first
+          ladder; pdf/media are handled by their dedicated paths before the
+          ladder runs anyway)
+        """
+        if profile == "js_heavy":
+            return self.JS_HEAVY_TIER_ORDER
+        return self.tier_order
+
+    def _eligible_tiers(self, force_js_render: bool, profile: str = "default") -> list[str]:
+        tiers = list(self._tier_order_for(profile))
+        if force_js_render or profile == "js_heavy":
             tiers = [t for t in tiers if t not in self.NON_JS_TIERS]
         return tiers
 
@@ -880,7 +1068,26 @@ class UnifiedExtract:
         errors: list[str] = []
         self._active_query = query or ""
 
-        for tier in self._eligible_tiers(force_js_render):
+        # OVERHAUL4 P7: URL/page-type aware entry. Media files fail fast;
+        # PDFs get the dedicated PDF path first (text + tables), then fall
+        # through to the general ladder if it fails; known JS-heavy hosts skip
+        # the non-JS tiers so the first rendering tier carries them.
+        profile = self._classify_url(url)
+        if profile == "media":
+            return self._failure(url, [], ["media file — no text to extract"])
+        if profile == "pdf":
+            try:
+                pdf_result = await self.extract_pdf(url)
+                if pdf_result.success:
+                    pdf_result.tool_used = pdf_result.tool_used or "pdf"
+                    pdf_result.tools_tried = ["pdf"]
+                    return pdf_result
+                errors.append(f"pdf: {pdf_result.error or 'no content'}")
+            except Exception as exc:  # noqa: BLE001 - PDF path must not kill the ladder
+                logger.debug("pdf extraction failed for %s: %s", url, exc)
+                errors.append(f"pdf: {type(exc).__name__}: {exc}")
+
+        for tier in self._eligible_tiers(force_js_render, profile):
             if not self._tier_available(tier):
                 continue
             extractor = getattr(self, f"_extract_{tier}", None)
@@ -895,26 +1102,68 @@ class UnifiedExtract:
                 continue
 
             tools_tried.append(tier)
-            try:
-                result = cast(
-                    "UnifiedExtractResult",
-                    await extractor(
-                        url,
-                        extract_tables=extract_tables,
-                        extract_links=extract_links,
-                    ),
-                )
-            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
-                # Fail loud (fix 0.3 discipline): never a bare `except: pass`.
-                logger.debug("extraction tier %s failed for %s: %s", tier, url, e)
-                errors.append(f"{tier}: {e}")
-                continue
+            result: UnifiedExtractResult | None = None
+            # OVERHAUL4 P7: per-tier retries (TIER_MAX_ATTEMPTS). Only
+            # transient failures (timeout/connection/5xx/429) are retried
+            # with a short backoff; deterministic failures move on at once.
+            for attempt in range(1, self.TIER_MAX_ATTEMPTS + 1):
+                try:
+                    result = cast(
+                        "UnifiedExtractResult",
+                        await extractor(
+                            url,
+                            extract_tables=extract_tables,
+                            extract_links=extract_links,
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    logger.debug(
+                        "extraction tier %s failed for %s (attempt %d/%d): %s",
+                        tier, url, attempt, self.TIER_MAX_ATTEMPTS, exc,
+                    )
+                    if attempt < self.TIER_MAX_ATTEMPTS and self._is_transient_error(
+                        f"{type(exc).__name__}: {exc}"
+                    ):
+                        await asyncio.sleep(0.4 * attempt)
+                        continue
+                    result = None
+                    break
+                if result.success:
+                    break
+                if (
+                    attempt < self.TIER_MAX_ATTEMPTS
+                    and result.error
+                    and self._is_transient_error(result.error)
+                ):
+                    logger.debug(
+                        "extraction tier %s transient failure (%s) — retrying "
+                        "%d/%d", tier, result.error[:60], attempt + 1,
+                        self.TIER_MAX_ATTEMPTS,
+                    )
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+                break
 
-            if result.success:
+            if result is not None and result.success:
                 result.tools_tried = tools_tried
                 result.tool_used = tier
+                # OVERHAUL4 P7: media enrichment — a cheap tier (curl_cffi/
+                # jina/http/firecrawl) returns TEXT but no media. When the
+                # caller wants links, ask obscura for the rendered asset
+                # graph (~1 fast local call; skipped when obscura is
+                # unavailable or the tier already produced images). This is
+                # what makes "a page containing media and infographics"
+                # contribute its image URLs on EVERY profile, not just
+                # js_heavy.
+                if extract_links and not result.images and tier != "obscura":
+                    try:
+                        if self._tier_available("obscura"):
+                            obscura = await self._get_obscura()
+                            result.images = await obscura.fetch_assets(url)
+                    except Exception as exc:  # noqa: BLE001 - enrichment is best-effort
+                        logger.debug("media enrichment failed for %s: %s", url, exc)
                 return result
-            if result.error:
+            if result is not None and result.error:
                 errors.append(f"{tier}: {result.error}")
 
         return self._failure(url, tools_tried, errors)
@@ -1046,10 +1295,45 @@ class UnifiedExtract:
         semaphore = asyncio.Semaphore(concurrency or self.EXTRACTION_CONCURRENCY)
         is_available = tier_available or self._tier_available
         resolve = tier_resolver or self._default_resolver
-        ladder = self._eligible_tiers(force_js_render)
+        # OVERHAUL4 P7: all-js_heavy batches climb the capability-ordered
+        # js_heavy ladder (obscura first); mixed/default batches keep the
+        # cheap-first order (per-URL filtering still skips non-JS on
+        # js_heavy URLs).
+        _batch_profile = (
+            "js_heavy"
+            if pending_order and all(
+                self._classify_url(u) == "js_heavy" for u in pending_order
+            )
+            else "default"
+        )
+        ladder = self._eligible_tiers(force_js_render, _batch_profile)
         if tiers:
             allowed = set(tiers)
             ladder = [t for t in ladder if t in allowed]
+
+        # OVERHAUL4 P7: URL-aware pre-pass — media files fail fast (no text
+        # to extract) and PDFs use the dedicated PDF path (text + tables);
+        # neither should waste a general tier on a binary blob. PDF failures
+        # stay in the ladder as a fallback.
+        for url in list(pending_order):
+            profile = self._classify_url(url)
+            if profile == "media":
+                outcome.results.append(UnifiedExtractResult(
+                    url=url, success=False, error="media file — no text to extract"
+                ))
+                extracted_urls.add(url)
+            elif profile == "pdf":
+                try:
+                    pdf_result = await self.extract_pdf(url)
+                    if pdf_result.success:
+                        pdf_result.tool_used = pdf_result.tool_used or "pdf"
+                        pdf_result.tools_tried = ["pdf"]
+                        outcome.results.append(pdf_result)
+                        extracted_urls.add(url)
+                        if url and (pdf_result.markdown or pdf_result.content):
+                            _FETCH_CACHE.setdefault(url, pdf_result)
+                except Exception as exc:  # noqa: BLE001 - PDF path must not kill the batch
+                    logger.debug("pdf extraction failed for %s: %s", url, exc)
 
         for tier in ladder:
             pending = [u for u in pending_order if u not in extracted_urls]
@@ -1057,6 +1341,14 @@ class UnifiedExtract:
                 break  # everything already extracted — stop climbing the ladder
             if not is_available(tier):
                 continue
+
+            # OVERHAUL4 P7: URL-aware tier filtering — non-JS tiers never
+            # waste a request on a known js_heavy URL (its HTML is an empty
+            # shell); the first rendering tier carries it instead.
+            if tier in self.NON_JS_TIERS:
+                pending = [u for u in pending if self._classify_url(u) != "js_heavy"]
+                if not pending:
+                    continue
 
             extractor = resolve(
                 tier,
@@ -1072,10 +1364,36 @@ class UnifiedExtract:
             results = await asyncio.gather(
                 *(extractor(u) for u in pending), return_exceptions=True
             )
+            by_url: dict[str, Any] = dict(zip(pending, results))
+
+            # OVERHAUL4 P7: per-tier transient retry rounds — timeout/
+            # connection/5xx/429 failures on the SAME tier are retried
+            # (TIER_MAX_ATTEMPTS total attempts) with a short backoff before
+            # the ladder moves on; deterministic failures do not retry.
+            for retry_round in range(1, self.TIER_MAX_ATTEMPTS):
+                retryable = [
+                    u for u in pending
+                    if not _batch_result_ok(by_url[u])
+                    and _batch_result_transient(by_url[u])
+                ]
+                if not retryable:
+                    break
+                logger.debug(
+                    "extraction tier %s retrying %d transient URL(s) "
+                    "(round %d/%d)", tier, len(retryable),
+                    retry_round + 1, self.TIER_MAX_ATTEMPTS,
+                )
+                await asyncio.sleep(0.5 * retry_round)
+                retried = await asyncio.gather(
+                    *(extractor(u) for u in retryable), return_exceptions=True
+                )
+                for u, res in zip(retryable, retried):
+                    if _batch_result_ok(res):
+                        by_url[u] = res
 
             produced = 0
             failures: list[str] = []
-            for result in results:
+            for url, result in by_url.items():
                 if isinstance(result, BaseException):
                     logger.debug("extraction tier %s raised: %s", tier, result)
                     failures.append(f"{type(result).__name__}: {result}")

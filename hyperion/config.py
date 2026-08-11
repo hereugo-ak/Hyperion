@@ -599,6 +599,10 @@ class ToolPathsConfig(BaseModel):
     # Jina — search + reader API (§5.1)
     jina_api_key: str = ""
 
+    # OVERHAUL4 P7 — self-hosted Firecrawl (crawl/scrape engine, port 3002).
+    # One HTTP call with server-side JS rendering + parallel /batch/scrape.
+    firecrawl_url: str = "http://localhost:3002"
+
     # Obscura — Rust headless browser binary (§5.1)
     # Empty string means "look in PATH"
     obscura_path: str = ""
@@ -871,6 +875,9 @@ class Settings(BaseSettings):
     # ── Tool Paths ──
     searxng_url: str = "http://localhost:8888"
     jina_api_key: str = ""
+    # OVERHAUL4 P7: self-hosted Firecrawl (docker-compose service, port 3002).
+    # Extraction ladder tier between `http` and the local browser tiers.
+    firecrawl_url: str = "http://localhost:3002"
     obscura_path: str = ""
     flaresolverr_url: str = "http://localhost:8191/v1"
     alpha_vantage_api_key: str = ""

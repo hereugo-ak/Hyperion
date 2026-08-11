@@ -1005,20 +1005,25 @@ class SubAgentRunner:
     MAX_EXTRACT_URLS = 10
 
     def _extraction_tiers(self) -> list[str]:
-        """Extraction tiers this sub-agent is entitled to use, in ladder order.
+        """Extraction tiers this sub-agent may use, in ladder order.
 
-        Ordering is left to :class:`UnifiedExtract`, this returns a *set* of
-        permitted tiers, and the ladder normalises them back into its own
-        cheap-first order so a sub-agent cannot accidentally promote a browser
-        tier ahead of a free one.
+        OVERHAUL4 P7 (2026-08-11): tiers were previously gated on the agent's
+        LLM-visible tool grants (``EXTRACT_TIER_TOOLS`` + ``_has_tool``), so a
+        sub-agent whose parent specialist hadn't granted ``jina``/``obscura``
+        silently lost those extraction tiers even when the backends were
+        installed — the root cause of the 0 ``stage=extraction`` ledger
+        records (findings built from snippets only). Extraction is internal
+        plumbing, not an LLM tool surface: every backend that can run here
+        should be on the ladder. ``UnifiedExtract._tier_available`` decides
+        availability at runtime (curl_cffi installed, jina keyless-capable,
+        obscura binary present, craw4ai installed, ...); ``flaresolverr``
+        stays governed by its own circuit breaker (W-12: CAPTCHA tooling is
+        investigation-only). Ordering is still normalised cheap-first by the
+        ladder itself.
         """
-        tiers = list(self.ALWAYS_AVAILABLE_EXTRACT_TIERS)
-        tiers += [
-            tier
-            for tier, tool in self.EXTRACT_TIER_TOOLS.items()
-            if self._has_tool(tool)
-        ]
-        return tiers
+        from hyperion.tools.unified_extract import UnifiedExtract
+
+        return list(UnifiedExtract.TIER_ORDER)
 
     async def _extract_urls(
         self, urls: list[str], query: str = ""

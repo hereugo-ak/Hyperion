@@ -35,6 +35,10 @@ Status legend: ⬜ pending · 🔧 in progress · ✅ done · ❌ blocked (state
 - [x] ✅ P6.4 deployed to WSL; live smoke test: mwmbl 50 results, brave 429 (cools), yep denied (cools), mojeek silent-0 (note: investigate/disable later)
 - [x] ✅ P6.5 ops fix: valkey `cap_add` (WSL2 setpriv crash-loop) — compose updated + containers healthy
 - [x] ✅ P6.6 rate-limit policy: Semantic Scholar pacing process-wide + 1.5s (below the 1 req/s cumulative ceiling)
+- [x] ✅ P7.0 extraction tiers availability-based (not tool-grant-based) — obscura/jina/etc reach every sub-agent
+- [x] ✅ P7.0b Firecrawl tier wired: `firecrawl` in TIER_ORDER after `http`; FirecrawlClient (single + parallel `/batch/scrape`); config `firecrawl_url`; compose services (firecrawl + firecrawl-redis + playwright-service, correct ghcr refs); fail-open verified
+- [x] ✅ P7.0c WSL fully provisioned: firecrawl stack running; curl_cffi present; **obscura v0.1.10 Linux installed** (from github.com/h4ckf0r0day/obscura, pinned to the Windows-binary version) — live-verified: js_heavy→obscura (15.7k chars + 13 images), default→curl_cffi + enrichment (53.5k + 12 images). playwright chromium unsupported on ubuntu26.04 (crawl4ai browser tier degrades; firecrawl covers JS)
+- [x] ✅ P7.0d media-on-page: `UnifiedExtractResult.images`; obscura `--dump assets`; media enrichment after ANY successful text tier (verified Windows: 45.8k text + 15 images)
 
 ## Phase 7 — Regression lock
 - [ ] ⬜ P7.1 empty-report canary

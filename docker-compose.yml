@@ -134,6 +134,13 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
 
+# OVERHAUL4 P7: Firecrawl runs from ITS OWN stack — clone + compose at
+# /home/abuzar/firecrawl (official self-host; api+playwright+nuq-postgres+
+# foundationdb+rabbitmq+redis, prebuilt images, port 3002). Not defined here
+# to avoid container-name/port conflicts with that stack. The extraction
+# ladder's `firecrawl` tier needs only HYPERION_FIRECRAWL_URL=http://localhost:3002
+# and the stack to be running.
+
 volumes:
   hyperion-valkey-data:
   hyperion-searxng-scholar-data:
