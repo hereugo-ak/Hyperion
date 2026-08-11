@@ -621,6 +621,11 @@ class ToolPathsConfig(BaseModel):
     # Semantic Scholar — academic paper search API (§5.1)
     semantic_scholar_api_key: str = ""
 
+    # OpenAlex — scholarly metadata API, NO key. Polite pool via mailto:
+    # a real email in the User-Agent raises the rate ceiling ~10x
+    # (HYPERION_OPENALEX_EMAIL; falls back to HYPERION_CONTACT_EMAIL).
+    openalex_email: str = ""
+
     # Unsplash — image search API (§5.1)
     unsplash_access_key: str = ""
 
@@ -875,6 +880,9 @@ class Settings(BaseSettings):
     reddit_user_agent: str = "hyperion_research/1.0"
     unsplash_access_key: str = ""
     semantic_scholar_api_key: str = ""
+    # OVERHAUL4 G2: OpenAlex polite-pool mailto — NO API key exists; a real
+    # email raises the rate ceiling ~10x (falls back to HYPERION_CONTACT_EMAIL).
+    openalex_email: str = ""
 
     # ── Computed Configurations ──
     # These are not loaded from env — they are derived from the architecture
@@ -953,6 +961,7 @@ class Settings(BaseSettings):
             reddit_user_agent=self.reddit_user_agent,
             unsplash_access_key=self.unsplash_access_key,
             semantic_scholar_api_key=self.semantic_scholar_api_key,
+            openalex_email=self.openalex_email,
         )
 
     @property

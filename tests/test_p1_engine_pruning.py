@@ -33,7 +33,9 @@ from hyperion.tools.searxng import (
 
 ROOT = Path(__file__).resolve().parents[1]
 BANNED = ("mojeek", "yep")
-ACTIVE_WEB = ("mwmbl", "brave")
+# OVERHAUL4 P6.2: marginalia/wiby added to the web class — keyless,
+# IP-tolerant engines (unlike the crawler class) to end web=0d/0e.
+ACTIVE_WEB = ("mwmbl", "brave", "marginalia", "wiby")
 
 
 def _load_yml(path: Path) -> dict:
@@ -69,10 +71,11 @@ def test_base_settings_disable_banned_scrapers() -> None:
 
 
 def test_generated_web_profile_matches_the_pruning_contract() -> None:
-    """P1.2: the running web replica never feeds a banned scraper."""
+    """P1.2 + OVERHAUL4 P6.2: the web replica never feeds a banned scraper
+    and ships the tolerant keyless web engines."""
     web = _load_yml(ROOT / "searxng_settings.web.yml")
     engines = {e["name"]: e for e in web["engines"]}
-    assert set(engines) == {"mojeek", "mwmbl", "brave", "yep"}
+    assert set(engines) == {"mojeek", "mwmbl", "brave", "yep", "marginalia", "wiby"}
     for name in BANNED:
         assert engines[name]["disabled"] is True
     for name in ACTIVE_WEB:

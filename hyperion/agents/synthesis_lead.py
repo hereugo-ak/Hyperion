@@ -130,6 +130,11 @@ SECTION_PRODUCING_AGENTS: frozenset[AgentName] = frozenset({
     AgentName.CONSUMER_INSIGHTS,
     AgentName.MA_ANALYST,
     AgentName.INNOVATION_ANALYST,
+    # OVERHAUL4 P3.1: strategy_analyst was missing from the allowlist — a
+    # strategy-only engagement produced ZERO chapters (tasks=[], 0 sections,
+    # 0 cited domains → CORPUS FLOOR: 0). All 12 specialists produce a
+    # client-facing chapter.
+    AgentName.STRATEGY_ANALYST,
 })
 
 
@@ -570,8 +575,23 @@ class SynthesisLead(BaseAgent):
         return self._findings_by_agent.get(agent_name, [])
 
     def _get_participating_agents(self) -> list[str]:
-        """Get list of agents that produced findings."""
-        return list(self._findings_by_agent.keys())
+        """Get list of agents that produced findings.
+
+        OVERHAUL4 P3.3: never report an empty methodology while findings
+        exist. ``_findings_by_agent`` is keyed by bus sender / finding.agent;
+        if keying diverged (empty agent on a synthetic finding, a sub-agent
+        label outside the allowlist), fall back to the distinct agent labels
+        on the collected findings themselves so the methodology block is
+        never empty alongside a non-empty evidence base.
+        """
+        agents = list(self._findings_by_agent.keys())
+        if not agents and self._collected_findings:
+            agents = sorted({
+                (f.agent or "").strip()
+                for f in self._collected_findings
+                if (f.agent or "").strip()
+            })
+        return agents
 
     # ─────────────────────────────────────────────────────────────────────
     # Step 2: Build finding matrix
@@ -1176,6 +1196,40 @@ class SynthesisLead(BaseAgent):
     # Step 8: Build analysis sections for FinalReport
     # ─────────────────────────────────────────────────────────────────────
 
+    def _deterministic_section_body(
+        self, agent: str, findings: list[KeyFinding], section_title: str
+    ) -> str:
+        """OVERHAUL4 P3.2: structured finding-digest section body (last resort).
+
+        Built when the deep-tier narrative LLM fails, times out, or returns a
+        body too short to satisfy the page contract. Each finding becomes a
+        titled paragraph with its content, "so what?" implications and cited
+        sources — consulting-grade prose assembled from the fields the
+        specialists already produced, never a raw JSON dump. Logged loudly by
+        the caller so a degraded section is visible, not silent.
+        """
+        parts = [
+            f"Analysis of {section_title} is synthesized from "
+            f"{len(findings)} specialist finding(s). The narrative engine was "
+            "unavailable, so this section is a structured digest of the "
+            "collected evidence.",
+        ]
+        for idx, finding in enumerate(findings, start=1):
+            title = (finding.title or "").strip() or f"Finding {idx}"
+            content = (finding.content or "").strip()
+            implications = (finding.implications or "").strip()
+            sources = ", ".join(
+                s.title or s.url for s in (finding.sources or [])[:5]
+            )
+            parts.append(f"### {idx}. {title}")
+            if content:
+                parts.append(content)
+            if implications:
+                parts.append(f"**So what?** {implications}")
+            if sources:
+                parts.append(f"**Sources:** {sources}")
+        return "\n\n".join(parts)
+
     async def _build_analysis_sections(
         self,
         recommendation_data: dict[str, Any] | None = None,
@@ -1380,25 +1434,47 @@ class SynthesisLead(BaseAgent):
                     ):
                         section_body = retry_response.content
             except (ValueError, AttributeError, RuntimeError) as exc:
-                # P2-11: never a silent pass, never concatenated content. The
-                # failure becomes a structured gap with the agent and section
-                # identity, and the section is omitted below.
+                # OVERHAUL4 P3.2: P2-11's "omit the section" policy is exactly
+                # how 47 findings became a 0-domain shell (Aug-11 run). A
+                # failed narrative LLM is a LOUD last-resort fallback to a
+                # deterministic finding-digest section — never a gap that
+                # empties the report. The LLM path remains primary.
                 logger.error(
-                    "narrative synthesis failed for agent=%s section=%s: %s: %s",
+                    "narrative synthesis failed for agent=%s section=%s: %s: %s "
+                    "— building deterministic finding-digest section",
                     agent, _section_title(agent), type(exc).__name__, exc,
                 )
-                raise SectionGapError(
-                    f"Narrative synthesis failed for "
-                    f"'{_section_title(agent)}' ({agent}): {type(exc).__name__}: {exc}"
-                ) from exc
+                section_body = self._deterministic_section_body(
+                    agent, findings, _section_title(agent)
+                )
 
             if section_body is None:
-                # Both attempts produced an unusable body (too short or empty).
-                # Do not fall back to concatenation: raise a gap instead.
-                raise SectionGapError(
-                    f"Narrative synthesis produced no usable body for "
-                    f"'{_section_title(agent)}' ({agent}); section omitted and "
-                    f"its question declared in limitations."
+                # OVERHAUL4 P3.2: both attempts produced an unusable body.
+                # Never omit the section (that is what emptied the report) —
+                # fall back to the deterministic digest with a loud log.
+                logger.warning(
+                    "narrative synthesis produced no usable body for "
+                    "agent=%s section=%s — building deterministic "
+                    "finding-digest section",
+                    agent, _section_title(agent),
+                )
+                section_body = self._deterministic_section_body(
+                    agent, findings, _section_title(agent)
+                )
+
+            if section_body is None:
+                # OVERHAUL4 P3.2: both attempts produced an unusable body
+                # (too short or empty). P2-11's "omit the section" policy is
+                # exactly how 47 findings became a 0-domain shell — never
+                # omit: fall back to the deterministic digest, loudly.
+                logger.warning(
+                    "narrative synthesis produced no usable body for "
+                    "agent=%s section=%s — building deterministic "
+                    "finding-digest section",
+                    agent, _section_title(agent),
+                )
+                section_body = self._deterministic_section_body(
+                    agent, findings, _section_title(agent)
                 )
 
             # P2-13: assembly-time dedup. Multiple findings can carry the same

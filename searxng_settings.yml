@@ -23,6 +23,11 @@ use_default_settings:
       - mwmbl
       - brave
       - yep
+      # OVERHAUL4 P6.2: tolerant, keyless web engines (probe /config first)
+      - marginalia
+      - wiby
+      # OVERHAUL4 P6.2: structured-facts API engine (reference class)
+      - wikidata
 
 general:
   instance_name: "HYPERION Search"
@@ -207,3 +212,35 @@ engines:
     disabled: true
     timeout: 15
     weight: 0.6
+
+  # OVERHAUL4 P6.2: marginalia — text-first independent index, no key,
+  # tolerant of datacenter IPs (unlike the crawler class). VERIFY against
+  # the running image's /config before restart: if the image lacks it, remove
+  # this block + the services.py tuple entry + the searxng.py constant and
+  # regenerate.
+  - name: marginalia
+    engine: marginalia
+    shortcut: mg
+    categories: [general]
+    disabled: false
+    timeout: 15
+    weight: 0.7
+
+  # OVERHAUL4 P6.2: wiby — simple-web index, no key, tolerant.
+  - name: wiby
+    engine: wiby
+    shortcut: wb
+    categories: [general]
+    disabled: false
+    timeout: 15
+    weight: 0.5
+
+  # OVERHAUL4 P6.2: wikidata — structured-facts API, no key, tolerant;
+  # reference-class padding for metric tables (Wikipedia companion).
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    categories: [general]
+    disabled: false
+    timeout: 15
+    weight: 0.8
