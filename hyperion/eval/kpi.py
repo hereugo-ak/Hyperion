@@ -56,6 +56,15 @@ class RunKPIs:
     kpi_7_synthesis_produced_final_report: bool = False
     kpi_8_off_topic_dropped: int = -1
 
+    # OVERHAUL3 D-F (overhaul3_audit.md §5.5): the Recovery Supervisor
+    # telemetry. ``kpi_9_recovery_attempted`` — did a BLOCKED run enter the
+    # supervisor at all? ``kpi_9_recovery_passes`` — how many bounded passes
+    # ran. ``kpi_9_recovered`` — did the run ship (or strictly improve) after
+    # recovery instead of terminating with a discarded diagnosis?
+    kpi_9_recovery_attempted: bool = False
+    kpi_9_recovery_passes: int = 0
+    kpi_9_recovered: bool = False
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -79,6 +88,8 @@ class RunKPIs:
             "kpi_7": self.kpi_7_synthesis_produced_final_report,
             # OVERHAUL2 S15 (S11): off-topic drops are tracked, not hidden.
             "kpi_8": self.kpi_8_off_topic_dropped >= 0,
+            # OVERHAUL3 D-F (§5.5): recovery telemetry is present and counted.
+            "kpi_9": self.kpi_9_recovery_passes >= 0,
         }
 
 
@@ -160,6 +171,7 @@ def diff_kpis(run_id: str, base: str | Path = "") -> dict[str, Any]:
         )
         gates["kpi_7"] = bool(data.get("kpi_7_synthesis_produced_final_report", False))
         gates["kpi_8"] = int(data.get("kpi_8_off_topic_dropped", -1)) >= 0
+        gates["kpi_9"] = int(data.get("kpi_9_recovery_passes", 0)) >= 0
         return gates
 
     cur_g = _green(current)
@@ -186,6 +198,8 @@ KPI_OWNER_PHASE: dict[str, str] = {
     "kpi_6": "P2",  # tasks-completed-with-output → output contract (OC-1/OC-2)
     "kpi_7": "P2",  # synthesis-produced-final-report → partial-context (S4)
     "kpi_8": "P3",  # off-topic drops → funnel hygiene (S11)
+    # OVERHAUL3 D-F: recovery supervisor telemetry → self-healing loop (W4/S9)
+    "kpi_9": "P5",  # recovery attempted/counted → quality supervision (P5)
 }
 
 

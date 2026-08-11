@@ -34,7 +34,10 @@ from hyperion.schemas.models import KeyFinding, ResearchOutcome
 
 
 def test_research_outcome_enum_members() -> None:
-    """F-01: the six required outcomes exist as one typed enum."""
+    """F-01 + OVERHAUL3 S10: the six required outcomes exist as one typed
+    enum, extended with ``budget_refused`` (a self-heal refused by the total
+    budget gate is stamped BUDGET_REFUSED, never RETRY_EXHAUSTED/ANALYSIS_FAILED
+    — logs must tell the truth, overhaul3_audit.md W4/S10)."""
     values = {o.value for o in ResearchOutcome}
     assert {
         "success",
@@ -43,6 +46,7 @@ def test_research_outcome_enum_members() -> None:
         "analysis_failed",
         "timeout",
         "retry_exhausted",
+        "budget_refused",
     } == values
 
 

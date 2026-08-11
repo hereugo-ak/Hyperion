@@ -701,6 +701,51 @@ class SearxNGClient:
             "owners_exhausted": sorted(cls._owners_exhausted),
         }
 
+    @staticmethod
+    def _sanitize_scholar_query(query: str, max_len: int = 120) -> str:
+        """OVERHAUL3 D-H (overhaul3_audit.md W3/S7): scholar APIs reject
+        punctuation-heavy ``search=`` expressions.
+
+        openalex 400'd on a 145-char comma/``?`` sentence (docker 12:02:35)
+        that sat UNDER the old 200-char clamp — the rejection was
+        punctuation, not length. Collapse ``,`` ``?`` ``.`` to spaces, then
+        clamp to ``max_len`` at a word boundary.
+        """
+        q = (query or "").strip()
+        q = q.replace(",", " ").replace("?", " ").replace(".", " ")
+        q = " ".join(q.split())
+        if len(q) > max_len:
+            q = q[:max_len].rsplit(" ", 1)[0]
+        return q.strip() or (query or "").strip()[:max_len]
+
+    @staticmethod
+    def _shape_query_for_profile(query: str, profile: str) -> str:
+        """OVERHAUL3 D-G/D-H: shape a query for the profile actually serving it.
+
+        - ``reference`` (wikipedia): ``/page/summary/{title}`` treats the
+          whole query as an article title and 400s on full-sentence specialist
+          queries (docker 12:31:05). Route through the same
+          ``SubAgentRunner._condense_query`` the sub-agents already use, so
+          reference searches arrive title-shaped (≤120 chars).
+        - ``scholar`` (openalex/crossref/arxiv/pubmed): APIs reject
+          punctuation-heavy paragraph queries; sanitize via
+          ``_sanitize_scholar_query``.
+        - everything else: the legacy S10 200-char clamp stays as the final
+          net so no profile ever dispatches a runaway paragraph.
+        """
+        if profile == "reference":
+            try:
+                from hyperion.agents.sub_agent import SubAgentRunner
+
+                return SubAgentRunner._condense_query(query, max_len=120)
+            except Exception as exc:  # noqa: BLE001 - degrade to the generic clamp
+                logger.debug("reference query condensation unavailable (%s)", exc)
+        elif profile == "scholar":
+            return SearxNGClient._sanitize_scholar_query(query)
+        if len(query) > 200:
+            return query[:200].rsplit(" ", 1)[0]
+        return query
+
     async def _search_searxng_json(
         self,
         query: str,
@@ -715,12 +760,13 @@ class SearxNGClient:
     ) -> SearchResponse | None:
         """Query one profile and fail over without sending it foreign engines."""
         category = categories or "general"
-        # OVERHAUL2 S10: scholar APIs 400 on paragraph-length natural-language
-        # queries (docker: openalex '400 Bad Request' on the Aug-10 run). Clamp
-        # at the client before the retry loop so the whole fleet never burns
-        # budget on a query the upstream categorically rejects.
-        if len(query) > 200:
-            query = query[:200].rsplit(" ", 1)[0]
+        # OVERHAUL3 D-G/D-H (overhaul3_audit.md W3/S6-7): query shaping is now
+        # profile-aware and happens INSIDE the retry loop
+        # (``_shape_query_for_profile``), because the endpoint profile is only
+        # known after ``endpoint_for`` resolves. The old S10 blanket 200-char
+        # clamp ran before the endpoint was known, so punctuation-heavy
+        # paragraphs still reached wikipedia (400 on ``/page/summary/{title}``)
+        # and openalex (400 on ``search=``).
         requested_engines = {
             engine.strip() for engine in engines.split(",") if engine.strip()
         }
@@ -759,8 +805,9 @@ class SearxNGClient:
                         endpoint.profile,
                     )
                     continue
+                dispatch_query = self._shape_query_for_profile(query, endpoint.profile)
                 params: dict[str, Any] = {
-                    "q": query,
+                    "q": dispatch_query,
                     "format": "json",
                     "categories": (
                         category
@@ -784,7 +831,34 @@ class SearxNGClient:
                     endpoint.outstanding = max(0, endpoint.outstanding - 1)
                 self._pool.mark_success(endpoint.port)
 
-                data = response.json()
+                # OVERHAUL3 D-I (overhaul3_audit.md W3/S8): a non-JSON body
+                # (proxy error page, throttling HTML, an upstream 502 page) is
+                # an ENGINE-LEVEL health signal, not a generic client error.
+                # The old path only opened the endpoint circuit — engine_health
+                # was never told, so the next request re-asked the same dead
+                # engines (the 2026-07-30 semantic scholar repeat-queries).
+                # Feed the failure to ``record_response`` BEFORE the retry so
+                # ``filter_available`` drops the cooled engines and the
+                # profile fails over to a healthy replica.
+                try:
+                    data = response.json()
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "SearXNG non-JSON body for '%s' on %s profile: %s — "
+                        "cooling engines %s",
+                        query[:80],
+                        endpoint.profile,
+                        exc,
+                        ", ".join(sorted(endpoint.engines)),
+                    )
+                    health.record_response(
+                        unresponsive_engines=[
+                            [engine, "non-json response body"]
+                            for engine in sorted(endpoint.engines)
+                        ],
+                        responding_engines=[],
+                    )
+                    raise
                 raw_results = data.get("results", [])
                 results: list[SearchResult] = []
                 engines_used_set: set[str] = set()

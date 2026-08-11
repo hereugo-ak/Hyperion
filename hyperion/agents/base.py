@@ -1192,9 +1192,10 @@ class BaseAgent(ABC):
         MBB-grade depth shows the disagreement and resolves it — it never
         hides conflicting numbers. This extracts numeric claims from each
         substantive sub-agent finding and flags pairs that disagree on the
-        same magnitude (e.g. one sub-agent cites "$2B TAM", another "$20B"),
-        so the parent's synthesis can either reconcile them evidence-weighted
-        or carry them as a typed limitation instead of silently averaging.
+        same magnitude (e.g. one sub-agent cites a two-billion-dollar TAM,
+        another cites twenty billion), so the parent's synthesis can either
+        reconcile them evidence-weighted or carry them as a typed limitation
+        instead of silently averaging.
 
         Returns a list of human-readable contradiction strings. Never raises —
         a detection failure yields [] so a sub-agent edge case cannot break
@@ -1336,6 +1337,12 @@ class BaseAgent(ABC):
         """
         from hyperion.agents.sub_agent import SubAgentRunner
 
+        # OVERHAUL3 D-C (overhaul3_audit.md W1/S3): reset the budget-refusal
+        # stamp at the top of EVERY spawn so a refusal recorded by an earlier
+        # spawn can never leak into a later caller's self-heal decision. The
+        # gate sets it to True only when IT refuses this specific spawn.
+        self._last_spawn_refused = False
+
         # F-08: yield-aware budget. A slot is only consumed by a sub-agent
         # that produced >=1 non-gap finding; timeouts and zero-findings
         # RELEASE the slot (sequential refills up to SUB_AGENT_TOTAL_CEILING).
@@ -1374,7 +1381,21 @@ class BaseAgent(ABC):
         if distinct_questions is None:
             distinct_questions = set()
             self._sub_agent_questions = distinct_questions
-        if len(distinct_questions) >= self.SUB_AGENT_TOTAL_CEILING:
+        # OVERHAUL3 D-C (overhaul3_audit.md W1/S3): the gate is MEMBERSHIP-aware,
+        # not size-only. A STRONG self-heal or a broadened respawn re-enters
+        # with the SAME question (already counted); the old `len(...) >= CEILING`
+        # check refused every retry once the set filled (3/3 under AMBER), so
+        # PROVIDER_FAILURE heals logged "still failed on STRONG tier" when
+        # STRONG never ran (the 2026-08-11 lie). Only genuinely NEW work items
+        # consume the ceiling; a retry of a counted question is budget-free.
+        if (
+            spec.question not in distinct_questions
+            and len(distinct_questions) >= self.SUB_AGENT_TOTAL_CEILING
+        ):
+            # P2 honesty (overhaul3 §5.4): stamp the refusal so the caller's
+            # self-heal can log "refused by budget" instead of claiming the
+            # STRONG tier ran and failed.
+            self._last_spawn_refused = True
             self._log(
                 f"SUB-AGENT total budget reached "
                 f"({len(distinct_questions)}/{self.SUB_AGENT_TOTAL_CEILING} "
@@ -1517,10 +1538,36 @@ class BaseAgent(ABC):
                     f"recovered {len(healed)} finding(s) on STRONG tier"
                 )
                 return healed
-            self._log(
-                f"SUB-AGENT PROVIDER SELF-HEAL EXHAUSTED: {spec.question[:80]} "
-                f"still failed on STRONG tier — typed terminal"
-            )
+            # OVERHAUL3 D-C (overhaul3_audit.md W1/S3): logs must NEVER lie.
+            # If the STRONG spawn was REFUSED at the total budget gate, it
+            # never ran — stamp BUDGET_REFUSED instead of the old
+            # "still failed on STRONG tier" line (which asserted an action the
+            # gate refused). ``_last_spawn_refused`` is set by the gate's
+            # refusal branch and reset at the top of every spawn.
+            if getattr(self, "_last_spawn_refused", False):
+                # OVERHAUL3 S10 (overhaul3_audit.md W4/S10, §5.4 P2): stamp the
+                # RUNNER's typed outcome too. The runner typed
+                # ANALYSIS_FAILED/RETRY_EXHAUSTED when PROVIDER_FAILURE was
+                # recorded; leaving that would tell telemetry a STRONG-tier
+                # run failed when the gate never let it run. Failure-class
+                # accuracy is a typed property, not a log line.
+                try:
+                    from hyperion.schemas.models import ResearchOutcome
+
+                    runner.outcome = ResearchOutcome.BUDGET_REFUSED
+                    runner.recovery_hint = "BUDGET_REFUSED"
+                except Exception as exc:  # noqa: BLE001 - stamping is best-effort
+                    logger.debug("runner BUDGET_REFUSED stamp failed: %s", exc)
+                self._log(
+                    f"SUB-AGENT PROVIDER SELF-HEAL REFUSED BY BUDGET: "
+                    f"{spec.question[:80]} — STRONG tier never ran (total "
+                    f"budget gate); typed BUDGET_REFUSED, not a STRONG failure"
+                )
+            else:
+                self._log(
+                    f"SUB-AGENT PROVIDER SELF-HEAL EXHAUSTED: {spec.question[:80]} "
+                    f"still failed on STRONG tier — typed terminal"
+                )
         if self._should_respawn_broadened(
             spec, findings, timed_out, generic_failure, recovery_hint=hint
         ):

@@ -8,8 +8,11 @@ Verifies the acceptance criteria from HYPERION_DEEP_AUDIT_2026-07-31_PART2.md
 2. Simulated crash/resume: a journal pre-seeded with N successful steps +
    artifacts causes re-execution to replay those steps from cache — the
    agent dispatch stub is NEVER invoked for them (not re-dispatched).
-3. MissingDependencyOutput: a task whose declared dependency failed raises
-   the named exception rather than silently running with a partial context.
+3. MissingDependencyOutput: a task whose declared dependency is missing for a
+   non-crash reason (PENDING / absent — a scheduling anomaly, not a FAILED
+   specialist) raises the named exception rather than silently running with
+   a partial context. (A FAILED dep is the D-B partial-context case — see
+   tests/test_w1_db_partial_context.py.)
 4. cli.py contains a real @app.command() named ``resume`` (not only the
    banner string) and at least one SIGINT/SIGTERM handler exists in-tree.
 5. _all_findings is guarded by an asyncio.Lock.
@@ -201,10 +204,14 @@ async def test_missing_dependency_output_raises(tmp_path, monkeypatch) -> None:
     engine = WorkflowEngine()
     engine._engagement_id = "eng_dep"
 
-    failed_dep = _task("dep1", AgentName.MARKET_ANALYST)
-    failed_dep.status = TaskStatus.FAILED
+    # OVERHAUL3 D-B (overhaul3_audit.md W1/S2): a FAILED dep is a *specialist
+    # crash* and the dependent now runs on reduced context (see
+    # tests/test_w1_db_partial_context.py). The strict raise survives only
+    # for a dep that is NOT a crashed task — here a PENDING dep (a scheduling
+    # anomaly / a retrieval artifact that will never arrive).
+    pending_dep = _task("dep1", AgentName.MARKET_ANALYST)  # status PENDING
     dependent = _task("dep2", AgentName.FINANCIAL_ANALYST, deps=["dep1"])
-    dag = _make_dag("q", [failed_dep, dependent])
+    dag = _make_dag("q", [pending_dep, dependent])
 
     class _StubAgent:
         async def run(self, **kwargs):  # noqa: ANN003

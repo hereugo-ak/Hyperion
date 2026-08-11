@@ -3081,6 +3081,57 @@ convention. They are load-bearing; do not weaken them.
 
 Also load-bearing: the reference-replica category contract
 (`searxng_settings.reference.yml` declares `reference` on every engine; guarded
-by `tests/test_searxng_category_contract.py`), and the single ingestion path
-for sub-agent findings (`base.py` `_ingest_sub_findings` — no specialist may
-hand-wire its own merge/reconcile/contradiction/publish block).
+by `tests/test_searxng_category_contract.py`, which also asserts the
+reference-class canary probe query is title-shaped — OVERHAUL3 S12), and the
+single ingestion path for sub-agent findings (`base.py` `_ingest_sub_findings`
+— no specialist may hand-wire its own merge/reconcile/contradiction/publish
+block).
+
+---
+
+## 15. The Self-Healing Loop (OVERHAUL3, 2026-08-11)
+
+Overhaul 3 is the fail-safe self-healing layer. Every defect D-A..D-L is one
+disease with three faces: **a component acted on a belief about its own state
+that was wrong, stale, or dishonestly logged, and had no supervisor to catch
+it.** Each fix makes its failure class typed, bounded, and honestly logged.
+
+| Defect | Failure on 2026-08-11 | Fix | Guard |
+|---|---|---|---|
+| D-A | `_log()` with 2 positional args crashed COMPETE at 06:31:36 | every `_log` site takes exactly one message; values via f-strings | `tests/test_log_arity.py` AST lock + `log-arity` canary |
+| D-B | a specialist whose dependency produced no output crashed with `MissingDependencyOutput` | synthesis/fact-check run on partial context + typed `missing_dependencies` | `tests/test_w1_db_partial_context.py` |
+| D-C | budget-refused self-heal logged "still failed on STRONG tier" (a lie) | membership-aware budget (retries of already-counted questions are free) + `BUDGET_REFUSED` runner stamp | `tests/test_w1_dc_budget_gate.py`, `tests/test_w4_s10_budget_refused_outcome.py` |
+| D-D | aggregate bus publishes counted but never collected ("1 (0)", "8 (7)") | `_all_findings` drains `bus.get_retained_findings()` per agent, dedup by id | `tests/test_w1_dd_bus_fed_collection.py` + `all-findings-bus-fed` canary |
+| D-E | reframed variants of reframed variants (reframe trees) | per-class reframe gate — a dead class or already-reframed variant is never reframed | `tests/test_w2_de_reframe_tree.py` |
+| D-G/D-H | wikipedia 400 / openalex 400 on raw paragraph queries | reference-profile condensation (≤120, title-shaped) + scholar-profile sanitation (≤120, strip `,?.`) | `tests/test_w3_dg_dh_query_shaping.py` + `reference-condensation` / `scholar-sanitation` canaries |
+| D-I | semantic scholar re-queried all run after a non-JSON body | non-JSON body → `engine_health.record_response` before the retry → engines cool, replica fail-over | `tests/test_w3_di_nonjson_cooldown.py` + `nonjson-cooldown` canary |
+| D-K | gate blocked risk_coverage=1/5 while RISK published 18 findings | Synthesis Lead assigns `FinalReport.risk_analysis` from the RISK aggregate payload | `tests/test_w1_dk_risk_section.py` + `risk-section-populated` canary |
+| D-L | gate penalized `visual_quality` before delivery ran | pre-delivery boundary scores missing viz output as N/A (neutral); the re-render/validation path keeps the hard check | `tests/test_w1_dl_viz_na_gate.py` + `visual-quality-na` canary |
+
+### 15.1 The Recovery Supervisor (`orchestrator._recover_from_blocked`)
+
+A BLOCKED quality verdict is a diagnostic input, not an exit:
+
+1. **Classify** each integrity blocker into a `RecoveryClass`
+   (`PLACEHOLDER_VALUE`, `VERDICT_CONFLICT`, `MISSING_SECTION`,
+   `THIN_EVIDENCE`, `PRESENTATION_DEFECT`).
+2. **Re-dispatch only the owning specialist** with a blocker-specific directive
+   (idempotent task ids) — never a blanket re-run of the DAG.
+3. **Re-score** via the existing Quality Gate authority; commit only a strictly
+   improved score (monotonicity — a worse re-score is discarded, `best` ships
+   or blocks).
+4. **Bound the loop**: `quality_recovery_max_passes` (default 1) and
+   `recovery_wall_clock_seconds`. No existing cap was raised (§4.1) — these are
+   new bounds on a new loop.
+5. **Telemetry** — every pass lands in the blocked diagnostic, the manifest
+   `passes_detail`, and the new KPI block.
+
+### 15.2 KPI additions (`eval/kpi.py`)
+
+`kpi_9_recovery_attempted` (bool), `kpi_9_recovery_passes` (int),
+`kpi_9_recovered` (bool — did a BLOCKED run ship after recovery?), and
+`kpi_9_recovery_outcome_by_class` (map RecoveryClass →
+committed/discarded/skipped). The canary suite (`python -m
+hyperion.eval.canaries`) now carries the 8 OVERHAUL3 locks (§15 table) on top
+of the OVERHAUL2 set and must stay green — it is the permanent regression lock
+for the self-healing layer.

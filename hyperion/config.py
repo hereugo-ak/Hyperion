@@ -818,6 +818,17 @@ class Settings(BaseSettings):
     # ship, but only with a prominent limitations page.
     allow_ship_with_caveat: bool = False
 
+    # ── Recovery Supervisor (OVERHAUL3 D-F, overhaul3_audit.md §5) ──
+    # A BLOCKED verdict is a diagnostic input, not an exit: the orchestrator
+    # may run a bounded recovery loop that classifies each integrity blocker,
+    # re-dispatches ONLY the responsible agent(s) with blocker-specific
+    # directives (idempotent task ids), and re-scores via the existing Quality
+    # Gate. These are NEW bounds on a NEW loop — no existing cap is raised.
+    # 0 disables the supervisor entirely (the old terminal-BLOCKED behaviour).
+    quality_recovery_max_passes: int = 1        # bounded self-healing; 0 disables
+    quality_recovery_min_score_gain: float = 0.05  # a pass must beat `best` by this to commit
+    recovery_wall_clock_seconds: int = 300      # sub-budget carved from the engagement wall-clock
+
     # ── Sub-Agent ──
     # L2 fix: 600s (was 300s). See SubAgentConfig above for the rationale;
     # the schema default (schemas/agents.py:225) is already 600, and every

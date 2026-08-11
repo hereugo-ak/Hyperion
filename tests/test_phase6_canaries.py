@@ -157,10 +157,14 @@ def test_kpi_record_and_diff(tmp_path) -> None:
 
 
 def test_kpi_owner_phase_mapping_covered() -> None:
-    """Every KPI maps to an owning phase node; the map is complete."""
+    """Every KPI maps to an owning phase node; the map is complete.
+
+    OVERHAUL3 D-F (§5.5): ``kpi_9_*`` (recovery supervisor telemetry) is part
+    of the map, so a recovery regression opens the P5 quality node.
+    """
     assert set(KPI_OWNER_PHASE) == {
         "kpi_1", "kpi_2", "kpi_3", "kpi_4", "kpi_5",
-        "kpi_6", "kpi_7", "kpi_8",
+        "kpi_6", "kpi_7", "kpi_8", "kpi_9",
     }
 
 

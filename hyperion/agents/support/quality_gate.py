@@ -395,6 +395,14 @@ class QualityGate(BaseAgent):
         # The VisualizationOutput to check visual quality
         self._visualization_output: VisualizationOutput | None = None
 
+        # OVERHAUL3 D-L (overhaul3_audit.md W1/S4c): True when this gate
+        # invocation sits BEFORE Stage 5 (delivery). DATA_VISUALIZER has not
+        # run by construction, so a missing viz output is scored N/A (neutral)
+        # — the gate verifies what exists, it never penalizes a stage
+        # scheduled for later. The re-render/validation path sets False, where
+        # delivery output IS expected and the hard check survives.
+        self._pre_delivery: bool = True
+
         # Current iteration
         self._iteration = 1
 
@@ -1058,7 +1066,33 @@ class QualityGate(BaseAgent):
         """Score Dimension 10: Visual Quality.
 
         Are charts brand-compliant? Are images properly placed? Is the PDF 300 DPI?
+
+        OVERHAUL3 D-L (overhaul3_audit.md W1/S4c): at the PRE-DELIVERY
+        boundary (``_pre_delivery=True``, the orchestrator's Stage-4 quality
+        loop), a missing viz output is scored as **N/A (neutral)**, never 3/5
+        with "No Visualization Output received". DATA_VISUALIZER runs only in
+        Stage 5, so the output does not exist yet BY CONSTRUCTION: the gate
+        must verify what exists, not punish a stage scheduled for later (the
+        2026-08-11 blocked diagnostic scored visual_quality=3/5 on a run where
+        Stage 5 never ran). The hard check survives when ``_pre_delivery`` is
+        False, i.e. the re-render/validation path where delivery output IS
+        expected.
         """
+        if self._pre_delivery and self._visualization_output is None:
+            return QualityDimension(
+                dimension_id=QualityDimensionName.VISUAL_QUALITY,
+                name="Visual Quality",
+                score=5,
+                weight=0.05,
+                feedback=(
+                    "Not scored at the pre-delivery boundary (delivery has "
+                    "not run yet); visual quality is verified at the "
+                    "re-render/validation boundary where visual output is "
+                    "expected."
+                ),
+                fix_instructions=None,
+                critical=False,
+            )
         score = 5
         feedback_parts: list[str] = []
         fix_parts: list[str] = []
@@ -1465,6 +1499,10 @@ class QualityGate(BaseAgent):
         fact_check_report: FactCheckReport | None = None,
         visualization_output: VisualizationOutput | None = None,
         iteration: int = 1,
+        # OVERHAUL3 D-L: True when this is the pre-Stage-5 quality loop — a
+        # missing viz output is then scored N/A, not penalized. Pass False on
+        # a re-render/validation path where delivery output is expected.
+        pre_delivery: bool = True,
     ) -> QualityScore:
         """Execute the Quality Gate's 7-step methodology.
 
@@ -1502,6 +1540,10 @@ class QualityGate(BaseAgent):
         if visualization_output:
             self._visualization_output = visualization_output
 
+        # OVERHAUL3 D-L: the caller tells the gate which boundary it sits at.
+        # The orchestrator's Stage-4 quality loop is pre-delivery; a
+        # re-render/validation path passes pre_delivery=False.
+        self._pre_delivery = pre_delivery
         self._iteration = iteration
 
         # Step 3: Score each of the 10 dimensions

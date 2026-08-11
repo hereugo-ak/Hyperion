@@ -527,8 +527,7 @@ class CompetitiveIntel(BaseAgent):
         self._llm_competitor_candidates = llm_candidates
         if llm_candidates:
             self._log(
-                "COMPETE Stage A: model-knowledge discovery named %d candidate(s)",
-                len(llm_candidates),
+                f"COMPETE Stage A: model-knowledge discovery named {len(llm_candidates)} candidate(s)",
             )
 
         # ── Stage B: search validation + URL binding ───────────────────────
@@ -566,10 +565,9 @@ class CompetitiveIntel(BaseAgent):
         if not competitors and llm_candidates:
             competitors = [c["name"] for c in llm_candidates]
             self._log(
-                "COMPETE Stage B: search yielded no citable rows — using "
-                "%d model-knowledge candidate(s); provenance will be "
-                "search-bound downstream or typed unverified",
-                len(competitors),
+                f"COMPETE Stage B: search yielded no citable rows — using "
+                f"{len(competitors)} model-knowledge candidate(s); provenance will be "
+                f"search-bound downstream or typed unverified",
             )
         self._competitor_names = competitors
 
