@@ -213,6 +213,27 @@ class EvidenceLedger:
         with self._lock:
             return self._ids.get(key, "")
 
+    def retag_stage(self, *, urls: set[str], stage: str) -> int:
+        """OVERHAUL2 S7: re-stage already-recorded URLs (preflight canaries).
+
+        Canary evidence is real evidence, but gates that measure mid-run
+        collapse must be able to exclude it. First-sighting-wins record
+        semantics mean a simple re-record cannot change a stage, so this
+        rewrites the stored record under the lock. Returns rows changed.
+        """
+        changed = 0
+        with self._lock:
+            for key, ev in list(self._items.items()):
+                if ev.url in urls and ev.stage != stage:
+                    self._items[key] = Evidence(
+                        url=ev.url, domain=ev.domain, title=ev.title,
+                        snippet=ev.snippet, content_hash=ev.content_hash,
+                        engine=ev.engine, profile=ev.profile, stage=stage,
+                        fetched_at=ev.fetched_at, run_id=ev.run_id,
+                    )
+                    changed += 1
+        return changed
+
     def by_evidence_id(self, evidence_id: str) -> Evidence | None:
         """P3: the ``Evidence`` behind a cited ID, or ``None`` if unknown.
 

@@ -84,10 +84,36 @@ async def test_green_at_exact_floor(monkeypatch) -> None:
     try:
         new_ledger("eng_floor")
         _stub_canaries(monkeypatch)
-        for i in range(8):
-            _record(f"https://f{i}.example/x", "web")
+        # OVERHAUL2 S6: GREEN at the exact total floor AND every source class
+        # alive. Records below each per-class floor would degrade to AMBER —
+        # the old test recorded 8 web-only domains and called it GREEN (that
+        # is the D4 bug: a 2/3-dead fleet fanned out a full DAG).
+        for i in range(8):  # 8 distinct domains across all three classes
+            profile = "web" if i < 3 else ("scholar" if i < 6 else "reference")
+            _record(f"https://f{i}.example/x", profile)
         contract = await run_corpus_preflight("q", settings=_settings())
         assert contract.status is CorpusStatus.GREEN
+    finally:
+        reset_active_ledger()
+
+
+@pytest.mark.asyncio
+async def test_dead_source_class_degrades_to_amber(monkeypatch) -> None:
+    """OVERHAUL2 S6: a fleet with a dead source class is AMBER, never GREEN.
+
+    The 17:13 run went GREEN on scholar alone (web=0d, reference=0d) and
+    fanned out a full 16-task DAG over two dead classes. GREEN now requires
+    the total floor AND a per-class pulse; any dead class degrades to AMBER.
+    """
+    reset_active_ledger()
+    try:
+        new_ledger("eng_dead_class")
+        _stub_canaries(monkeypatch)
+        for i in range(8):  # 8 distinct domains but ONLY from scholar
+            _record(f"https://s{i}.example/x", "scholar")
+        contract = await run_corpus_preflight("q", settings=_settings())
+        assert contract.status is CorpusStatus.AMBER
+        assert "dead/thin classes: ['web', 'reference']" in contract.detail
     finally:
         reset_active_ledger()
 

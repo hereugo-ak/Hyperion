@@ -715,6 +715,12 @@ class SearxNGClient:
     ) -> SearchResponse | None:
         """Query one profile and fail over without sending it foreign engines."""
         category = categories or "general"
+        # OVERHAUL2 S10: scholar APIs 400 on paragraph-length natural-language
+        # queries (docker: openalex '400 Bad Request' on the Aug-10 run). Clamp
+        # at the client before the retry loop so the whole fleet never burns
+        # budget on a query the upstream categorically rejects.
+        if len(query) > 200:
+            query = query[:200].rsplit(" ", 1)[0]
         requested_engines = {
             engine.strip() for engine in engines.split(",") if engine.strip()
         }

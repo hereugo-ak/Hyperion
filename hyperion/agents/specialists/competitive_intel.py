@@ -1438,19 +1438,9 @@ class CompetitiveIntel(BaseAgent):
         await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning competitor data collection "
             "sub-agents")
         sub_findings = await self._spawn_competitor_sub_agents(self._competitor_names)
-        self._sub_agent_findings = sub_findings
-        self._sources = self._merge_evidence(sub_findings, self._sources)
-        self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
-        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
-        if self._sub_agent_contradictions:
-            self._log(
-                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
-                    len(self._sub_agent_contradictions),
-                    "; ".join(self._sub_agent_contradictions[:3]),
-                )
-            )
-        for _reconciled in self._sub_agent_reconciled:
-            await self._publish_finding(_reconciled)
+        # OVERHAUL2 S2: single ingestion path — merge/reconcile/contradiction/
+        # publish all live in BaseAgent._ingest_sub_findings.
+        await self._ingest_sub_findings(sub_findings)
 
         await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
 

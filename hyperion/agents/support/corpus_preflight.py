@@ -133,6 +133,10 @@ async def _fire_canaries(question: str, settings: Any) -> None:
 
     query = SubAgentRunner._condense_query(question)
     client = SearxNGClient(settings=settings)
+    # OVERHAUL2 S7: tag canary evidence so mid-run gates can exclude it.
+    from hyperion.tools.evidence_ledger import get_evidence_ledger
+    _ledger = get_evidence_ledger()
+    _before = {e.url for e in _ledger.all()}
     try:
         for source_class in SOURCE_CLASSES:
             try:
@@ -152,6 +156,9 @@ async def _fire_canaries(question: str, settings: Any) -> None:
             await client.close()
         except Exception as exc:  # noqa: BLE001 - closing must not mask a verdict
             logger.debug("corpus preflight: search client close failed: %s", exc)
+        _new_urls = {e.url for e in _ledger.all()} - _before
+        if _new_urls:
+            _ledger.retag_stage(urls=_new_urls, stage="preflight")
 
 
 def _evaluate_contract(
@@ -182,12 +189,24 @@ def _evaluate_contract(
 
     evidence_items = len(records)
     distinct_domains = len(all_domains)
-    if distinct_domains >= min_domains:
-        status = CorpusStatus.GREEN
-    elif distinct_domains > 0:
-        status = CorpusStatus.AMBER
-    else:
+
+    # OVERHAUL2 S6: a fleet with a dead source class is NOT green. The
+    # 17:13 run went GREEN on scholar alone (web=0d, reference=0d) and
+    # fanned out a full 16-task DAG over two dead classes. GREEN requires
+    # the total floor AND a per-class pulse; any dead class degrades to
+    # AMBER (reduced DAG + that class's queries rerouted to living classes).
+    _PER_CLASS_MIN_DOMAINS = {"web": 1, "scholar": 2, "reference": 1}
+    dead_classes = [
+        p.source_class
+        for p in per_class
+        if p.distinct_domains < _PER_CLASS_MIN_DOMAINS.get(p.source_class, 1)
+    ]
+    if distinct_domains == 0:
         status = CorpusStatus.RED
+    elif distinct_domains >= min_domains and not dead_classes:
+        status = CorpusStatus.GREEN
+    else:
+        status = CorpusStatus.AMBER
 
     summary = "; ".join(
         f"{p.source_class}={p.distinct_domains}d/{p.evidence_items}e" for p in per_class
@@ -199,9 +218,10 @@ def _evaluate_contract(
             "ungrounded output."
         )
     elif status is CorpusStatus.AMBER:
+        _dead_note = f"dead/thin classes: {dead_classes}" if dead_classes else ""
         detail = (
             f"partial corpus ({distinct_domains}/{min_domains} domains, {evidence_items} "
-            f"items; {summary}) — running a reduced DAG."
+            f"items; {summary}) — running a reduced DAG. {_dead_note}".rstrip()
         )
     else:
         detail = (

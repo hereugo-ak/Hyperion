@@ -707,6 +707,7 @@ class WorkflowEngine:
         # Now the dependent raises ``MissingDependencyOutput`` before any agent
         # dispatch; ``_execute_wave`` marks it FAILED with that reason.
         context: dict[str, Any] = {}
+        missing_deps: list[str] = []
         for dep_id in task.dependencies:
             if dep_id in self._task_outputs:
                 dep_output = self._task_outputs[dep_id]
@@ -714,13 +715,32 @@ class WorkflowEngine:
                 if dep_task:
                     context[dep_task.agent.value] = dep_output
             else:
-                dep_task = dag.get_task(dep_id)
-                dep_status = dep_task.status.value if dep_task else "missing"
+                missing_deps.append(dep_id)
+        if missing_deps:
+            # OVERHAUL2 S4: the scheduler (workflow.get_ready_tasks) already
+            # licenses FAILED dependencies — "run with partial findings".
+            # Synthesis and fact-check are the aggregation stages: their
+            # inputs are the FINDINGS CHANNEL plus whatever outputs exist.
+            # Crashing them on a missing dep converts one specialist failure
+            # into a zero-report run (the 17:51:21 incident). Specialists
+            # keep the strict contract (they need real inputs).
+            if task.agent not in (AgentName.SYNTHESIS_LEAD, AgentName.FACT_CHECKER):
+                dep_status = "unknown"
+                dep_task = dag.get_task(missing_deps[0])
+                if dep_task is not None:
+                    dep_status = dep_task.status.value
                 raise MissingDependencyOutput(
                     f"task '{task.id}' ({task.agent.value}) depends on "
-                    f"'{dep_id}' which has no output (status={dep_status}) — "
+                    f"'{missing_deps[0]}' which has no output (status={dep_status}) — "
                     f"refusing to run with a partial context"
                 )
+            self._log(
+                f"{task.agent.value}: proceeding with partial context — "
+                f"missing dependency outputs: {missing_deps}"
+            )
+            context["missing_dependencies"] = missing_deps
+            async with self._findings_lock:
+                context["collected_findings"] = list(self._all_findings)
 
         try:
             # Call the agent's run() method with the right arguments
@@ -979,6 +999,32 @@ class WorkflowEngine:
             )
             self._task_outputs[task.id] = result
             self._publish_task_update(task)
+            # OVERHAUL2 S5: a successful reframed variant satisfies the
+            # ORIGINAL task's downstream contract. Without this alias,
+            # dependents keep pointing at an output slot the reframer's new
+            # task IDs never fill. Walk the ``reframed_from`` chain to the
+            # ROOT origin so nested reframes (a reframed variant that is
+            # itself reframed — the 17:43:39 ``task_reframed_1_1_*`` chain)
+            # all backfill the one slot synthesis actually depends on.
+            reframed_from = getattr(task, "reframed_from", None)
+            if reframed_from:
+                origin = reframed_from
+                seen: set[str] = set()
+                while origin and origin not in seen:
+                    seen.add(origin)
+                    if origin not in self._task_outputs:
+                        self._task_outputs[origin] = result
+                        original = dag.get_task(origin)
+                        if original is not None and original.status == TaskStatus.FAILED:
+                            original.status = TaskStatus.COMPLETED
+                            original.error = ""
+                            self._publish_task_update(original)
+                    parent = dag.get_task(origin)
+                    next_origin = getattr(parent, "reframed_from", None) if parent else None
+                    if next_origin and next_origin not in self._task_outputs:
+                        origin = next_origin
+                    else:
+                        break
 
             # P10: Record success in journal + save artifact
             if self._journal:
@@ -1181,10 +1227,26 @@ class WorkflowEngine:
         Only specialists are eligible — the Director, Synthesis Lead,
         Quality Gate, delivery agents etc. have their own recovery paths
         and shouldn't be reframed.
+
+        OVERHAUL2 S5c: a task that ALREADY produced substantive findings
+        is never reframed, whatever its status field says. The 17:23 run
+        showed a risk analyst completing with 12 findings and then being
+        marked FAILED (a stale "blocked" bus broadcast from its own gap
+        escalation) and REFRAMED — rerunning the whole analysis and
+        stranding the first 12 findings in a task slot nothing reads.
         """
         if task.reframe_attempts >= self.MAX_REFRAMER_RETRIES:
             return False
         if task.agent not in self._SPECIALIST_AGENTS:
+            return False
+        # S5c: the bus is the single ledger of record for findings — if this
+        # agent already published substantive yield, its work product exists;
+        # a FAILED status is a status-writer bug, not missing evidence.
+        try:
+            bus_count = self.bus.get_findings_count(task.agent)
+        except Exception:  # noqa: BLE001 - a read failure must not change policy
+            bus_count = 0
+        if bus_count > 0:
             return False
         # FAILED — clearly worth a reframe.
         if task.status == TaskStatus.FAILED:
@@ -2116,6 +2178,20 @@ class WorkflowEngine:
                     f"QUALITY: corpus-floor retrieval escalation recovered "
                     f"sources (now {getattr(current_report, 'total_sources', 0)})"
                 )
+
+                # OVERHAUL2 S12: polishing cannot create evidence. A CORPUS
+                # FLOOR integrity blocker skips quality iteration entirely —
+                # whether the escalation above recovered sources or not. Two
+                # prose-polish passes on a sourceless floor report is how the
+                # 17:52 run burned its last minutes before the no-score-change
+                # early-terminate fired. The report's floor is now known; the
+                # terminal-state computation below renders the honest verdict.
+                self._log(
+                    "QUALITY: CORPUS FLOOR blocker — skipping iterations, "
+                    "terminal BLOCKED"
+                )
+                current_score.max_iterations_reached = True
+                break
 
             # P2-25: thin evidence triggers retrieval escalation, not a stop.
             # The old content-aware stop broke here; now a below-floor source
@@ -3204,6 +3280,7 @@ class WorkflowEngine:
             # P6.2 (overhaul §6 P6): record the 5 KPIs per run and diff against
             # the previous run. A KPI regression auto-opens the owning phase
             # node (KPI_OWNER_PHASE) so the master loop can route there.
+            # OVERHAUL2 S15: also record the Output Contract gates (kpi_6..8).
             try:
                 from hyperion.eval.kpi import (
                     RunKPIs,
@@ -3211,6 +3288,27 @@ class WorkflowEngine:
                     record_run_kpis,
                     regressed_phase,
                 )
+
+                # OC-1 (S15): the share of COMPLETED tasks that carry an output
+                # object. The "status=completed but no output" task that crashed
+                # synthesis (B-5) drives this below 100.
+                _completed = [
+                    t for t in dag.tasks if t.status == TaskStatus.COMPLETED
+                ]
+                _completed_with_output = [
+                    t for t in _completed if t.id in self._task_outputs
+                ]
+                _pct_completed_with_output = (
+                    100.0 * len(_completed_with_output) / len(_completed)
+                    if _completed else -1.0
+                )
+                # S11 (S15): sum the per-agent off-topic drop counters (the
+                # parent specialists increment their own ``_off_topic_dropped``).
+                _off_topic_dropped_total = 0
+                for _agent_inst in (getattr(self, "_agents", None) or {}).values():
+                    _off_topic_dropped_total += getattr(
+                        _agent_inst, "_off_topic_dropped", 0
+                    )
 
                 kpis = RunKPIs(
                     run_id=self._engagement_id,
@@ -3225,6 +3323,17 @@ class WorkflowEngine:
                         getattr(quality_score, "blockers", []) or []
                     ) if quality_score else -1,
                     kpi_5_verdict_consistent=True,
+                    # OVERHAUL2 S15 (OC-1): every COMPLETED task must carry an
+                    # output object — the "completed but no output" status-writer
+                    # bug (B-5) is structurally impossible when this is 100%.
+                    kpi_6_pct_tasks_completed_with_output=_pct_completed_with_output,
+                    # OVERHAUL2 S15 (OC-2): a run that reached synthesis produced
+                    # a FinalReport (directly or via the floor fallback).
+                    kpi_7_synthesis_produced_final_report=bool(
+                        self._task_outputs.get("task_synthesis_lead")
+                    ),
+                    # OVERHAUL2 S15 (S11): off-topic funnel drops, visible in telemetry.
+                    kpi_8_off_topic_dropped=self._off_topic_dropped_total,
                 )
                 record_run_kpis(kpis)
                 kdiff = diff_kpis(self._engagement_id)
@@ -3381,7 +3490,14 @@ class WorkflowEngine:
             # boundary (fires at both synthesis and fact-check).
             self._record_kpi_telemetry()
             ledger = get_evidence_ledger()
-            domains = len(ledger.distinct_domains())
+            # OVERHAUL2 S7: measure ENGAGEMENT-retrieved evidence only.
+            # Preflight canary records persist in the ledger; counting them
+            # made this gate read the t=0 probe forever and never detect a
+            # mid-run fleet collapse (B-7).
+            domains = len({
+                e.domain for e in ledger.all()
+                if e.domain and e.stage != "preflight"
+            })
             floor = int(getattr(contract, "min_domains", 8))
             if domains >= floor:
                 return

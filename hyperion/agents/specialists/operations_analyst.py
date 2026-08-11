@@ -1082,23 +1082,13 @@ class OperationsAnalyst(BaseAgent):
         process_type = self._context.get("process_type", "manufacturing")
 
         # Spawn sub-agents for parallel data collection
+        sub_findings: list[KeyFinding] = []
         if industry or sector:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning operational data "
                 "collection sub-agents")
             sub_findings = await self._spawn_ops_sub_agents(industry, sector, process_type)
-            self._sub_agent_findings = sub_findings
-            self._sources = self._merge_evidence(sub_findings, self._sources)
-            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
-        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
-        if self._sub_agent_contradictions:
-            self._log(
-                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
-                    len(self._sub_agent_contradictions),
-                    "; ".join(self._sub_agent_contradictions[:3]),
-                )
-            )
-            for _reconciled in self._sub_agent_reconciled:
-                await self._publish_finding(_reconciled)
+        await self._ingest_sub_findings(sub_findings)
+        if industry or sector:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 

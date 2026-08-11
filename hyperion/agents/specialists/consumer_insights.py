@@ -1064,23 +1064,13 @@ class ConsumerInsightsAnalyst(BaseAgent):
         segment = self._context.get("segment") or ""
 
         # Spawn sub-agents for parallel data collection
+        sub_findings: list[KeyFinding] = []
         if sector or company:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning consumer data "
                 "collection sub-agents")
             sub_findings = await self._spawn_consumer_sub_agents(company, sector, product_category, segment)
-            self._sub_agent_findings = sub_findings
-            self._sources = self._merge_evidence(sub_findings, self._sources)
-            self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
-        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(sub_findings)
-        if self._sub_agent_contradictions:
-            self._log(
-                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
-                    len(self._sub_agent_contradictions),
-                    "; ".join(self._sub_agent_contradictions[:3]),
-                )
-            )
-            for _reconciled in self._sub_agent_reconciled:
-                await self._publish_finding(_reconciled)
+        await self._ingest_sub_findings(sub_findings)
+        if sector or company:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 

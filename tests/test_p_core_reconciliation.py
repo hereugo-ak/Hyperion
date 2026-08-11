@@ -47,13 +47,17 @@ def _finding(
     finding_type: str = "market_size",
     sources: list[Source] | None = None,
 ) -> KeyFinding:
+    # OVERHAUL2 S8: a substantive finding with no source URL is retyped
+    # unverified_assertion AT CONSTRUCTION. Fixtures for the reconciliation
+    # funnel must carry a bound source so they represent real substantive
+    # yield — the unbound case is covered by dedicated provenance tests.
     return KeyFinding(
         id=f"f_{abs(hash(title)) % 100000}",
         agent="sub",
         finding_type=finding_type,
         title=title,
         content=content,
-        sources=sources or [],
+        sources=sources if sources is not None else [_source("https://sub.example/data")],
         confidence=ConfidenceLevel.HIGH,
     )
 
@@ -148,11 +152,21 @@ def test_contradiction_detection_never_raises() -> None:
     assert agent._detect_sub_agent_contradictions([_finding(content="no numbers here")]) == []
 
 
-# ── Every specialist wires the merge ────────────────────────────────────────
+# ── Every specialist wires the single ingestion path (OVERHAUL2 S2) ─────────
 
 
-def test_all_specialists_merge_after_spawning_sub_agents() -> None:
-    """P-CORE: no specialist may store sub-agent findings and drop them."""
+def test_all_specialists_route_through_single_ingestion_path() -> None:
+    """OVERHAUL2 S2: exactly ONE ingestion path.
+
+    Before this overhaul each specialist hand-wired its own
+    assign/merge/reconcile/contradiction/publish block, and 10 of them
+    assigned ``sub_findings`` inside an ``if`` guard while consuming it
+    outside (UnboundLocalError on empty collections); M&A additionally gated
+    its publish loop on contradictions existing, silently dropping reconciled
+    evidence. All of that now lives in ``BaseAgent._ingest_sub_findings`` —
+    a specialist that spawns sub-agents must route through it and must NOT
+    carry its own merge/reconcile/contradiction wiring.
+    """
     for path in sorted(SPECIALISTS_DIR.glob("*.py")):
         if path.name == "__init__.py":
             continue
@@ -160,10 +174,17 @@ def test_all_specialists_merge_after_spawning_sub_agents() -> None:
         has_spawn = "_spawn_sub_agent(" in src or "_sub_agent_findings = sub_findings" in src
         if not has_spawn:
             continue  # specialists that don't spawn sub-agents are unaffected
-        assert "_merge_evidence(" in src, f"{path.name} stores sub-agent findings but never merges"
-        assert "_reconcile_findings(" in src, f"{path.name} never reconciles sub-agent findings"
-        assert "_detect_sub_agent_contradictions(" in src, (
-            f"{path.name} never surfaces sub-agent contradictions"
+        assert "_ingest_sub_findings(" in src, (
+            f"{path.name} spawns sub-agents but never routes through "
+            f"BaseAgent._ingest_sub_findings"
+        )
+        assert "_detect_sub_agent_contradictions(" not in src, (
+            f"{path.name} still hand-wires contradiction detection — "
+            f"OVERHAUL2 S2 requires the single ingestion path"
+        )
+        assert "_merge_evidence(" not in src, (
+            f"{path.name} still hand-wires the merge — "
+            f"OVERHAUL2 S2 requires the single ingestion path"
         )
 
 

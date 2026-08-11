@@ -22,6 +22,8 @@ from hyperion.schemas.agents import AgentName, SubAgentSpec
 from hyperion.schemas.models import (
     ConfidenceLevel,
     KeyFinding,
+    Source,
+    SourceCredibility,
 )
 
 
@@ -192,6 +194,9 @@ def _parent() -> MagicMock:
     parent = MagicMock()
     parent.max_sub_agents = 3
     parent.SUB_AGENT_TOTAL_CEILING = 6
+    parent.SUB_AGENT_CONCURRENT_MAX = 5
+    parent._concurrent_boost = 0
+    parent._deferred_specs = None
     parent._sub_agent_specs = []
     parent._sub_agent_respawned = set()
     parent._sub_agent_questions = set()
@@ -243,9 +248,15 @@ def test_provider_failure_escalates_to_strong_once() -> None:
             "hyperion.schemas.models", fromlist=["ResearchOutcome"]
         ).ResearchOutcome.SUCCESS
         self.recovery_hint = "SUCCESS"
+        # OVERHAUL2 S8: a substantive finding must carry a ledger-bound source
+        # URL, or it is retyped unverified_assertion at construction.
         return [KeyFinding(
             id="healed", agent="ops", finding_type="benchmark", title="t",
             content="cycle time 42h", confidence=ConfidenceLevel.MEDIUM,
+            sources=[Source(
+                id="src_healed", title="Benchmark", url="https://example.com/bench",
+                credibility=SourceCredibility.INDUSTRY_REPORT,
+            )],
         )]
 
     with patch.object(SubAgentRunner, "run", new=_fake_run):

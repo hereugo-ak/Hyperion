@@ -31,6 +31,7 @@ from hyperion.config import ModelTier
 from hyperion.schemas.agents import AgentName, SubAgentSpec
 from hyperion.schemas.models import (
     RESEARCH_GAP_TYPE,
+    UNVERIFIED_ASSERTION_TYPE,
     ConfidenceLevel,
     KeyFinding,
 )
@@ -152,7 +153,12 @@ def test_labeled_estimate_finding_stamps_assumption() -> None:
     runner = _runner()
     runner.spec = _spec()
     est = runner.labeled_estimate_finding(3.5)
-    assert est.finding_type == "analog_estimate"
+    # OVERHAUL2 S8: a labeled estimate is an UNSOURCED assumption by design —
+    # the provenance validator retypes it unverified_assertion at
+    # construction so it can never be counted as citable evidence yield.
+    # Its role is the closure contract: surface "data not publicly available"
+    # as a typed limitation, not as a sourced figure.
+    assert est.finding_type == UNVERIFIED_ASSERTION_TYPE
     assert "LABELED ANALOG ESTIMATE" in est.content
     assert est.confidence == ConfidenceLevel.LOW
 

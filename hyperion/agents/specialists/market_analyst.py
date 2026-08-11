@@ -1386,26 +1386,9 @@ class MarketAnalyst(BaseAgent):
         # Spawn sub-agents for parallel data collection
         await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning data collection sub-agents")
         sub_findings = await self._spawn_data_collection_sub_agents(market_query)
-        self._sub_agent_findings = sub_findings
-        # P-CORE (2026-08-10): funnel sub-agent evidence into the parent's
-        # analysis. Sub-agent sources become part of this specialist's
-        # corroboration (KPI-2/3 move together), and their substantive
-        # findings are reconciled so they are published alongside the parent's
-        # own — no more "sub-agents returned findings, parent reported 0".
-        self._sources = self._merge_evidence(sub_findings, self._sources)
-        self._sub_agent_reconciled = self._reconcile_findings(sub_findings)
-        # P-CORE: surface numeric disagreements between sub-agents so the
-        # synthesis resolves them evidence-weighted instead of averaging.
-        self._sub_agent_contradictions = self._detect_sub_agent_contradictions(
-            sub_findings
-        )
-        if self._sub_agent_contradictions:
-            self._log(
-                "SUB-AGENT RECONCILIATION: {} contradiction(s) surfaced: {}".format(
-                    len(self._sub_agent_contradictions),
-                    "; ".join(self._sub_agent_contradictions[:3]),
-                )
-            )
+        # OVERHAUL2 S2: single ingestion path — merge/reconcile/contradiction/
+        # publish all live in BaseAgent._ingest_sub_findings.
+        await self._ingest_sub_findings(sub_findings)
 
         await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with analysis")
 

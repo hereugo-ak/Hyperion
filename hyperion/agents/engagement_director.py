@@ -762,19 +762,20 @@ class EngagementDirector(BaseAgent):
         except ValueError:
             return
 
-        # Find tasks for this agent and update status
+        # OVERHAUL2 S3: the orchestrator is the SINGLE WRITER of execution
+        # truth. This handler previously marked EVERY task carrying this
+        # agent's name COMPLETED on a bare "done" broadcast — including
+        # FAILED originals and unrelated reframed variants — producing
+        # "status=completed but no output" tasks that crashed synthesis
+        # (MissingDependencyOutput). Bus heartbeats now only drive the
+        # PENDING→RUNNING display transition; terminal states are written
+        # exclusively by the orchestrator together with the output object.
         for task in self._current_dag.tasks:
             if task.agent != agent_name:
                 continue
             if state_str == "working" and task.status == TaskStatus.PENDING:
                 task.status = TaskStatus.RUNNING
                 task.started_at = time.time()
-            elif state_str == "done":
-                task.status = TaskStatus.COMPLETED
-                task.completed_at = time.time()
-            elif state_str == "blocked":
-                task.status = TaskStatus.FAILED
-                task.error = payload.get("detail", "")
 
     # ─────────────────────────────────────────────────────────────────────
     # Second Brain query, prior research (§12.8)

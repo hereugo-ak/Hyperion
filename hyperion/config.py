@@ -825,6 +825,11 @@ class Settings(BaseSettings):
     sub_agent_timeout: int = 600
     max_sub_agents: int = 3
 
+    #: OVERHAUL2 S9: hard upper bound for the per-specialist CONCURRENT
+    #: sub-agent budget under pressure. Starts at each spec's
+    #: max_sub_agents (3); cap pressure raises it toward this ceiling.
+    sub_agent_concurrent_max: int = 5
+
     # ── Wait Gate ──
     budget_reserve: float = 0.20
     rate_limit_cooldown: int = 60
