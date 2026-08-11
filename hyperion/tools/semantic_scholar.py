@@ -151,7 +151,17 @@ class SemanticScholarClient:
     MAX_RETRIES = 2
     RETRY_DELAY = 5  # Longer delay for rate limit recovery
     RATE_LIMIT_DELAY_NO_KEY = 3.0  # 100 req/5min = ~3s between calls
-    RATE_LIMIT_DELAY_WITH_KEY = 1.0  # 1 req/sec with key
+    # OVERHAUL4 P6 (policy 2026-08-11): Semantic Scholar's documented ceiling
+    # is 1 request/second CUMULATIVE across all endpoints. 1.0s was ON the
+    # threshold; 1.5s (~0.67 req/s) sits safely below it. Pacing is also
+    # shared process-wide (see _rate_limit) so parallel client instances
+    # cannot collectively exceed the ceiling.
+    RATE_LIMIT_DELAY_WITH_KEY = 1.5  # safely below 1 req/s with key
+
+    # OVERHAUL4 P6: process-wide cumulative pacing state (Semantic Scholar's
+    # 1 req/s ceiling applies across all endpoints AND all client instances).
+    _shared_lock: asyncio.Lock | None = None
+    _shared_last: float = 0.0
 
     # Default fields to request from the API
     DEFAULT_FIELDS = (
@@ -213,12 +223,24 @@ class SemanticScholarClient:
         self._cache[key] = (time.time(), data)
 
     async def _rate_limit(self) -> None:
-        """Enforce rate limit (3s without key, 1s with key)."""
-        elapsed = time.time() - self._last_request_time
+        """Enforce the cumulative rate ceiling ACROSS all client instances.
+
+        OVERHAUL4 P6 (policy 2026-08-11): the documented limit is
+        1 request/second cumulative across all endpoints. The old pacing was
+        per-instance and exactly 1.0s with a key — on the threshold, and
+        parallel instances could collectively exceed it. Pacing is now
+        process-wide (shared lock + timestamp) and the with-key delay is 1.5s
+        (~0.67 req/s), safely below the ceiling. Without a key the delay stays
+        at 3.0s, far below the shared-pool ceiling.
+        """
         delay = self._rate_limit_delay
-        if elapsed < delay:
-            await asyncio.sleep(delay - elapsed)
-        self._last_request_time = time.time()
+        if SemanticScholarClient._shared_lock is None:
+            SemanticScholarClient._shared_lock = asyncio.Lock()
+        async with SemanticScholarClient._shared_lock:
+            elapsed = time.time() - SemanticScholarClient._shared_last
+            if elapsed < delay:
+                await asyncio.sleep(delay - elapsed)
+            SemanticScholarClient._shared_last = time.time()
 
     async def _make_request(
         self,

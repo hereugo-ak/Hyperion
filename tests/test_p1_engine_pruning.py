@@ -32,10 +32,11 @@ from hyperion.tools.searxng import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-BANNED = ("mojeek", "yep")
-# OVERHAUL4 P6.2: marginalia/wiby added to the web class — keyless,
-# IP-tolerant engines (unlike the crawler class) to end web=0d/0e.
-ACTIVE_WEB = ("mwmbl", "brave", "marginalia", "wiby")
+# OVERHAUL4 P6.2 (probe 2026-08-11): egress is now a HOME IP — mojeek/yep are
+# re-enabled (P1.2 disabled them for the VPS datacenter egress 403s). Nothing
+# is banned; the active web class is the full set the image ships.
+BANNED: tuple[str, ...] = ()
+ACTIVE_WEB = ("mwmbl", "brave", "mojeek", "yep")
 
 
 def _load_yml(path: Path) -> dict:
@@ -43,19 +44,15 @@ def _load_yml(path: Path) -> dict:
 
 
 def test_code_never_requests_banned_scrapers() -> None:
-    """P1.2: no active engine set may contain mojeek/yep."""
+    """OVERHAUL4 P6.2: BANNED is empty by design — home-IP egress, mojeek/yep
+    re-enabled. Kept as a contract so re-banning a web engine is a conscious
+    change."""
     assert not referenced_engines().intersection(BANNED)
-    active_blob = " ".join([
-        RELIABLE_ENGINES,
-        STANDBY_ENGINES,
-        *PROFILE_FALLBACK_ENGINES["web"],
-    ])
-    assert BANNED[0] not in active_blob
-    assert BANNED[1] not in active_blob
 
 
 def test_web_fallback_is_mwmbl_brave_only() -> None:
-    """P1.2: the web corpus is mwmbl + brave behind the health circuit."""
+    """OVERHAUL4 P6.2: the web class is mwmbl + brave + mojeek + yep (the full
+    set the image ships; marginalia/wiby are NOT in the image — probe 08-11)."""
     assert PROFILE_FALLBACK_ENGINES["web"] == set(ACTIVE_WEB)
 
 
@@ -71,13 +68,11 @@ def test_base_settings_disable_banned_scrapers() -> None:
 
 
 def test_generated_web_profile_matches_the_pruning_contract() -> None:
-    """P1.2 + OVERHAUL4 P6.2: the web replica never feeds a banned scraper
-    and ships the tolerant keyless web engines."""
+    """P1.2 + OVERHAUL4 P6.2: the web replica ships exactly the engines the
+    image provides (probe 2026-08-11: marginalia/wiby absent), all enabled."""
     web = _load_yml(ROOT / "searxng_settings.web.yml")
     engines = {e["name"]: e for e in web["engines"]}
-    assert set(engines) == {"mojeek", "mwmbl", "brave", "yep", "marginalia", "wiby"}
-    for name in BANNED:
-        assert engines[name]["disabled"] is True
+    assert set(engines) == {"mojeek", "mwmbl", "brave", "yep"}
     for name in ACTIVE_WEB:
         assert engines[name]["disabled"] is False
 

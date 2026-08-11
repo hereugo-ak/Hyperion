@@ -29,20 +29,12 @@ Status legend: ⬜ pending · 🔧 in progress · ✅ done · ❌ blocked (state
 - [ ] ⬜ P5.4 test: all engines suspended ⇒ escalation still recovers (moved to Phase 7 canaries — needs orchestrator mocking)
 
 ## Phase 6 — Restore a working web class (no keyed APIs)
-- [ ] ⬜ P6.1 **probe running image `/config` on the HOST** (this box can't reach the containers) — command below
-- [x] ✅ P6.2 generator + base settings + `services.py` replicas + `searxng.py` constants updated; profiles regenerated (web += marginalia, wiby; reference += wikidata)
+- [x] ✅ P6.1 probe ran (live /config, 2026-08-11): marginalia/wiby NOT in image; wikidata IS; egress is home IP
+- [x] ✅ P6.2 final engine set: web = mojeek/mwmbl/brave/yep (mojeek+yep re-enabled for home egress); reference += wikidata; profiles regenerated
 - [x] ✅ P6.3 `.env.example`/config: semantic scholar key (added), openalex mailto (wired as Settings field)
-- [ ] ⬜ P6.4 copy settings to host + restart + live preflight shows web class > 0 domains
-
-> **PROBE (run on the Linux host where the stack lives, BEFORE deploying):**
-> ```
-> for p in 8888 8889 8890; do echo "port $p:"; curl -s -m 5 http://127.0.0.1:$p/config | python3 -c "import sys,json; d=json.load(sys.stdin); print(sorted(e['name'] for e in d['engines'] if e.get('enabled')))"; done
-> ```
-> Required: `marginalia` + `wiby` on 8890 (web), `wikidata` on 8889 (reference).
-> If any are missing from the image, revert: remove the 3 new blocks from
-> `searxng_settings.yml`, the tuple entries in `hyperion/infra/services.py`,
-> the new names in `hyperion/tools/searxng.py` constants, then re-run
-> `.venv/Scripts/python.exe -m hyperion.infra.searxng_profiles`.
+- [x] ✅ P6.4 deployed to WSL; live smoke test: mwmbl 50 results, brave 429 (cools), yep denied (cools), mojeek silent-0 (note: investigate/disable later)
+- [x] ✅ P6.5 ops fix: valkey `cap_add` (WSL2 setpriv crash-loop) — compose updated + containers healthy
+- [x] ✅ P6.6 rate-limit policy: Semantic Scholar pacing process-wide + 1.5s (below the 1 req/s cumulative ceiling)
 
 ## Phase 7 — Regression lock
 - [ ] ⬜ P7.1 empty-report canary

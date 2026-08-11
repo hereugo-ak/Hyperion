@@ -51,6 +51,12 @@ services:
     mem_limit: 256m
     cpus: 0.5
     cap_drop: [ALL]
+    # OVERHAUL4 P6 (WSL2 fix): the valkey entrypoint drops privileges via
+    # setpriv, which needs CAP_SETUID — cap_drop:ALL alone crash-loops on
+    # Docker Desktop/WSL2 with `setpriv: setresuid failed: Operation not
+    # permitted`. Mirror the searxng replicas' cap_add so the entrypoint can
+    # run. Without this the whole retrieval stack never becomes healthy.
+    cap_add: [CHOWN, SETGID, SETUID]
     security_opt: [no-new-privileges:true]
     # FIX0.3 §2: same single timezone rule as the searxng replicas.
     environment:

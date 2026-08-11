@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # `searxng_settings.yml` so no replica ever receives traffic for them again.
 # The web corpus is now served by `mwmbl` + `brave` behind the engine-health
 # circuit, with the scholar/reference API engines as the fan-out rescue path.
-RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex,marginalia,wiby,wikidata"
+RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex,wikidata"
 STANDBY_ENGINES = ""
 CATEGORY_ENGINES = {
     "science": "arxiv,crossref,openalex,semantic scholar",
@@ -77,10 +77,11 @@ CATEGORY_ENGINES = {
 # response. These engines accept broad natural-language research queries;
 # profile-specific code/search/geo engines do not.
 PROFILE_FALLBACK_ENGINES = {
-    # P1.2: mojeek/yep removed — they 403 categorically from this egress.
-    # OVERHAUL4 P6.2: marginalia/wiby are keyless, IP-tolerant web engines
-    # (unlike the crawler class); wikidata pads the reference fallback.
-    "web": frozenset({"mwmbl", "brave", "marginalia", "wiby"}),
+    # P1.2: mojeek/yep were removed from fallbacks after the VPS egress 403s.
+    # OVERHAUL4 P6.2 (probe 2026-08-11): marginalia/wiby are NOT in the image;
+    # egress is now a home IP, so mojeek/yep are re-enabled on the web replica
+    # (watch logs for 403s); wikidata pads the reference fallback.
+    "web": frozenset({"mwmbl", "brave", "mojeek", "yep"}),
     "reference": frozenset({"wikipedia", "wikidata"}),
     "scholar": frozenset({"crossref", "openalex", "semantic scholar"}),
 }

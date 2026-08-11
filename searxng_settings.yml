@@ -23,11 +23,9 @@ use_default_settings:
       - mwmbl
       - brave
       - yep
-      # OVERHAUL4 P6.2: tolerant, keyless web engines (probe /config first)
-      - marginalia
-      - wiby
-      # OVERHAUL4 P6.2: structured-facts API engine (reference class)
-      - wikidata
+      # OVERHAUL4 P6.2 (probe 2026-08-11): marginalia/wiby are NOT in the
+      # image (wiby FileNotFoundError in container log) — do not declare them.
+      # wikidata IS in the image (reference class).
 
 general:
   instance_name: "HYPERION Search"
@@ -185,7 +183,10 @@ engines:
     engine: mojeek
     shortcut: mj
     categories: [general]
-    disabled: true
+    # OVERHAUL4 P6.2 (probe 2026-08-11): re-enabled — P1.2 disabled mojeek/yep
+    # for the datacenter/VPS egress (403 x5+); egress is now a HOME IP, so
+    # watch the container logs for 403s and disable again if they return.
+    disabled: false
     timeout: 15
     weight: 1.0
 
@@ -209,34 +210,14 @@ engines:
     engine: yep
     shortcut: yp
     categories: [general]
-    disabled: true
+    # OVERHAUL4 P6.2: re-enabled for home-IP egress (see mojeek note).
+    disabled: false
     timeout: 15
     weight: 0.6
 
-  # OVERHAUL4 P6.2: marginalia — text-first independent index, no key,
-  # tolerant of datacenter IPs (unlike the crawler class). VERIFY against
-  # the running image's /config before restart: if the image lacks it, remove
-  # this block + the services.py tuple entry + the searxng.py constant and
-  # regenerate.
-  - name: marginalia
-    engine: marginalia
-    shortcut: mg
-    categories: [general]
-    disabled: false
-    timeout: 15
-    weight: 0.7
-
-  # OVERHAUL4 P6.2: wiby — simple-web index, no key, tolerant.
-  - name: wiby
-    engine: wiby
-    shortcut: wb
-    categories: [general]
-    disabled: false
-    timeout: 15
-    weight: 0.5
-
-  # OVERHAUL4 P6.2: wikidata — structured-facts API, no key, tolerant;
-  # reference-class padding for metric tables (Wikipedia companion).
+  # OVERHAUL4 P6.2 (probe 2026-08-11): wikidata — structured-facts API engine,
+  # keyless; present in the image (reference class). Init hit a 403 on first
+  # boot; engine-health cools and retries.
   - name: wikidata
     engine: wikidata
     shortcut: wd

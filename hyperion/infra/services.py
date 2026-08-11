@@ -170,18 +170,17 @@ SEARXNG_REPLICAS = (
         8889,
         "reference",
         ("wikipedia", "openstreetmap", "github", "stackexchange", "hackernews",
-         # OVERHAUL4 P6.2: wikidata — keyless structured-facts API engine.
+         # OVERHAUL4 P6.2 (probe 2026-08-11): wikidata confirmed in the image.
          "wikidata"),
     ),
     SearxngReplica(
         "hyperion-searxng-web",
         8890,
         "web",
-        ("mojeek", "mwmbl", "brave", "yep",
-         # OVERHAUL4 P6.2: tolerant, keyless web engines (marginalia/wiby).
-         # Probe the running image's /config first — if absent, revert these
-         # two entries + the base settings blocks + the searxng.py constant.
-         "marginalia", "wiby"),
+        # OVERHAUL4 P6.2 (probe 2026-08-11): marginalia/wiby are NOT in the
+        # image — web stays mojeek/mwmbl/brave/yep. mojeek/yep re-enabled for
+        # the home-IP egress (P1.2 disabled them for the VPS datacenter egress).
+        ("mojeek", "mwmbl", "brave", "yep"),
     ),
 )
 SEARXNG_PRIMARY_PORT = SEARXNG_REPLICAS[0].port
