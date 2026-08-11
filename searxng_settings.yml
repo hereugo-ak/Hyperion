@@ -83,9 +83,17 @@ outgoing:
 
 engines:
   # Tier A: documented APIs
+  # OVERHAUL2 S1: every engine carries an explicit ``categories`` LIST so the
+  # generated replicas declare every category the client sends. The reference
+  # replica previously declared only ``it``/implicit-general, so SearXNG
+  # rejected ``categories=reference`` with HTTP 400 BEFORE any engine ran
+  # (B-2: ``Invalid value: "['reference']"``) and the whole reference source
+  # class was dead by config. Each list keeps the engine's original home and
+  # adds the profile category it must answer.
   - name: wikipedia
     engine: wikipedia
     shortcut: wp
+    categories: [general, reference]
     disabled: false
     timeout: 10
     weight: 1.0
@@ -93,7 +101,7 @@ engines:
   - name: arxiv
     engine: arxiv
     shortcut: ar
-    categories: science
+    categories: [science, general]
     disabled: false
     timeout: 12
     weight: 1.0
@@ -101,7 +109,7 @@ engines:
   - name: crossref
     engine: crossref
     shortcut: cr
-    categories: science
+    categories: [science, general]
     disabled: false
     timeout: 12
     weight: 1.0
@@ -109,7 +117,7 @@ engines:
   - name: openalex
     engine: openalex
     shortcut: oa
-    categories: science
+    categories: [science, medical, general]
     disabled: false
     timeout: 12
     weight: 1.0
@@ -117,7 +125,7 @@ engines:
   - name: pubmed
     engine: pubmed
     shortcut: pm
-    categories: science
+    categories: [science, medical, general]
     disabled: false
     timeout: 12
     weight: 0.8
@@ -125,7 +133,7 @@ engines:
   - name: semantic scholar
     engine: semantic_scholar
     shortcut: ss
-    categories: science
+    categories: [science, general]
     disabled: false
     timeout: 12
     weight: 1.0
@@ -133,7 +141,7 @@ engines:
   - name: github
     engine: github
     shortcut: gh
-    categories: it
+    categories: [it, reference]
     disabled: false
     timeout: 12
     weight: 0.8
@@ -141,7 +149,7 @@ engines:
   - name: stackexchange
     engine: stackexchange
     shortcut: se
-    categories: it
+    categories: [it, reference]
     disabled: false
     timeout: 12
     weight: 0.8
@@ -149,7 +157,7 @@ engines:
   - name: hackernews
     engine: hackernews
     shortcut: hn
-    categories: it
+    categories: [it, reference]
     disabled: false
     timeout: 10
     weight: 0.6
@@ -157,21 +165,29 @@ engines:
   - name: openstreetmap
     engine: openstreetmap
     shortcut: osm
+    categories: [geo, general, reference]
     disabled: false
     timeout: 12
     weight: 0.6
 
   # Tier B: independent crawlers with their own indexes
+  # P1.2 (overhaul §6 P1, 2026-08-10): mojeek/yep disabled — categorical 403
+  # from this datacenter/VPS egress (Aug-10 autopsy: 403 for the whole run).
+  # Kept declared so the W-12 replica registry stays disjoint and the running
+  # instance still matches the code contract, but they must never receive
+  # traffic again. The web corpus is mwmbl + brave behind engine health.
   - name: mojeek
     engine: mojeek
     shortcut: mj
-    disabled: false
+    categories: [general]
+    disabled: true
     timeout: 15
     weight: 1.0
 
   - name: mwmbl
     engine: mwmbl
     shortcut: mwm
+    categories: [general, news]
     disabled: false
     timeout: 20
     weight: 0.8
@@ -179,6 +195,7 @@ engines:
   - name: brave
     engine: brave
     shortcut: br
+    categories: [general, news]
     disabled: false
     timeout: 12
     weight: 1.0
@@ -186,6 +203,7 @@ engines:
   - name: yep
     engine: yep
     shortcut: yp
-    disabled: false
+    categories: [general]
+    disabled: true
     timeout: 15
     weight: 0.6

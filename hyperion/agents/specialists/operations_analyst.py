@@ -284,6 +284,11 @@ class OperationsAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1077,11 +1082,13 @@ class OperationsAnalyst(BaseAgent):
         process_type = self._context.get("process_type", "manufacturing")
 
         # Spawn sub-agents for parallel data collection
+        sub_findings: list[KeyFinding] = []
         if industry or sector:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning operational data "
                 "collection sub-agents")
             sub_findings = await self._spawn_ops_sub_agents(industry, sector, process_type)
-            self._sub_agent_findings = sub_findings
+        await self._ingest_sub_findings(sub_findings)
+        if industry or sector:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 
@@ -1093,6 +1100,13 @@ class OperationsAnalyst(BaseAgent):
         if sector:
             await self._transition(AgentState.WORKING, f"Step 1b: Scraping supply chain data for {sector}")
             self._supply_chain_data = await self._scrape_supply_chain_data(sector)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no operational data for {sector or industry}"):
+            return OperationsAnalysis(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 2: Map the end-to-end process
         await self._transition(AgentState.WORKING, "Step 2: Mapping end-to-end process (SIPOC)")

@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -163,10 +164,18 @@ class OpenAlexClient:
     def __init__(self, settings: Any | None = None) -> None:
         self.settings = settings
         self._email = "hyperion-research@example.com"
-        if settings:
-            email = getattr(settings, "openalex_email", "")
-            if email:
-                self._email = email
+        # P1.3 (overhaul §6 P1): the polite pool needs a real contact. An
+        # explicit HYPERION_OPENALEX_EMAIL wins, then the documented
+        # HYPERION_CONTACT_EMAIL, then the historical example address.
+        # OpenAlex raises the rate ceiling ~10x for mailto-bearing clients,
+        # so a fabricated default quietly forfeits that.
+        email = (
+            getattr(settings, "openalex_email", "") if settings else ""
+        ) or os.environ.get("HYPERION_OPENALEX_EMAIL", "") or os.environ.get(
+            "HYPERION_CONTACT_EMAIL", ""
+        )
+        if email:
+            self._email = email
         self._client: httpx.AsyncClient | None = None
         self._cache: dict[str, tuple[float, Any]] = {}
         self._last_request_time: float = 0.0

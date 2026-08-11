@@ -772,10 +772,15 @@ class Settings(BaseSettings):
     # W-14: native Gemini grounding is intentionally separate from Google's
     # OpenAI-compatible completion endpoint. Quota units are provider-issued
     # search queries for Gemini 3 models, not ordinary completion requests.
+    # P1.4 (overhaul §6 P1, 2026-08-10): the Gemini 2.5 Flash grounding tier
+    # ships a 1500-request/day free quota (the old 20/day was a pre-overhaul
+    # conservative guess that strangled the last-resort web class). 1500/day is
+    # an order-of-magnitude real server-side index — the free-capacity answer
+    # to P1.1, so no keyed Brave/Tavily/Exa web API is needed.
     google_grounding_enabled: bool = True
     google_grounding_model: str = "gemini-2.5-flash"
-    google_grounding_daily_limit: int = 20
-    google_grounding_monthly_limit: int = 600
+    google_grounding_daily_limit: int = 1500
+    google_grounding_monthly_limit: int = 45000
     google_grounding_reserve_fraction: float = 0.10
     google_grounding_max_queries_per_call: int = 4
     google_grounding_ledger_path: Path = Path("./vault/grounding_quota.json")
@@ -813,12 +818,28 @@ class Settings(BaseSettings):
     # ship, but only with a prominent limitations page.
     allow_ship_with_caveat: bool = False
 
+    # ── Recovery Supervisor (OVERHAUL3 D-F, overhaul3_audit.md §5) ──
+    # A BLOCKED verdict is a diagnostic input, not an exit: the orchestrator
+    # may run a bounded recovery loop that classifies each integrity blocker,
+    # re-dispatches ONLY the responsible agent(s) with blocker-specific
+    # directives (idempotent task ids), and re-scores via the existing Quality
+    # Gate. These are NEW bounds on a NEW loop — no existing cap is raised.
+    # 0 disables the supervisor entirely (the old terminal-BLOCKED behaviour).
+    quality_recovery_max_passes: int = 1        # bounded self-healing; 0 disables
+    quality_recovery_min_score_gain: float = 0.05  # a pass must beat `best` by this to commit
+    recovery_wall_clock_seconds: int = 300      # sub-budget carved from the engagement wall-clock
+
     # ── Sub-Agent ──
     # L2 fix: 600s (was 300s). See SubAgentConfig above for the rationale;
     # the schema default (schemas/agents.py:225) is already 600, and every
     # specialist that hard-coded 300 has been raised in lockstep.
     sub_agent_timeout: int = 600
     max_sub_agents: int = 3
+
+    #: OVERHAUL2 S9: hard upper bound for the per-specialist CONCURRENT
+    #: sub-agent budget under pressure. Starts at each spec's
+    #: max_sub_agents (3); cap pressure raises it toward this ceiling.
+    sub_agent_concurrent_max: int = 5
 
     # ── Wait Gate ──
     budget_reserve: float = 0.20

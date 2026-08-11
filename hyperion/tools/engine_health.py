@@ -51,8 +51,37 @@ logger = logging.getLogger(__name__)
 _BASE_COOLDOWN_SECONDS = 300  # 5 minutes
 _MAX_COOLDOWN_SECONDS = 14400  # 4 hours
 
+# P1.4 (overhaul §6 P1, 2026-08-10): per-source-class membership. The Aug-10
+# autopsy proved engine-level cooldowns are necessary but not sufficient — the
+# web SCRAPER class (mwmbl/brave) can be wholesale 403/429ing while the scholar
+# and reference API classes are healthy, and the old gate only asked "how many
+# engines are healthy fleet-wide". Class-level health lets the search layer
+# reroute to a living source class instead of re-probing a dead one. These are
+# the ACTIVE engines only (P1.2: mojeek/yep are disabled and excluded).
+_SOURCE_CLASS_ENGINES: dict[str, frozenset[str]] = {
+    "web": frozenset({"mwmbl", "brave"}),
+    "scholar": frozenset({"crossref", "openalex", "arxiv", "pubmed", "semantic scholar"}),
+    "reference": frozenset({"wikipedia", "github", "stackexchange", "hackernews", "openstreetmap"}),
+}
+
 _SUSPENDED_TIME_RE = re.compile(r"suspended_time=(\d+)")
 _CAPTCHA_MARKERS = ("captcha", "accessdenied", "access denied")
+
+# D-E (overhaul3_audit.md W2/S5): best-effort query → source-class markers.
+# Full-sentence specialist queries rarely carry strong class markers, so the
+# default is ``web`` — the corpus-safe broad pool. These are the same three
+# classes ``_SOURCE_CLASS_ENGINES`` keys.
+_SCHOLAR_MARKERS = (
+    "research", "study", "studies", "academic", "literature", "paper",
+    "papers", "journal", "published", "publication", "publications",
+    "scientific", "peer-review", "peer reviewed", "citation", "citations",
+    "doi", "scholar", "thesis", "clinical trial",
+)
+_REFERENCE_MARKERS = (
+    "define", "definition", "what is", "what are", "overview", "summary",
+    "encyclopedia", "wikipedia", "background", "history of", "meaning",
+    "explain", "introduction", "guide",
+)
 
 
 class EngineState(StrEnum):
@@ -262,6 +291,30 @@ class EngineHealthTracker:
     def healthy_count(self, engines: list[str] | set[str]) -> int:
         return sum(1 for engine in engines if self.is_available(engine))
 
+    # ── P1.4: source-class health ──────────────────────────────────────
+
+    def class_state(self, source_class: str) -> tuple[int, int, dict[str, EngineState]]:
+        """Per-class health: (healthy, total, per-engine states).
+
+        ``source_class`` is one of ``_SOURCE_CLASS_ENGINES`` keys (``web`` /
+        ``scholar`` / ``reference``). The engine-health circuit classifies the
+        fleet so the search layer can reroute to a living class instead of
+        re-probing a dead one (the Aug-10 "web pool 403ing all run" failure).
+        """
+        engines = sorted(_SOURCE_CLASS_ENGINES.get(source_class, frozenset()))
+        states = {engine: self.state(engine) for engine in engines}
+        healthy = sum(1 for state in states.values() if state is EngineState.HEALTHY)
+        return healthy, len(engines), states
+
+    def class_healthy(self, source_class: str) -> bool:
+        """True when at least one engine in the class is currently HEALTHY."""
+        healthy, total, _ = self.class_state(source_class)
+        return total > 0 and healthy > 0
+
+    def living_classes(self) -> list[str]:
+        """Source classes with >= 1 healthy engine, in registry order."""
+        return [cls for cls in _SOURCE_CLASS_ENGINES if self.class_healthy(cls)]
+
     def record_degradation_if_needed(
         self,
         engines: list[str] | set[str],
@@ -303,6 +356,24 @@ class EngineHealthTracker:
 
 
 _tracker: EngineHealthTracker | None = None
+
+
+def query_target_class(query: str, default: str = "web") -> str:
+    """Best-effort: which source class a research query targets.
+
+    The reframer (orchestrator._task_needs_reframe) uses this to refuse
+    rewordings whose target class has no living engine (D-E). The Aug-11
+    run kept reframing web-targeted COMPETE tasks while brave was
+    429-suspended and wikipedia was 400ing — the old gate only asked
+    whether ANY class was alive. This is a heuristic; the default is
+    ``web`` because specialist queries are broad natural language.
+    """
+    q = (query or "").lower()
+    if any(marker in q for marker in _SCHOLAR_MARKERS):
+        return "scholar"
+    if any(marker in q for marker in _REFERENCE_MARKERS):
+        return "reference"
+    return default
 
 
 def get_engine_health() -> EngineHealthTracker:

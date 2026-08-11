@@ -58,6 +58,7 @@ from typing import Any
 
 from hyperion.infra.paths import obscura_bin_dir, obscura_binary_names
 from hyperion.infra.provenance import banner as _provenance_banner
+from hyperion.infra.provenance import banner_lines as _provenance_banner_lines
 from hyperion.infra.provenance import collect_async as _collect_provenance_async
 from hyperion.infra.provenance import refusal_reason as _provenance_refusal
 from hyperion.infra.services import (
@@ -75,7 +76,11 @@ from hyperion.infra.services import (
 from hyperion.infra.services import (
     stop_services as _infra_stop_services,
 )
-from hyperion.tools.searxng import EngineRegistryMismatch, reconcile_engine_registry
+from hyperion.tools.searxng import (
+    EngineRegistryMismatch,
+    profile_enabled_engines,
+    reconcile_engine_registry,
+)
 from hyperion.tui.widgets.transcript import LogRow, Transcript
 
 logger = logging.getLogger(__name__)
@@ -186,7 +191,17 @@ async def run_boot_sequence(
     # Banner goes to the transcript AND stderr — it must be on screen even
     # if the TUI crashes before the first frame paints.
     print(banner_text, file=sys.stderr, flush=True)
-    log.add_entry("BUILD", banner_text, spinner=False)
+    # The transcript row is the compact, badge-styled rendering; the full
+    # fingerprint (hashes + policy) stays on stderr so a screenshot of the
+    # boot log can still prove the running build.
+    build_content, build_detail = _provenance_banner_lines(provenance)
+    log.add_entry(
+        "BUILD",
+        build_content,
+        detail=build_detail,
+        spinner=False,
+        icon="✓",
+    )
     refusal = _provenance_refusal(provenance)
     if refusal is not None and get_settings().provenance_strict:
         print(f"BOOT REFUSED — {refusal}", file=sys.stderr, flush=True)
@@ -274,9 +289,19 @@ async def run_boot_sequence(
             status = statuses[replica.name]
             if status.ok:
                 try:
+                    # P1.2-fix: expect the ENABLED engines, not the full
+                    # declared tuple. The W-12 registry keeps disabled engines
+                    # (web: mojeek/yep) declared so profile disjointness and
+                    # the P1.2 decision record hold — but the running config
+                    # only serves enabled engines, so expecting the declared
+                    # set produced a spurious `web:fail@8890` at every boot
+                    # even when the replica was healthy.
+                    expected = profile_enabled_engines(replica.profile)
+                    if not expected:
+                        expected = set(replica.engines)
                     registry = await reconcile_engine_registry(
                         f"http://127.0.0.1:{replica.port}",
-                        expected_engines=set(replica.engines),
+                        expected_engines=expected,
                     )
                 except EngineRegistryMismatch as exc:
                     status.state = FAIL

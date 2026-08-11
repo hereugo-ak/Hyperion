@@ -37,8 +37,12 @@ Docker Desktop installed per-user (``%LOCALAPPDATA%``), on a non-default drive,
 via winget, on macOS, or as a plain Linux daemon all miss that path, so
 ``docker_desktop.exists()`` was False and the code went straight to "start
 Docker Desktop manually". :func:`ensure_docker_engine` probes every real install
-location per platform, and on Linux tries the service manager, so the shell
-starts the engine itself.
+location per platform, and on Linux tries the service manager. On Linux it now
+also covers Docker Desktop for Ubuntu (the ``docker-desktop`` user unit and its
+GUI binary, launched detached), rootless docker (``systemctl --user``), the
+systemd daemon (root or passwordless sudo only — never a prompting sudo inside
+the TUI) and, as a non-systemd fallback, ``service docker start`` when root.
+So the shell starts the engine itself on every platform.
 
 READINESS, NOT ``sleep(3)``
 ---------------------------
@@ -505,7 +509,18 @@ async def _launch_docker_desktop() -> str:
         return await _launch_wsl2_docker_desktop()
 
     if platform == Platform.LINUX_SYSTEMD:
-        # Rootless user service never prompts and is always safe to try first.
+        # Docker Desktop on Ubuntu registers a user service. It is the "Docker
+        # app" desktop users mean by "I have to start Docker manually", so it
+        # is tried before the rootless/daemon paths.
+        for cmd in (
+            ["systemctl", "--user", "start", "docker-desktop"],
+            ["systemctl", "--user", "start", "docker-desktop.service"],
+        ):
+            rc, _, _ = await run_command(cmd, timeout=25)
+            if rc == 0:
+                return f"started via {' '.join(cmd[:3])}"
+
+        # Rootless user service never prompts and is always safe to try.
         for cmd in (
             ["systemctl", "--user", "start", "docker"],
             ["systemctl", "--user", "start", "docker.service"],
@@ -513,6 +528,27 @@ async def _launch_docker_desktop() -> str:
             rc, _, _ = await run_command(cmd, timeout=25)
             if rc == 0:
                 return f"started via {' '.join(cmd[:3])}"
+
+        # Docker Desktop's GUI binary as a last resort on Linux. Launching it
+        # detached never prompts inside the TUI and is exactly "launch the
+        # Docker app" — the engine poll then waits for the daemon to answer.
+        # Deliberately NO fallthrough to the system daemon after this: starting
+        # the apt/CE daemon alongside Docker Desktop would fight over the
+        # docker context and socket. If the GUI cannot bring the daemon up
+        # (headless box, not logged into Desktop), the poll times out and the
+        # failure detail reports the one-time setup hint instead.
+        desktop_bin = shutil.which("docker-desktop")
+        if desktop_bin:
+            try:
+                subprocess.Popen(
+                    [desktop_bin],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return "launching docker-desktop"
+            except OSError:
+                pass
 
         # Never invoke a command that can prompt inside the TUI. Root may call
         # systemctl directly; other users get only passwordless sudo (-n).
@@ -602,7 +638,14 @@ async def ensure_docker_engine(
         )
     if not note:
         detail = "Docker installed but the engine could not be started automatically"
-        if platform == Platform.WSL2:
+        if platform in (Platform.LINUX_SYSTEMD, Platform.LINUX_OTHER):
+            detail += (
+                ". One-time setup so it auto-starts from now on: "
+                "`sudo systemctl enable --now docker` (apt/CE daemon), "
+                "`systemctl --user enable --now docker` (rootless), or start "
+                "Docker Desktop once and enable Start on login."
+            )
+        elif platform == Platform.WSL2:
             detail += (
                 ". Confirm Docker Desktop is installed on Windows and WSL integration "
                 "is enabled for this distro."

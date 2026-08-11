@@ -280,6 +280,11 @@ class FinancialAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1339,11 +1344,13 @@ class FinancialAnalyst(BaseAgent):
         tam_from_market = self._context.get("tam")
 
         # Spawn sub-agents for parallel data collection
+        sub_findings: list[KeyFinding] = []
         if tickers or industry:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning financial data "
                 "collection sub-agents")
             sub_findings = await self._spawn_financial_sub_agents(tickers, industry, business_model)
-            self._sub_agent_findings = sub_findings
+        await self._ingest_sub_findings(sub_findings)
+        if tickers or industry:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 
@@ -1360,6 +1367,13 @@ class FinancialAnalyst(BaseAgent):
         if industry:
             await self._transition(AgentState.WORKING, f"Step 3: Searching industry benchmarks (SearxNG + Jina) for {industry}")
             self._industry_benchmarks = await self._search_industry_benchmarks(industry)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no financial data for {industry}"):
+            return FinancialAnalysis(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 4: Build DCF model with sensitivity tables
         await self._transition(AgentState.WORKING, "Step 4: Building DCF model with sensitivity "

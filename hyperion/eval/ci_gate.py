@@ -81,10 +81,33 @@ def run_lint() -> int:
     return EXIT_REGRESSION if failed else EXIT_PASS
 
 
+def run_canary_gate() -> int:
+    """P6.1 (overhaul §6 P6): run the fault-injection canary suite.
+
+    Each canary injects one deterministic fault and asserts the phase gate
+    that must hold under it. A single red canary fails CI — the Aug-9/Aug-10
+    failure modes are permanent integration tests, not anecdotes.
+    """
+    from hyperion.eval.canaries import run_canaries
+
+    results = run_canaries()
+    failed = [r for r in results if not r.passed]
+    print(f"CANARY GATE: {len(results) - len(failed)}/{len(results)} green")
+    for r in results:
+        print(f"  [{'PASS' if r.passed else 'FAIL'}] {r.name}: {r.detail}")
+    if failed:
+        for r in failed:
+            print(f"  FAILED: {r.name} — {r.detail}")
+        return EXIT_REGRESSION
+    return EXIT_PASS
+
+
 async def run_gate(args: argparse.Namespace) -> int:
     """Execute the requested gate mode and return a process exit code."""
     if args.lint:
         return run_lint()
+    if args.canaries:
+        return run_canary_gate()
 
     from hyperion.eval import GOLDEN_SET, EvalHarness, run_deterministic_checks
 
@@ -206,6 +229,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--lint",
         action="store_true",
         help="Run the static-analysis gate (ruff + mypy) instead of quality checks",
+    )
+    parser.add_argument(
+        "--canaries",
+        action="store_true",
+        help="Run the Phase 6 fault-injection canary suite instead of quality checks",
     )
     return parser
 

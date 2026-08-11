@@ -46,35 +46,47 @@ engines:
 - name: arxiv
   engine: arxiv
   shortcut: ar
-  categories: science
+  categories:
+  - science
+  - general
   disabled: false
   timeout: 12
   weight: 1.0
 - name: crossref
   engine: crossref
   shortcut: cr
-  categories: science
+  categories:
+  - science
+  - general
   disabled: false
   timeout: 12
   weight: 1.0
 - name: openalex
   engine: openalex
   shortcut: oa
-  categories: science
+  categories:
+  - science
+  - medical
+  - general
   disabled: false
   timeout: 12
   weight: 1.0
 - name: semantic scholar
   engine: semantic_scholar
   shortcut: ss
-  categories: science
+  categories:
+  - science
+  - general
   disabled: false
   timeout: 12
   weight: 1.0
 - name: pubmed
   engine: pubmed
   shortcut: pm
-  categories: science
+  categories:
+  - science
+  - medical
+  - general
   disabled: false
   timeout: 12
   weight: 0.8

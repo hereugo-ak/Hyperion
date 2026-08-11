@@ -325,6 +325,11 @@ class StrategyAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
         # Framework selection
         self._frameworks_selected: list[str] = []
@@ -1626,13 +1631,22 @@ class StrategyAnalyst(BaseAgent):
         )
 
         # Spawn sub-agents for parallel data collection
+        sub_findings: list[KeyFinding] = []
         if sector or company:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning strategy data "
                 "collection sub-agents")
             sub_findings = await self._spawn_strategy_sub_agents(sector, company)
-            self._sub_agent_findings = sub_findings
+        await self._ingest_sub_findings(sub_findings)
+        if sector or company:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no strategic context for {sector}"):
+            return StrategyAnalysis(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 2: Run Porter's Five Forces
         await self._transition(AgentState.WORKING, "Step 2: Running Porter's Five Forces analysis")

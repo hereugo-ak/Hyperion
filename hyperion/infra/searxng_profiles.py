@@ -1,4 +1,24 @@
-"""Generate the three disjoint W-12 SearXNG settings profiles."""
+"""Generate the three disjoint W-12 SearXNG settings profiles.
+
+Egress & capacity decision (overhaul §6 P1.4, recorded 2026-08-10):
+
+    The operator chose to harden the existing stack rather than add a
+    third-party keyed search API. This is the written decision record:
+
+    * SearXNG remains the corpus. General web is served by the web replica's
+      ``mwmbl`` + ``brave`` engines only, behind the engine-health circuit
+      (P1.2: ``mojeek``/``yep`` are disabled — they 403 categorically from
+      this datacenter/VPS egress). Scholar/reference API engines (crossref,
+      openalex, wikipedia, ...) remain the fan-out rescue path for a dead
+      web pool.
+    * Egress is the single loopback replica set (Docker bridge, one host
+      IP). No rotating proxy is used. That is a deliberate, documented
+      trade: bans are absorbed by the engine-health cooldown (capped at 4h)
+      and the boot-time TTL sweep, never by adding more anonymous scrapers.
+    * If upstream bans return to catastrophic levels, the capacity answer is
+      a keyed API or different egress — never more scraper engines or
+      higher retry/timeout budgets (overhaul §9 anti-patterns 1-2).
+"""
 
 from __future__ import annotations
 

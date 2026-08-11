@@ -108,3 +108,45 @@ def test_state_persists_across_instances(tmp_path, monkeypatch):
     t2 = EngineHealthTracker()  # new instance, same state file
     assert not t2.is_available("startpage")
     t1.reset()
+
+
+# ── P1.4 (overhaul §6 P1, 2026-08-10): per-source-class health ────────────
+
+
+def test_class_state_reports_per_class_membership(tracker):
+    """P1.4: the web/scholar/reference classes are composed of the ACTIVE
+    engines (P1.2-pruned), and a healthy class reports 1+ healthy engines."""
+    healthy, total, states = tracker.class_state("web")
+    assert set(states) >= {"mwmbl", "brave"}
+    assert total >= 2
+    assert healthy == total  # nothing cooled yet
+    assert tracker.class_healthy("web")
+    assert "web" in tracker.living_classes()
+
+
+def test_dead_class_is_reroutable_via_living_classes(tracker):
+    """P1.4: suspending every web engine must NOT drag the scholar class down —
+    the search layer reroutes to a living class (the Aug-10 rescue pattern)."""
+    for engine in ("mwmbl", "brave"):
+        tracker.record_response(
+            unresponsive_engines=[[engine, "HTTP error 403 (suspended_time=180)"]],
+            responding_engines=[],
+        )
+    assert not tracker.class_healthy("web")
+    assert "web" not in tracker.living_classes()
+    assert tracker.class_healthy("scholar")
+    assert "scholar" in tracker.living_classes()
+    # The fleet still has healthy classes to reroute to.
+    assert tracker.healthy_count({"mwmbl", "brave", "crossref", "openalex"}) >= 2
+
+
+def test_class_state_unknown_class_is_empty(tracker):
+    """P1.4: an unknown source class is empty (healthy=0, total=0) and never
+    counts as living."""
+    healthy, total, states = tracker.class_state("nonexistent")
+    assert healthy == 0
+    assert total == 0
+    assert states == {}
+    assert not tracker.class_healthy("nonexistent")
+    assert "nonexistent" not in tracker.living_classes()
+

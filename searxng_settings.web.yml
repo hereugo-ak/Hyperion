@@ -45,25 +45,35 @@ engines:
 - name: mojeek
   engine: mojeek
   shortcut: mj
-  disabled: false
+  categories:
+  - general
+  disabled: true
   timeout: 15
   weight: 1.0
 - name: mwmbl
   engine: mwmbl
   shortcut: mwm
+  categories:
+  - general
+  - news
   disabled: false
   timeout: 20
   weight: 0.8
 - name: brave
   engine: brave
   shortcut: br
+  categories:
+  - general
+  - news
   disabled: false
   timeout: 12
   weight: 1.0
 - name: yep
   engine: yep
   shortcut: yp
-  disabled: false
+  categories:
+  - general
+  disabled: true
   timeout: 15
   weight: 0.6
 valkey:

@@ -1787,7 +1787,7 @@ kitchen-sink afterthought.
 
 | Tool | Type | Used By | Description |
 |---|---|---|---|
-| SearxNG | Search | All specialists | Self-hosted meta-search, free, unlimited. Docker-based. Aggregates 70+ search engines. No API key, no rate limit, no tracking. |
+| SearxNG | Search | All specialists | Self-hosted meta-search, free. Docker-based. Web profile: `mwmbl` + `brave` only, behind the engine-health circuit (§5.2.1); scholar/reference API engines are the fan-out fallback. |
 | Jina | Search + Extract | All specialists | `s.jina.ai` search, `r.jina.ai` read. 500 RPM, 10M tokens/mo. Used for content extraction from URLs returned by SearxNG. |
 | Obscura | Browser | Competitive Intel, Consumer Insights, Technology, Regulatory, M&A, Market, Sustainability, Operations, Fact Checker | Rust headless browser. 70MB binary, 30MB RAM, instant cold start. CDP-compatible. Stealth mode. MCP server with 12 tools. **Primary browser for JS-heavy pages.** |
 | Crawl4AI | Deep Extract | Research Librarian, Fact Checker | Heavy page extraction. Fallback when Obscura unavailable. Transformers patch required. Used for PDF extraction and complex document parsing. |
@@ -1836,6 +1836,36 @@ Image task:
 
 This is not a generic "use whatever tool" approach. Each agent knows exactly
 which tool to use for which task, in what order, and when to fall back.
+
+#### 5.2.1 Egress & Corpus Capacity Policy (W-11 amendment, 2026-08-10)
+
+**Decision (overhaul.md §6 P1.4 — written record):** HYPERION does NOT use a
+third-party keyed web-search API (Brave, Tavily, Exa, SerpAPI, ...) and does
+NOT run a rotating residential proxy. Egress is the single host IP behind the
+Docker bridge. This is a deliberate, operator-chosen trade to keep the system
+self-contained and free-tier — not an unrecorded default.
+
+Consequences, enforced in code:
+
+| Policy | Enforcement |
+|---|---|
+| General web = `mwmbl` + `brave` only | `searxng_settings.web.yml` / `hyperion/infra/searxng_profiles.py` (P1.2: `mojeek`, `yep` disabled — categorical 403s from this egress) |
+| Scholar/reference is the fallback pool | crossref, openalex, wikipedia, semantic scholar joined via full-pool fan-out when web is dead |
+| Keyed fallbacks stay in place | Jina (keyed) and Gemini Search grounding (keyed, 20/day ledger) |
+| Boot does not burn capacity | readiness is local-only (`obs/health.py` — TCP + `/config` + persisted engine health) |
+| Bans are absorbed, not escalated | engine-health cooldown capped at 4h + boot-time TTL sweep (`engine_health.py`) |
+| Dead corpus is cheap | Phase-2 corpus preflight RED terminates < 60s / < 5k tokens |
+| Polite pools | `HYPERION_CONTACT_EMAIL` / `HYPERION_OPENALEX_EMAIL` mailto UA on openalex/crossref/wikipedia |
+
+**Explicitly NOT done** (overhaul.md §9 anti-patterns 1–2): no new anonymous
+scraper engines; no Tier-C engines (bing, duckduckgo, startpage, qwant)
+without a further written amendment; no raising of retry/timeout/iteration
+budgets. If upstream bans ever return to catastrophic levels, the capacity
+answer is a keyed API or different egress — never more scrapers or longer
+waits.
+
+Canonical machine-side record: the module docstring of
+`hyperion/infra/searxng_profiles.py` (same decision, recorded in code).
 
 ### 5.3 Obscura Integration — Deep Dive
 
@@ -3010,3 +3040,98 @@ proprietary consulting model with:
 
 Every component is the best version of itself. No bullshit. No filler.
 No idle components. This is the engine that powers HYPERION Consulting.
+
+---
+
+## 14. The Output Contract (OVERHAUL2, 2026-08-11)
+
+Overhaul 1 built the **Evidence Control Plane** (ledger, preflight, KPIs).
+Overhaul 2 builds the **Output Contract**: the guarantee that
+`task completed ⇒ output object exists ⇒ synthesis consumes it ⇒ report
+carries its sources`. These five invariants hold **by construction**, not by
+convention. They are load-bearing; do not weaken them.
+
+- **OC-1 · Single writer.** Only the orchestrator's execution record writes
+  `task.status = COMPLETED/FAILED` and `_task_outputs` (`orchestrator.py`
+  `_execute_task`). The Director's bus handler is display-only
+  (`engagement_director.py` `_handle_status_update` — PENDING→RUNNING only).
+  A task cannot be "completed" without an output object.
+- **OC-2 · Dependency outputs are aliased, never lost.** A successful reframed
+  variant backfills its origin's output slot (`orchestrator.py` `_execute_task`,
+  walking the `reframed_from` chain to the root origin). Synthesis and
+  fact-check run on partial context **by design** — they receive available
+  outputs plus the findings channel plus a typed `missing_dependencies` list,
+  and never crash with `MissingDependencyOutput`.
+- **OC-3 · Findings are source-bound in the schema.** A substantive
+  `KeyFinding` with zero usable source URLs is retyped `unverified_assertion`
+  at construction (`schemas/models.py` `_enforce_provenance`). Floor reports,
+  KPI-3 and the corpus floor all read the same enforced truth. Sub-agents bind
+  sources in code BEFORE validating the finding (`sub_agent.py`
+  `_analyze_and_produce_findings`).
+- **OC-4 · Corpus gates measure per-class and delta.** Preflight GREEN
+  requires every source class alive (`corpus_preflight.py` `_evaluate_contract`
+  per-class floors: web≥1, scholar≥2, reference≥1) AND the total floor. Canary
+  evidence is stage-tagged `preflight` (`evidence_ledger.py` `retag_stage`); the
+  mid-run recheck counts engagement-only evidence.
+- **OC-5 · Budgets degrade loudly and recover.** Concurrent sub-agent cap
+  pressure auto-raises 3→5 (bounded) and defers—never silently drops—specs
+  (`base.py` `_spawn_sub_agent` + `_deferred_specs`). A corpus-floor integrity
+  blocker skips quality iteration entirely (`orchestrator.py`
+  `_quality_iteration_loop`).
+
+Also load-bearing: the reference-replica category contract
+(`searxng_settings.reference.yml` declares `reference` on every engine; guarded
+by `tests/test_searxng_category_contract.py`, which also asserts the
+reference-class canary probe query is title-shaped — OVERHAUL3 S12), and the
+single ingestion path for sub-agent findings (`base.py` `_ingest_sub_findings`
+— no specialist may hand-wire its own merge/reconcile/contradiction/publish
+block).
+
+---
+
+## 15. The Self-Healing Loop (OVERHAUL3, 2026-08-11)
+
+Overhaul 3 is the fail-safe self-healing layer. Every defect D-A..D-L is one
+disease with three faces: **a component acted on a belief about its own state
+that was wrong, stale, or dishonestly logged, and had no supervisor to catch
+it.** Each fix makes its failure class typed, bounded, and honestly logged.
+
+| Defect | Failure on 2026-08-11 | Fix | Guard |
+|---|---|---|---|
+| D-A | `_log()` with 2 positional args crashed COMPETE at 06:31:36 | every `_log` site takes exactly one message; values via f-strings | `tests/test_log_arity.py` AST lock + `log-arity` canary |
+| D-B | a specialist whose dependency produced no output crashed with `MissingDependencyOutput` | synthesis/fact-check run on partial context + typed `missing_dependencies` | `tests/test_w1_db_partial_context.py` |
+| D-C | budget-refused self-heal logged "still failed on STRONG tier" (a lie) | membership-aware budget (retries of already-counted questions are free) + `BUDGET_REFUSED` runner stamp | `tests/test_w1_dc_budget_gate.py`, `tests/test_w4_s10_budget_refused_outcome.py` |
+| D-D | aggregate bus publishes counted but never collected ("1 (0)", "8 (7)") | `_all_findings` drains `bus.get_retained_findings()` per agent, dedup by id | `tests/test_w1_dd_bus_fed_collection.py` + `all-findings-bus-fed` canary |
+| D-E | reframed variants of reframed variants (reframe trees) | per-class reframe gate — a dead class or already-reframed variant is never reframed | `tests/test_w2_de_reframe_tree.py` |
+| D-G/D-H | wikipedia 400 / openalex 400 on raw paragraph queries | reference-profile condensation (≤120, title-shaped) + scholar-profile sanitation (≤120, strip `,?.`) | `tests/test_w3_dg_dh_query_shaping.py` + `reference-condensation` / `scholar-sanitation` canaries |
+| D-I | semantic scholar re-queried all run after a non-JSON body | non-JSON body → `engine_health.record_response` before the retry → engines cool, replica fail-over | `tests/test_w3_di_nonjson_cooldown.py` + `nonjson-cooldown` canary |
+| D-K | gate blocked risk_coverage=1/5 while RISK published 18 findings | Synthesis Lead assigns `FinalReport.risk_analysis` from the RISK aggregate payload | `tests/test_w1_dk_risk_section.py` + `risk-section-populated` canary |
+| D-L | gate penalized `visual_quality` before delivery ran | pre-delivery boundary scores missing viz output as N/A (neutral); the re-render/validation path keeps the hard check | `tests/test_w1_dl_viz_na_gate.py` + `visual-quality-na` canary |
+
+### 15.1 The Recovery Supervisor (`orchestrator._recover_from_blocked`)
+
+A BLOCKED quality verdict is a diagnostic input, not an exit:
+
+1. **Classify** each integrity blocker into a `RecoveryClass`
+   (`PLACEHOLDER_VALUE`, `VERDICT_CONFLICT`, `MISSING_SECTION`,
+   `THIN_EVIDENCE`, `PRESENTATION_DEFECT`).
+2. **Re-dispatch only the owning specialist** with a blocker-specific directive
+   (idempotent task ids) — never a blanket re-run of the DAG.
+3. **Re-score** via the existing Quality Gate authority; commit only a strictly
+   improved score (monotonicity — a worse re-score is discarded, `best` ships
+   or blocks).
+4. **Bound the loop**: `quality_recovery_max_passes` (default 1) and
+   `recovery_wall_clock_seconds`. No existing cap was raised (§4.1) — these are
+   new bounds on a new loop.
+5. **Telemetry** — every pass lands in the blocked diagnostic, the manifest
+   `passes_detail`, and the new KPI block.
+
+### 15.2 KPI additions (`eval/kpi.py`)
+
+`kpi_9_recovery_attempted` (bool), `kpi_9_recovery_passes` (int),
+`kpi_9_recovered` (bool — did a BLOCKED run ship after recovery?), and
+`kpi_9_recovery_outcome_by_class` (map RecoveryClass →
+committed/discarded/skipped). The canary suite (`python -m
+hyperion.eval.canaries`) now carries the 8 OVERHAUL3 locks (§15 table) on top
+of the OVERHAUL2 set and must stay green — it is the permanent regression lock
+for the self-healing layer.

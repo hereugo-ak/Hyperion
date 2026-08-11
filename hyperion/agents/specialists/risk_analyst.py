@@ -268,6 +268,11 @@ class RiskAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1152,11 +1157,13 @@ class RiskAnalyst(BaseAgent):
         space = self._context.get("space", industry)
 
         # Spawn sub-agents for parallel risk data collection
+        sub_findings: list[KeyFinding] = []
         if industry or space:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning risk data collection "
                 "sub-agents")
             sub_findings = await self._spawn_risk_sub_agents(industry, jurisdiction, space)
-            self._sub_agent_findings = sub_findings
+        await self._ingest_sub_findings(sub_findings)
+        if industry or space:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 
@@ -1167,6 +1174,15 @@ class RiskAnalyst(BaseAgent):
         # Step 2: Scrape regulatory databases
         await self._transition(AgentState.WORKING, f"Step 2: Scraping regulatory databases for {jurisdiction}")
         self._regulatory_data = await self._scrape_regulatory_databases(jurisdiction)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no risk data for {self._question[:60]}"):
+            return RiskAnalysis(
+                risks=[],
+                residual_risk_summary="No risks identified — zero evidence collected",
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 3: Identify risks across 6 categories
         await self._transition(AgentState.WORKING, "Step 3: Identifying risks across 6 categories")

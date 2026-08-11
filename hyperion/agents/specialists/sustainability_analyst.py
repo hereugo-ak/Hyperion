@@ -273,6 +273,11 @@ class SustainabilityAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1113,11 +1118,13 @@ class SustainabilityAnalyst(BaseAgent):
         # that supplied neither silently skipped its entire parallel research
         # phase. With `sector` now resolved from the question, that gate can
         # only close when there is genuinely no subject at all.
+        sub_findings: list[KeyFinding] = []
         if sector or company:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning ESG data collection "
                 "sub-agents")
             sub_findings = await self._spawn_sustainability_sub_agents(company, sector, jurisdictions)
-            self._sub_agent_findings = sub_findings
+        await self._ingest_sub_findings(sub_findings)
+        if sector or company:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
         else:
@@ -1136,6 +1143,13 @@ class SustainabilityAnalyst(BaseAgent):
         await self._transition(AgentState.WORKING, "Step 3: Pulling environmental economic data "
             "(FRED)")
         self._fred_data = await self._pull_fred_data()
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no sustainability data for {self._question[:60]}"):
+            return SustainabilityAnalysis(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 4: Score on relevant ESG framework
         await self._transition(AgentState.WORKING, "Step 4: Scoring on ESG frameworks (MSCI, "

@@ -41,6 +41,7 @@ from typing import Any, cast
 import httpx
 
 from hyperion.tools.engine_health import get_engine_health
+from hyperion.tools.evidence_ledger import record_evidence
 from hyperion.tools.jina import JinaClient
 from hyperion.tools.query_utils import grounded_search_or_empty
 from hyperion.tools.valkey import get_valkey_store
@@ -50,25 +51,33 @@ logger = logging.getLogger(__name__)
 # W-11: one code registry, built only from API-backed sources and independent
 # crawlers. Tier C engines that CAPTCHA, IP-ban, or proxy a blocking upstream
 # are forbidden everywhere, not merely omitted from the default route.
-# P2-G23: six general-web engines. openalex is a Tier-A/B documented API
-# (owned by the scholar replica) that does not ban datacenter IPs the way
-# crawlers do; `engines_for` intersects it out of web-replica requests, so
-# W-11 isolation and W-12 disjoint profiles are preserved while the pool
-# meets the six-engine tripwire.
-RELIABLE_ENGINES = "wikipedia,mojeek,mwmbl,brave,crossref,openalex"
-STANDBY_ENGINES = "yep"
+# P2-G23: the general pool. openalex is a Tier-A/B documented API (owned by
+# the scholar replica) that does not ban datacenter IPs the way crawlers do;
+# `engines_for` intersects it out of web-replica requests, so W-11 isolation
+# and W-12 disjoint profiles are preserved.
+#
+# P1.2 (overhaul §6 P1, 2026-08-10): **mojeek and yep are removed from every
+# active engine set.** Both categorically 403 from a datacenter/VPS egress
+# after a week of daily runs (the Aug-10 autopsy: mojeek 403 x5+, yep 403
+# x4+ for the entire 40-minute run). They are also disabled in
+# `searxng_settings.yml` so no replica ever receives traffic for them again.
+# The web corpus is now served by `mwmbl` + `brave` behind the engine-health
+# circuit, with the scholar/reference API engines as the fan-out rescue path.
+RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex"
+STANDBY_ENGINES = ""
 CATEGORY_ENGINES = {
     "science": "arxiv,crossref,openalex,semantic scholar",
     "medical": "pubmed,openalex",
     "it": "github,stackexchange,hackernews",
     "geo": "openstreetmap",
-    "news": "mojeek,mwmbl",
+    "news": "mwmbl",
 }
 # Corpus-safe defaults when a request crosses profiles after an empty/error
 # response. These engines accept broad natural-language research queries;
 # profile-specific code/search/geo engines do not.
 PROFILE_FALLBACK_ENGINES = {
-    "web": frozenset({"mojeek", "mwmbl", "brave", "yep"}),
+    # P1.2: mojeek/yep removed — they 403 categorically from this egress.
+    "web": frozenset({"mwmbl", "brave"}),
     "reference": frozenset({"wikipedia"}),
     "scholar": frozenset({"crossref", "openalex", "semantic scholar"}),
 }
@@ -113,6 +122,38 @@ class EngineRegistryReport:
     @property
     def ok(self) -> bool:
         return not self.missing and not self.forbidden
+
+
+def profile_enabled_engines(profile: str) -> set[str]:
+    """P1.2-fix: the ENABLED engines for a SearXNG replica profile.
+
+    Reads the generated per-profile settings file (``searxng_settings.<profile>.yml``)
+    and returns only the engines that are NOT ``disabled: true``. This exists
+    because the W-12 replica registry deliberately keeps DISABLED engines
+    declared (mojeek/yep stay in ``SEARXNG_REPLICAS`` so profile disjointness
+    and the P1.2 decision record hold), but a boot reconcile that expects the
+    full declared tuple reports a spurious mismatch against the running config,
+    which only serves the enabled set. The reconcile must expect exactly the
+    enabled engines.
+    """
+    try:
+        import yaml
+
+        from hyperion.infra.paths import project_root
+
+        path = project_root() / f"searxng_settings.{profile}.yml"
+        if not path.exists():
+            return set()
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        enabled = {
+            str(e.get("name", "")).strip()
+            for e in data.get("engines", [])
+            if str(e.get("name", "")).strip() and not e.get("disabled", False)
+        }
+        return enabled
+    except Exception as exc:  # noqa: BLE001 - a read failure must not break boot
+        logger.warning("profile_enabled_engines(%r) failed: %s", profile, exc)
+        return set()
 
 
 async def reconcile_engine_registry(
@@ -660,6 +701,51 @@ class SearxNGClient:
             "owners_exhausted": sorted(cls._owners_exhausted),
         }
 
+    @staticmethod
+    def _sanitize_scholar_query(query: str, max_len: int = 120) -> str:
+        """OVERHAUL3 D-H (overhaul3_audit.md W3/S7): scholar APIs reject
+        punctuation-heavy ``search=`` expressions.
+
+        openalex 400'd on a 145-char comma/``?`` sentence (docker 12:02:35)
+        that sat UNDER the old 200-char clamp — the rejection was
+        punctuation, not length. Collapse ``,`` ``?`` ``.`` to spaces, then
+        clamp to ``max_len`` at a word boundary.
+        """
+        q = (query or "").strip()
+        q = q.replace(",", " ").replace("?", " ").replace(".", " ")
+        q = " ".join(q.split())
+        if len(q) > max_len:
+            q = q[:max_len].rsplit(" ", 1)[0]
+        return q.strip() or (query or "").strip()[:max_len]
+
+    @staticmethod
+    def _shape_query_for_profile(query: str, profile: str) -> str:
+        """OVERHAUL3 D-G/D-H: shape a query for the profile actually serving it.
+
+        - ``reference`` (wikipedia): ``/page/summary/{title}`` treats the
+          whole query as an article title and 400s on full-sentence specialist
+          queries (docker 12:31:05). Route through the same
+          ``SubAgentRunner._condense_query`` the sub-agents already use, so
+          reference searches arrive title-shaped (≤120 chars).
+        - ``scholar`` (openalex/crossref/arxiv/pubmed): APIs reject
+          punctuation-heavy paragraph queries; sanitize via
+          ``_sanitize_scholar_query``.
+        - everything else: the legacy S10 200-char clamp stays as the final
+          net so no profile ever dispatches a runaway paragraph.
+        """
+        if profile == "reference":
+            try:
+                from hyperion.agents.sub_agent import SubAgentRunner
+
+                return SubAgentRunner._condense_query(query, max_len=120)
+            except Exception as exc:  # noqa: BLE001 - degrade to the generic clamp
+                logger.debug("reference query condensation unavailable (%s)", exc)
+        elif profile == "scholar":
+            return SearxNGClient._sanitize_scholar_query(query)
+        if len(query) > 200:
+            return query[:200].rsplit(" ", 1)[0]
+        return query
+
     async def _search_searxng_json(
         self,
         query: str,
@@ -674,6 +760,13 @@ class SearxNGClient:
     ) -> SearchResponse | None:
         """Query one profile and fail over without sending it foreign engines."""
         category = categories or "general"
+        # OVERHAUL3 D-G/D-H (overhaul3_audit.md W3/S6-7): query shaping is now
+        # profile-aware and happens INSIDE the retry loop
+        # (``_shape_query_for_profile``), because the endpoint profile is only
+        # known after ``endpoint_for`` resolves. The old S10 blanket 200-char
+        # clamp ran before the endpoint was known, so punctuation-heavy
+        # paragraphs still reached wikipedia (400 on ``/page/summary/{title}``)
+        # and openalex (400 on ``search=``).
         requested_engines = {
             engine.strip() for engine in engines.split(",") if engine.strip()
         }
@@ -712,8 +805,9 @@ class SearxNGClient:
                         endpoint.profile,
                     )
                     continue
+                dispatch_query = self._shape_query_for_profile(query, endpoint.profile)
                 params: dict[str, Any] = {
-                    "q": query,
+                    "q": dispatch_query,
                     "format": "json",
                     "categories": (
                         category
@@ -737,7 +831,34 @@ class SearxNGClient:
                     endpoint.outstanding = max(0, endpoint.outstanding - 1)
                 self._pool.mark_success(endpoint.port)
 
-                data = response.json()
+                # OVERHAUL3 D-I (overhaul3_audit.md W3/S8): a non-JSON body
+                # (proxy error page, throttling HTML, an upstream 502 page) is
+                # an ENGINE-LEVEL health signal, not a generic client error.
+                # The old path only opened the endpoint circuit — engine_health
+                # was never told, so the next request re-asked the same dead
+                # engines (the 2026-07-30 semantic scholar repeat-queries).
+                # Feed the failure to ``record_response`` BEFORE the retry so
+                # ``filter_available`` drops the cooled engines and the
+                # profile fails over to a healthy replica.
+                try:
+                    data = response.json()
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "SearXNG non-JSON body for '%s' on %s profile: %s — "
+                        "cooling engines %s",
+                        query[:80],
+                        endpoint.profile,
+                        exc,
+                        ", ".join(sorted(endpoint.engines)),
+                    )
+                    health.record_response(
+                        unresponsive_engines=[
+                            [engine, "non-json response body"]
+                            for engine in sorted(endpoint.engines)
+                        ],
+                        responding_engines=[],
+                    )
+                    raise
                 raw_results = data.get("results", [])
                 results: list[SearchResult] = []
                 engines_used_set: set[str] = set()
@@ -756,6 +877,17 @@ class SearxNGClient:
                         category=item.get("category", category),
                         published_date=item.get("publishedDate", ""),
                     ))
+                    # P0 (overhaul §6 P0.2): every retrieved URL becomes an
+                    # Evidence record in the run-scoped ledger BEFORE any LLM
+                    # sees it. Provenance starts here, in code.
+                    record_evidence(
+                        url=url,
+                        title=item.get("title", ""),
+                        snippet=item.get("content", ""),
+                        engine=engine_name,
+                        profile=endpoint.profile,
+                        stage="discovery",
+                    )
 
                 unresponsive = data.get("unresponsive_engines", [])
                 degradation_events: list[dict[str, object]] = []
@@ -917,6 +1049,16 @@ class SearxNGClient:
         per_profile = self._pool.healthy_engines()
         if not per_profile:
             return None
+        # P1.2: never name an engine the code does not reference. The web
+        # replica still DECLARES (disabled) mojeek/yep so W-12 disjointness
+        # holds, but the fan-out must not carry their names either — SearXNG
+        # ignores disabled engines in a request, and keeping them out of the
+        # engine list makes the no-traffic guarantee explicit.
+        per_profile = {
+            profile: engines & referenced_engines()
+            for profile, engines in per_profile.items()
+        }
+        per_profile = {p: e for p, e in per_profile.items() if e}
 
         async def _fan_one(profile: str, engines: set[str]) -> SearchResponse | None:
             try:
@@ -994,6 +1136,14 @@ class SearxNGClient:
                         score=1.0,
                         category=categories,
                     ))
+                    record_evidence(
+                        url=jr.url,
+                        title=jr.title,
+                        snippet=jr.snippet,
+                        engine="jina",
+                        profile="jina_fallback",
+                        stage="discovery",
+                    )
 
                 if results:
                     results = self._deduplicate(results)[:num_results]
@@ -1079,6 +1229,15 @@ class SearxNGClient:
             return None
 
         results = self._deduplicate(outcome.results)[:num_results]
+        for r in results:
+            record_evidence(
+                url=r.url,
+                title=r.title,
+                snippet=r.snippet,
+                engine="google-search-grounding",
+                profile="grounding",
+                stage="grounding",
+            )
         return SearchResponse(
             query=query,
             results=results,

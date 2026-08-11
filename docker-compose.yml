@@ -8,6 +8,10 @@ x-searxng-common: &searxng-common
   restart: unless-stopped
   mem_limit: 512m
   cpus: 2.0
+  # OVERHAUL2 S10: explicit upstream DNS so the embedded resolver's
+  # "Temporary failure in name resolution" bursts under load (B-11: mwmbl,
+  # arxiv, openalex, OSM at 23:14-23:17) fail over to public resolvers.
+  dns: [1.1.1.1, 9.9.9.9]
   cap_drop: [ALL]
   cap_add: [CHOWN, SETGID, SETUID]
   security_opt: [no-new-privileges:true]

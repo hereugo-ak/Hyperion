@@ -336,6 +336,13 @@ class WorkflowEngine:
     # broadening strategies before the Director's slot is spent, without
     # letting a genuinely un-answerable question loop forever.
     MAX_REFRAMER_RETRIES = 2
+    # P4.3 (overhaul §6 P4, 2026-08-10): a GLOBAL reframe budget per
+    # engagement. The per-task retry cap alone let A-6's competitive_intel burn
+    # ~8 full pipelines by re-framing DIFFERENT tasks against the same dead
+    # pool. The reframer is the cheapest way to waste a dead fleet's tokens, so
+    # the whole engagement gets one small bucket: once it is spent, no task is
+    # reworded again — failures route to capacity recovery instead.
+    MAX_REFRAMER_GLOBAL_BUDGET = 6
     # Each sub-agent does SearxNG search + Jina read + LLM analysis.
     # With SearxNG semaphore=3 and multiple specialists in parallel,
     # and potentially slow network conditions, 600s was not enough —
@@ -358,6 +365,34 @@ class WorkflowEngine:
         self._journal: RunJournal | None = None
         self._artifacts: ArtifactStore | None = None
         self._manifest: RunManifest | None = None
+        # P0/P2: the run-scoped Evidence Ledger and its preflight verdict.
+        self._evidence_ledger: Any = None
+        self._corpus_contract: Any = None
+        self._evidence_reduced_budget: bool = False
+        self._evidence_budget_default: int = 6
+        # P4.3: reframes actually SPAWNED this engagement (global budget).
+        self._reframes_spawned: int = 0
+        # P4.4: progress signal — Δdomains + Δevidence per orchestration
+        # iteration. An iteration with ZERO progress consumes the progress
+        # budget; two consecutive zero-delta iterations is a stop signal
+        # (the fleet is yielding nothing and more waves only burn tokens).
+        self._consecutive_zero_progress: int = 0
+        self._last_domains_seen: int = -1
+        # P6.2: per-run KPI telemetry (recorded to reports/diagnostics at end).
+        self._first_evidence_seconds: float = -1.0
+        self._domains_before_synthesis: int = -1
+        self._provenance_binding_pct: float = -1.0
+        # OVERHAUL3 D-F (overhaul3_audit.md §5.5): Recovery Supervisor
+        # telemetry. A BLOCKED run enters the supervisor at most
+        # ``quality_recovery_max_passes`` times; every pass is recorded so the
+        # final give-up (or ship) is replayable, never a discarded diagnosis.
+        self._recovery_telemetry: dict[str, Any] = {
+            "attempted": False,
+            "passes": 0,
+            "recovered": False,
+            "outcomes_by_class": {},
+            "passes_detail": [],
+        }
         # W-20: guard every mutation of ``_all_findings`` from gathered tasks.
         # ``_execute_wave`` runs tasks via ``asyncio.gather`` and two sites
         # (the cache-hit replay and the live-run collector) extend this list
@@ -562,6 +597,16 @@ class WorkflowEngine:
             for key in ("industry", "sector", "space"):
                 ctx.setdefault(key, subject)
 
+        # W-06 / A1 (competitor discovery): thread the Director's subject_class
+        # through to every specialist. COMPETE's discovery queries must be
+        # shaped by what kind of entity the arena is (a company, a country's
+        # players, a technology, a market) — "space startups in India" is a
+        # COMPANY-class arena even when the question's subject is a
+        # NATION_OR_REGION.
+        dag_subject_class = str(getattr(dag, "subject_class", "") or "").strip()
+        if dag_subject_class:
+            ctx["subject_class"] = dag_subject_class
+
         ctx.setdefault("question", dag.question)
         self._engagement_context = ctx
 
@@ -673,6 +718,7 @@ class WorkflowEngine:
         # Now the dependent raises ``MissingDependencyOutput`` before any agent
         # dispatch; ``_execute_wave`` marks it FAILED with that reason.
         context: dict[str, Any] = {}
+        missing_deps: list[str] = []
         for dep_id in task.dependencies:
             if dep_id in self._task_outputs:
                 dep_output = self._task_outputs[dep_id]
@@ -680,13 +726,53 @@ class WorkflowEngine:
                 if dep_task:
                     context[dep_task.agent.value] = dep_output
             else:
-                dep_task = dag.get_task(dep_id)
-                dep_status = dep_task.status.value if dep_task else "missing"
+                missing_deps.append(dep_id)
+        if missing_deps:
+            # OVERHAUL2 S4: the scheduler (workflow.get_ready_tasks) already
+            # licenses FAILED dependencies — "run with partial findings".
+            # Synthesis and fact-check are the aggregation stages: their
+            # inputs are the FINDINGS CHANNEL plus whatever outputs exist.
+            # Crashing them on a missing dep converts one specialist failure
+            # into a zero-report run (the 17:51:21 incident). Specialists
+            # keep the strict contract (they need real inputs).
+            #
+            # OVERHAUL3 D-B (overhaul3_audit.md W1/S2): the strict raise was
+            # too blunt — it also fired when the missing dep is a FAILED
+            # *specialist* (upstream crash, e.g. COMPETE at 06:31:36), which
+            # cascaded into MissingDependencyOutput on STRATEGY at 06:57:51.
+            # The scheduler licenses FAILED deps as a ready condition
+            # (workflow.get_ready_tasks), so a crashed upstream is exactly
+            # the partial-context case, not a scheduling anomaly. Distinguish:
+            #   - dep task exists and status == FAILED (specialist crash) →
+            #     run on reduced context carrying missing_dependencies, like
+            #     synthesis — for ALL agents that consume specialist output.
+            #   - dep task absent / not FAILED (PENDING, scheduling anomaly,
+            #     a genuinely missing retrieval artifact) → strict raise.
+            is_agg_stage = task.agent in (
+                AgentName.SYNTHESIS_LEAD, AgentName.FACT_CHECKER,
+            )
+            missing_are_crashed = all(
+                (dep_task := dag.get_task(dep_id)) is not None
+                and dep_task.status == TaskStatus.FAILED
+                for dep_id in missing_deps
+            )
+            if not (is_agg_stage or missing_are_crashed):
+                dep_status = "unknown"
+                dep_task = dag.get_task(missing_deps[0])
+                if dep_task is not None:
+                    dep_status = dep_task.status.value
                 raise MissingDependencyOutput(
                     f"task '{task.id}' ({task.agent.value}) depends on "
-                    f"'{dep_id}' which has no output (status={dep_status}) — "
+                    f"'{missing_deps[0]}' which has no output (status={dep_status}) — "
                     f"refusing to run with a partial context"
                 )
+            self._log(
+                f"{task.agent.value}: proceeding with partial context — "
+                f"missing dependency outputs: {missing_deps}"
+            )
+            context["missing_dependencies"] = missing_deps
+            async with self._findings_lock:
+                context["collected_findings"] = list(self._all_findings)
 
         try:
             # Call the agent's run() method with the right arguments
@@ -732,6 +818,13 @@ class WorkflowEngine:
                 )
 
             elif task.agent == AgentName.FACT_CHECKER:
+                # P5.1 (overhaul §6 P5): the corpus floor is measured at the
+                # pre-factcheck boundary too. Fact-checking re-searches for
+                # verification; running it against a corpus that has collapsed
+                # since preflight wastes the verification pass. A below-floor
+                # read here degrades to AMBER so the verification step is
+                # bounded, never hallucinated.
+                await self._recheck_corpus_midrun(dag)
                 # Fact Checker needs all findings
                 result = await asyncio.wait_for(
                     agent.run(
@@ -774,6 +867,14 @@ class WorkflowEngine:
                     f"SYNTHESIS: injected {len(self._all_findings)} findings "
                     f"(total in agent: {len(agent._collected_findings)})"
                 )
+
+                # P1.4 (overhaul §6 P1, 2026-08-10): mid-run corpus re-probe.
+                # The preflight fires once at engagement start (P2); if the
+                # fleet collapses mid-run (the Aug-10 A-8 scenario), synthesis
+                # must not proceed over an evidence vacuum. Read the ledger now
+                # and degrade to AMBER (halved sub-agent budget) when the
+                # corpus has collapsed since start.
+                await self._recheck_corpus_midrun(dag)
 
                 result = await asyncio.wait_for(
                     agent.run(
@@ -930,6 +1031,32 @@ class WorkflowEngine:
             )
             self._task_outputs[task.id] = result
             self._publish_task_update(task)
+            # OVERHAUL2 S5: a successful reframed variant satisfies the
+            # ORIGINAL task's downstream contract. Without this alias,
+            # dependents keep pointing at an output slot the reframer's new
+            # task IDs never fill. Walk the ``reframed_from`` chain to the
+            # ROOT origin so nested reframes (a reframed variant that is
+            # itself reframed — the 17:43:39 ``task_reframed_1_1_*`` chain)
+            # all backfill the one slot synthesis actually depends on.
+            reframed_from = getattr(task, "reframed_from", None)
+            if reframed_from:
+                origin = reframed_from
+                seen: set[str] = set()
+                while origin and origin not in seen:
+                    seen.add(origin)
+                    if origin not in self._task_outputs:
+                        self._task_outputs[origin] = result
+                        original = dag.get_task(origin)
+                        if original is not None and original.status == TaskStatus.FAILED:
+                            original.status = TaskStatus.COMPLETED
+                            original.error = ""
+                            self._publish_task_update(original)
+                    parent = dag.get_task(origin)
+                    next_origin = getattr(parent, "reframed_from", None) if parent else None
+                    if next_origin and next_origin not in self._task_outputs:
+                        origin = next_origin
+                    else:
+                        break
 
             # P10: Record success in journal + save artifact
             if self._journal:
@@ -942,10 +1069,55 @@ class WorkflowEngine:
 
             # Collect findings for Fact Checker and Synthesis Lead
             if hasattr(agent, "_findings"):
-                findings_count = len(agent._findings)
+                # F-0.1-13 (FIX0.1_SUB_AGENT_RETRY_EXHAUSTED.md): the single
+                # ledger of record is the bus's FINDINGS channel — it captures
+                # both individual findings (_publish_finding) AND aggregate
+                # model publishes (bus.publish Channel.FINDINGS) that bypass the
+                # specialist's _findings attribute. Counting only len(_findings)
+                # produced "completed with 0 findings" despite 23 recorded. The
+                # bus count is authoritative; _findings is a fallback.
+                try:
+                    bus_count = self.bus.get_findings_count(task.agent)
+                except Exception:  # noqa: BLE001 - count must never break the wave
+                    bus_count = 0
+                findings_count = bus_count or len(agent._findings)
                 # W-20: gathered-wave mutation — under the lock.
                 async with self._findings_lock:
                     self._all_findings.extend(agent._findings)
+                    # OVERHAUL3 D-D (overhaul3_audit.md W1/S4): count and
+                    # collection must read the SAME store. Specialists publish
+                    # two ways — _publish_finding (agent._findings + bus) and
+                    # the aggregate model publish (bus.publish Channel.FINDINGS
+                    # with a model_dump, bus ONLY). The count used the bus; the
+                    # collection used only agent._findings — so the aggregate
+                    # was counted but never collected (06:40:41 "1 (0)",
+                    # 06:41:27 "8 (7)"). Drain this agent's retained bus
+                    # findings, convert aggregate payloads with the same
+                    # synthetic-finding path the Synthesis Lead uses, and dedup
+                    # by finding id (individual findings already collected from
+                    # agent._findings are also on the bus).
+                    seen_ids = {
+                        getattr(f, "id", None) for f in self._all_findings
+                    }
+                    for retained in self.bus.get_retained_findings():
+                        if retained.sender != task.agent:
+                            continue
+                        finding = retained.finding
+                        if finding is None:
+                            from hyperion.agents.synthesis_lead import (
+                                synthetic_finding_from_payload,
+                            )
+
+                            finding = synthetic_finding_from_payload(
+                                retained.payload, task.agent.value,
+                            )
+                        if finding is None:
+                            continue
+                        finding_id = getattr(finding, "id", None)
+                        if finding_id in seen_ids:
+                            continue
+                        seen_ids.add(finding_id)
+                        self._all_findings.append(finding)
                 self._log(
                     f"{task.agent.value}: completed with {findings_count} findings "
                     f"(total collected: {len(self._all_findings)})"
@@ -1121,10 +1293,54 @@ class WorkflowEngine:
         Only specialists are eligible — the Director, Synthesis Lead,
         Quality Gate, delivery agents etc. have their own recovery paths
         and shouldn't be reframed.
+
+        OVERHAUL2 S5c: a task that ALREADY produced substantive findings
+        is never reframed, whatever its status field says. The 17:23 run
+        showed a risk analyst completing with 12 findings and then being
+        marked FAILED (a stale "blocked" bus broadcast from its own gap
+        escalation) and REFRAMED — rerunning the whole analysis and
+        stranding the first 12 findings in a task slot nothing reads.
         """
         if task.reframe_attempts >= self.MAX_REFRAMER_RETRIES:
             return False
+        # OVERHAUL3 D-E (overhaul3_audit.md W2/S5) (a): an already-reframed
+        # variant is NEVER reframed again. The 06:58:03 chain reframed
+        # ``task_reframed_1_1_task_competitive_intel`` into 3 more variants
+        # because the per-task attempt cap counted the VARIANT's fresh chain
+        # instead of the original's. Refusing any ``reframed_from`` node caps
+        # the variant TREE, not just the branch — a variant fails once and
+        # the chain dies.
+        if task.reframed_from:
+            return False
+        # OVERHAUL3 D-E (b): the health-gate must be per-class, not "any
+        # class alive". The Aug-11 run had brave 429-suspended (and wikipedia
+        # 400ing) while scholar/reference stayed up — the old gate still
+        # reframed web-targeted COMPETE into a dead path. A query whose
+        # target source class has no living engine is rewording a dead pool.
+        try:
+            from hyperion.tools.engine_health import get_engine_health, query_target_class
+
+            target_class = query_target_class(task.description or "")
+            if not get_engine_health().class_healthy(target_class):
+                logger.warning(
+                    "REFRAMER TARGET-CLASS GATE: source class %r is dead for "
+                    "'%s' — reframing refused (per-class health-gate)",
+                    target_class,
+                    (task.description or "")[:80],
+                )
+                return False
+        except Exception as exc:  # noqa: BLE001 - a health read must not change policy
+            logger.debug("reframer per-class gate read failed (reframe allowed): %s", exc)
         if task.agent not in self._SPECIALIST_AGENTS:
+            return False
+        # S5c: the bus is the single ledger of record for findings — if this
+        # agent already published substantive yield, its work product exists;
+        # a FAILED status is a status-writer bug, not missing evidence.
+        try:
+            bus_count = self.bus.get_findings_count(task.agent)
+        except Exception:  # noqa: BLE001 - a read failure must not change policy
+            bus_count = 0
+        if bus_count > 0:
             return False
         # FAILED — clearly worth a reframe.
         if task.status == TaskStatus.FAILED:
@@ -1156,6 +1372,23 @@ class WorkflowEngine:
             return "failed"
         return "zero_findings"
 
+    def _dependency_failed(self, task: TaskNode, dag: WorkflowDAG) -> bool:
+        """OVERHAUL3 D-E (c): True when any of this task's own dependencies
+        FAILED.
+
+        Reframing cannot repair an upstream crash — every variant re-runs the
+        same dead dependency path. The Aug-11 STRATEGY chain is the proof:
+        COMPETE failed at 06:47:43, STRATEGY was reframed at 06:57:55, and
+        each variant re-failed against the same missing output. When the
+        upstream crash is recovered (the dep is later COMPLETED), the task
+        becomes eligible again.
+        """
+        for dep_id in task.dependencies or []:
+            dep = dag.get_task(dep_id)
+            if dep is not None and dep.status == TaskStatus.FAILED:
+                return True
+        return False
+
     async def _maybe_reframe_failed_tasks(
         self, tasks: list[TaskNode], dag: WorkflowDAG,
     ) -> None:
@@ -1163,8 +1396,10 @@ class WorkflowEngine:
         specialist tasks and add ``task_reframed_*`` nodes to the DAG.
 
         This method is non-raising: a reframer outage must not stall the
-        pipeline. Bounded to at most ``MAX_REFRAMER_RETRIES`` per
-        task-chain via the ``reframe_attempts`` counter on TaskNode.
+        pipeline. Bounded per task-chain (``MAX_REFRAMER_RETRIES``) and per
+        engagement (``MAX_REFRAMER_GLOBAL_BUDGET``). P4.3 health-gate: the
+        reframer only runs when at least one source class is alive — rewording
+        a query against a fully-dead fleet is pure token spend (the A-6 loop).
         """
         try:
             from hyperion.tools.task_reframer import reframe_task
@@ -1172,8 +1407,40 @@ class WorkflowEngine:
             logger.warning("task_reframer import failed: %s", exc)
             return
 
-        eligible = [t for t in tasks if self._task_needs_reframe(t)]
+        # P4.3 health-gate: when NO source class has a live engine, the
+        # failure class is ENGINE_BLOCKED, and rewording cannot recover it —
+        # reroute to capacity recovery (orchestrator._escalate_retrieval)
+        # instead of burning the reframe budget. The reframer is a NO_RESULTS
+        # remedy (anti-pattern 5); a dead fleet is a routing problem.
+        try:
+            from hyperion.tools.engine_health import get_engine_health
+
+            if not get_engine_health().living_classes():
+                logger.error(
+                    "REFRAMER HEALTH-GATE: zero living source classes — "
+                    "reframing suppressed (failure class ENGINE_BLOCKED); "
+                    "rerouting to capacity recovery"
+                )
+                return
+        except Exception as exc:  # noqa: BLE001 - health read must not block a wave
+            logger.debug("reframer health-gate read failed (reframe allowed): %s", exc)
+
+        eligible = [
+            t for t in tasks
+            if self._task_needs_reframe(t) and not self._dependency_failed(t, dag)
+        ]
         if not eligible:
+            return
+
+        # P4.3 global budget: reframes spawned THIS engagement are counted
+        # against one shared bucket, not just the per-task cap.
+        if self._reframes_spawned >= self.MAX_REFRAMER_GLOBAL_BUDGET:
+            logger.error(
+                "REFRAMER GLOBAL BUDGET reached (%d/%d) — no further "
+                "rewordings this engagement; failures route to capacity recovery",
+                self._reframes_spawned,
+                self.MAX_REFRAMER_GLOBAL_BUDGET,
+            )
             return
 
         # Pull engagement context (subject/geography) for better prompts.
@@ -1242,6 +1509,10 @@ class WorkflowEngine:
                     continue
 
             if spawned:
+                # P4.3: count every actually-spawned reframe against the
+                # engagement-wide budget, so a fleet-wide outage cannot spend
+                # the bucket across unrelated tasks.
+                self._reframes_spawned += spawned
                 try:
                     dag.adapted = True
                     if hasattr(dag, "adaptation_log"):
@@ -1793,6 +2064,10 @@ class WorkflowEngine:
         max_iterations = 100  # Safety valve — prevent infinite loops
         iteration = 0
 
+        # P4.4: the loop's progress budget — consecutive iterations that add
+        # ZERO new evidence domains are a stop signal, not a retry reason.
+        max_zero_progress = 2
+
         while not dag.is_complete and iteration < max_iterations:
             iteration += 1
 
@@ -1842,7 +2117,20 @@ class WorkflowEngine:
                 continue
 
             # Execute the wave (non-delivery tasks only)
+            domains_before = self._ledger_domains()
             await self._execute_wave(ready_non_delivery, dag)
+
+            # P4.4: record Δ evidence after this wave. Zero new domains across
+            # consecutive waves means the fleet is yielding nothing — terminate
+            # the DAG rather than burn the remaining budget on empty waves.
+            if not self._record_wave_progress(domains_before, max_zero_progress):
+                # Progress budget exhausted — stop the loop; downstream will
+                # handle the thin corpus (AMBER) or report the limitation.
+                self._log(
+                    f"CORPUS PROGRESS SIGNAL: {self._consecutive_zero_progress} consecutive iteration(s) with "
+                    f"zero new evidence domains — terminating the DAG wave loop",
+                )
+                break
 
             # Brief yield to allow bus messages to propagate
             await asyncio.sleep(0.1)
@@ -2004,6 +2292,20 @@ class WorkflowEngine:
                     f"sources (now {getattr(current_report, 'total_sources', 0)})"
                 )
 
+                # OVERHAUL2 S12: polishing cannot create evidence. A CORPUS
+                # FLOOR integrity blocker skips quality iteration entirely —
+                # whether the escalation above recovered sources or not. Two
+                # prose-polish passes on a sourceless floor report is how the
+                # 17:52 run burned its last minutes before the no-score-change
+                # early-terminate fired. The report's floor is now known; the
+                # terminal-state computation below renders the honest verdict.
+                self._log(
+                    "QUALITY: CORPUS FLOOR blocker — skipping iterations, "
+                    "terminal BLOCKED"
+                )
+                current_score.max_iterations_reached = True
+                break
+
             # P2-25: thin evidence triggers retrieval escalation, not a stop.
             # The old content-aware stop broke here; now a below-floor source
             # count dispatches a targeted retrieval round (new engines,
@@ -2156,6 +2458,383 @@ class WorkflowEngine:
             f"{score.threshold:.2f} and allow_ship_with_caveat is disabled"
         )
 
+    # ─────────────────────────────────────────────────────────────────────
+    # OVERHAUL3 D-F — the Recovery Supervisor (overhaul3_audit.md §5.1)
+    # ─────────────────────────────────────────────────────────────────────
+    #
+    # BLOCKED is a diagnostic input, not an exit. When the Quality Gate
+    # blocks, classify each integrity blocker into a RecoveryClass, plan a
+    # remediation that can_make_progress (P3), re-dispatch ONLY the
+    # responsible agent(s) with blocker-specific directives (idempotent task
+    # ids), re-score via the EXISTING ``_quality_iteration_loop``, and commit
+    # only when the score strictly improves (monotonicity). Bounded by
+    # ``config.quality_recovery_max_passes`` and a wall-clock sub-budget. The
+    # supervisor never overrides the gate — it changes the INPUT, then asks
+    # the same gate again (§5.3 non-authoritative).
+
+    _RECOVERY_CLASS_PLACEHOLDER = "PLACEHOLDER_VALUE"
+    _RECOVERY_CLASS_VERDICT = "VERDICT_CONFLICT"
+    _RECOVERY_CLASS_SECTION = "MISSING_SECTION"
+    _RECOVERY_CLASS_THIN = "THIN_EVIDENCE"
+    _RECOVERY_CLASS_PRESENTATION = "PRESENTATION_DEFECT"
+
+    # dimension-name substring → specialist that owns it. Used to pick the
+    # responsible agent for a DATA VOID blocker, whose text names no agent;
+    # the report's critical dimensions / gaps usually do ("Risk Coverage").
+    _RECOVERY_DIMENSION_AGENTS = {
+        "risk": AgentName.RISK_ANALYST,
+        "market": AgentName.MARKET_ANALYST,
+        "financial": AgentName.FINANCIAL_ANALYST,
+        "compet": AgentName.COMPETITIVE_INTEL,
+        "technolog": AgentName.TECHNOLOGY_ANALYST,
+        "operation": AgentName.OPERATIONS_ANALYST,
+        "regulator": AgentName.REGULATORY_ANALYST,
+        "sustainab": AgentName.SUSTAINABILITY_ANALYST,
+        "consumer": AgentName.CONSUMER_INSIGHTS,
+        "m&a": AgentName.MA_ANALYST,
+        "innovat": AgentName.INNOVATION_ANALYST,
+        "strateg": AgentName.STRATEGY_ANALYST,
+    }
+
+    def _recovery_config(self) -> dict[str, Any]:
+        """OVERHAUL3 D-F: read the bounded recovery-loop knobs (§5.5)."""
+        try:
+            from hyperion.config import get_settings
+
+            _s = get_settings()
+            return {
+                "max_passes": int(getattr(_s, "quality_recovery_max_passes", 1)),
+                "min_gain": float(getattr(_s, "quality_recovery_min_score_gain", 0.05)),
+                "wall_clock": float(getattr(_s, "recovery_wall_clock_seconds", 300)),
+            }
+        except Exception:  # noqa: BLE001 - fall back to spec defaults
+            return {"max_passes": 1, "min_gain": 0.05, "wall_clock": 300.0}
+
+    def _recovery_agent_for_text(self, *texts: str) -> AgentName | None:
+        """Pick the specialist that owns a blocker from dimension names."""
+        blob = " ".join(t for t in texts if t).lower()
+        for key, agent in self._RECOVERY_DIMENSION_AGENTS.items():
+            if key in blob:
+                return agent
+        return None
+
+    def _remediation_for(
+        self, blocker: str, score: QualityScore,
+    ) -> dict[str, Any] | None:
+        """DIAGNOSE + PLAN (§5.2): classify one blocker into a remediation.
+
+        Returns an action dict ``{recovery_class, agent, directive, description}``
+        or None when nothing is capable of helping (P3 → dropped).
+        """
+        text = blocker or ""
+        low = text.lower()
+
+        if "corpus floor" in low:
+            return {
+                "recovery_class": self._RECOVERY_CLASS_THIN,
+                "agent": None,
+                "directive": (
+                    "escalate retrieval on living source classes only; if the "
+                    "fleet is dead, degrade to a floor report with the evidence "
+                    "limitation stated"
+                ),
+                "description": "Recovery: retrieval escalation for corpus floor",
+            }
+
+        if "verdict contradiction" in low:
+            return {
+                "recovery_class": self._RECOVERY_CLASS_VERDICT,
+                "agent": AgentName.SYNTHESIS_LEAD,
+                "directive": (
+                    "single-verdict reconciliation: pick ONE recommendation and "
+                    "purge every conflicting phrase from cover, summary and "
+                    "body — never leave two verdicts in one report"
+                ),
+                "description": (
+                    f"RECOVERY: reconcile to a single verdict — {text[:160]}"
+                ),
+            }
+
+        if "risk" in low and (
+            "no risk analysis" in low or "risk_coverage" in low
+            or "missing risk section" in low
+        ):
+            # D-K (overhaul3_audit.md): the RISK findings already exist on the
+            # bus — this is a body-assembly wiring gap, not a research gap, so
+            # no re-research. Re-synthesis maps the aggregate → report.
+            return {
+                "recovery_class": self._RECOVERY_CLASS_SECTION,
+                "agent": AgentName.SYNTHESIS_LEAD,
+                "directive": (
+                    "rebuild the report body from the bus's RISK aggregate "
+                    "payload (the findings already exist — no re-research); "
+                    "assign FinalReport.risk_analysis from them"
+                ),
+                "description": "RECOVERY: populate risk_analysis from RISK findings",
+            }
+
+        if "data void" in low or "'unknown'" in low or "out of scope" in low:
+            # PLACEHOLDER_VALUE (§5.2): re-dispatch the finding-bearing
+            # specialist that emitted the placeholder with the hard directive
+            # "no data is a typed gap; never emit 'Unknown' as a value".
+            agent = self._recovery_agent_for_text(
+                text,
+                " ".join(d.value if hasattr(d, "value") else str(d)
+                          for d in (score.critical_dimensions or [])),
+                " ".join(score.gaps or []),
+            ) or AgentName.FINANCIAL_ANALYST
+            return {
+                "recovery_class": self._RECOVERY_CLASS_PLACEHOLDER,
+                "agent": agent,
+                "directive": (
+                    "no data is a typed research_gap; NEVER emit 'Unknown' or "
+                    "'OUT OF SCOPE' as a data value — emit a typed gap finding "
+                    "instead and state the limitation in prose"
+                ),
+                "description": (
+                    f"RECOVERY: re-run with the no-placeholder directive — "
+                    f"{text[:120]}"
+                ),
+            }
+
+        # Leaked object / banned filler / broken URL / meta-text — a targeted
+        # synthesis polish of the offending field.
+        return {
+            "recovery_class": self._RECOVERY_CLASS_PRESENTATION,
+            "agent": AgentName.SYNTHESIS_LEAD,
+            "directive": (
+                "repair the presentation defect flagged by the Quality Gate: "
+                "remove the offending value or string and never re-introduce it"
+            ),
+            "description": f"RECOVERY: presentation polish — {text[:160]}",
+        }
+
+    async def _dispatch_recovery(
+        self, action: dict[str, Any], dag: WorkflowDAG, pass_no: int,
+    ) -> Any:
+        """RECOVER (§5.1 step 4): re-dispatch ONE responsible agent.
+
+        Deterministic ``task_recover_<pass>_<agent>`` ids make re-entry a
+        no-op (the reframer's ``dag.get_task`` guard) — no variant-tree
+        explosion (§5.3 idempotent). Returns the produced output when the
+        agent ran, else None. Best-effort: a recovery dispatch failure is
+        logged, never fatal.
+        """
+        agent = action["agent"]
+        if agent is None:
+            return None  # THIN_EVIDENCE is handled by the caller
+        task_id = f"task_recover_{pass_no}_{agent.value}"
+        if dag.get_task(task_id) is not None:
+            return self._task_outputs.get(task_id)
+
+        task = TaskNode(
+            id=task_id,
+            agent=agent,
+            model_tier="standard",
+            description=action["description"],
+            dependencies=[],
+            status=TaskStatus.PENDING,
+        )
+        try:
+            dag.add_task(task)
+            self._publish_task_update(task)
+        except Exception as exc:  # noqa: BLE001 - recovery is best-effort
+            logger.warning("recovery task %s could not be added: %s", task_id, exc)
+            return None
+
+        if agent == AgentName.SYNTHESIS_LEAD:
+            # The directive must reach the agent as fix_instructions — the
+            # quality loop uses the same argument for its fix-instruction pass.
+            # Mirror _execute_task's findings injection so the re-synthesis
+            # reads the bus-fed corpus (P1).
+            synth = self._get_agent(agent)
+            try:
+                if hasattr(synth, "_collected_findings"):
+                    existing_ids = {id(f) for f in synth._collected_findings}
+                    for finding in self._all_findings:
+                        if id(finding) not in existing_ids:
+                            synth._collected_findings.append(finding)
+                            if finding.agent not in synth._findings_by_agent:
+                                synth._findings_by_agent[finding.agent] = []
+                            synth._findings_by_agent[finding.agent].append(finding)
+                else:
+                    synth._collected_findings = list(self._all_findings)
+                    synth._findings_by_agent = {}
+                    for finding in self._all_findings:
+                        synth._findings_by_agent.setdefault(finding.agent, []).append(finding)
+            except Exception as exc:  # noqa: BLE001 - injection is best-effort
+                logger.warning("recovery synthesis injection failed: %s", exc)
+            try:
+                result = await asyncio.wait_for(
+                    synth.run(
+                        engagement_id=self._engagement_id,
+                        question=dag.question,
+                        dag=dag,
+                        fix_instructions=action["directive"],
+                    ),
+                    timeout=self.SPECIALIST_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:  # noqa: BLE001 - recovery must not crash the run
+                logger.warning("recovery synthesis re-run failed: %s", exc)
+                task.status = TaskStatus.FAILED
+                task.error = str(exc)[:300]
+                self._publish_task_update(task)
+                return None
+        else:
+            try:
+                result = await self._execute_task(task, dag)
+            except Exception as exc:  # noqa: BLE001 - recovery must not crash the run
+                logger.warning("recovery dispatch for %s failed: %s", agent.value, exc)
+                return None
+        if result is None:
+            return None
+        if isinstance(result, BaseModel):
+            task.output = result.model_dump()
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = time.time()
+        self._task_outputs[task_id] = result
+        self._publish_task_update(task)
+        return result
+
+    def _record_recovery_pass(
+        self,
+        pass_no: int,
+        plan: list[dict[str, Any]],
+        score_before: QualityScore,
+        score_after: QualityScore,
+        committed: bool,
+    ) -> None:
+        """OVERHAUL3 D-F (§5.5): append one pass to the telemetry + manifest."""
+        classes = [a["recovery_class"] for a in plan]
+        entry = {
+            "pass": pass_no,
+            "blocker_classes": classes,
+            "agents": [
+                a["agent"].value if a["agent"] is not None else None
+                for a in plan
+            ],
+            "score_before": round(score_before.total_score, 3),
+            "score_after": round(score_after.total_score, 3) if score_after else None,
+            "committed": committed,
+        }
+        self._recovery_telemetry["passes_detail"].append(entry)
+        for cls in classes:
+            bucket = self._recovery_telemetry["outcomes_by_class"].setdefault(
+                cls, {"committed": 0, "discarded": 0, "skipped": 0}
+            )
+            bucket["committed" if committed else "discarded"] += 1
+        if self._manifest is not None:
+            try:
+                self._manifest.ledger.setdefault("recovery_passes", []).append(entry)
+            except Exception as exc:  # noqa: BLE001 - telemetry must not break recovery
+                logger.debug("recovery manifest record failed: %s", exc)
+
+    async def _recover_from_blocked(
+        self,
+        dag: WorkflowDAG,
+        report: FinalReport,
+        score: QualityScore,
+        fact_check_report: FactCheckReport | None,
+    ) -> tuple[FinalReport, QualityScore]:
+        """OVERHAUL3 D-F (§5.1): the bounded BLOCKED → diagnose → plan →
+        recover → re-score → decide state machine.
+
+        Invoked from the BLOCKED branch of ``run_engagement`` BEFORE the
+        ``return result``. Re-uses the existing ``_quality_iteration_loop`` as
+        the scorer (no second ship/no-ship authority) and ``_write_blocked_diagnostic``
+        for the honest give-up. Returns ``(best_report, best_score)`` — the
+        caller re-reads ``terminal_state``; when still BLOCKED the run ends
+        with the recovery attempt RECORDED, never a discarded diagnosis.
+        """
+        cfg = self._recovery_config()
+        max_passes = cfg["max_passes"]
+        if max_passes <= 0:
+            return report, score  # feature-flagged off → old behaviour
+        self._recovery_telemetry["attempted"] = True
+        self._log(
+            "RECOVERY: BLOCKED verdict entered the supervisor — "
+            f"classifying {len(score.integrity_blockers or [])} blocker(s)"
+        )
+        deadline = time.time() + cfg["wall_clock"]
+        best_report, best_score = report, score  # monotonicity snapshot
+
+        for pass_no in range(1, max_passes + 1):
+            if time.time() > deadline:
+                self._log("RECOVERY: wall-clock budget exhausted — degrading")
+                break
+
+            # DIAGNOSE: integrity blockers plus the risk-coverage dimension
+            # (D-K: risk_coverage=1 with risk_analysis None is not a hard
+            # blocker string, but it IS a MISSING_SECTION recovery signal).
+            signals = list(best_score.integrity_blockers or [])
+            for dim in (best_score.critical_dimensions or []):
+                dname = dim.value if hasattr(dim, "value") else str(dim)
+                if str(dname).lower() == "risk_coverage":
+                    signals.append(
+                        "MISSING RISK SECTION: risk_coverage failing with "
+                        "risk_analysis absent"
+                    )
+            # PLAN + P3: drop signals nothing is capable of helping.
+            plan = [
+                action
+                for signal in signals
+                for action in [self._remediation_for(signal, best_score)]
+                if action is not None
+            ]
+            if not plan:
+                self._log(
+                    "RECOVERY: no remediation capable of changing this block — "
+                    "degrading honestly"
+                )
+                break
+
+            # RECOVER: re-dispatch only the responsible agents.
+            recovered_report = best_report
+            for action in plan:
+                self._log(
+                    f"RECOVERY pass {pass_no}: {action['recovery_class']} → "
+                    f"{action['agent'].value if action['agent'] is not None else 'retrieval'}"
+                )
+                outcome = await self._dispatch_recovery(action, dag, pass_no)
+                if (
+                    outcome is not None
+                    and action["agent"] == AgentName.SYNTHESIS_LEAD
+                    and isinstance(outcome, FinalReport)
+                ):
+                    recovered_report = outcome
+
+            # RE-SCORE via the existing authority.
+            cand_report, cand_score, _ = await self._quality_iteration_loop(
+                dag, recovered_report, fact_check_report,
+            )
+            if cand_score is None:
+                break
+            approved = (
+                cand_score.approved
+                or cand_score.terminal_state == QualityTerminalState.APPROVED
+            )
+            gain = cand_score.total_score - best_score.total_score
+            committed = approved or gain >= cfg["min_gain"]
+            self._record_recovery_pass(pass_no, plan, best_score, cand_score, committed)
+            self._recovery_telemetry["passes"] = pass_no
+            if approved:
+                self._recovery_telemetry["recovered"] = True
+                return cand_report, cand_score  # SHIP — Stage 5 runs
+            if gain >= cfg["min_gain"]:
+                self._log(
+                    f"RECOVERY pass {pass_no} committed: {best_score.total_score:.2f} "
+                    f"→ {cand_score.total_score:.2f}"
+                )
+                best_report, best_score = cand_report, cand_score
+                continue
+            self._log(
+                f"RECOVERY pass {pass_no} discarded (score {cand_score.total_score:.2f} "
+                f"not ≥ best+{cfg['min_gain']:.2f}) — keeping best, degrading"
+            )
+            break
+
+        return best_report, best_score
+
     def _attach_methodology(self, report: Any, dag: Any) -> None:
         """W-10: attach the six-subsection methodology record to the report.
 
@@ -2250,6 +2929,9 @@ class WorkflowEngine:
                     "findings_collected": len(self._all_findings),
                     "task_outputs": len(self._task_outputs),
                 },
+                # OVERHAUL3 D-F (§5.5): a blocked run is now replayable — the
+                # recovery attempt (or its absence) is recorded, never hidden.
+                "recovery": dict(self._recovery_telemetry),
                 "roster_decisions": [
                     str(r) for r in roster_decisions
                 ],
@@ -2283,9 +2965,25 @@ class WorkflowEngine:
             self._log("FLOOR-REPORT: no findings collected — cannot build floor report")
             return None
 
+        # P3.4: Filter out non-substantive findings (research_gaps and
+        # unverified_assertions) — these are admission of evidential failure,
+        # not evidence. The floor report reports what the system found, not
+        # what it failed to find.
+        from hyperion.schemas.models import NON_SUBSTANTIVE_FINDING_TYPES
+        substantive_findings = [
+            f for f in findings
+            if f.finding_type not in NON_SUBSTANTIVE_FINDING_TYPES
+        ]
+        if not substantive_findings:
+            self._log(
+                "FLOOR-REPORT: all findings are non-substantive (gaps/unverified) — "
+                "cannot build a floor report from admission of failure alone"
+            )
+            return None
+
         # Group findings by agent
         by_agent: dict[str, list[KeyFinding]] = {}
-        for f in findings:
+        for f in substantive_findings:
             agent_name = f.agent if isinstance(f.agent, str) else str(f.agent)
             if agent_name not in by_agent:
                 by_agent[agent_name] = []
@@ -2325,7 +3023,7 @@ class WorkflowEngine:
             ConfidenceLevel.LOW: 2,
         }
         key_findings = sorted(
-            findings,
+            substantive_findings,
             key=lambda f: confidence_order.get(f.confidence, 3),
         )[:5]
 
@@ -2333,7 +3031,7 @@ class WorkflowEngine:
         summary_lines = [
             f"This report was generated as a floor-report fallback because the "
             f"Synthesis Lead did not produce a full synthesis. It contains "
-            f"{len(findings)} findings from {len(by_agent)} specialists.",
+            f"{len(substantive_findings)} substantive findings from {len(by_agent)} specialists.",
             "",
         ]
         for f in key_findings:
@@ -2491,6 +3189,21 @@ class WorkflowEngine:
         # never inherit the previous engagement's industry/geography.
         self._engagement_context = None
         clear_engagement_focus()
+        # P0 (overhaul §6 P0.1): open the run-scoped Evidence Ledger. Every
+        # retrieved URL from here on lands in it BEFORE any LLM sees text,
+        # and the Phase-2 corpus preflight will gate the DAG on it.
+        from hyperion.tools.evidence_ledger import new_ledger
+
+        self._evidence_ledger = new_ledger(self._engagement_id)
+        trace("evidence", run_id=self._engagement_id, event="ledger_started")
+        # F-0.1-8: reset the shared per-engagement fetch cache so no URL fetched
+        # by a previous engagement leaks into this one.
+        try:
+            from hyperion.tools.unified_extract import clear_fetch_cache
+
+            clear_fetch_cache()
+        except Exception as exc:  # noqa: BLE001 - cache reset must never break boot
+            logger.debug("fetch cache reset failed (non-fatal): %s", exc)
         # Fix 2.6 (audit §6 Phase 2): reset the extraction-yield accumulator
         # so engagement_yield_report() covers THIS engagement only.
         try:
@@ -2638,6 +3351,16 @@ class WorkflowEngine:
 
         try:
             # ─────────────────────────────────────────────────────────────
+            # Phase 2 (overhaul §6 P2): Corpus Contract preflight. The
+            # system decides whether it CAN research before spending a token
+            # on research. RED raises CorpusPreflightError — the existing
+            # failure path records the typed INSUFFICIENT_EVIDENCE terminal
+            # state in seconds; AMBER runs a reduced DAG with a smaller
+            # sub-agent budget; GREEN runs the full DAG.
+            # ─────────────────────────────────────────────────────────────
+            await self._run_corpus_preflight(question, settings=_settings)
+
+            # ─────────────────────────────────────────────────────────────
             # Stage 1: Engagement Director — decompose and plan
             # ─────────────────────────────────────────────────────────────
             self._director = EngagementDirector(bus=self.bus, router=self.router)
@@ -2746,39 +3469,77 @@ class WorkflowEngine:
                 self._log(
                     f"QUALITY: BLOCKED — refusing to ship. {blocked_reason}"
                 )
-                diagnostic_path = self._write_blocked_diagnostic(quality_score) if quality_score else ""
-                await self.bus.publish(
-                    channel=Channel.ESCALATION,
-                    msg_type=MessageType.ESCALATION,
-                    sender=AgentName.QUALITY_GATE,
-                    payload={
-                        "agent": AgentName.QUALITY_GATE.value,
-                        "issue": f"Quality Gate BLOCKED the run: {blocked_reason}",
-                        "suggested_action": (
-                            "Operator diagnostic written"
-                            f"{' to ' + diagnostic_path if diagnostic_path else ''}; "
-                            "engagement ends without a deliverable"
+
+                # ─────────────────────────────────────────────────────────
+                # OVERHAUL3 D-F (§5.1): BLOCKED is a diagnostic input, not
+                # an exit. Run the bounded Recovery Supervisor BEFORE
+                # terminating. It re-dispatches the responsible agent(s)
+                # with blocker-specific directives and re-scores via the
+                # SAME Quality Gate (never overriding it). If the re-score
+                # leaves BLOCKED, fall through to the honest give-up below —
+                # now with the recovery attempt recorded.
+                # ─────────────────────────────────────────────────────────
+                if quality_score is not None:
+                    recovered_report, recovered_score = await self._recover_from_blocked(
+                        dag, final_report, quality_score, fact_check_report,
+                    )
+                    if (
+                        recovered_score is not None
+                        and recovered_score.terminal_state != QualityTerminalState.BLOCKED
+                    ):
+                        final_report = recovered_report
+                        quality_score = recovered_score
+                        result.final_report = final_report
+                        result.quality_score = quality_score
+                        result.quality_iterations += self._recovery_telemetry["passes"]
+                        terminal_state = recovered_score.terminal_state
+                        self._log(
+                            f"QUALITY: RECOVERED after "
+                            f"{self._recovery_telemetry['passes']} recovery pass(es) — "
+                            f"terminal state {terminal_state.value} "
+                            f"(score {quality_score.total_score:.2f}); proceeding"
+                        )
+                    else:
+                        self._log(
+                            "QUALITY: still BLOCKED after "
+                            f"{self._recovery_telemetry['passes']} recovery pass(es) — "
+                            "giving up with the recovery attempt recorded"
+                        )
+
+                if terminal_state == QualityTerminalState.BLOCKED:
+                    diagnostic_path = self._write_blocked_diagnostic(quality_score) if quality_score else ""
+                    await self.bus.publish(
+                        channel=Channel.ESCALATION,
+                        msg_type=MessageType.ESCALATION,
+                        sender=AgentName.QUALITY_GATE,
+                        payload={
+                            "agent": AgentName.QUALITY_GATE.value,
+                            "issue": f"Quality Gate BLOCKED the run: {blocked_reason}",
+                            "suggested_action": (
+                                "Operator diagnostic written"
+                                f"{' to ' + diagnostic_path if diagnostic_path else ''}; "
+                                "engagement ends without a deliverable"
+                            ),
+                        },
+                    )
+                    result.success = False
+                    result.failure_reason = "quality_gate"
+                    result.error = f"Quality Gate BLOCKED: {blocked_reason}"
+                    result.duration_seconds = time.time() - self._start_time
+                    result.metadata = EngagementMetadata(
+                        engagement_id=self._engagement_id,
+                        question=question,
+                        question_type=dag.question_type,
+                        agents_used=dag.agents_selected,
+                        sources_accessed=sum(
+                            1 for f in self._all_findings if hasattr(f, "sources") and f.sources
                         ),
-                    },
-                )
-                result.success = False
-                result.failure_reason = "quality_gate"
-                result.error = f"Quality Gate BLOCKED: {blocked_reason}"
-                result.duration_seconds = time.time() - self._start_time
-                result.metadata = EngagementMetadata(
-                    engagement_id=self._engagement_id,
-                    question=question,
-                    question_type=dag.question_type,
-                    agents_used=dag.agents_selected,
-                    sources_accessed=sum(
-                        1 for f in self._all_findings if hasattr(f, "sources") and f.sources
-                    ),
-                    data_points_collected=len(self._all_findings),
-                    duration_seconds=result.duration_seconds,
-                )
-                if diagnostic_path:
-                    result.metadata.blocked_diagnostic_path = diagnostic_path
-                return result
+                        data_points_collected=len(self._all_findings),
+                        duration_seconds=result.duration_seconds,
+                    )
+                    if diagnostic_path:
+                        result.metadata.blocked_diagnostic_path = diagnostic_path
+                    return result
 
             if terminal_state == QualityTerminalState.SHIP_WITH_CAVEAT:
                 caveat_notice = (
@@ -3047,6 +3808,79 @@ class WorkflowEngine:
                 trace("durable", run_id=self._engagement_id, status="manifest_saved",
                       success=result.success, duration=result.duration_seconds)
 
+            # P6.2 (overhaul §6 P6): record the 5 KPIs per run and diff against
+            # the previous run. A KPI regression auto-opens the owning phase
+            # node (KPI_OWNER_PHASE) so the master loop can route there.
+            # OVERHAUL2 S15: also record the Output Contract gates (kpi_6..8).
+            try:
+                from hyperion.eval.kpi import (
+                    RunKPIs,
+                    diff_kpis,
+                    record_run_kpis,
+                    regressed_phase,
+                )
+
+                # OC-1 (S15): the share of COMPLETED tasks that carry an output
+                # object. The "status=completed but no output" task that crashed
+                # synthesis (B-5) drives this below 100.
+                _completed = [
+                    t for t in dag.tasks if t.status == TaskStatus.COMPLETED
+                ]
+                _completed_with_output = [
+                    t for t in _completed if t.id in self._task_outputs
+                ]
+                _pct_completed_with_output = (
+                    100.0 * len(_completed_with_output) / len(_completed)
+                    if _completed else -1.0
+                )
+                # S11 (S15): sum the per-agent off-topic drop counters (the
+                # parent specialists increment their own ``_off_topic_dropped``).
+                _off_topic_dropped_total = 0
+                for _agent_inst in (getattr(self, "_agents", None) or {}).values():
+                    _off_topic_dropped_total += getattr(
+                        _agent_inst, "_off_topic_dropped", 0
+                    )
+
+                kpis = RunKPIs(
+                    run_id=self._engagement_id,
+                    question=dag.question[:200] if dag else "",
+                    kpi_1_time_to_first_evidence_s=self._first_evidence_seconds,
+                    kpi_2_distinct_domains_pre_synthesis=self._domains_before_synthesis,
+                    kpi_3_provenance_binding_pct=self._provenance_binding_pct,
+                    kpi_4_duration_s=result.duration_seconds,
+                    kpi_4_tokens=result.metadata.tokens_consumed if result.metadata else 0,
+                    kpi_4_typed_terminal=bool(result.error),
+                    kpi_5_blockers=len(
+                        getattr(quality_score, "blockers", []) or []
+                    ) if quality_score else -1,
+                    kpi_5_verdict_consistent=True,
+                    # OVERHAUL2 S15 (OC-1): every COMPLETED task must carry an
+                    # output object — the "completed but no output" status-writer
+                    # bug (B-5) is structurally impossible when this is 100%.
+                    kpi_6_pct_tasks_completed_with_output=_pct_completed_with_output,
+                    # OVERHAUL2 S15 (OC-2): a run that reached synthesis produced
+                    # a FinalReport (directly or via the floor fallback).
+                    kpi_7_synthesis_produced_final_report=bool(
+                        self._task_outputs.get("task_synthesis_lead")
+                    ),
+                    # OVERHAUL2 S15 (S11): off-topic funnel drops, visible in telemetry.
+                    kpi_8_off_topic_dropped=self._off_topic_dropped_total,
+                    # OVERHAUL3 D-F (§5.5): Recovery Supervisor telemetry.
+                    kpi_9_recovery_attempted=self._recovery_telemetry["attempted"],
+                    kpi_9_recovery_passes=self._recovery_telemetry["passes"],
+                    kpi_9_recovered=self._recovery_telemetry["recovered"],
+                )
+                record_run_kpis(kpis)
+                kdiff = diff_kpis(self._engagement_id)
+                if kdiff.get("regressions"):
+                    self._log(
+                        f"KPI REGRESSION: {', '.join(kdiff['regressions'])} vs "
+                        f"{kdiff.get('prev_id')} — owning phase node(s): "
+                        f"{', '.join(regressed_phase(kdiff))}",
+                    )
+            except Exception as exc:  # noqa: BLE001 - KPI recording must never break the run
+                logger.warning("KPI recording failed (non-fatal): %s", exc)
+
             # ─────────────────────────────────────────────────────────────
             # Save to Second Brain for future learning (§12.8)
             # ─────────────────────────────────────────────────────────────
@@ -3084,6 +3918,235 @@ class WorkflowEngine:
             # P10: Close journal
             if self._journal:
                 self._journal.close()
+            # P0: persist the Evidence Ledger snapshot on success AND failure
+            # so the run autopsy is reproducible from telemetry alone.
+            self._snapshot_evidence_ledger()
+            # Phase 2: restore the sub-agent ceiling if AMBER reduced it.
+            if getattr(self, "_evidence_reduced_budget", False):
+                from hyperion.agents.base import BaseAgent
+
+                BaseAgent.SUB_AGENT_TOTAL_CEILING = getattr(
+                    self, "_evidence_budget_default", 6
+                )
+                self._evidence_reduced_budget = False
+
+    async def _run_corpus_preflight(
+        self, question: str, settings: Any | None = None
+    ) -> Any:
+        """Phase 2 (overhaul §6 P2): fire the canary battery, apply the verdict.
+
+        RED raises ``CorpusPreflightError`` — the existing failure path records
+        the typed ``INSUFFICIENT_EVIDENCE`` terminal state in seconds. AMBER
+        halves the sequential sub-agent ceiling for this engagement (restored
+        in ``run_engagement``'s ``finally``); GREEN does nothing. Separated
+        into a method so the network-touching battery can be stubbed in tests
+        that drive ``run_engagement`` for other concerns.
+        """
+        from hyperion.agents.support.corpus_preflight import (
+            CorpusPreflightError,
+            CorpusStatus,
+            run_corpus_preflight,
+        )
+
+        try:
+            contract = await run_corpus_preflight(
+                question,
+                settings=settings,
+                run_id=self._engagement_id,
+            )
+        except CorpusPreflightError as exc:
+            # P2: RED must notify the TUI (overhaul §6 P2) before the existing
+            # failure path records the typed INSUFFICIENT_EVIDENCE terminal.
+            try:
+                await self.bus.publish(
+                    channel=Channel.TUI,
+                    msg_type=MessageType.STATUS,
+                    sender="orchestrator",
+                    payload={
+                        "agent": "orchestrator",
+                        "tool": "corpus_preflight",
+                        "action": "RED",
+                        "detail": str(exc)[:200],
+                        "success": False,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - a TUI notify must not mask the terminal
+                logger.warning("corpus preflight TUI notify failed: %s", exc)
+            raise
+
+        self._corpus_contract = contract
+        self._evidence_reduced_budget = contract.status is CorpusStatus.AMBER
+        if self._evidence_reduced_budget:
+            from hyperion.agents.base import BaseAgent
+
+            # AMBER: halve the sequential sub-agent ceiling for this
+            # engagement; capture the default so the restore is exact even if
+            # the class constant ever changes.
+            default_ceiling = BaseAgent.SUB_AGENT_TOTAL_CEILING
+            self._evidence_budget_default = default_ceiling
+            BaseAgent.SUB_AGENT_TOTAL_CEILING = max(1, default_ceiling // 2)
+            self._log(
+                f"CORPUS PREFLIGHT AMBER — reduced sub-agent budget "
+                f"({BaseAgent.SUB_AGENT_TOTAL_CEILING}/{default_ceiling} ceiling): "
+                f"{contract.detail}"
+            )
+        if self._manifest:
+            self._manifest.record_ledger_entry(
+                "corpus_preflight", contract.to_dict()
+            )
+        self._log(
+            f"CORPUS PREFLIGHT {contract.status.value.upper()}: {contract.detail}"
+        )
+        return contract
+
+    async def _recheck_corpus_midrun(self, dag: Any) -> None:
+        """P1.4/P5.1: mid-run corpus re-probe at a stage boundary.
+
+        The preflight (P2) samples the corpus once at engagement start. If the
+        fleet collapses mid-run (Aug-10 A-8: specialists "complete" with empty
+        domain models while the corpus dies underneath them), downstream stages
+        (synthesis, fact-check) must not run their full pipelines over an
+        evidence vacuum. This reads the ledger at each boundary:
+
+        * Corpus still at/above the contract → GREEN, no action.
+        * Corpus collapsed since start → degrade to AMBER (halve the sub-agent
+          ceiling for the remaining run) and log the typed state, so the stage
+          can still produce a grounded-if-thin result rather than a fabricated
+          one. Never raises — a re-probe failure must not abort the stage.
+        """
+        try:
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            contract = getattr(self, "_corpus_contract", None)
+            if contract is None:
+                return
+            # P6.2: sample the ledger for per-run KPI telemetry at this
+            # boundary (fires at both synthesis and fact-check).
+            self._record_kpi_telemetry()
+            ledger = get_evidence_ledger()
+            # OVERHAUL2 S7: measure ENGAGEMENT-retrieved evidence only.
+            # Preflight canary records persist in the ledger; counting them
+            # made this gate read the t=0 probe forever and never detect a
+            # mid-run fleet collapse (B-7).
+            domains = len({
+                e.domain for e in ledger.all()
+                if e.domain and e.stage != "preflight"
+            })
+            floor = int(getattr(contract, "min_domains", 8))
+            if domains >= floor:
+                return
+            if self._evidence_reduced_budget:
+                return
+            # Corpus collapsed below the contract since the preflight.
+            self._evidence_reduced_budget = True
+            from hyperion.agents.base import BaseAgent
+
+            default_ceiling = getattr(self, "_evidence_budget_default", None)
+            if default_ceiling is None:
+                default_ceiling = BaseAgent.SUB_AGENT_TOTAL_CEILING
+                self._evidence_budget_default = default_ceiling
+            BaseAgent.SUB_AGENT_TOTAL_CEILING = max(1, default_ceiling // 2)
+            self._log(
+                f"CORPUS MID-RUN RECHECK — corpus dropped to {domains}/{floor} "
+                f"domains since preflight; degraded to AMBER (reduced sub-agent "
+                f"budget) before the next stage boundary"
+            )
+        except Exception as exc:  # noqa: BLE001 - a re-probe must never abort synthesis
+            logger.warning("corpus mid-run recheck failed (non-fatal): %s", exc)
+
+    def _record_kpi_telemetry(self) -> None:
+        """P6.2: sample the Evidence Ledger for per-run KPI telemetry.
+
+        Called at every stage boundary (via ``_recheck_corpus_midrun``) and
+        recorded to ``reports/diagnostics/kpis.json`` at run end. Fills
+        ``_first_evidence_seconds`` (KPI-1), ``_domains_before_synthesis``
+        (KPI-2) and ``_provenance_binding_pct`` (KPI-3). Never raises.
+        """
+        try:
+            from hyperion.schemas.models import NON_SUBSTANTIVE_FINDING_TYPES
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            ledger = get_evidence_ledger()
+            first = ledger.first_fetched_at()
+            if first is not None and self._start_time:
+                elapsed = max(0.0, first - self._start_time)
+                if self._first_evidence_seconds < 0 or elapsed < self._first_evidence_seconds:
+                    self._first_evidence_seconds = elapsed
+            domains = len(ledger.distinct_domains())
+            if domains > self._domains_before_synthesis:
+                self._domains_before_synthesis = domains
+            # KPI-3: share of substantive findings carrying >= 1 bound source URL.
+            findings = self._all_findings or []
+            substantive = [
+                f for f in findings
+                if getattr(f, "finding_type", "") not in NON_SUBSTANTIVE_FINDING_TYPES
+            ]
+            if substantive:
+                bound = sum(
+                    1 for f in substantive
+                    if any(getattr(s, "url", "") for s in getattr(f, "sources", []))
+                )
+                self._provenance_binding_pct = round(bound / len(substantive) * 100.0, 1)
+        except Exception as exc:  # noqa: BLE001 - KPI sampling must never break a stage
+            logger.debug("KPI telemetry sample failed (non-fatal): %s", exc)
+
+    def _ledger_domains(self) -> int:
+        """P4.4: distinct domains currently in the run-scoped Evidence Ledger."""
+        try:
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            return len(get_evidence_ledger().distinct_domains())
+        except Exception:  # noqa: BLE001 - progress is best-effort, never fatal
+            return self._last_domains_seen if self._last_domains_seen >= 0 else 0
+
+    def _record_wave_progress(self, domains_before: int, max_zero: int = 2) -> bool:
+        """P4.4: consume/produce the progress signal for one orchestration wave.
+
+        Returns True when the loop may continue, False when the progress budget
+        is exhausted (consecutive zero-delta waves) and the DAG should stop.
+        """
+        domains_after = self._ledger_domains()
+        delta = max(0, domains_after - domains_before)
+        self._last_domains_seen = domains_after
+        if delta > 0:
+            self._consecutive_zero_progress = 0
+            return True
+        self._consecutive_zero_progress += 1
+        return self._consecutive_zero_progress < max_zero
+
+    def _snapshot_evidence_ledger(self) -> None:
+        """P0: persist the Evidence Ledger snapshot at run end.
+
+        Runs on success AND failure so the Aug-10 autopsy is reproducible
+        from telemetry alone (P0 exit gate). Never raises — a failed snapshot
+        must not mask the run result it describes.
+
+        D-06/§4 0.2: a refused engagement aborts with NO artifacts — the
+        manifest is only opened after the refusal check, so its absence means
+        the run never started and there is nothing to snapshot.
+        """
+        if getattr(self, "_manifest", None) is None:
+            return
+        try:
+            from hyperion.infra.paths import project_file
+            from hyperion.tools.evidence_ledger import get_evidence_ledger
+
+            ledger = getattr(self, "_evidence_ledger", None) or get_evidence_ledger()
+            path = project_file(
+                "reports", "diagnostics", self._engagement_id, "evidence_ledger.json"
+            )
+            saved = ledger.snapshot(path)
+            self._manifest.record_ledger_entry("evidence", ledger.summary())
+            trace(
+                "evidence",
+                run_id=self._engagement_id,
+                event="ledger_snapshot",
+                items=ledger.count(),
+                domains=len(ledger.distinct_domains()),
+                path=saved,
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry must not break the run
+            logger.warning("evidence ledger snapshot failed: %s", exc)
 
     def _print_run_summary(self, result: EngagementResult) -> None:
         """Print end-of-run summary with report link, timing, status, and token breakdown."""

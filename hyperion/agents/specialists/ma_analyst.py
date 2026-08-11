@@ -281,6 +281,11 @@ class MAAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
         # Acquisition criteria
         self._acquisition_criteria: str = ""
@@ -1101,7 +1106,7 @@ class MAAnalyst(BaseAgent):
                     ''.join(target_names)}, Glassdoor reviews, LinkedIn company pages, employee sentiment, culture ratings",
                 parent_agent=self.name,
                 model_tier=ModelTier.STANDARD,
-                tools=[ToolName.OBSCURA],
+                tools=[ToolName.SEARXNG, ToolName.JINA, ToolName.OBSCURA],
                 findings_model="KeyFinding",
                 timeout_seconds=600,
                 context={"companies": target_names},
@@ -1205,6 +1210,13 @@ class MAAnalyst(BaseAgent):
             "(SearxNG + Jina + Obscura)")
         self._search_results, self._deal_database_data = await self._search_targets(self._acquisition_criteria, sector)
 
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no M&A data for {sector}"):
+            return MAAnalysis(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
+
         # Step 3: Build long list → short list
         await self._transition(AgentState.WORKING, "Step 3: Building long list → short list")
         long_list, short_list = await self._build_target_lists(
@@ -1212,11 +1224,13 @@ class MAAnalyst(BaseAgent):
         )
 
         # Spawn sub-agents for parallel data collection on short-listed targets
+        sub_findings: list[KeyFinding] = []
         if short_list:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning M&A data collection "
                 "sub-agents")
             sub_findings = await self._spawn_ma_sub_agents(self._acquisition_criteria, sector, short_list)
-            self._sub_agent_findings = sub_findings
+        await self._ingest_sub_findings(sub_findings)
+        if short_list:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 

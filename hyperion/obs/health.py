@@ -31,6 +31,26 @@ from typing import Any
 from hyperion.infra.paths import obscura_bin_dir
 
 
+def _format_quality_line(
+    total_score: float,
+    *,
+    threshold: float = 4.0,
+    iterations: int | str = "?",
+) -> str:
+    """P5.2 (overhaul §6 P5 / A-12): ONE quality score scale everywhere.
+
+    The weighted total is a 1-5 rubric score; the approval threshold is a
+    comparison line, never a denominator. Returns ``score/5.0`` with the
+    threshold stated explicitly, so no surface can render the audit's broken
+    ``3.2/4.0`` (threshold-as-scale) against the CLI's ``3.2/5.0``.
+    """
+    threshold = threshold or 4.0
+    return (
+        f"  Quality:     {total_score:.1f}/5.0 "
+        f"(approve \u2265 {threshold:.1f}; iterations: {iterations})"
+    )
+
+
 @dataclass
 class ToolHealth:
     """Health status of a single tool."""
@@ -58,50 +78,35 @@ def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-# D-06: the smoke query is the only honest search health signal.
-SMOKE_QUERY = "india import tariff"
-MIN_SMOKE_RESULTS = 3
-_LOCAL_SEARXNG_HEADERS = {
-    "User-Agent": "HYPERION/1.0 (local search health probe)",
-    "X-Forwarded-For": "127.0.0.1",
-    "X-Real-IP": "127.0.0.1",
-}
+def _searxng_probe_targets(settings: Any) -> list[tuple[str, str, tuple[str, ...]]]:
+    """Return LOCAL-ONLY readiness targets: (url, profile, engines).
 
-
-def _searxng_probe_targets(settings: Any) -> list[tuple[str, str, str, float]]:
-    """Return profile-aware smoke targets for the managed local stack.
+    P1.5 (overhaul §6 P1, 2026-08-10): readiness is local. The probe NEVER
+    issues a search query — the Aug-9/10 autopsy showed the boot smoke
+    tripping the fleet into 403/429 one minute before the engagement even
+    began. Each managed replica is checked for (1) a reachable TCP port,
+    (2) a serving ``/config`` endpoint (served locally, zero upstream), and
+    (3) persisted engine-health state. The corpus probe — the thing that
+    DOES send queries — belongs to the Phase-2 preflight
+    (``corpus_preflight.py``), never to boot.
 
     The configured compatibility URL points at the scholar replica on 8888.
-    Probing only that endpoint with a general-web query produced the exact false
-    OFFLINE refusal in the reported run even while the web and reference replicas
-    were healthy. Custom/remote SearXNG deployments remain a single target.
-
-    F-02 (FIX0.3_RUNBOOK_2026-08-09): the web-profile smoke used to send the
-    full ``mojeek,mwmbl,brave,yep`` set — the exact engines the boot probe
-    tripped into 403/429 one minute before the engagement began. The web
-    smoke is now de-rated to a single cheap engine (``mwmbl`` only) with a
-    short timeout, and ``_check_searxng`` additionally gates it behind engine
-    health so a probe never issues traffic to engines that are already
-    cooling.
+    Probing only that endpoint produced the exact false OFFLINE refusal in
+    the reported run even while the web and reference replicas were healthy,
+    so every managed replica is probed. Custom/remote SearXNG deployments
+    remain a single local target.
     """
     from urllib.parse import urlsplit
 
     configured = getattr(settings, "searxng_url", "") or "http://localhost:8888"
     parsed = urlsplit(configured if "://" in configured else f"http://{configured}")
     if (parsed.hostname or "").lower() not in {"127.0.0.1", "localhost", "::1"}:
-        return [(configured.rstrip("/"), SMOKE_QUERY, "", 20.0)]
+        return [(configured.rstrip("/"), "custom", ())]
 
     from hyperion.infra.services import SEARXNG_REPLICAS
 
-    queries = {
-        "scholar": ("india trade policy", "crossref,openalex", 20.0),
-        "reference": ("India", "wikipedia", 20.0),
-        # F-02: one cheap engine, short timeout — the probe must not be the
-        # thing that bans the fleet.
-        "web": (SMOKE_QUERY, "mwmbl", 6.0),
-    }
     return [
-        (f"http://127.0.0.1:{replica.port}", *queries[replica.profile])
+        (f"http://127.0.0.1:{replica.port}", replica.profile, replica.engines)
         for replica in SEARXNG_REPLICAS
     ]
 
@@ -207,94 +212,80 @@ def _log_preflight(provider_type: Any, status: str, detail: str) -> None:
 
 
 def _check_searxng(settings: Any) -> ToolHealth:
-    """Smoke-query every managed profile and report aggregate search health.
+    """LOCAL-ONLY SearXNG readiness (P1.5) — never issues a search query.
 
-    A local three-replica stack is usable when at least one profile returns
-    evidence. Partial startup, upstream engine failures, or a thin response are
-    DEGRADED; only a stack that yields zero evidence everywhere is OFFLINE.
+    Readiness answers three local questions per replica:
+      1. Is the TCP port reachable?
+      2. Does the instance serve its ``/config`` endpoint (local, zero
+         upstream traffic)?
+      3. What does PERSISTED engine health say about its engines?
+
+    Verdicts:
+      OK       every replica serves locally and no replica has a fully
+               cooling/suspended engine set
+      DEGRADED some replicas unreachable, or a reachable replica has zero
+               available engines (persisted bans from an earlier session)
+      OFFLINE  no replica is reachable at all
+
+    The corpus probe (the check that sends queries) is the Phase-2
+    preflight's job (``corpus_preflight.py``), not boot's.
     """
     h = ToolHealth(name="searxng")
     targets = _searxng_probe_targets(settings)
-    healthy_profiles = 0
-    total_results = 0
-    live_engines: set[str] = set()
+    total = len(targets)
+    reachable = 0
+    cooling: set[str] = set()
     failures: list[str] = []
 
     try:
         import httpx
     except ImportError as exc:
         h.status = "OFFLINE"
-        h.detail = f"smoke query unavailable: {exc}"
+        h.detail = f"local readiness unavailable: {exc}"
         return h
 
-    for url, query, engines, timeout in targets:
+    from hyperion.tools.engine_health import get_engine_health
+
+    health = get_engine_health()
+
+    for url, profile, engines in targets:
         from urllib.parse import urlsplit
 
-        parsed = urlsplit(url if "://" in url else f"http://{url}")
+        parsed = urlsplit(url)
         host = parsed.hostname or "localhost"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        label = str(port)
+        label = f"{profile}:{port}"
         if not _check_port(host, port):
             failures.append(f"{label}: unreachable")
             continue
-        # F-02: gate the smoke behind engine health. If every engine this
-        # profile would query is already cooling/suspended (persisted from an
-        # earlier session), do NOT issue traffic — record the deferral and
-        # move on. The probe must never be the thing that re-triggers a ban.
-        if engines:
-            try:
-                from hyperion.tools.engine_health import get_engine_health
-
-                requested = [e.strip() for e in engines.split(",") if e.strip()]
-                if requested and not any(
-                    get_engine_health().is_available(e) for e in requested
-                ):
-                    failures.append(
-                        f"{label}: smoke deferred (engines cooling: {', '.join(requested)})"
-                    )
-                    continue
-            except Exception as exc:  # noqa: BLE001 - health lookup must not break boot
-                failures.append(f"{label}: health gate error ({type(exc).__name__})")
-                continue
-        params = {"q": query, "format": "json"}
-        if engines:
-            params["engines"] = engines
         try:
-            response = httpx.get(
-                f"{url.rstrip('/')}/search",
-                params=params,
-                headers=_LOCAL_SEARXNG_HEADERS if host in {"127.0.0.1", "localhost", "::1"} else None,
-                timeout=timeout,
-            )
+            response = httpx.get(f"{url.rstrip('/')}/config", timeout=5.0)
             response.raise_for_status()
-            body = response.json()
-            results = body.get("results", []) or []
-            dead = [item[0] for item in body.get("unresponsive_engines", []) if item]
-            if results:
-                healthy_profiles += 1
-                total_results += len(results)
-                live_engines.update(
-                    str(item.get("engine")) for item in results if item.get("engine")
-                )
-                if dead or len(results) < MIN_SMOKE_RESULTS:
-                    failures.append(f"{label}: {len(results)} results; DEAD={dead}")
-            else:
-                failures.append(f"{label}: 0 results; DEAD={dead or 'none reported'}")
+            response.json()
         except Exception as exc:  # noqa: BLE001 - aggregate every profile failure
-            failures.append(f"{label}: {type(exc).__name__}: {str(exc)[:80]}")
+            failures.append(f"{label}: /config {type(exc).__name__}: {str(exc)[:60]}")
+            continue
+        reachable += 1
+        # Persisted engine health: a replica whose engines are all cooling or
+        # suspended has no usable capacity even though it serves locally.
+        if engines:
+            unavailable = [e for e in engines if not health.is_available(e)]
+            if len(unavailable) == len(engines):
+                failures.append(f"{label}: no capacity ({', '.join(unavailable)})")
+            cooling.update(unavailable)
 
-    if total_results == 0:
+    if reachable == 0:
         h.status = "OFFLINE"
-        h.detail = "no evidence from any SearXNG profile; " + "; ".join(failures)
-    elif healthy_profiles == len(targets) and not failures:
+        h.detail = "no local SearXNG replica reachable; " + "; ".join(failures)
+    elif reachable == total and not failures:
         h.status = "OK"
-        h.detail = f"{total_results} results from {sorted(live_engines)} across {healthy_profiles} profiles"
+        h.detail = (
+            f"{reachable}/{total} replicas local"
+            + (f"; cooling: {', '.join(sorted(cooling))}" if cooling else "")
+        )
     else:
         h.status = "DEGRADED"
-        h.detail = (
-            f"{total_results} results from {sorted(live_engines)} across "
-            f"{healthy_profiles}/{len(targets)} profiles; " + "; ".join(failures)
-        )
+        h.detail = f"{reachable}/{total} replicas local; " + "; ".join(failures)
     return h
 
 
@@ -540,8 +531,17 @@ def print_completion_health(
 
     if hasattr(result, 'quality_score') and result.quality_score:
         qs = result.quality_score
-        print(f"  Quality:     {qs.total_score:.1f}/{qs.threshold:.1f} "
-              f"(iterations: {getattr(result, 'quality_iterations', '?')})")
+        # P5.2 (overhaul §6 P5 / A-12): ONE score scale everywhere. The
+        # weighted total is on a 1-5 rubric; the threshold (4.0) is a
+        # comparison line, not a denominator. Displaying "3.2/4.0" here while
+        # the CLI shows "3.2/5.0" is the audit's scale inconsistency. The
+        # scale is always /5.0; the threshold is stated next to it.
+        threshold = getattr(qs, "threshold", 4.0) or 4.0
+        print(_format_quality_line(
+            qs.total_score,
+            threshold=threshold,
+            iterations=getattr(result, 'quality_iterations', '?'),
+        ))
     else:
         print("  Quality:     N/A")
 

@@ -91,6 +91,7 @@ from hyperion.schemas.models import (
     KeyFinding,
     QualityScore,
     Recommendation,
+    RiskAnalysis,
     Source,
     SourceCredibility,
 )
@@ -135,6 +136,116 @@ SECTION_PRODUCING_AGENTS: frozenset[AgentName] = frozenset({
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent Specification
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# OVERHAUL3 D-D (overhaul3_audit.md W1/S4): the aggregate → synthetic finding
+# conversion is ONE shared code path. The Synthesis Lead's bus handler and the
+# orchestrator's findings collector (orchestrator.py — the ``_all_findings``
+# drain) both call this so count and collection read the same store and can
+# never disagree (the 2026-08-11 "1 (0)" / "8 (7)" mismatch).
+_ANALYSIS_PAYLOAD_KEYS = [
+    "market_analysis", "financial_analysis", "risk_analysis",
+    "technology_assessment", "operations_analysis",
+    "regulatory_analysis", "sustainability_analysis",
+    "consumer_insights", "ma_analysis", "innovation_analysis",
+    "strategy_analysis", "competitive_landscape",
+]
+
+
+def synthetic_finding_from_payload(
+    payload: dict[str, Any],
+    agent_name: str,
+) -> KeyFinding | None:
+    """Convert a specialist's aggregate FINDINGS payload into a synthetic
+    ``analysis_summary`` KeyFinding of its presentable headline metrics.
+
+    Returns None when the payload carries no presentable metrics (a typed
+    analysis gap, P2-16), never a JSON dump (P2-09) and never a fabricated
+    finding.
+
+    Shared by the Synthesis Lead's bus handler and the orchestrator's
+    ``_all_findings`` collector (OVERHAUL3 D-D) so the conversion is one code
+    path, not two implementations that can drift.
+    """
+    for key in _ANALYSIS_PAYLOAD_KEYS:
+        if key not in payload:
+            continue
+        headlines: list[str] = []
+        headline_title = ""
+        analysis_data = payload.get(key, {})
+        if isinstance(analysis_data, dict):
+            # Try to build a meaningful title from key metrics.
+            for title_key, label in [
+                ("tam_triangulated", "TAM"),
+                ("dcf_valuation", "DCF Valuation"),
+                ("comp_valuation", "Comp Valuation"),
+                ("market_maturity", "Market Maturity"),
+                ("residual_risk_summary", "Residual Risk"),
+                ("build_vs_buy", "Build vs Buy"),
+            ]:
+                val = analysis_data.get(title_key)
+                if val is not None:
+                    try:
+                        val_str = display_value(val)
+                    except DisplayError:
+                        # Unpresentable metric: a gap, never a repr.
+                        continue
+                    if not val_str:
+                        continue
+                    if len(val_str) > 120:
+                        val_str = val_str[:117] + "..."
+                    headlines.append(f"{label}: {val_str}")
+                    if not headline_title:
+                        headline_title = f"{label}: {val_str}"
+
+            # Extract key value drivers as headlines.
+            kvd = analysis_data.get("key_value_drivers", [])
+            if isinstance(kvd, list):
+                for vd in kvd[:3]:
+                    try:
+                        vd_str = display_value(vd)
+                    except DisplayError:
+                        continue
+                    if not vd_str:
+                        continue
+                    headlines.append(f"Key Value Driver: {vd_str}")
+                    if not headline_title:
+                        headline_title = f"Key Value Driver: {vd_str}"
+
+        if not headline_title:
+            # Fallback: use confidence or a count from the payload itself.
+            for fb_key in ("confidence", "risk_count", "competitor_count",
+                           "white_space_count"):
+                fb_val = payload.get(fb_key)
+                if fb_val is not None:
+                    headline_title = f"{fb_key.replace('_', ' ').title()}: {fb_val}"
+                    break
+
+        if not headlines and not headline_title:
+            # No presentable metrics at all: this is an analysis gap (P2-16),
+            # not a finding. Do not synthesize one out of a payload dump.
+            logger.warning(
+                "specialist payload for %s carried no presentable metrics; "
+                "treated as a gap, not a JSON dump",
+                key,
+            )
+            return None
+
+        if not headline_title:
+            headline_title = f"{agent_name.replace('_', ' ').title()} Analysis"
+
+        content = "\n".join(headlines)
+        return KeyFinding(
+            id=f"summary_{agent_name}_{uuid.uuid4().hex[:8]}",
+            agent=agent_name,
+            finding_type="analysis_summary",
+            title=headline_title[:200],
+            content=content,
+            sources=[],
+            confidence=ConfidenceLevel.MEDIUM,
+            implications=headlines[0] if headlines else "",
+        )
+    return None
 
 
 SYNTHESIS_LEAD_SPEC = AgentSpec(
@@ -323,6 +434,14 @@ class SynthesisLead(BaseAgent):
         # with concatenated finding content or a placeholder string.
         self.section_gaps: list[str] = []
 
+        # OVERHAUL3 D-K (overhaul3_audit.md W1/S4b): the structured RISK
+        # model captured from the RISK aggregate payload on the bus. Every
+        # FinalReport this agent constructs assigns it, so a run with strong
+        # RISK findings is never blocked by the Quality Gate on
+        # ``risk_coverage`` (the 2026-08-11 blocked diagnostic scored 1/5
+        # against a risk section that was never assigned).
+        self._risk_analysis: RiskAnalysis | None = None
+
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling, collect findings, fact check, quality score
     # ─────────────────────────────────────────────────────────────────────
@@ -348,103 +467,33 @@ class SynthesisLead(BaseAgent):
                 # without a "finding" key, extract summary data as a synthetic
                 # KeyFinding so the synthesis lead has access to quantitative
                 # results (TAM, DCF, WACC, etc.) for narrative generation.
-                payload = msg.payload
+                #
+                # OVERHAUL3 D-D: the conversion lives in one shared function
+                # (synthetic_finding_from_payload) so the orchestrator's
+                # _all_findings collector uses the identical code path.
                 agent_name = msg.sender.value
-
-                # Map analysis payload keys to readable content
-                analysis_keys = [
-                    "market_analysis", "financial_analysis", "risk_analysis",
-                    "technology_assessment", "operations_analysis",
-                    "regulatory_analysis", "sustainability_analysis",
-                    "consumer_insights", "ma_analysis", "innovation_analysis",
-                    "strategy_analysis", "competitive_landscape",
-                ]
-                for key in analysis_keys:
-                    if key in payload:
-                        # P2-09: the json.dumps summary path is deleted. A JSON
-                        # dump is not analysis; it put whole sources arrays and
-                        # accessed_at keys into seven chapters of a client
-                        # report. Only presentable headline metrics become a
-                        # synthetic finding; everything else is a gap, not a
-                        # payload paste.
-                        headlines = []
-                        headline_title = ""
-                        analysis_data = payload.get(key, {})
-                        if isinstance(analysis_data, dict):
-                            # Try to build a meaningful title from key metrics
-                            for title_key, label in [
-                                ("tam_triangulated", "TAM"),
-                                ("dcf_valuation", "DCF Valuation"),
-                                ("comp_valuation", "Comp Valuation"),
-                                ("market_maturity", "Market Maturity"),
-                                ("residual_risk_summary", "Residual Risk"),
-                                ("build_vs_buy", "Build vs Buy"),
-                            ]:
-                                val = analysis_data.get(title_key)
-                                if val is not None:
-                                    try:
-                                        val_str = display_value(val)
-                                    except DisplayError:
-                                        # Unpresentable metric: a gap, never a repr.
-                                        continue
-                                    if not val_str:
-                                        continue
-                                    if len(val_str) > 120:
-                                        val_str = val_str[:117] + "..."
-                                    headlines.append(f"{label}: {val_str}")
-                                    if not headline_title:
-                                        headline_title = f"{label}: {val_str}"
-
-                            # Extract key value drivers as headlines
-                            kvd = analysis_data.get("key_value_drivers", [])
-                            if isinstance(kvd, list):
-                                for vd in kvd[:3]:
-                                    vd_str = display_value(vd)
-                                    if not vd_str:
-                                        continue
-                                    headlines.append(f"Key Value Driver: {vd_str}")
-                                    if not headline_title:
-                                        headline_title = f"Key Value Driver: {vd_str}"
-
-                        if not headline_title:
-                            # Fallback: use confidence or risk count
-                            for fb_key in ("confidence", "risk_count", "competitor_count", "white_space_count"):
-                                fb_val = payload.get(fb_key)
-                                if fb_val is not None:
-                                    headline_title = f"{fb_key.replace('_', ' ').title()}: {fb_val}"
-                                    break
-
-                        if not headlines and not headline_title:
-                            # No presentable metrics at all: this is an analysis
-                            # gap (P2-16), not a finding. Do not synthesize one
-                            # out of a payload dump.
-                            logger.warning(
-                                "specialist payload for %s carried no presentable "
-                                "metrics; treated as a gap, not a JSON dump",
-                                key,
-                            )
-                            break
-
-                        if not headline_title:
-                            headline_title = f"{agent_name.replace('_', ' ').title()} Analysis"
-
-                        content = "\n".join(headlines)
-
-                        synthetic = KeyFinding(
-                            id=f"summary_{agent_name}_{uuid.uuid4().hex[:8]}",
-                            agent=agent_name,
-                            finding_type="analysis_summary",
-                            title=headline_title[:200],
-                            content=content,
-                            sources=[],
-                            confidence=ConfidenceLevel.MEDIUM,
-                            implications=headlines[0] if headlines else "",
+                synthetic = synthetic_finding_from_payload(msg.payload, agent_name)
+                if synthetic is not None:
+                    self._collected_findings.append(synthetic)
+                    if agent_name not in self._findings_by_agent:
+                        self._findings_by_agent[agent_name] = []
+                    self._findings_by_agent[agent_name].append(synthetic)
+                # OVERHAUL3 D-K (overhaul3_audit.md W1/S4b): RISK publishes a
+                # full structured ``RiskAnalysis`` (risk_analyst.py:1323).
+                # Capture it so FinalReport.risk_analysis is assigned — the
+                # section is a VIEW over the store, never a separately
+                # maintained copy (P1). A payload that fails validation is
+                # discarded; a capture failure must never crash synthesis.
+                if "risk_analysis" in msg.payload:
+                    try:
+                        self._risk_analysis = RiskAnalysis.model_validate(
+                            msg.payload["risk_analysis"]
                         )
-                        self._collected_findings.append(synthetic)
-                        if agent_name not in self._findings_by_agent:
-                            self._findings_by_agent[agent_name] = []
-                        self._findings_by_agent[agent_name].append(synthetic)
-                        break
+                    except (ValueError, TypeError) as exc:
+                        logger.warning(
+                            "risk_analysis payload failed validation and was "
+                            "discarded: %s: %s", type(exc).__name__, exc,
+                        )
 
         elif msg.channel == Channel.HANDOFF:
             payload = msg.payload
@@ -1853,6 +1902,10 @@ class SynthesisLead(BaseAgent):
             agents_used=self._get_participating_agents(),
             total_sources=len({s.url for f in self._get_all_findings() for s in f.sources}),
             total_data_points=len(self._get_all_findings()),
+            # OVERHAUL3 D-K: even a degraded report carries the risk section
+            # when RISK published one — the gate must never score
+            # risk_coverage against an absent-but-produced section.
+            risk_analysis=self._risk_analysis,
             limitations=[f"Synthesis incomplete: {reason}"],
             is_degraded=True,
         )
@@ -2038,6 +2091,11 @@ class SynthesisLead(BaseAgent):
             agents_used=self._get_participating_agents(),
             total_sources=len(unique_sources),
             total_data_points=len(all_findings),
+            # OVERHAUL3 D-K: the risk section is the RISK aggregate payload on
+            # the bus, assigned here — the schema-to-agent wiring gap that
+            # blocked the 2026-08-11 run on risk_coverage despite RISK
+            # publishing a full RiskAnalysis.
+            risk_analysis=self._risk_analysis,
             limitations=list(set(limitations)),
         )
 

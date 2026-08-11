@@ -138,6 +138,15 @@ class TestParser:
         args = build_parser().parse_args([])
         assert args.lint is False
 
+    def test_canaries_flag_parses(self):
+        """P6.1: --canaries reaches the fault-injection gate."""
+        args = build_parser().parse_args(["--canaries"])
+        assert args.canaries is True
+
+    def test_canaries_defaults_off(self):
+        args = build_parser().parse_args([])
+        assert args.canaries is False
+
 
 class TestStructuralGuards:
     """AST/config guards so the NEXT recurrence of 'gate silently weakened'

@@ -16,6 +16,11 @@ Because `Transcript.render_line` stamps precise per-cell content offsets and
 keeps scrolling *and* keeps extending the selection — you are not limited to
 what is currently on screen. ``ctrl+shift+a`` selects the entire scrollback.
 
+For the case where you want the WHOLE log in one shot without any selection
+or clipboard dependency, ``ctrl+shift+s`` (or the ``/export`` command) writes
+the complete transcript — logo, roster and every event, including rows
+scrolled out of view — to ``reports/diagnostics/tui_log_<session>_<ts>.txt``.
+
 For terminals where Textual's mouse capture prevents the *terminal's own*
 click-drag selection (classic conhost / some PowerShell setups), launch with
 ``hyperion shell --no-mouse``: Textual then never grabs the mouse, so the
@@ -70,6 +75,7 @@ class HyperionApp(App[None]):
     BINDINGS = [
         Binding("ctrl+shift+c", "copy_selection", "Copy", show=True),
         Binding("ctrl+shift+a", "select_all", "Select all", show=True),
+        Binding("ctrl+shift+s", "save_transcript", "Save log", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
     ]
 
@@ -166,6 +172,25 @@ class HyperionApp(App[None]):
                 self._toast("transcript selected — Ctrl+Shift+C to copy")
         except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
             logger.debug("%s: %s", "action_select_all", exc)
+
+    def action_save_transcript(self) -> None:
+        """Write the ENTIRE transcript to a file — no selection required.
+
+        Selection + OSC-52 clipboard works in most terminals, but some (classic
+        conhost, SSH without clipboard forwarding) can only ever copy the
+        visible screen. Saving to a file is terminal-independent: the whole
+        scrollback lands under ``reports/diagnostics/`` where any editor can
+        copy from it.
+        """
+        screen = self.screen
+        if not isinstance(screen, SessionScreen):
+            self._toast("save is available on the session screen")
+            return
+        path = screen.export_transcript()
+        if path:
+            self._toast(f"saved full log → {path}")
+        else:
+            self._toast("nothing to save — the transcript is empty")
 
     def _gather_selection(self) -> str:
         """Return the currently selected text, if the Textual version exposes it."""

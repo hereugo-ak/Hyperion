@@ -10,12 +10,13 @@ from typing import Any
 import pytest
 import yaml
 
-from hyperion.infra.services import searxng_spec
+from hyperion.infra.services import SEARXNG_REPLICAS, searxng_spec
 from hyperion.tools.engine_health import EngineHealthTracker, EngineState
 from hyperion.tools.searxng import (
     TIER_C_ENGINES,
     EngineRegistryMismatch,
     EngineTokenBucket,
+    profile_enabled_engines,
     reconcile_engine_registry,
     referenced_engines,
 )
@@ -62,7 +63,11 @@ def test_settings_registry_is_exact_and_contains_no_tier_c_engines() -> None:
     }
     assert enabled == referenced_engines()
     assert enabled.isdisjoint(TIER_C_ENGINES)
-    assert set(data["use_default_settings"]["engines"]["keep_only"]) == enabled
+    # P1.2 (overhaul §6 P1, 2026-08-10): ``keep_only`` lists every DECLARED
+    # engine (incl. disabled mojeek/yep); the non-disabled ``enabled`` set is
+    # exactly the active referenced set.
+    declared = {str(engine["name"]) for engine in data["engines"]}
+    assert set(data["use_default_settings"]["engines"]["keep_only"]) == declared
     assert data["default_doi_resolver"] in data["doi_resolvers"]
     assert "default_doi_resolver" not in data["search"]
     assert data["server"]["secret_key"] == "${SEARXNG_SECRET}"
@@ -199,3 +204,47 @@ async def test_token_bucket_is_process_wide_per_engine(
 
     EngineTokenBucket._lock = None
     EngineTokenBucket._next_allowed = {}
+
+
+# ── P1.2-fix: boot reconcile expects ENABLED engines, not the declared tuple ─
+
+
+def test_web_profile_enabled_engines_excludes_disabled_scrapers() -> None:
+    """P1.2-fix: the web replica's reconcile must expect only mwmbl+brave.
+
+    mojeek/yep are DISABLED in the settings (they 403 categorically from this
+    egress) but stay DECLARED in SEARXNG_REPLICAS so W-12 disjointness holds.
+    profile_enabled_engines() must return only the enabled set — otherwise the
+    boot reconcile reports `web:fail@8890` at every boot despite a healthy
+    container (the running config only serves enabled engines)."""
+    web = next(r for r in SEARXNG_REPLICAS if r.profile == "web")
+    enabled = profile_enabled_engines("web")
+    assert enabled == {"mwmbl", "brave"}
+    assert "mojeek" not in enabled
+    assert "yep" not in enabled
+    # The declared tuple still holds the disabled engines (P1.2 record).
+    assert {"mojeek", "yep"} <= set(web.engines)
+
+
+def test_scholar_and_reference_profiles_are_fully_enabled() -> None:
+    """Scholar/reference have no disabled engines, so declared == enabled."""
+    for profile in ("scholar", "reference"):
+        replica = next(r for r in SEARXNG_REPLICAS if r.profile == profile)
+        enabled = profile_enabled_engines(profile)
+        assert enabled == set(replica.engines)
+
+
+@pytest.mark.asyncio
+async def test_web_reconcile_passes_against_enabled_only_registry() -> None:
+    """P1.2-fix: reconciling the web replica against its ENABLED engines passes
+    even though mojeek/yep are declared-but-disabled."""
+    client = _Client(
+        [{"name": name, "enabled": True} for name in {"mwmbl", "brave"}]
+    )
+    report = await reconcile_engine_registry(
+        "http://127.0.0.1:8890",
+        client=client,  # type: ignore[arg-type]
+        expected_engines={"mwmbl", "brave"},
+    )
+    assert report.ok
+    assert report.enabled == frozenset({"mwmbl", "brave"})

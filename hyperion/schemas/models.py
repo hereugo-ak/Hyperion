@@ -29,7 +29,7 @@ from enum import Enum
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # W-10. Safe to import at module level: hyperion.schemas.methodology is a leaf
 # (stdlib + pydantic only) and defers its ClientProse import into the validator
@@ -173,6 +173,11 @@ class ResearchOutcome(str, Enum):
                              phase budget
     - RETRY_EXHAUSTED     -> every permitted retry/recovery path has been
                              tried and the run is terminal
+    - BUDGET_REFUSED      -> a self-heal (or respawn) was REFUSED at a
+                             budget gate — the recovery never ran. Never
+                             stamped ``ANALYSIS_FAILED``/``RETRY_EXHAUSTED``,
+                             which would assert an action the gate refused
+                             (OVERHAUL3 D-C / S10, overhaul3_audit.md §5.4 P2)
     """
 
     SUCCESS = "success"
@@ -181,6 +186,7 @@ class ResearchOutcome(str, Enum):
     ANALYSIS_FAILED = "analysis_failed"
     TIMEOUT = "timeout"
     RETRY_EXHAUSTED = "retry_exhausted"
+    BUDGET_REFUSED = "budget_refused"
 
 
 class ConfidenceLevel(str, Enum):
@@ -268,6 +274,23 @@ class Source(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# P3 (overhaul §6 P3.2): provenance is bound in code, never transcribed by
+# the LLM. A substantive finding must carry at least one ledger-bound Source;
+# a "finding" with zero valid citations is typed ``unverified_assertion`` —
+# never counted as yield, never rendered. A gap is a separate type
+# (``AnalysisGap`` / ``research_gap`` finding_type) — never counted as a
+# finding. These three values are the complete non-substantive set, shared
+# by the sub-agent outcome typing, the spawn budget and the floor report.
+# OVERHAUL2 S8: defined ABOVE ``KeyFinding`` so the model validator can
+# reference them at validation time (module order matters for class-level
+# defaults; ``mode="after"`` validators read them at call time).
+RESEARCH_GAP_TYPE = "research_gap"
+UNVERIFIED_ASSERTION_TYPE = "unverified_assertion"
+NON_SUBSTANTIVE_FINDING_TYPES = frozenset(
+    {RESEARCH_GAP_TYPE, UNVERIFIED_ASSERTION_TYPE}
+)
+
+
 class KeyFinding(BaseModel):
     """A single finding from any agent.
 
@@ -306,6 +329,81 @@ class KeyFinding(BaseModel):
     _reject_filler = field_validator("content", "title", "implications")(
         _reject_banned_filler
     )
+
+    @model_validator(mode="after")
+    def _enforce_provenance(self) -> "KeyFinding":
+        """OVERHAUL2 S8: provenance is schema-enforced, not advisory.
+
+        The 17:52 block: 87 findings → 0 report domains, because substantive
+        findings shipped with ``sources=[]`` whenever the author's searches
+        failed. A substantive finding with no usable source URL is retyped
+        ``unverified_assertion`` at construction — it is then excluded from
+        yield, floor reports and the corpus floor BY the existing
+        NON_SUBSTANTIVE filters, everywhere, automatically.
+        """
+        if self.finding_type in NON_SUBSTANTIVE_FINDING_TYPES:
+            return self
+        if not any(getattr(s, "url", "") for s in self.sources):
+            object.__setattr__(self, "finding_type", UNVERIFIED_ASSERTION_TYPE)
+            object.__setattr__(self, "confidence", ConfidenceLevel.LOW)
+        return self
+
+
+# P3 (overhaul §6 P3.2): provenance is bound in code, never transcribed by
+# the LLM. A substantive finding must carry at least one ledger-bound Source;
+# a "finding" with zero valid citations is typed ``unverified_assertion`` —
+# never counted as yield, never rendered. A gap is a separate type
+# (``AnalysisGap`` / ``research_gap`` finding_type) — never counted as a
+# finding. These three values are the complete non-substantive set, shared
+# by the sub-agent outcome typing, the spawn budget and the floor report.
+# OVERHAUL2 S8: defined ABOVE ``KeyFinding`` so the model validator can
+# reference them at validation time (module order matters for class-level
+# defaults; ``mode="after"`` validators read them at call time).
+RESEARCH_GAP_TYPE = "research_gap"
+UNVERIFIED_ASSERTION_TYPE = "unverified_assertion"
+NON_SUBSTANTIVE_FINDING_TYPES = frozenset(
+    {RESEARCH_GAP_TYPE, UNVERIFIED_ASSERTION_TYPE}
+)
+
+
+class EvidenceFinding(KeyFinding):
+    """A substantive finding bound to at least one ledger-derived Source (I-3).
+
+    Inherits every ``KeyFinding`` field but hardens the provenance contract
+    at the schema layer:
+
+    - ``sources`` is REQUIRED and must be non-empty. The validators reject a
+      sourceless substantive finding at construction — the Aug-10
+      "86 findings → 0 domains" mechanism is unrepresentable in this type.
+    - ``finding_type`` must be substantive. A gap or unverified assertion is
+      a different typed object, never an ``EvidenceFinding``.
+    - The LLM's own ``sources`` are discarded upstream (``sub_agent.py``);
+      only code-constructed, ledger-bound ``Source`` objects may appear here.
+    """
+
+    sources: list[Source] = Field(
+        description="Ledger-bound evidence sources (>=1 required)"
+    )
+
+    @field_validator("sources")
+    @classmethod
+    def _require_bound_source(cls, v: list[Source]) -> list[Source]:
+        if not v:
+            raise ValueError(
+                "EvidenceFinding requires >=1 bound source; a sourceless "
+                "substantive finding is unrepresentable (I-3)"
+            )
+        return v
+
+    @field_validator("finding_type")
+    @classmethod
+    def _substantive_only(cls, v: str) -> str:
+        if v in NON_SUBSTANTIVE_FINDING_TYPES:
+            raise ValueError(
+                f"finding_type {v!r} is not substantive; a gap is an "
+                "AnalysisGap and an uncited assertion is unverified_assertion"
+            )
+        return v
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -270,6 +270,11 @@ class RegulatoryAnalyst(BaseAgent):
 
         # Sub-agent findings
         self._sub_agent_findings: list[KeyFinding] = []
+        # P-CORE: reconciled substantive sub-agent findings (published so sub-agent
+        # evidence reaches the report, not just the parent's own analysis).
+        self._sub_agent_reconciled: list[KeyFinding] = []
+        # P-CORE: numeric contradictions surfaced between sub-agent findings.
+        self._sub_agent_contradictions: list[str] = []
 
     # ─────────────────────────────────────────────────────────────────────
     # Bus message handling
@@ -1303,11 +1308,13 @@ class RegulatoryAnalyst(BaseAgent):
         jurisdictions = self._resolve_jurisdictions()
 
         # Spawn sub-agents for parallel regulatory research
+        sub_findings: list[KeyFinding] = []
         if jurisdictions and industry:
             await self._transition(AgentState.SUB_AGENT_SPAWNED, "Spawning regulatory research "
                 "sub-agents")
             sub_findings = await self._spawn_regulatory_sub_agents(jurisdictions, industry)
-            self._sub_agent_findings = sub_findings
+        await self._ingest_sub_findings(sub_findings)
+        if jurisdictions and industry:
             await self._transition(AgentState.WORKING, "Sub-agents returned, proceeding with "
                 "analysis")
 
@@ -1324,6 +1331,13 @@ class RegulatoryAnalyst(BaseAgent):
         await self._transition(AgentState.WORKING, "Step 3: Pulling historical regulatory "
             "snapshots (Wayback)")
         self._historical_snapshots = await self._pull_historical_data(jurisdictions, industry)
+
+        # P3.3: Zero-evidence gate
+        if await self._check_zero_evidence(f"no regulatory data for {industry}"):
+            return RegulatoryAnalysis(
+                confidence=ConfidenceLevel.LOW,
+                sources=[],
+            )
 
         # Step 4: Map regulations by jurisdiction
         await self._transition(AgentState.WORKING, "Step 4: Mapping regulations by jurisdiction")
