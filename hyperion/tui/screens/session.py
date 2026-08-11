@@ -37,6 +37,8 @@ import asyncio
 import contextlib
 import logging
 import random
+import time
+from pathlib import Path
 from typing import Any
 
 from textual.app import ComposeResult
@@ -72,8 +74,35 @@ _HELP_LINES = [
     "/demo            →  run a simulated engagement (no API keys needed)",
     "/clear  /help    →  reset the session · show this help",
     "copy             →  drag to highlight, then Ctrl+Shift+C  (Ctrl+Shift+A = all)",
+    "save             →  Ctrl+Shift+S or /export — write the WHOLE log to reports/diagnostics/",
     "keys             →  Enter submit · ↑/↓ history · Ctrl+L clear · Ctrl+C cancel · Ctrl+Q quit",
 ]
+
+
+def _transcript_export_path(session_id: str) -> Path:
+    """Absolute path for a session transcript export under reports/diagnostics/."""
+    from hyperion.infra.paths import project_file
+
+    # Sub-second component so two exports within the same second on the same
+    # session cannot silently overwrite each other.
+    ts = (
+        f"{time.strftime('%Y%m%d_%H%M%S')}_"
+        f"{int(time.monotonic_ns() % 1_000_000):06d}"
+    )
+    return project_file("reports", "diagnostics", f"tui_log_{session_id}_{ts}.txt")
+
+
+def export_transcript_text(text: str, session_id: str) -> Path:
+    """Write ``text`` to a timestamped transcript file; returns the written path.
+
+    Appends a trailing newline so the file is a POSIX-clean text file.
+    """
+    path = _transcript_export_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not text.endswith("\n"):
+        text += "\n"
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 class SessionScreen(Screen[None]):
@@ -224,6 +253,23 @@ class SessionScreen(Screen[None]):
     def select_all_transcript(self) -> None:
         self._log().select_all()
 
+    def export_transcript(self) -> Path | None:
+        """Write the ENTIRE transcript (logo, roster, all events) to a file.
+
+        This is the reliable whole-log copy: it needs no selection and no
+        OSC-52 clipboard support, so it works in every terminal — including
+        ones where drag-select only ever reaches the visible screen. Returns
+        the written path, or None on failure (surfaced, never silent).
+        """
+        try:
+            text = self._log().full_text()
+            if not text.strip():
+                return None
+            return export_transcript_text(text, self._session_id)
+        except Exception as exc:  # noqa: BLE001 - export must never crash the TUI
+            logger.warning("transcript export failed: %s", exc)
+            return None
+
     def selected_transcript_text(self) -> str:
         """Return the transcript's own selected text.
 
@@ -271,7 +317,20 @@ class SessionScreen(Screen[None]):
         elif cmd.startswith("vault"):
             self._run_vault(value)
         elif cmd.startswith("export"):
-            log.add_entry("DONE", "session transcript exported", icon="✓")
+            # OVERHAUL2-era fix: this used to be a fake-success stub — it
+            # logged "session transcript exported" and wrote nothing. The whole
+            # log (including scrolled-off history) now lands in a file.
+            path = self.export_transcript()
+            if path:
+                log.add_entry("DONE", f"transcript saved → {path}", icon="✓")
+            elif not self._log().full_text().strip():
+                log.add_entry(
+                    "WARN", "nothing to save yet — the transcript is empty", icon="✗"
+                )
+            else:
+                log.add_entry(
+                    "WARN", "transcript export failed — see the session log", icon="✗"
+                )
         elif cmd in ("quit", "exit"):
             self.app.exit()
         else:

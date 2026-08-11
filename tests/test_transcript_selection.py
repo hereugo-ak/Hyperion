@@ -115,11 +115,17 @@ class TestRenderLineAppliesOffsets:
             _fill(t, 60)
             await pilot.pause()
 
-            t.scroll_to(y=0, animate=False)
+            # immediate=True: with animate=False alone, Textual queues the
+            # scroll as a zero-duration animation and the single pause() below
+            # occasionally runs before it lands — this test then reads the
+            # previous scroll position and fails ~1 in 5 runs on HEAD. The
+            # assertion under test is the offset *metadata*, not the scroll
+            # machinery, so forcing the offset synchronously is exactly right.
+            t.scroll_to(y=0, animate=False, immediate=True)
             await pilot.pause()
             top_at_home = _offset_meta(t.render_line(0))
 
-            t.scroll_to(y=20, animate=False)
+            t.scroll_to(y=20, animate=False, immediate=True)
             await pilot.pause()
             top_after_scroll = _offset_meta(t.render_line(0))
 
@@ -141,7 +147,9 @@ class TestRenderLineAppliesOffsets:
             t = pilot.app.query_one(Transcript)
             _fill(t, 40)
             await pilot.pause()
-            t.scroll_to(y=0, animate=False)
+            # immediate=True: see test_offsets_track_the_scroll_position — the
+            # scroll must land before the mouse-down is mapped to an offset.
+            t.scroll_to(y=0, animate=False, immediate=True)
             await pilot.pause()
 
             await pilot.mouse_down(t, offset=(4, 1))
