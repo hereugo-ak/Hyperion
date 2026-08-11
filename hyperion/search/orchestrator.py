@@ -127,7 +127,15 @@ class SearchOrchestrator:
         query: str,
         num_results: int = MAX_RESULTS,
     ) -> list[SearchResult]:
-        """Run the deterministic chain and return deduped results (≤ MAX_RESULTS)."""
+        """Run the deterministic chain and return deduped results (≤ MAX_RESULTS).
+
+        ORDER GUARANTEE: SearXNG is ALWAYS consulted first, per query, in
+        every path — this chain is strictly sequential within a query. Paid
+        providers are only ever called after SearXNG (rotation + full-pool
+        fan-out upstream) failed to reach MIN_RESULTS for THIS query.
+        Parallelism lives ACROSS queries (sub-agent fan-out concurrency and
+        the SearXNG replica fan-out), never inside a single query's fallback.
+        """
         pool: list[SearchResult] = []
         for _attempt in range(LOOP_RETRIES + 1):
             for adapter_cls in TIERS_LOOP:
