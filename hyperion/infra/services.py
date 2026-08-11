@@ -350,6 +350,81 @@ def all_specs(*, include_flaresolverr: bool = False) -> list[ContainerSpec]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# OVERHAUL4 P9 — Firecrawl compose-stack lifecycle
+#
+# The firecrawl extraction stack (api + playwright + nuq-postgres +
+# foundationdb + rabbitmq + redis) runs from its OWN repo compose
+# (default /home/abuzar/firecrawl, override HYPERION_FIRECRAWL_COMPOSE_DIR),
+# not from Hyperion's docker-compose — its harness requires the full
+# multi-service stack. Manage it as a compose project so the shell lifecycle
+# (start on boot, stop on quit) covers every service the pipeline uses.
+# ─────────────────────────────────────────────────────────────────────────────
+
+FIRECRAWL_COMPOSE_DIR = os.environ.get(
+    "HYPERION_FIRECRAWL_COMPOSE_DIR", "/home/abuzar/firecrawl"
+)
+
+
+def firecrawl_compose_file() -> Path | None:
+    """Path to the firecrawl compose file, or None when not deployed."""
+    candidate = Path(FIRECRAWL_COMPOSE_DIR) / "docker-compose.yaml"
+    if candidate.is_file():
+        return candidate
+    candidate_yml = Path(FIRECRAWL_COMPOSE_DIR) / "docker-compose.yml"
+    if candidate_yml.is_file():
+        return candidate_yml
+    return None
+
+
+async def start_firecrawl_stack() -> tuple[bool, str]:
+    """Bring up the whole firecrawl compose project. Never raises."""
+    compose = firecrawl_compose_file()
+    if compose is None:
+        return False, f"firecrawl compose not found under {FIRECRAWL_COMPOSE_DIR}"
+    if not docker_available():
+        return False, "Docker CLI not available"
+    rc, out, err = await run_command(
+        ["docker", "compose", "-f", str(compose), "up", "-d"],
+        timeout=300.0,
+    )
+    tail = ((out or err) or "").strip().splitlines()
+    detail = tail[-1][:120] if tail else ("started" if rc == 0 else "failed")
+    return rc == 0, detail
+
+
+async def stop_firecrawl_stack() -> tuple[bool, str]:
+    """Tear down the firecrawl compose project (containers + network).
+
+    Uses ``down`` (not ``down -v``) so the NUQ/foundationdb volumes survive
+    for a faster next boot. Never raises.
+    """
+    compose = firecrawl_compose_file()
+    if compose is None:
+        return False, "no firecrawl compose deployed"
+    if not docker_available():
+        return False, "Docker CLI not available"
+    rc, out, err = await run_command(
+        ["docker", "compose", "-f", str(compose), "down"],
+        timeout=120.0,
+    )
+    tail = ((out or err) or "").strip().splitlines()
+    detail = tail[-1][:120] if tail else ("stopped" if rc == 0 else "failed")
+    return rc == 0, detail
+
+
+async def firecrawl_stack_running() -> bool:
+    """True when at least one firecrawl compose container is running."""
+    compose = firecrawl_compose_file()
+    if compose is None or not docker_available():
+        return False
+    rc, out, _err = await run_command(
+        ["docker", "compose", "-f", str(compose), "ps", "-q"],
+        timeout=30.0,
+    )
+    return rc == 0 and bool((out or "").strip())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Subprocess helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

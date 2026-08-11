@@ -169,6 +169,19 @@ def _ensure_services_stopped() -> None:
     except Exception as exc:  # noqa: BLE001 - verification is advisory only
         logger.warning("%s: %s", "_ensure_services_stopped", exc)
 
+    # OVERHAUL4 P9: show the session's search cost (per provider + total).
+    # Runs after teardown so the numbers reflect the whole session.
+    try:
+        from hyperion.search.cost import format_search_cost_report
+        from hyperion.search.orchestrator import get_search_orchestrator
+
+        report = format_search_cost_report(
+            get_search_orchestrator().metrics_snapshot()
+        )
+        console.print(f"[{DIM}]{report}[/{DIM}]")
+    except Exception as exc:  # noqa: BLE001 - cost display must never break quit
+        logger.warning("%s: %s", "_ensure_services_stopped", exc)
+
 
 @app.command()
 def boot(

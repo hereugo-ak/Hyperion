@@ -40,6 +40,15 @@ Status legend: ⬜ pending · 🔧 in progress · ✅ done · ❌ blocked (state
 - [x] ✅ P7.0c WSL fully provisioned: firecrawl stack running; curl_cffi present; **obscura v0.1.10 Linux installed** (from github.com/h4ckf0r0day/obscura, pinned to the Windows-binary version) — live-verified: js_heavy→obscura (15.7k chars + 13 images), default→curl_cffi + enrichment (53.5k + 12 images). playwright chromium unsupported on ubuntu26.04 (crawl4ai browser tier degrades; firecrawl covers JS)
 - [x] ✅ P7.0d media-on-page: `UnifiedExtractResult.images`; obscura `--dump assets`; media enrichment after ANY successful text tier (verified Windows: 45.8k text + 15 images)
 
+## Phase 8 — Multi-provider search layer (P8) — ✅ done
+- [x] ✅ canonical chain: SearXNG -> You -> Exa (loop once) -> Tavily -> Yep, search-only
+- [x] ✅ hyperion/search/ package: types, budget, suspension, 5 adapters, orchestrator
+- [x] ✅ wired into searxng.py fallback + run-reset at engagement start
+- [x] ✅ config/search_providers.yaml + env slots (HYPERION_{YOU,EXA,TAVILY,YEP}_API_KEY) in WSL .env
+- [x] ✅ live WSL smoke: SearXNG 10 results for "stablecoin regulation 2026", paid untouched
+- [x] ✅ tests/test_search_layer.py (10) — 33 total green
+- [ ] ⬜ user to add You/Exa/Tavily/Yep keys to WSL .env
+
 ## Phase 7 — Regression lock
 - [ ] ⬜ P7.1 empty-report canary
 - [ ] ⬜ P7.2 suspension-guard canary

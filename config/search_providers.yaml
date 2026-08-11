@@ -1,0 +1,77 @@
+# config/search_providers.yaml
+# Single source of truth for the multi-provider search layer (OVERHAUL4 P8).
+# Env vars use the HYPERION_ prefix (Settings env_prefix). Keys are added by
+# the operator in .env; values here are the runtime cost/order source.
+# Pricing is Aug-2026 approximation — verify on each provider dashboard.
+
+version: 1
+
+orchestrator:
+  min_results: 5
+  max_results: 15
+  loop_retries: 1            # SearXNG->You->Exa tried a second time
+  dedupe_key: netloc_plus_path
+
+providers:
+
+  searxng:
+    enabled: true
+    order: 1
+    base_url_env: HYPERION_SEARXNG_URL
+    timeout_s: 15
+    rps: 6
+    per_run_cap: 10000
+    cost_per_1000: 0.0
+
+  you:
+    enabled: true
+    order: 2
+    api_key_env: HYPERION_YOU_API_KEY
+    endpoint: https://api.ydc-index.io/search
+    timeout_s: 15
+    rps: 8
+    per_run_cap: 300
+    cost_per_1000: 4.00
+    forbidden_endpoints: ["/rag", "/smart", "/ai_snapshots"]
+
+  exa:
+    enabled: true
+    order: 3
+    api_key_env: HYPERION_EXA_API_KEY
+    endpoint: https://api.exa.ai/search
+    type: auto
+    timeout_s: 20
+    rps: 4
+    per_run_cap: 180
+    cost_per_1000: 5.00
+    contents: null           # DO NOT set — triggers extraction billing
+
+  tavily:
+    enabled: true
+    order: 4                 # reserve tier
+    api_key_env: HYPERION_TAVILY_API_KEY
+    endpoint: https://api.tavily.com/search
+    search_depth: basic
+    include_answer: false
+    include_raw_content: false
+    timeout_s: 20
+    rps: 4
+    per_run_cap: 70
+    cost_per_1000: 8.00
+
+  yep:
+    enabled: true
+    order: 5                 # last resort
+    api_key_env: HYPERION_YEP_API_KEY
+    endpoint: https://api.yep.com/fs/2/search
+    timeout_s: 15
+    rps: 4
+    per_run_cap: 150
+    cost_per_1000: 1.50
+
+suspension:
+  cooldown_429_s: 90
+  cooldown_5xx_s: 120
+  cooldown_timeout_s: 60
+  cooldown_403_s: null
+  consec_empty_threshold: 3

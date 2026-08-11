@@ -592,7 +592,20 @@ async def start_services(
     richer per-service detail stays available through the infra layer.
     """
     statuses = await _infra_start_services(on_progress=on_progress)
-    return {name: status.ok for name, status in statuses.items()}
+    result = {name: status.ok for name, status in statuses.items()}
+    # OVERHAUL4 P9: the firecrawl extraction stack runs from its OWN compose
+    # project — start it with the rest of the stack so every service the
+    # pipeline uses is up on shell boot.
+    try:
+        from hyperion.infra.services import start_firecrawl_stack
+
+        ok, detail = await start_firecrawl_stack()
+        if on_progress:
+            with suppress(Exception):
+                on_progress(f"firecrawl stack: {'started' if ok else 'skipped'} · {detail}")
+    except Exception as exc:  # noqa: BLE001 - firecrawl is best-effort at boot
+        logger.debug("firecrawl stack start failed: %s", exc)
+    return result
 
 
 async def ensure_docker_ready(
@@ -694,6 +707,14 @@ async def stop_services() -> None:
     # ── 2. Stop and REMOVE the containers ────────────────────────────────────
     # `rm` as well as `stop`: a stopped-but-present container keeps its cached
     # SearxNG results, so the next boot is not actually a fresh instance.
+    # OVERHAUL4 P9: tear the firecrawl compose project down FIRST (its api
+    # depends on its own redis/postgres; independent of the retrieval stack).
+    try:
+        from hyperion.infra.services import stop_firecrawl_stack
+
+        await stop_firecrawl_stack()
+    except Exception as exc:  # noqa: BLE001 - teardown must never raise
+        logger.debug("firecrawl stack stop failed: %s", exc)
     with contextlib.suppress(Exception):
         await _infra_stop_services()
 
@@ -707,6 +728,19 @@ async def stop_services() -> None:
     # interpreter itself keeps running (embedded / test / REPL use).
     with contextlib.suppress(Exception):
         reset_process_state()
+
+    # ── 5. Report the session's search cost ──────────────────────────────────
+    # OVERHAUL4 P9: surface what the multi-provider search layer spent this
+    # session (per provider + total). Free tiers (SearXNG) show $0.0000.
+    try:
+        from hyperion.search.cost import format_search_cost_report
+        from hyperion.search.orchestrator import get_search_orchestrator
+
+        snapshot = get_search_orchestrator().metrics_snapshot()
+        report = format_search_cost_report(snapshot)
+        logger.info("\n%s", report)
+    except Exception as exc:  # noqa: BLE001 - cost report must never break quit
+        logger.debug("search cost report failed: %s", exc)
 
 
 async def _close_tool_clients() -> None:
