@@ -67,6 +67,22 @@ _SOURCE_CLASS_ENGINES: dict[str, frozenset[str]] = {
 _SUSPENDED_TIME_RE = re.compile(r"suspended_time=(\d+)")
 _CAPTCHA_MARKERS = ("captcha", "accessdenied", "access denied")
 
+# D-E (overhaul3_audit.md W2/S5): best-effort query → source-class markers.
+# Full-sentence specialist queries rarely carry strong class markers, so the
+# default is ``web`` — the corpus-safe broad pool. These are the same three
+# classes ``_SOURCE_CLASS_ENGINES`` keys.
+_SCHOLAR_MARKERS = (
+    "research", "study", "studies", "academic", "literature", "paper",
+    "papers", "journal", "published", "publication", "publications",
+    "scientific", "peer-review", "peer reviewed", "citation", "citations",
+    "doi", "scholar", "thesis", "clinical trial",
+)
+_REFERENCE_MARKERS = (
+    "define", "definition", "what is", "what are", "overview", "summary",
+    "encyclopedia", "wikipedia", "background", "history of", "meaning",
+    "explain", "introduction", "guide",
+)
+
 
 class EngineState(StrEnum):
     """The three operational states required by W-11."""
@@ -340,6 +356,24 @@ class EngineHealthTracker:
 
 
 _tracker: EngineHealthTracker | None = None
+
+
+def query_target_class(query: str, default: str = "web") -> str:
+    """Best-effort: which source class a research query targets.
+
+    The reframer (orchestrator._task_needs_reframe) uses this to refuse
+    rewordings whose target class has no living engine (D-E). The Aug-11
+    run kept reframing web-targeted COMPETE tasks while brave was
+    429-suspended and wikipedia was 400ing — the old gate only asked
+    whether ANY class was alive. This is a heuristic; the default is
+    ``web`` because specialist queries are broad natural language.
+    """
+    q = (query or "").lower()
+    if any(marker in q for marker in _SCHOLAR_MARKERS):
+        return "scholar"
+    if any(marker in q for marker in _REFERENCE_MARKERS):
+        return "reference"
+    return default
 
 
 def get_engine_health() -> EngineHealthTracker:

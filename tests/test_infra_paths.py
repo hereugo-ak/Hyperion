@@ -542,6 +542,103 @@ class TestDockerAutostart:
         assert ["sudo", "-n", "true"] in commands
         assert all(cmd[:1] != ["sudo"] or "-n" in cmd for cmd in commands)
 
+    async def test_linux_tries_docker_desktop_unit_before_rootless(self, monkeypatch):
+        """Docker Desktop on Ubuntu is a user service; it must be attempted."""
+        from hyperion.infra import services
+
+        commands: list[list[str]] = []
+
+        async def _run(cmd, timeout=30.0):
+            commands.append(cmd)
+            return (1, "", "failed")
+
+        monkeypatch.setattr(services, "detect_platform", lambda: services.Platform.LINUX_SYSTEMD)
+        monkeypatch.setattr(services, "run_command", _run)
+        monkeypatch.setattr(services.shutil, "which", lambda _name: None)
+
+        assert await services._launch_docker_desktop() == ""
+        docker_desktop_units = [
+            cmd for cmd in commands if cmd[:2] == ["systemctl", "--user"]
+            and "docker-desktop" in cmd
+        ]
+        rootless = ["systemctl", "--user", "start", "docker"]
+        assert docker_desktop_units, "no docker-desktop user unit was attempted"
+        assert commands.index(docker_desktop_units[0]) < commands.index(rootless), (
+            "rootless docker was tried before the Docker Desktop user service"
+        )
+
+    async def test_linux_launches_docker_desktop_binary_when_installed(self, monkeypatch):
+        """A docker-desktop binary on PATH is launched detached, never sudo."""
+        from hyperion.infra import services
+
+        started: list[tuple[list[str], dict[str, object]]] = []
+        commands: list[list[str]] = []
+
+        async def _run(cmd, timeout=30.0):
+            commands.append(cmd)
+            return (1, "", "failed")
+
+        def _fake_popen(argv, **kwargs):
+            started.append((argv, kwargs))
+            return object()
+
+        monkeypatch.setattr(services, "detect_platform", lambda: services.Platform.LINUX_SYSTEMD)
+        monkeypatch.setattr(services, "run_command", _run)
+        monkeypatch.setattr(
+            services.shutil,
+            "which",
+            lambda name: "/usr/bin/docker-desktop" if name == "docker-desktop" else None,
+        )
+        monkeypatch.setattr(services.subprocess, "Popen", _fake_popen)
+
+        note = await services._launch_docker_desktop()
+        assert note == "launching docker-desktop"
+        assert started and started[0][0] == ["/usr/bin/docker-desktop"]
+        assert started[0][1]["start_new_session"] is True
+        assert all("sudo" not in cmd for cmd in commands), (
+            "docker-desktop binary path reached sudo probes unnecessarily"
+        )
+
+    async def test_linux_failure_detail_offers_autostart_setup(self, monkeypatch):
+        """When auto-start is impossible, tell the user the one-time fix."""
+        from hyperion.infra import services
+
+        async def _no_version():
+            return ""
+
+        async def _cannot_launch():
+            return ""
+
+        monkeypatch.setattr(services, "detect_platform", lambda: services.Platform.LINUX_SYSTEMD)
+        monkeypatch.setattr(services, "docker_available", lambda: True)
+        monkeypatch.setattr(services, "docker_engine_version", _no_version)
+        monkeypatch.setattr(services, "_launch_docker_desktop", _cannot_launch)
+        monkeypatch.setattr(services.asyncio, "sleep", lambda *_a, **_k: _noop())
+        status = await services.ensure_docker_engine(wait_seconds=0.05)
+        assert status.state == services.WARN
+        assert "enable --now docker" in status.detail, (
+            "the failure detail must name the one-time auto-start command, or "
+            "the user keeps starting Docker by hand forever"
+        )
+
+    def test_cli_registers_sighup_for_teardown(self, monkeypatch):
+        """Closing the terminal window must tear down, not silently die."""
+        from hyperion import cli
+
+        if not hasattr(cli.signal, "SIGHUP"):
+            pytest.skip("SIGHUP is not defined on this platform")
+
+        registered: dict[int, object] = {}
+
+        def _fake_signal(signum, handler):
+            registered[signum] = handler
+
+        monkeypatch.setattr(cli.signal, "signal", _fake_signal)
+        cli._install_interrupt_handlers()
+        assert cli.signal.SIGHUP in registered, (
+            "SIGHUP is not handled — closing the terminal leaves containers running"
+        )
+
     def test_timestamp_cache_older_than_source_does_not_refuse_boot(self, tmp_path):
         """A post-pull timestamp cache is rejected by CPython, not executed."""
         from hyperion.infra import provenance

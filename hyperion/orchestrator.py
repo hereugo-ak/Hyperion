@@ -382,6 +382,17 @@ class WorkflowEngine:
         self._first_evidence_seconds: float = -1.0
         self._domains_before_synthesis: int = -1
         self._provenance_binding_pct: float = -1.0
+        # OVERHAUL3 D-F (overhaul3_audit.md §5.5): Recovery Supervisor
+        # telemetry. A BLOCKED run enters the supervisor at most
+        # ``quality_recovery_max_passes`` times; every pass is recorded so the
+        # final give-up (or ship) is replayable, never a discarded diagnosis.
+        self._recovery_telemetry: dict[str, Any] = {
+            "attempted": False,
+            "passes": 0,
+            "recovered": False,
+            "outcomes_by_class": {},
+            "passes_detail": [],
+        }
         # W-20: guard every mutation of ``_all_findings`` from gathered tasks.
         # ``_execute_wave`` runs tasks via ``asyncio.gather`` and two sites
         # (the cache-hit replay and the live-run collector) extend this list
@@ -724,7 +735,28 @@ class WorkflowEngine:
             # Crashing them on a missing dep converts one specialist failure
             # into a zero-report run (the 17:51:21 incident). Specialists
             # keep the strict contract (they need real inputs).
-            if task.agent not in (AgentName.SYNTHESIS_LEAD, AgentName.FACT_CHECKER):
+            #
+            # OVERHAUL3 D-B (overhaul3_audit.md W1/S2): the strict raise was
+            # too blunt — it also fired when the missing dep is a FAILED
+            # *specialist* (upstream crash, e.g. COMPETE at 06:31:36), which
+            # cascaded into MissingDependencyOutput on STRATEGY at 06:57:51.
+            # The scheduler licenses FAILED deps as a ready condition
+            # (workflow.get_ready_tasks), so a crashed upstream is exactly
+            # the partial-context case, not a scheduling anomaly. Distinguish:
+            #   - dep task exists and status == FAILED (specialist crash) →
+            #     run on reduced context carrying missing_dependencies, like
+            #     synthesis — for ALL agents that consume specialist output.
+            #   - dep task absent / not FAILED (PENDING, scheduling anomaly,
+            #     a genuinely missing retrieval artifact) → strict raise.
+            is_agg_stage = task.agent in (
+                AgentName.SYNTHESIS_LEAD, AgentName.FACT_CHECKER,
+            )
+            missing_are_crashed = all(
+                (dep_task := dag.get_task(dep_id)) is not None
+                and dep_task.status == TaskStatus.FAILED
+                for dep_id in missing_deps
+            )
+            if not (is_agg_stage or missing_are_crashed):
                 dep_status = "unknown"
                 dep_task = dag.get_task(missing_deps[0])
                 if dep_task is not None:
@@ -1052,6 +1084,40 @@ class WorkflowEngine:
                 # W-20: gathered-wave mutation — under the lock.
                 async with self._findings_lock:
                     self._all_findings.extend(agent._findings)
+                    # OVERHAUL3 D-D (overhaul3_audit.md W1/S4): count and
+                    # collection must read the SAME store. Specialists publish
+                    # two ways — _publish_finding (agent._findings + bus) and
+                    # the aggregate model publish (bus.publish Channel.FINDINGS
+                    # with a model_dump, bus ONLY). The count used the bus; the
+                    # collection used only agent._findings — so the aggregate
+                    # was counted but never collected (06:40:41 "1 (0)",
+                    # 06:41:27 "8 (7)"). Drain this agent's retained bus
+                    # findings, convert aggregate payloads with the same
+                    # synthetic-finding path the Synthesis Lead uses, and dedup
+                    # by finding id (individual findings already collected from
+                    # agent._findings are also on the bus).
+                    seen_ids = {
+                        getattr(f, "id", None) for f in self._all_findings
+                    }
+                    for retained in self.bus.get_retained_findings():
+                        if retained.sender != task.agent:
+                            continue
+                        finding = retained.finding
+                        if finding is None:
+                            from hyperion.agents.synthesis_lead import (
+                                synthetic_finding_from_payload,
+                            )
+
+                            finding = synthetic_finding_from_payload(
+                                retained.payload, task.agent.value,
+                            )
+                        if finding is None:
+                            continue
+                        finding_id = getattr(finding, "id", None)
+                        if finding_id in seen_ids:
+                            continue
+                        seen_ids.add(finding_id)
+                        self._all_findings.append(finding)
                 self._log(
                     f"{task.agent.value}: completed with {findings_count} findings "
                     f"(total collected: {len(self._all_findings)})"
@@ -1237,6 +1303,34 @@ class WorkflowEngine:
         """
         if task.reframe_attempts >= self.MAX_REFRAMER_RETRIES:
             return False
+        # OVERHAUL3 D-E (overhaul3_audit.md W2/S5) (a): an already-reframed
+        # variant is NEVER reframed again. The 06:58:03 chain reframed
+        # ``task_reframed_1_1_task_competitive_intel`` into 3 more variants
+        # because the per-task attempt cap counted the VARIANT's fresh chain
+        # instead of the original's. Refusing any ``reframed_from`` node caps
+        # the variant TREE, not just the branch — a variant fails once and
+        # the chain dies.
+        if task.reframed_from:
+            return False
+        # OVERHAUL3 D-E (b): the health-gate must be per-class, not "any
+        # class alive". The Aug-11 run had brave 429-suspended (and wikipedia
+        # 400ing) while scholar/reference stayed up — the old gate still
+        # reframed web-targeted COMPETE into a dead path. A query whose
+        # target source class has no living engine is rewording a dead pool.
+        try:
+            from hyperion.tools.engine_health import get_engine_health, query_target_class
+
+            target_class = query_target_class(task.description or "")
+            if not get_engine_health().class_healthy(target_class):
+                logger.warning(
+                    "REFRAMER TARGET-CLASS GATE: source class %r is dead for "
+                    "'%s' — reframing refused (per-class health-gate)",
+                    target_class,
+                    (task.description or "")[:80],
+                )
+                return False
+        except Exception as exc:  # noqa: BLE001 - a health read must not change policy
+            logger.debug("reframer per-class gate read failed (reframe allowed): %s", exc)
         if task.agent not in self._SPECIALIST_AGENTS:
             return False
         # S5c: the bus is the single ledger of record for findings — if this
@@ -1278,6 +1372,23 @@ class WorkflowEngine:
             return "failed"
         return "zero_findings"
 
+    def _dependency_failed(self, task: TaskNode, dag: WorkflowDAG) -> bool:
+        """OVERHAUL3 D-E (c): True when any of this task's own dependencies
+        FAILED.
+
+        Reframing cannot repair an upstream crash — every variant re-runs the
+        same dead dependency path. The Aug-11 STRATEGY chain is the proof:
+        COMPETE failed at 06:47:43, STRATEGY was reframed at 06:57:55, and
+        each variant re-failed against the same missing output. When the
+        upstream crash is recovered (the dep is later COMPLETED), the task
+        becomes eligible again.
+        """
+        for dep_id in task.dependencies or []:
+            dep = dag.get_task(dep_id)
+            if dep is not None and dep.status == TaskStatus.FAILED:
+                return True
+        return False
+
     async def _maybe_reframe_failed_tasks(
         self, tasks: list[TaskNode], dag: WorkflowDAG,
     ) -> None:
@@ -1314,7 +1425,10 @@ class WorkflowEngine:
         except Exception as exc:  # noqa: BLE001 - health read must not block a wave
             logger.debug("reframer health-gate read failed (reframe allowed): %s", exc)
 
-        eligible = [t for t in tasks if self._task_needs_reframe(t)]
+        eligible = [
+            t for t in tasks
+            if self._task_needs_reframe(t) and not self._dependency_failed(t, dag)
+        ]
         if not eligible:
             return
 
@@ -2013,9 +2127,8 @@ class WorkflowEngine:
                 # Progress budget exhausted — stop the loop; downstream will
                 # handle the thin corpus (AMBER) or report the limitation.
                 self._log(
-                    "CORPUS PROGRESS SIGNAL: %d consecutive iteration(s) with "
-                    "zero new evidence domains — terminating the DAG wave loop",
-                    self._consecutive_zero_progress,
+                    f"CORPUS PROGRESS SIGNAL: {self._consecutive_zero_progress} consecutive iteration(s) with "
+                    f"zero new evidence domains — terminating the DAG wave loop",
                 )
                 break
 
@@ -2345,6 +2458,383 @@ class WorkflowEngine:
             f"{score.threshold:.2f} and allow_ship_with_caveat is disabled"
         )
 
+    # ─────────────────────────────────────────────────────────────────────
+    # OVERHAUL3 D-F — the Recovery Supervisor (overhaul3_audit.md §5.1)
+    # ─────────────────────────────────────────────────────────────────────
+    #
+    # BLOCKED is a diagnostic input, not an exit. When the Quality Gate
+    # blocks, classify each integrity blocker into a RecoveryClass, plan a
+    # remediation that can_make_progress (P3), re-dispatch ONLY the
+    # responsible agent(s) with blocker-specific directives (idempotent task
+    # ids), re-score via the EXISTING ``_quality_iteration_loop``, and commit
+    # only when the score strictly improves (monotonicity). Bounded by
+    # ``config.quality_recovery_max_passes`` and a wall-clock sub-budget. The
+    # supervisor never overrides the gate — it changes the INPUT, then asks
+    # the same gate again (§5.3 non-authoritative).
+
+    _RECOVERY_CLASS_PLACEHOLDER = "PLACEHOLDER_VALUE"
+    _RECOVERY_CLASS_VERDICT = "VERDICT_CONFLICT"
+    _RECOVERY_CLASS_SECTION = "MISSING_SECTION"
+    _RECOVERY_CLASS_THIN = "THIN_EVIDENCE"
+    _RECOVERY_CLASS_PRESENTATION = "PRESENTATION_DEFECT"
+
+    # dimension-name substring → specialist that owns it. Used to pick the
+    # responsible agent for a DATA VOID blocker, whose text names no agent;
+    # the report's critical dimensions / gaps usually do ("Risk Coverage").
+    _RECOVERY_DIMENSION_AGENTS = {
+        "risk": AgentName.RISK_ANALYST,
+        "market": AgentName.MARKET_ANALYST,
+        "financial": AgentName.FINANCIAL_ANALYST,
+        "compet": AgentName.COMPETITIVE_INTEL,
+        "technolog": AgentName.TECHNOLOGY_ANALYST,
+        "operation": AgentName.OPERATIONS_ANALYST,
+        "regulator": AgentName.REGULATORY_ANALYST,
+        "sustainab": AgentName.SUSTAINABILITY_ANALYST,
+        "consumer": AgentName.CONSUMER_INSIGHTS,
+        "m&a": AgentName.MA_ANALYST,
+        "innovat": AgentName.INNOVATION_ANALYST,
+        "strateg": AgentName.STRATEGY_ANALYST,
+    }
+
+    def _recovery_config(self) -> dict[str, Any]:
+        """OVERHAUL3 D-F: read the bounded recovery-loop knobs (§5.5)."""
+        try:
+            from hyperion.config import get_settings
+
+            _s = get_settings()
+            return {
+                "max_passes": int(getattr(_s, "quality_recovery_max_passes", 1)),
+                "min_gain": float(getattr(_s, "quality_recovery_min_score_gain", 0.05)),
+                "wall_clock": float(getattr(_s, "recovery_wall_clock_seconds", 300)),
+            }
+        except Exception:  # noqa: BLE001 - fall back to spec defaults
+            return {"max_passes": 1, "min_gain": 0.05, "wall_clock": 300.0}
+
+    def _recovery_agent_for_text(self, *texts: str) -> AgentName | None:
+        """Pick the specialist that owns a blocker from dimension names."""
+        blob = " ".join(t for t in texts if t).lower()
+        for key, agent in self._RECOVERY_DIMENSION_AGENTS.items():
+            if key in blob:
+                return agent
+        return None
+
+    def _remediation_for(
+        self, blocker: str, score: QualityScore,
+    ) -> dict[str, Any] | None:
+        """DIAGNOSE + PLAN (§5.2): classify one blocker into a remediation.
+
+        Returns an action dict ``{recovery_class, agent, directive, description}``
+        or None when nothing is capable of helping (P3 → dropped).
+        """
+        text = blocker or ""
+        low = text.lower()
+
+        if "corpus floor" in low:
+            return {
+                "recovery_class": self._RECOVERY_CLASS_THIN,
+                "agent": None,
+                "directive": (
+                    "escalate retrieval on living source classes only; if the "
+                    "fleet is dead, degrade to a floor report with the evidence "
+                    "limitation stated"
+                ),
+                "description": "Recovery: retrieval escalation for corpus floor",
+            }
+
+        if "verdict contradiction" in low:
+            return {
+                "recovery_class": self._RECOVERY_CLASS_VERDICT,
+                "agent": AgentName.SYNTHESIS_LEAD,
+                "directive": (
+                    "single-verdict reconciliation: pick ONE recommendation and "
+                    "purge every conflicting phrase from cover, summary and "
+                    "body — never leave two verdicts in one report"
+                ),
+                "description": (
+                    f"RECOVERY: reconcile to a single verdict — {text[:160]}"
+                ),
+            }
+
+        if "risk" in low and (
+            "no risk analysis" in low or "risk_coverage" in low
+            or "missing risk section" in low
+        ):
+            # D-K (overhaul3_audit.md): the RISK findings already exist on the
+            # bus — this is a body-assembly wiring gap, not a research gap, so
+            # no re-research. Re-synthesis maps the aggregate → report.
+            return {
+                "recovery_class": self._RECOVERY_CLASS_SECTION,
+                "agent": AgentName.SYNTHESIS_LEAD,
+                "directive": (
+                    "rebuild the report body from the bus's RISK aggregate "
+                    "payload (the findings already exist — no re-research); "
+                    "assign FinalReport.risk_analysis from them"
+                ),
+                "description": "RECOVERY: populate risk_analysis from RISK findings",
+            }
+
+        if "data void" in low or "'unknown'" in low or "out of scope" in low:
+            # PLACEHOLDER_VALUE (§5.2): re-dispatch the finding-bearing
+            # specialist that emitted the placeholder with the hard directive
+            # "no data is a typed gap; never emit 'Unknown' as a value".
+            agent = self._recovery_agent_for_text(
+                text,
+                " ".join(d.value if hasattr(d, "value") else str(d)
+                          for d in (score.critical_dimensions or [])),
+                " ".join(score.gaps or []),
+            ) or AgentName.FINANCIAL_ANALYST
+            return {
+                "recovery_class": self._RECOVERY_CLASS_PLACEHOLDER,
+                "agent": agent,
+                "directive": (
+                    "no data is a typed research_gap; NEVER emit 'Unknown' or "
+                    "'OUT OF SCOPE' as a data value — emit a typed gap finding "
+                    "instead and state the limitation in prose"
+                ),
+                "description": (
+                    f"RECOVERY: re-run with the no-placeholder directive — "
+                    f"{text[:120]}"
+                ),
+            }
+
+        # Leaked object / banned filler / broken URL / meta-text — a targeted
+        # synthesis polish of the offending field.
+        return {
+            "recovery_class": self._RECOVERY_CLASS_PRESENTATION,
+            "agent": AgentName.SYNTHESIS_LEAD,
+            "directive": (
+                "repair the presentation defect flagged by the Quality Gate: "
+                "remove the offending value or string and never re-introduce it"
+            ),
+            "description": f"RECOVERY: presentation polish — {text[:160]}",
+        }
+
+    async def _dispatch_recovery(
+        self, action: dict[str, Any], dag: WorkflowDAG, pass_no: int,
+    ) -> Any:
+        """RECOVER (§5.1 step 4): re-dispatch ONE responsible agent.
+
+        Deterministic ``task_recover_<pass>_<agent>`` ids make re-entry a
+        no-op (the reframer's ``dag.get_task`` guard) — no variant-tree
+        explosion (§5.3 idempotent). Returns the produced output when the
+        agent ran, else None. Best-effort: a recovery dispatch failure is
+        logged, never fatal.
+        """
+        agent = action["agent"]
+        if agent is None:
+            return None  # THIN_EVIDENCE is handled by the caller
+        task_id = f"task_recover_{pass_no}_{agent.value}"
+        if dag.get_task(task_id) is not None:
+            return self._task_outputs.get(task_id)
+
+        task = TaskNode(
+            id=task_id,
+            agent=agent,
+            model_tier="standard",
+            description=action["description"],
+            dependencies=[],
+            status=TaskStatus.PENDING,
+        )
+        try:
+            dag.add_task(task)
+            self._publish_task_update(task)
+        except Exception as exc:  # noqa: BLE001 - recovery is best-effort
+            logger.warning("recovery task %s could not be added: %s", task_id, exc)
+            return None
+
+        if agent == AgentName.SYNTHESIS_LEAD:
+            # The directive must reach the agent as fix_instructions — the
+            # quality loop uses the same argument for its fix-instruction pass.
+            # Mirror _execute_task's findings injection so the re-synthesis
+            # reads the bus-fed corpus (P1).
+            synth = self._get_agent(agent)
+            try:
+                if hasattr(synth, "_collected_findings"):
+                    existing_ids = {id(f) for f in synth._collected_findings}
+                    for finding in self._all_findings:
+                        if id(finding) not in existing_ids:
+                            synth._collected_findings.append(finding)
+                            if finding.agent not in synth._findings_by_agent:
+                                synth._findings_by_agent[finding.agent] = []
+                            synth._findings_by_agent[finding.agent].append(finding)
+                else:
+                    synth._collected_findings = list(self._all_findings)
+                    synth._findings_by_agent = {}
+                    for finding in self._all_findings:
+                        synth._findings_by_agent.setdefault(finding.agent, []).append(finding)
+            except Exception as exc:  # noqa: BLE001 - injection is best-effort
+                logger.warning("recovery synthesis injection failed: %s", exc)
+            try:
+                result = await asyncio.wait_for(
+                    synth.run(
+                        engagement_id=self._engagement_id,
+                        question=dag.question,
+                        dag=dag,
+                        fix_instructions=action["directive"],
+                    ),
+                    timeout=self.SPECIALIST_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:  # noqa: BLE001 - recovery must not crash the run
+                logger.warning("recovery synthesis re-run failed: %s", exc)
+                task.status = TaskStatus.FAILED
+                task.error = str(exc)[:300]
+                self._publish_task_update(task)
+                return None
+        else:
+            try:
+                result = await self._execute_task(task, dag)
+            except Exception as exc:  # noqa: BLE001 - recovery must not crash the run
+                logger.warning("recovery dispatch for %s failed: %s", agent.value, exc)
+                return None
+        if result is None:
+            return None
+        if isinstance(result, BaseModel):
+            task.output = result.model_dump()
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = time.time()
+        self._task_outputs[task_id] = result
+        self._publish_task_update(task)
+        return result
+
+    def _record_recovery_pass(
+        self,
+        pass_no: int,
+        plan: list[dict[str, Any]],
+        score_before: QualityScore,
+        score_after: QualityScore,
+        committed: bool,
+    ) -> None:
+        """OVERHAUL3 D-F (§5.5): append one pass to the telemetry + manifest."""
+        classes = [a["recovery_class"] for a in plan]
+        entry = {
+            "pass": pass_no,
+            "blocker_classes": classes,
+            "agents": [
+                a["agent"].value if a["agent"] is not None else None
+                for a in plan
+            ],
+            "score_before": round(score_before.total_score, 3),
+            "score_after": round(score_after.total_score, 3) if score_after else None,
+            "committed": committed,
+        }
+        self._recovery_telemetry["passes_detail"].append(entry)
+        for cls in classes:
+            bucket = self._recovery_telemetry["outcomes_by_class"].setdefault(
+                cls, {"committed": 0, "discarded": 0, "skipped": 0}
+            )
+            bucket["committed" if committed else "discarded"] += 1
+        if self._manifest is not None:
+            try:
+                self._manifest.ledger.setdefault("recovery_passes", []).append(entry)
+            except Exception as exc:  # noqa: BLE001 - telemetry must not break recovery
+                logger.debug("recovery manifest record failed: %s", exc)
+
+    async def _recover_from_blocked(
+        self,
+        dag: WorkflowDAG,
+        report: FinalReport,
+        score: QualityScore,
+        fact_check_report: FactCheckReport | None,
+    ) -> tuple[FinalReport, QualityScore]:
+        """OVERHAUL3 D-F (§5.1): the bounded BLOCKED → diagnose → plan →
+        recover → re-score → decide state machine.
+
+        Invoked from the BLOCKED branch of ``run_engagement`` BEFORE the
+        ``return result``. Re-uses the existing ``_quality_iteration_loop`` as
+        the scorer (no second ship/no-ship authority) and ``_write_blocked_diagnostic``
+        for the honest give-up. Returns ``(best_report, best_score)`` — the
+        caller re-reads ``terminal_state``; when still BLOCKED the run ends
+        with the recovery attempt RECORDED, never a discarded diagnosis.
+        """
+        cfg = self._recovery_config()
+        max_passes = cfg["max_passes"]
+        if max_passes <= 0:
+            return report, score  # feature-flagged off → old behaviour
+        self._recovery_telemetry["attempted"] = True
+        self._log(
+            "RECOVERY: BLOCKED verdict entered the supervisor — "
+            f"classifying {len(score.integrity_blockers or [])} blocker(s)"
+        )
+        deadline = time.time() + cfg["wall_clock"]
+        best_report, best_score = report, score  # monotonicity snapshot
+
+        for pass_no in range(1, max_passes + 1):
+            if time.time() > deadline:
+                self._log("RECOVERY: wall-clock budget exhausted — degrading")
+                break
+
+            # DIAGNOSE: integrity blockers plus the risk-coverage dimension
+            # (D-K: risk_coverage=1 with risk_analysis None is not a hard
+            # blocker string, but it IS a MISSING_SECTION recovery signal).
+            signals = list(best_score.integrity_blockers or [])
+            for dim in (best_score.critical_dimensions or []):
+                dname = dim.value if hasattr(dim, "value") else str(dim)
+                if str(dname).lower() == "risk_coverage":
+                    signals.append(
+                        "MISSING RISK SECTION: risk_coverage failing with "
+                        "risk_analysis absent"
+                    )
+            # PLAN + P3: drop signals nothing is capable of helping.
+            plan = [
+                action
+                for signal in signals
+                for action in [self._remediation_for(signal, best_score)]
+                if action is not None
+            ]
+            if not plan:
+                self._log(
+                    "RECOVERY: no remediation capable of changing this block — "
+                    "degrading honestly"
+                )
+                break
+
+            # RECOVER: re-dispatch only the responsible agents.
+            recovered_report = best_report
+            for action in plan:
+                self._log(
+                    f"RECOVERY pass {pass_no}: {action['recovery_class']} → "
+                    f"{action['agent'].value if action['agent'] is not None else 'retrieval'}"
+                )
+                outcome = await self._dispatch_recovery(action, dag, pass_no)
+                if (
+                    outcome is not None
+                    and action["agent"] == AgentName.SYNTHESIS_LEAD
+                    and isinstance(outcome, FinalReport)
+                ):
+                    recovered_report = outcome
+
+            # RE-SCORE via the existing authority.
+            cand_report, cand_score, _ = await self._quality_iteration_loop(
+                dag, recovered_report, fact_check_report,
+            )
+            if cand_score is None:
+                break
+            approved = (
+                cand_score.approved
+                or cand_score.terminal_state == QualityTerminalState.APPROVED
+            )
+            gain = cand_score.total_score - best_score.total_score
+            committed = approved or gain >= cfg["min_gain"]
+            self._record_recovery_pass(pass_no, plan, best_score, cand_score, committed)
+            self._recovery_telemetry["passes"] = pass_no
+            if approved:
+                self._recovery_telemetry["recovered"] = True
+                return cand_report, cand_score  # SHIP — Stage 5 runs
+            if gain >= cfg["min_gain"]:
+                self._log(
+                    f"RECOVERY pass {pass_no} committed: {best_score.total_score:.2f} "
+                    f"→ {cand_score.total_score:.2f}"
+                )
+                best_report, best_score = cand_report, cand_score
+                continue
+            self._log(
+                f"RECOVERY pass {pass_no} discarded (score {cand_score.total_score:.2f} "
+                f"not ≥ best+{cfg['min_gain']:.2f}) — keeping best, degrading"
+            )
+            break
+
+        return best_report, best_score
+
     def _attach_methodology(self, report: Any, dag: Any) -> None:
         """W-10: attach the six-subsection methodology record to the report.
 
@@ -2439,6 +2929,9 @@ class WorkflowEngine:
                     "findings_collected": len(self._all_findings),
                     "task_outputs": len(self._task_outputs),
                 },
+                # OVERHAUL3 D-F (§5.5): a blocked run is now replayable — the
+                # recovery attempt (or its absence) is recorded, never hidden.
+                "recovery": dict(self._recovery_telemetry),
                 "roster_decisions": [
                     str(r) for r in roster_decisions
                 ],
@@ -2976,39 +3469,77 @@ class WorkflowEngine:
                 self._log(
                     f"QUALITY: BLOCKED — refusing to ship. {blocked_reason}"
                 )
-                diagnostic_path = self._write_blocked_diagnostic(quality_score) if quality_score else ""
-                await self.bus.publish(
-                    channel=Channel.ESCALATION,
-                    msg_type=MessageType.ESCALATION,
-                    sender=AgentName.QUALITY_GATE,
-                    payload={
-                        "agent": AgentName.QUALITY_GATE.value,
-                        "issue": f"Quality Gate BLOCKED the run: {blocked_reason}",
-                        "suggested_action": (
-                            "Operator diagnostic written"
-                            f"{' to ' + diagnostic_path if diagnostic_path else ''}; "
-                            "engagement ends without a deliverable"
+
+                # ─────────────────────────────────────────────────────────
+                # OVERHAUL3 D-F (§5.1): BLOCKED is a diagnostic input, not
+                # an exit. Run the bounded Recovery Supervisor BEFORE
+                # terminating. It re-dispatches the responsible agent(s)
+                # with blocker-specific directives and re-scores via the
+                # SAME Quality Gate (never overriding it). If the re-score
+                # leaves BLOCKED, fall through to the honest give-up below —
+                # now with the recovery attempt recorded.
+                # ─────────────────────────────────────────────────────────
+                if quality_score is not None:
+                    recovered_report, recovered_score = await self._recover_from_blocked(
+                        dag, final_report, quality_score, fact_check_report,
+                    )
+                    if (
+                        recovered_score is not None
+                        and recovered_score.terminal_state != QualityTerminalState.BLOCKED
+                    ):
+                        final_report = recovered_report
+                        quality_score = recovered_score
+                        result.final_report = final_report
+                        result.quality_score = quality_score
+                        result.quality_iterations += self._recovery_telemetry["passes"]
+                        terminal_state = recovered_score.terminal_state
+                        self._log(
+                            f"QUALITY: RECOVERED after "
+                            f"{self._recovery_telemetry['passes']} recovery pass(es) — "
+                            f"terminal state {terminal_state.value} "
+                            f"(score {quality_score.total_score:.2f}); proceeding"
+                        )
+                    else:
+                        self._log(
+                            "QUALITY: still BLOCKED after "
+                            f"{self._recovery_telemetry['passes']} recovery pass(es) — "
+                            "giving up with the recovery attempt recorded"
+                        )
+
+                if terminal_state == QualityTerminalState.BLOCKED:
+                    diagnostic_path = self._write_blocked_diagnostic(quality_score) if quality_score else ""
+                    await self.bus.publish(
+                        channel=Channel.ESCALATION,
+                        msg_type=MessageType.ESCALATION,
+                        sender=AgentName.QUALITY_GATE,
+                        payload={
+                            "agent": AgentName.QUALITY_GATE.value,
+                            "issue": f"Quality Gate BLOCKED the run: {blocked_reason}",
+                            "suggested_action": (
+                                "Operator diagnostic written"
+                                f"{' to ' + diagnostic_path if diagnostic_path else ''}; "
+                                "engagement ends without a deliverable"
+                            ),
+                        },
+                    )
+                    result.success = False
+                    result.failure_reason = "quality_gate"
+                    result.error = f"Quality Gate BLOCKED: {blocked_reason}"
+                    result.duration_seconds = time.time() - self._start_time
+                    result.metadata = EngagementMetadata(
+                        engagement_id=self._engagement_id,
+                        question=question,
+                        question_type=dag.question_type,
+                        agents_used=dag.agents_selected,
+                        sources_accessed=sum(
+                            1 for f in self._all_findings if hasattr(f, "sources") and f.sources
                         ),
-                    },
-                )
-                result.success = False
-                result.failure_reason = "quality_gate"
-                result.error = f"Quality Gate BLOCKED: {blocked_reason}"
-                result.duration_seconds = time.time() - self._start_time
-                result.metadata = EngagementMetadata(
-                    engagement_id=self._engagement_id,
-                    question=question,
-                    question_type=dag.question_type,
-                    agents_used=dag.agents_selected,
-                    sources_accessed=sum(
-                        1 for f in self._all_findings if hasattr(f, "sources") and f.sources
-                    ),
-                    data_points_collected=len(self._all_findings),
-                    duration_seconds=result.duration_seconds,
-                )
-                if diagnostic_path:
-                    result.metadata.blocked_diagnostic_path = diagnostic_path
-                return result
+                        data_points_collected=len(self._all_findings),
+                        duration_seconds=result.duration_seconds,
+                    )
+                    if diagnostic_path:
+                        result.metadata.blocked_diagnostic_path = diagnostic_path
+                    return result
 
             if terminal_state == QualityTerminalState.SHIP_WITH_CAVEAT:
                 caveat_notice = (
@@ -3334,15 +3865,18 @@ class WorkflowEngine:
                     ),
                     # OVERHAUL2 S15 (S11): off-topic funnel drops, visible in telemetry.
                     kpi_8_off_topic_dropped=self._off_topic_dropped_total,
+                    # OVERHAUL3 D-F (§5.5): Recovery Supervisor telemetry.
+                    kpi_9_recovery_attempted=self._recovery_telemetry["attempted"],
+                    kpi_9_recovery_passes=self._recovery_telemetry["passes"],
+                    kpi_9_recovered=self._recovery_telemetry["recovered"],
                 )
                 record_run_kpis(kpis)
                 kdiff = diff_kpis(self._engagement_id)
                 if kdiff.get("regressions"):
                     self._log(
-                        "KPI REGRESSION: %s vs %s — owning phase node(s): %s",
-                        ", ".join(kdiff["regressions"]),
-                        kdiff.get("prev_id"),
-                        ", ".join(regressed_phase(kdiff)),
+                        f"KPI REGRESSION: {', '.join(kdiff['regressions'])} vs "
+                        f"{kdiff.get('prev_id')} — owning phase node(s): "
+                        f"{', '.join(regressed_phase(kdiff))}",
                     )
             except Exception as exc:  # noqa: BLE001 - KPI recording must never break the run
                 logger.warning("KPI recording failed (non-fatal): %s", exc)

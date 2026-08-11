@@ -61,3 +61,45 @@ def test_every_profile_accepts_the_categories_we_send() -> None:
 
 def test_canary_categories_match_profiles() -> None:
     assert set(_CANARY_CATEGORIES) == {"web", "scholar", "reference"}
+
+
+def test_reference_canary_query_is_title_shaped() -> None:
+    """OVERHAUL3 S12 (D-G contract at the preflight boundary): the query the
+    reference-class canary probe dispatches must be title-shaped.
+
+    ``corpus_preflight._fire_canaries`` condenses the question ONCE (via the
+    same ``SubAgentRunner._condense_query`` rule the sub-agents use) and sends
+    that single shaped query to every source class — including the reference
+    replica. A paragraph-length query 400s wikipedia ``/page/summary`` (the
+    audited 12:31:05 ``wikipedia 400 Bad Request`` on
+    ``competitor strategic moves space%2C recent announcements%2C...``), so
+    the reference probe's query must never be the raw sentence.
+
+    Regression lock: if the condensation were removed from the battery, the
+    reference probe would ship the raw paragraph and this contract fails.
+    """
+    from hyperion.agents.sub_agent import SubAgentRunner
+
+    # The audited wikipedia 400 — a >120-char instruction-prefixed sentence.
+    reference_probe_question = (
+        "Find competitor strategic moves in the Indian space sector, recent "
+        "announcements, funding rounds and market positioning of startups"
+    )
+
+    # Replay the battery's shaping seam verbatim: the single condensed query
+    # that routes to ``categories=reference``.
+    shaped = SubAgentRunner._condense_query(reference_probe_question)
+
+    assert len(shaped) <= 120, (
+        "the reference probe query must be ≤120 chars (wikipedia title-safe), "
+        f"got {len(shaped)}: {shaped!r}"
+    )
+    assert shaped != reference_probe_question, (
+        "the raw paragraph must never reach the reference replica — that is "
+        "the wikipedia /page/summary 400"
+    )
+    assert not shaped.startswith("Find "), (
+        "instruction prefixes are not title-shaped"
+    )
+    # The battery really does route this query to the reference category.
+    assert _CANARY_CATEGORIES["reference"] == "reference"

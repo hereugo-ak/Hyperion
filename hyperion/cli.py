@@ -236,7 +236,7 @@ def _quarantine_partial_outputs(extra_paths: list[str] | None = None) -> list[st
 
 
 def _install_interrupt_handlers(output_path: str = "") -> None:
-    """Install SIGINT/SIGTERM handlers for a CLI engagement run.
+    """Install SIGINT/SIGTERM/SIGHUP handlers for a CLI engagement run.
 
     On interrupt: (1) close the open RunJournal so its WAL is checkpointed
     and a subsequent ``hyperion resume`` sees every step that had actually
@@ -244,6 +244,10 @@ def _install_interrupt_handlers(output_path: str = "") -> None:
     deliverable path via the W-02 ``_rejected/`` path, so an interrupted run
     never leaves stale bytes at the deliverable name. Then re-raise as
     KeyboardInterrupt / default SIGTERM so the process still terminates.
+
+    SIGHUP (terminal window closed) is converted to KeyboardInterrupt so the
+    shell's ``finally`` teardown stops the containers instead of the process
+    dying with them still running.
     """
 
     def _handler(signum: int, _frame: Any) -> None:
@@ -263,6 +267,12 @@ def _install_interrupt_handlers(output_path: str = "") -> None:
             console.print(f"[{DIM}]partial output quarantined → {dest}[/{DIM}]")
         if signum == signal.SIGINT:
             raise KeyboardInterrupt
+        if signum == signal.SIGHUP:
+            # Terminal window closed / pty hung up. Raising interrupts the
+            # event loop so the shell's `finally` teardown runs — the default
+            # SIGHUP disposition would kill the process with no cleanup and
+            # leave the containers running.
+            raise KeyboardInterrupt
         # SIGTERM: restore the default disposition and re-raise so the exit
         # status reflects the signal rather than a clean 0.
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
@@ -270,6 +280,10 @@ def _install_interrupt_handlers(output_path: str = "") -> None:
 
     signal.signal(signal.SIGINT, _handler)
     signal.signal(signal.SIGTERM, _handler)
+    # Closing the terminal window sends SIGHUP; it must tear down too, not
+    # silently die and leave containers running. Absent on Windows.
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _handler)
 
 
 # ── consult ─────────────────────────────────────────────────────────────────────

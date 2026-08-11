@@ -173,6 +173,11 @@ class ResearchOutcome(str, Enum):
                              phase budget
     - RETRY_EXHAUSTED     -> every permitted retry/recovery path has been
                              tried and the run is terminal
+    - BUDGET_REFUSED      -> a self-heal (or respawn) was REFUSED at a
+                             budget gate — the recovery never ran. Never
+                             stamped ``ANALYSIS_FAILED``/``RETRY_EXHAUSTED``,
+                             which would assert an action the gate refused
+                             (OVERHAUL3 D-C / S10, overhaul3_audit.md §5.4 P2)
     """
 
     SUCCESS = "success"
@@ -181,6 +186,7 @@ class ResearchOutcome(str, Enum):
     ANALYSIS_FAILED = "analysis_failed"
     TIMEOUT = "timeout"
     RETRY_EXHAUSTED = "retry_exhausted"
+    BUDGET_REFUSED = "budget_refused"
 
 
 class ConfidenceLevel(str, Enum):
