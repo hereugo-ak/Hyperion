@@ -30,6 +30,7 @@ the next tier runs.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -42,6 +43,11 @@ logger = logging.getLogger(__name__)
 FIRECRAWL_DEFAULT_URL = "http://localhost:3002"
 FIRECRAWL_TIMEOUT = 30.0
 FIRECRAWL_BATCH_LIMIT = 100  # firecrawl's documented max URLs per batch
+# OVERHAUL4 P7 (probe 2026-08-11): this version's /v1/batch/scrape is ASYNC —
+# it returns a job id and you poll GET /v1/batch/scrape/{id} until
+# status=completed. Poll every 2s up to this deadline.
+FIRECRAWL_BATCH_POLL_SECONDS = 120.0
+FIRECRAWL_BATCH_POLL_INTERVAL = 2.0
 
 
 @dataclass
@@ -78,7 +84,11 @@ class FirecrawlClient:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            # OVERHAUL4 P7: base_url set so relative probe paths (/test, /)
+            # resolve — without it httpx raises UnsupportedProtocol and the
+            # availability probe always reported the tier down.
             self._client = httpx.AsyncClient(
+                base_url=self._base_url,
                 timeout=httpx.Timeout(FIRECRAWL_TIMEOUT),
                 headers={
                     "Accept": "application/json",
@@ -206,14 +216,43 @@ class FirecrawlClient:
                     )
                     continue
                 data = response.json()
+                # OVERHAUL4 P7: this version's batch is ASYNC — poll the job.
+                job_id = str(data.get("id") or "")
+                if job_id:
+                    deadline = time.monotonic() + FIRECRAWL_BATCH_POLL_SECONDS
+                    while time.monotonic() < deadline:
+                        await asyncio.sleep(FIRECRAWL_BATCH_POLL_INTERVAL)
+                        job = await client.get(
+                            f"{self._base_url}/v1/batch/scrape/{job_id}"
+                        )
+                        if job.status_code >= 400:
+                            break
+                        jd = job.json()
+                        status = str(jd.get("status") or "").lower()
+                        if status in ("completed", "finished"):
+                            data = jd
+                            break
+                        if status in ("failed", "cancelled", "error"):
+                            data = jd
+                            break
                 for item in (data.get("data") or []):
-                    item_url = str(item.get("metadata", {}).get("url", ""))
+                    meta = item.get("metadata") or {}
+                    item_url = str(meta.get("url", "") or item.get("url", ""))
                     content = item.get("data") or {}
-                    markdown = str(content.get("markdown", "") or "")
-                    html = str(content.get("html", "") or "")
+                    # OVERHAUL4 P7 (probe 2026-08-11): the batch item shape
+                    # differs from single /v1/scrape — markdown/html sit at the
+                    # TOP LEVEL of each item, not nested under "data". Handle
+                    # both shapes so a version bump cannot silently zero a
+                    # whole batch.
+                    markdown = str(
+                        content.get("markdown", "") or item.get("markdown", "") or ""
+                    )
+                    html = str(
+                        content.get("html", "") or item.get("html", "") or ""
+                    )
                     results.append(FirecrawlScrapeResult(
                         url=item_url,
-                        title=str(item.get("metadata", {}).get("title", "") or ""),
+                        title=str(meta.get("title", "") or item.get("title", "") or ""),
                         markdown=markdown,
                         html=html,
                         error="" if (markdown or html) else "no usable content",
