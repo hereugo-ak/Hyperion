@@ -125,6 +125,24 @@ def clear_fetch_cache() -> None:
     _FETCH_CACHE.clear()
 
 
+def _batch_result_ok(result: Any) -> bool:
+    """OVERHAUL4 P7: True when a batch-tier result is a successful extraction
+    (an exception is never OK)."""
+    return not isinstance(result, BaseException) and bool(
+        getattr(result, "success", False)
+    )
+
+
+def _batch_result_transient(result: Any) -> bool:
+    """OVERHAUL4 P7: True when a batch-tier failure looks transient
+    (timeout/connection/5xx/429) and is worth a same-tier retry."""
+    if isinstance(result, BaseException):
+        msg = f"{type(result).__name__}: {result}"
+    else:
+        msg = getattr(result, "error", "") or ""
+    return UnifiedExtract._is_transient_error(msg)
+
+
 @dataclass
 class UnifiedExtractResult:
     """A unified extraction result from the fallback chain."""
@@ -253,6 +271,27 @@ class UnifiedExtract:
     # page needs rendering (pricing calculators, interactive dashboards), since
     # attempting them can only return a shell of the document.
     NON_JS_TIERS: tuple[str, ...] = ("curl_cffi", "jina", "http")
+
+    # OVERHAUL4 P7 (URL-aware ladder): how many attempts each tier gets before
+    # the ladder moves on. Retries only fire on TRANSIENT failures (timeout /
+    # connection / 5xx / 429) — a deterministic "not installed" or
+    # "no usable content" is not retried.
+    TIER_MAX_ATTEMPTS = 3
+
+    # Known JS-rendered / anti-bot hostname fragments. Pages from these hosts
+    # skip the non-JS tiers entirely (their HTML is an empty shell).
+    JS_HEAVY_HOST_HINTS: frozenset[str] = frozenset({
+        "twitter.com", "x.com", "linkedin.com", "facebook.com",
+        "instagram.com", "tiktok.com", "glassdoor.com", "indeed.com",
+        "producthunt.com", "statista.com", "crunchbase.com",
+        "g2.com", "capterra.com", "trustpilot.com", "etmoney.com",
+        "investing.com", "tradingview.com", "app.", "dashboards.",
+    })
+    # URL path fragments that indicate a JS-heavy interactive page.
+    JS_HEAVY_PATH_HINTS: frozenset[str] = frozenset({
+        "/pricing", "/features", "/compare", "/dashboard", "/calculator",
+        "/explore", "/products", "/app", "/chart", "/interactive",
+    })
 
     def __init__(
         self,
@@ -876,6 +915,53 @@ class UnifiedExtract:
 
     # ── Driver 1: single URL ────────────────────────────────────────────────
 
+    def _classify_url(self, url: str) -> str:
+        """OVERHAUL4 P7: URL/page-type profile for tier selection.
+
+        Returns one of ``pdf`` / ``media`` / ``js_heavy`` / ``default``:
+
+        - ``pdf``      -> dedicated PDF text+table extraction first
+        - ``media``    -> an image/video file: nothing to extract, fail fast
+        - ``js_heavy`` -> known JS/anti-bot host or interactive path: skip the
+          non-JS tiers (their HTML is an empty shell) and start at the first
+          rendering tier (firecrawl/obscura)
+        - ``default``  -> cheap-first ladder as before
+        """
+        raw = (url or "").strip()
+        lowered = raw.lower()
+        path = lowered.split("?", 1)[0].split("#", 1)[0]
+        host = lowered.split("//")[-1].split("/")[0]
+        host = host[4:] if host.startswith("www.") else host
+
+        if path.endswith(".pdf") or ".pdf?" in lowered:
+            return "pdf"
+        if path.endswith((
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp",
+            ".mp4", ".mp3", ".avi", ".mov", ".webm", ".zip", ".gz",
+        )):
+            return "media"
+        if any(h in host for h in self.JS_HEAVY_HOST_HINTS) or any(
+            h in path for h in self.JS_HEAVY_PATH_HINTS
+        ):
+            return "js_heavy"
+        return "default"
+
+    @staticmethod
+    def _is_transient_error(error: str) -> bool:
+        """OVERHAUL4 P7: whether a tier failure is worth a same-tier retry.
+
+        Transient = timeout / connection / 5xx / 429 / rate limit. A
+        deterministic failure ("not installed", "no usable content",
+        "HTTP 404") is not retried — it will fail identically.
+        """
+        msg = (error or "").lower()
+        return any(k in msg for k in (
+            "timeout", "timed out", "time out", "connection", "refused",
+            "reset", "temporarily", "too many requests", "rate limit",
+            "429", "500", "502", "503", "504", "5xx", "connect error",
+            "unreachable", "unavailable", "read error", "broken pipe",
+        ))
+
     def _eligible_tiers(self, force_js_render: bool) -> list[str]:
         tiers = list(self.tier_order)
         if force_js_render:
@@ -932,7 +1018,26 @@ class UnifiedExtract:
         errors: list[str] = []
         self._active_query = query or ""
 
-        for tier in self._eligible_tiers(force_js_render):
+        # OVERHAUL4 P7: URL/page-type aware entry. Media files fail fast;
+        # PDFs get the dedicated PDF path first (text + tables), then fall
+        # through to the general ladder if it fails; known JS-heavy hosts skip
+        # the non-JS tiers so the first rendering tier carries them.
+        profile = self._classify_url(url)
+        if profile == "media":
+            return self._failure(url, [], ["media file — no text to extract"])
+        if profile == "pdf":
+            try:
+                pdf_result = await self.extract_pdf(url)
+                if pdf_result.success:
+                    pdf_result.tool_used = pdf_result.tool_used or "pdf"
+                    pdf_result.tools_tried = ["pdf"]
+                    return pdf_result
+                errors.append(f"pdf: {pdf_result.error or 'no content'}")
+            except Exception as exc:  # noqa: BLE001 - PDF path must not kill the ladder
+                logger.debug("pdf extraction failed for %s: %s", url, exc)
+                errors.append(f"pdf: {type(exc).__name__}: {exc}")
+
+        for tier in self._eligible_tiers(force_js_render or profile == "js_heavy"):
             if not self._tier_available(tier):
                 continue
             extractor = getattr(self, f"_extract_{tier}", None)
@@ -947,26 +1052,53 @@ class UnifiedExtract:
                 continue
 
             tools_tried.append(tier)
-            try:
-                result = cast(
-                    "UnifiedExtractResult",
-                    await extractor(
-                        url,
-                        extract_tables=extract_tables,
-                        extract_links=extract_links,
-                    ),
-                )
-            except Exception as e:  # noqa: BLE001 - failure is logged, not swallowed
-                # Fail loud (fix 0.3 discipline): never a bare `except: pass`.
-                logger.debug("extraction tier %s failed for %s: %s", tier, url, e)
-                errors.append(f"{tier}: {e}")
-                continue
+            result: UnifiedExtractResult | None = None
+            # OVERHAUL4 P7: per-tier retries (TIER_MAX_ATTEMPTS). Only
+            # transient failures (timeout/connection/5xx/429) are retried
+            # with a short backoff; deterministic failures move on at once.
+            for attempt in range(1, self.TIER_MAX_ATTEMPTS + 1):
+                try:
+                    result = cast(
+                        "UnifiedExtractResult",
+                        await extractor(
+                            url,
+                            extract_tables=extract_tables,
+                            extract_links=extract_links,
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 - failure is logged, not swallowed
+                    logger.debug(
+                        "extraction tier %s failed for %s (attempt %d/%d): %s",
+                        tier, url, attempt, self.TIER_MAX_ATTEMPTS, exc,
+                    )
+                    if attempt < self.TIER_MAX_ATTEMPTS and self._is_transient_error(
+                        f"{type(exc).__name__}: {exc}"
+                    ):
+                        await asyncio.sleep(0.4 * attempt)
+                        continue
+                    result = None
+                    break
+                if result.success:
+                    break
+                if (
+                    attempt < self.TIER_MAX_ATTEMPTS
+                    and result.error
+                    and self._is_transient_error(result.error)
+                ):
+                    logger.debug(
+                        "extraction tier %s transient failure (%s) — retrying "
+                        "%d/%d", tier, result.error[:60], attempt + 1,
+                        self.TIER_MAX_ATTEMPTS,
+                    )
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+                break
 
-            if result.success:
+            if result is not None and result.success:
                 result.tools_tried = tools_tried
                 result.tool_used = tier
                 return result
-            if result.error:
+            if result is not None and result.error:
                 errors.append(f"{tier}: {result.error}")
 
         return self._failure(url, tools_tried, errors)
@@ -1103,12 +1235,44 @@ class UnifiedExtract:
             allowed = set(tiers)
             ladder = [t for t in ladder if t in allowed]
 
+        # OVERHAUL4 P7: URL-aware pre-pass — media files fail fast (no text
+        # to extract) and PDFs use the dedicated PDF path (text + tables);
+        # neither should waste a general tier on a binary blob. PDF failures
+        # stay in the ladder as a fallback.
+        for url in list(pending_order):
+            profile = self._classify_url(url)
+            if profile == "media":
+                outcome.results.append(UnifiedExtractResult(
+                    url=url, success=False, error="media file — no text to extract"
+                ))
+                extracted_urls.add(url)
+            elif profile == "pdf":
+                try:
+                    pdf_result = await self.extract_pdf(url)
+                    if pdf_result.success:
+                        pdf_result.tool_used = pdf_result.tool_used or "pdf"
+                        pdf_result.tools_tried = ["pdf"]
+                        outcome.results.append(pdf_result)
+                        extracted_urls.add(url)
+                        if url and (pdf_result.markdown or pdf_result.content):
+                            _FETCH_CACHE.setdefault(url, pdf_result)
+                except Exception as exc:  # noqa: BLE001 - PDF path must not kill the batch
+                    logger.debug("pdf extraction failed for %s: %s", url, exc)
+
         for tier in ladder:
             pending = [u for u in pending_order if u not in extracted_urls]
             if not pending:
                 break  # everything already extracted — stop climbing the ladder
             if not is_available(tier):
                 continue
+
+            # OVERHAUL4 P7: URL-aware tier filtering — non-JS tiers never
+            # waste a request on a known js_heavy URL (its HTML is an empty
+            # shell); the first rendering tier carries it instead.
+            if tier in self.NON_JS_TIERS:
+                pending = [u for u in pending if self._classify_url(u) != "js_heavy"]
+                if not pending:
+                    continue
 
             extractor = resolve(
                 tier,
@@ -1124,10 +1288,36 @@ class UnifiedExtract:
             results = await asyncio.gather(
                 *(extractor(u) for u in pending), return_exceptions=True
             )
+            by_url: dict[str, Any] = dict(zip(pending, results))
+
+            # OVERHAUL4 P7: per-tier transient retry rounds — timeout/
+            # connection/5xx/429 failures on the SAME tier are retried
+            # (TIER_MAX_ATTEMPTS total attempts) with a short backoff before
+            # the ladder moves on; deterministic failures do not retry.
+            for retry_round in range(1, self.TIER_MAX_ATTEMPTS):
+                retryable = [
+                    u for u in pending
+                    if not _batch_result_ok(by_url[u])
+                    and _batch_result_transient(by_url[u])
+                ]
+                if not retryable:
+                    break
+                logger.debug(
+                    "extraction tier %s retrying %d transient URL(s) "
+                    "(round %d/%d)", tier, len(retryable),
+                    retry_round + 1, self.TIER_MAX_ATTEMPTS,
+                )
+                await asyncio.sleep(0.5 * retry_round)
+                retried = await asyncio.gather(
+                    *(extractor(u) for u in retryable), return_exceptions=True
+                )
+                for u, res in zip(retryable, retried):
+                    if _batch_result_ok(res):
+                        by_url[u] = res
 
             produced = 0
             failures: list[str] = []
-            for result in results:
+            for url, result in by_url.items():
                 if isinstance(result, BaseException):
                     logger.debug("extraction tier %s raised: %s", tier, result)
                     failures.append(f"{type(result).__name__}: {result}")
