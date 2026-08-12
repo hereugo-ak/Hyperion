@@ -15,7 +15,11 @@ COOLDOWNS: dict[str, float | None] = {
     "429": 90.0,
     "5xx": 120.0,
     "timeout": 60.0,
-    "403": None,
+    # OVERHAUL5 W3 (D-05): paid-provider 403 is a COOLDOWN, not permanent —
+    # free tiers 403 transiently (stale endpoint, IP block, key hiccup) and
+    # the first 403 exiled the provider for the whole run invisibly. Permanent
+    # only after 3 consecutive 403s (see record_error).
+    "403": 120.0,
     "bucket_exhausted": None,   # resumes next run by construction
 }
 
@@ -45,9 +49,20 @@ class SuspensionRegistry:
         """Apply §10 signals. ``signal`` in {429, 403, 5xx, timeout}."""
         now = now or time.monotonic()
         st = self._state(name)
-        if signal in ("403", "bucket_exhausted"):
+        if signal == "bucket_exhausted":
             st.permanent = True
             st.suspended_until = now  # never retry within the run
+            return
+        if signal == "403":
+            # OVERHAUL5 W3 (D-05): cooldown + retry; permanent only after 3
+            # consecutive 403s. record_success clears the counter.
+            st.error_counts["403"] = st.error_counts.get("403", 0) + 1
+            st.suspended_until = max(
+                st.suspended_until or 0.0, now + (COOLDOWNS["403"] or 0.0)
+            )
+            if st.error_counts["403"] >= 3:
+                st.permanent = True
+                st.suspended_until = now
             return
         if signal == "429":
             st.suspended_until = max(st.suspended_until or 0.0, now + (COOLDOWNS["429"] or 0.0))

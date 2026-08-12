@@ -24,11 +24,11 @@ Master plan: `overhaul5.md` (defects D-01..D-14, W0..W8)
 - [x] ✅ W2.3 tests (fail-first, 3): exclude skips real SearxNG adapter (SearxNGClient.search 0 calls, paid tiers reached); guard returns empty w/o rotation; searxng.py passes exclude + clears guard
 - [ ] ⬜ W2.4 commit + push (next commit)
 
-## W3 · Paid suspension + visibility (D-05)
-- [ ] ⬜ W3.1 suspension.py: paid 403 → 120s cooldown, permanent only after 3×
-- [ ] ⬜ W3.2 orchestrator: TUI-visible system.log per paid attempt (provider, query, results, error, cooldown)
-- [ ] ⬜ W3.3 test (fail-first): 3× 403 → suspended on 3rd, retried before; TUI channel receives lines
-- [ ] ⬜ W3.4 canaries still green; commit + push
+## W3 · Paid suspension + visibility (D-05) — ✅ done
+- [x] ✅ W3.1 suspension.py: paid 403 → 120s cooldown + retry, permanent only after 3 consecutive; success resets counter (bucket_exhausted stays permanent)
+- [x] ✅ W3.2 orchestrator: TUI system.log per paid attempt — provider, query, results/error, cooldown state (search_layer sender)
+- [x] ✅ W3.3 tests (fail-first, 4): cooldown-then-retry-then-permanent; success resets; failure emits TUI line; success emits TUI line; search_layer 403 test updated to new contract
+- [x] ✅ W3.4 canaries green (16/16); commit + push (next commit)
 
 ## W4 · Paywall pre-classifier + firecrawl load guard (D-06)
 - [ ] ⬜ W4.1 unified_extract: URL classify step before tier climb; typed PAYWALL result

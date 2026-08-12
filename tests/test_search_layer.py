@@ -172,14 +172,22 @@ async def test_429_suspends_provider_for_run() -> None:
 
 
 @pytest.mark.asyncio
-async def test_403_is_permanent_for_run() -> None:
+async def test_403_is_cooldown_then_permanent_after_three() -> None:
+    """OVERHAUL5 W3 (D-05): a paid 403 is a 120s cooldown (free tiers 403
+    transiently), permanent only after 3 consecutive failures."""
     you = _fake(YouAdapter, _n("b", MIN_RESULTS), fail_signal="403")
     searxng = _fake(SearxNGAdapter, [])
     orch = _orchestrator(searxng=searxng, you=you)
     await orch.search("q")
     assert you.calls == 1
     await orch.search("q2")
-    assert you.calls == 1
+    assert you.calls == 1  # within the 120s cooldown — still not called
+    # After the cooldown lapses the provider is retried (not exiled for the run).
+    st = orch.suspension.states["You"]
+    assert not st.permanent
+    # Only ONE failure so far: the second search skipped You (still inside the
+    # 120s cooldown), it did NOT fail a second time.
+    assert st.error_counts.get("403", 0) == 1
 
 
 # ── dedupe / cap / url hygiene ──────────────────────────────────────────────

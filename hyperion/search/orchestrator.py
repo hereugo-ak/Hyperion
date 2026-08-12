@@ -17,8 +17,9 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
+from hyperion.schemas.agents import AgentName
 from hyperion.search.adapters.base import BaseAdapter, TransientProviderError
 from hyperion.search.adapters.exa import ExaAdapter
 from hyperion.search.adapters.searxng import SearxNGAdapter
@@ -169,6 +170,56 @@ class SearchOrchestrator:
         deduped = dedupe_results(pool)
         return deduped[: max(1, min(num_results, MAX_RESULTS))]
 
+    # ── OVERHAUL5 W3 (D-05): TUI-visible provider telemetry ─────────────
+
+    def _log_to_tui(self, message: str) -> None:
+        """Surface a provider line in the TUI system.log (mirrors BaseAgent._log).
+
+        The 08-12 run hid every paid-provider failure at logger.warning/debug;
+        operators could not see WHY the chain returned nothing. Every provider
+        attempt now emits a visible line. Synchronous, never raises.
+        """
+        try:
+            from hyperion.agents.bus import Channel, MessageType, get_bus
+
+            bus = get_bus()
+            coro = bus.publish(
+                channel=Channel.TUI,
+                msg_type=MessageType.STATUS,
+                # Runtime-safe: msg.agent is read from payload["agent"], so a
+                # plain-string sender is fine despite the AgentName annotation.
+                sender=cast("AgentName", "SEARCH"),
+                payload={
+                    "agent": "search_layer",
+                    "tool": "system.log",
+                    "action": message[:400],
+                    "detail": "",
+                    "success": None,
+                },
+            )
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                coro.close()
+                return
+            task = loop.create_task(coro)
+            task.add_done_callback(
+                lambda done: done.exception() if not done.cancelled() else None
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry must not break search
+            logger.debug("TUI log emit failed: %s", exc)
+
+    def _cooldown_label(self, name: str) -> str:
+        """Human-readable suspension state for the provider line."""
+        st = self.suspension.states.get(name)
+        if st is None:
+            return "ok"
+        if st.permanent:
+            return "dead-for-run"
+        if st.suspended_until > time.monotonic():
+            return f"cooldown {max(0, int(st.suspended_until - time.monotonic()))}s"
+        return "ok"
+
     # ── one provider call ──────────────────────────────────────────────────
 
     async def _call(
@@ -202,11 +253,17 @@ class SearchOrchestrator:
                 "search provider %s %s — suspended for run (query=%r)",
                 name, signal, query[:60],
             )
+            self._log_to_tui(
+                f"paid {name}: {signal} (query={query[:60]!r}) — {self._cooldown_label(name)}"
+            )
             return []
         except Exception as exc:  # noqa: BLE001 - one provider must not kill the chain
             metrics.calls_total -= 1
             logger.warning("search provider %s failed: %s", name, exc)
             self.suspension.record_error(name, "5xx")
+            self._log_to_tui(
+                f"paid {name}: failed ({exc!s:.60}) — {self._cooldown_label(name)}"
+            )
             return []
         finally:
             metrics.latency_ms.append((time.monotonic() - started) * 1000)
@@ -215,6 +272,9 @@ class SearchOrchestrator:
         metrics.results_total += len(results)
         if results:
             self.suspension.record_success(name)
+            self._log_to_tui(
+                f"paid {name}: {len(results)} result(s) for {query[:60]!r}"
+            )
         else:
             down_weighted = self.suspension.record_empty(name)
             if down_weighted:
