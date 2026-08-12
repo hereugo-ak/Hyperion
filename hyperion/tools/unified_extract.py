@@ -1126,6 +1126,12 @@ class UnifiedExtract:
                     ):
                         await asyncio.sleep(0.4 * attempt)
                         continue
+                    # OVERHAUL4 P7 FIX: a RAISING tier used to set
+                    # ``result = None`` and fall through — the reason was
+                    # silently dropped from the aggregated error because the
+                    # append below only fires for ``result.error``. A raising
+                    # tier must be reported, never shrugged off.
+                    errors.append(f"{tier}: {type(exc).__name__}: {exc}")
                     result = None
                     break
                 if result.success:
