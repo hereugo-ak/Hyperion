@@ -955,7 +955,7 @@ table, .kpi-value, .data-table, .chart-data-table {{
 .toc-table td:first-child {{
     font-family: "Instrument Serif", serif;
     font-size: 12pt;
-    /* OVERHAUL4 fix: TOC labels are navigation, never prose — they must
+    /* OVERHAUL4 fix: TOC labels are navigation, never prose; they must
        not hyphenate (WeasyPrint was breaking "Economics" -> "Econom-",
        pushing U+2010 into a font that lacks it). */
     hyphens: none;
