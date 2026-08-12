@@ -348,13 +348,26 @@ class TestRetrievalEscalation:
         )
 
     def test_escalation_persists_recovered_urls_on_report(self, monkeypatch):
-        """Recovered counts must correspond to real report provenance."""
+        """Recovered counts must correspond to real report provenance.
+
+        OVERHAUL4 P5.4 fix: the test now runs HERMETIC — the escalation must
+        not touch live engines, live APIs, or require API keys (the run
+        previously 401'd on s.jina.ai and crashed on a ``published_date``
+        AttributeError from ``_as_hit``-normalized API hits). Engine health
+        and all three direct-API legs are mocked; only the fleet leg's mocked
+        SearxNG results can produce evidence.
+        """
         from hyperion.orchestrator import WorkflowEngine
         from hyperion.tools.searxng import SearxNGClient
 
         monkeypatch.setattr(
             "hyperion.tools.query_utils.get_engagement_focus",
             lambda: ("question", "Acme", "Singapore"),
+        )
+        # Fleet healthy so the SearxNG loop runs (no live engine-health state).
+        monkeypatch.setattr(
+            "hyperion.tools.engine_health.get_engine_health",
+            lambda: SimpleNamespace(healthy_count=lambda engines: 10),
         )
 
         async def fake_search(self, query, num_results=5, **kwargs):
@@ -368,6 +381,19 @@ class TestRetrievalEscalation:
             return SimpleNamespace(results=[result])
 
         monkeypatch.setattr(SearxNGClient, "search", fake_search)
+
+        # Direct-API legs: hermetic (empty) — no keys, no network.
+        from hyperion.tools.jina import JinaClient
+        from hyperion.tools.openalex import OpenAlexClient
+        from hyperion.tools.semantic_scholar import SemanticScholarClient
+
+        async def _empty_leg(self, *args, **kwargs):
+            return SimpleNamespace(results=[])
+
+        monkeypatch.setattr(OpenAlexClient, "search_works", _empty_leg)
+        monkeypatch.setattr(SemanticScholarClient, "search", _empty_leg)
+        monkeypatch.setattr(JinaClient, "search", _empty_leg)
+
         section = SimpleNamespace(sources=[])
         report = SimpleNamespace(
             sections=[section],
@@ -386,3 +412,76 @@ class TestRetrievalEscalation:
             "https://example.com/acme-singapore-industry-report-2025",
             "https://example.com/acme-singapore-news",
         }
+
+    def test_escalation_survives_direct_api_hit_without_published_date(
+        self, monkeypatch
+    ):
+        """OVERHAUL4 P5.2 regression: a direct-API hit normalized by
+        ``_as_hit`` (title/url/snippet only, no ``published_date`` attribute)
+        must not crash the persistence loop — the pre-fix code read
+        ``result.published_date`` on every recovered item and the whole
+        escalation died with AttributeError, recovering 0 even though the
+        API legs had found sources."""
+        from hyperion.orchestrator import WorkflowEngine
+        from hyperion.tools.searxng import SearxNGClient
+
+        monkeypatch.setattr(
+            "hyperion.tools.query_utils.get_engagement_focus",
+            lambda: ("question", "Acme", "Singapore"),
+        )
+        monkeypatch.setattr(
+            "hyperion.tools.engine_health.get_engine_health",
+            lambda: SimpleNamespace(healthy_count=lambda engines: 10),
+        )
+
+        async def fake_search(self, query, num_results=5, **kwargs):
+            slug = query.lower().replace(" ", "-")
+            return SimpleNamespace(
+                results=[
+                    SimpleNamespace(
+                        url=f"https://example.com/{slug}",
+                        title=f"Evidence for {query}",
+                        snippet="Retrieved evidence",
+                        published_date="2026-08-01",
+                    )
+                ]
+            )
+
+        monkeypatch.setattr(SearxNGClient, "search", fake_search)
+
+        from hyperion.tools.jina import JinaClient
+        from hyperion.tools.openalex import OpenAlexClient
+        from hyperion.tools.semantic_scholar import SemanticScholarClient
+
+        # The OpenAlex leg returns a hit WITHOUT published_date — exactly the
+        # shape _as_hit normalizes to. It must persist with publication_date
+        # None instead of killing the escalation.
+        async def _openalex_leg(self, *args, **kwargs):
+            return SimpleNamespace(
+                results=[
+                    SimpleNamespace(
+                        title="A scholarly work",
+                        url="https://api.openalex.org/W123",
+                        abstract="Peer-reviewed finding",
+                    )
+                ]
+            )
+
+        async def _empty_leg(self, *args, **kwargs):
+            return SimpleNamespace(results=[])
+
+        monkeypatch.setattr(OpenAlexClient, "search_works", _openalex_leg)
+        monkeypatch.setattr(SemanticScholarClient, "search", _empty_leg)
+        monkeypatch.setattr(JinaClient, "search", _empty_leg)
+
+        section = SimpleNamespace(sources=[])
+        report = SimpleNamespace(sections=[section], key_findings=[], total_sources=0)
+        orch = WorkflowEngine.__new__(WorkflowEngine)
+
+        recovered = asyncio.run(orch._escalate_retrieval(report, needed=8))
+
+        assert recovered == 4, "3 fleet + 1 API hit must all persist"
+        urls = {s.url for s in section.sources}
+        assert "https://api.openalex.org/W123" in urls
+        api_source = next(s for s in section.sources if s.url == "https://api.openalex.org/W123")
+        assert api_source.publication_date is None

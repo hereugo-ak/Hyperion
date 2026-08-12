@@ -26,7 +26,7 @@ Status legend: ⬜ pending · 🔧 in progress · ✅ done · ❌ blocked (state
 - [x] ✅ P5.1 `_escalate_retrieval`: skips SearxNG when fleet < 2 healthy engines
 - [x] ✅ P5.2 OpenAlex + Semantic Scholar + Jina direct-API recovery legs (error-safe)
 - [x] ✅ P5.3 escalation wall-clock cap 45 s
-- [ ] ⬜ P5.4 test: all engines suspended ⇒ escalation still recovers (moved to Phase 7 canaries — needs orchestrator mocking)
+- [x] ✅ P5.4 test: all engines suspended ⇒ escalation still recovers — hermetic now (engine-health + OpenAlex/Scholar/Jina legs mocked; no keys/network) + P5.2 regression: `_as_hit` drops `published_date` → every direct-API hit crashed persistence (AttributeError, recovered 0) — fixed + locked (test_phase7_corpus.py)
 
 ## Phase 6 — Restore a working web class (no keyed APIs)
 - [x] ✅ P6.1 probe ran (live /config, 2026-08-11): marginalia/wiby NOT in image; wikidata IS; egress is home IP
@@ -58,3 +58,12 @@ Status legend: ⬜ pending · 🔧 in progress · ✅ done · ❌ blocked (state
 ## Cross-cutting
 - [ ] ⬜ verify all post-overhaul3 docker-log issues are covered (see overhaul4.md §4.1)
 - [ ] ⬜ final `pytest` run + 1 live engagement
+
+## Report cover — design audit (2026-08-12) — ✅ done
+- [x] ✅ COVER.1 hero visual: photo cover (Unsplash) fills top ~65% and dissolves into the solid charcoal plate via a full-height top-down overlay; no-photo fallback is a designed warm radial-gradient composition, never dead-black space
+- [x] ✅ COVER.2 full bleed: WeasyPrint named-page path verified (corners charcoal, no white ring); Playwright path now renders the cover as its OWN zero-margin, furniture-free page and pikepdf-merges it ahead of the body (Chromium ignores named pages + the old hardcoded 25/40mm page.pdf margins inset every cover)
+- [x] ✅ COVER.3 terracotta accent rule moved into the title block (directly above the h1), no longer floating at top:120mm
+- [x] ✅ COVER.4 metadata: raw engagement UUID replaced by "August 2026 · MBB Engagement Report"; inline confidence badge "HIGH ●" (terracotta dot) right-aligned on the recommendation row
+- [x] ✅ COVER.5 title weight: Source Sans 3 Bold 700 (vendored face) — Instrument Serif has no bold, a 600 there is a synthetic smear
+- [x] ✅ COVER.6 latent blocker: page audit expected cream corners + body word/fill on EVERY page, so no full-bleed cover could ever pass — cover page (0) is now a declared full-bleed plate (exempt) at both audit call sites; reports/ had zero PDFs, now the cover passes (verified on the 42-page golden probe)
+- [x] ✅ COVER.7 regression lock: tests/output/test_cover_design.py (13) — template/CSS assertions, corner exemption, split + pikepdf merge legs

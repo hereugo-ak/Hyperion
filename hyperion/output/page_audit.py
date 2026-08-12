@@ -217,10 +217,20 @@ def _check_trim(doc: fitz.Document) -> list[str]:
 
 
 def _check_corners(
-    doc: fitz.Document, background_rgb: tuple[int, int, int]
+    doc: fitz.Document,
+    background_rgb: tuple[int, int, int],
+    cover_pages: frozenset[int] = frozenset(),
 ) -> list[str]:
     violations: list[str] = []
     for page in doc:
+        if page.number in cover_pages:
+            # OVERHAUL4 COVER: a full-bleed plate (cover) legitimately
+            # carries art/photo/charcoal all the way to the trim edge — its
+            # corners are NOT the theme canvas colour and must not be
+            # flagged. This is what let the WeasyPrint cover (charcoal
+            # corners) and the Playwright cover (any art) fail every render
+            # since the corner check landed.
+            continue
         pix = page.get_pixmap(dpi=72)
         w, h = pix.width, pix.height
         for x, y in ((1, 1), (w - 2, 1), (1, h - 2), (w - 2, h - 2)):
@@ -364,7 +374,7 @@ def audit_pdf(
         metrics.update(fill_metrics)
         violations.extend(_check_column_balance(doc, cover))
         violations.extend(_check_trim(doc))
-        violations.extend(_check_corners(doc, background_rgb))
+        violations.extend(_check_corners(doc, background_rgb, cover))
         violations.extend(_check_toc(doc))
         violations.extend(_check_empty_list_items(doc))
         full_text = "\n".join(page.get_text() for page in doc)

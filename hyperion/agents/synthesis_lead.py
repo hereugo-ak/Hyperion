@@ -1204,7 +1204,7 @@ class SynthesisLead(BaseAgent):
         Built when the deep-tier narrative LLM fails, times out, or returns a
         body too short to satisfy the page contract. Each finding becomes a
         titled paragraph with its content, "so what?" implications and cited
-        sources — consulting-grade prose assembled from the fields the
+        sources, consulting-grade prose assembled from the fields the
         specialists already produced, never a raw JSON dump. Logged loudly by
         the caller so a degraded section is visible, not silent.
         """
@@ -1441,7 +1441,7 @@ class SynthesisLead(BaseAgent):
                 # empties the report. The LLM path remains primary.
                 logger.error(
                     "narrative synthesis failed for agent=%s section=%s: %s: %s "
-                    "— building deterministic finding-digest section",
+                    "; building deterministic finding-digest section",
                     agent, _section_title(agent), type(exc).__name__, exc,
                 )
                 section_body = self._deterministic_section_body(
@@ -1454,7 +1454,7 @@ class SynthesisLead(BaseAgent):
                 # fall back to the deterministic digest with a loud log.
                 logger.warning(
                     "narrative synthesis produced no usable body for "
-                    "agent=%s section=%s — building deterministic "
+                    "agent=%s section=%s; building deterministic "
                     "finding-digest section",
                     agent, _section_title(agent),
                 )
@@ -1469,7 +1469,7 @@ class SynthesisLead(BaseAgent):
                 # omit: fall back to the deterministic digest, loudly.
                 logger.warning(
                     "narrative synthesis produced no usable body for "
-                    "agent=%s section=%s — building deterministic "
+                    "agent=%s section=%s; building deterministic "
                     "finding-digest section",
                     agent, _section_title(agent),
                 )

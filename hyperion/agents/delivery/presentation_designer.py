@@ -468,32 +468,52 @@ table, .kpi-value, .data-table, .chart-data-table {{
 
 .cover-overlay {{
     position: absolute;
-    bottom: 0;
+    top: 0;
     left: 0;
     width: 100%;
-    height: 60%;
-    background: linear-gradient(to top, rgba(26,26,26,0.92) 0%, rgba(26,26,26,0.75) 40%, rgba(26,26,26,0.3) 75%, rgba(26,26,26,0) 100%);
+    height: 100%;
+    /* OVERHAUL4 COVER: the old plate was a 60%-tall bottom-up gradient,
+       so the top ~70% of the cover was raw image (or, with no image,
+       dead black). The design call is a hero that fills the top ~65%
+       and dissolves into the solid charcoal plate the type sits on.
+       Full-height, top-down: transparent at the trim edge, ~35% at 45%,
+       and solid {warm_charcoal} from ~78% down (the title block always
+       sits on the solid plate, never on busy image detail. */
+    background: linear-gradient(
+        to bottom,
+        rgba(26,26,26,0) 0%,
+        rgba(26,26,26,0.35) 45%,
+        rgba(26,26,26,0.88) 72%,
+        {warm_charcoal} 78%,
+        {warm_charcoal} 100%
+    );
     z-index: 2;
 }}
 
 .cover-title {{
     position: absolute;
-    bottom: 50mm;
+    bottom: 46mm;
     left: 25mm;
     right: 25mm;
     color: {cream};
-    font-size: 32pt;
-    font-family: "Instrument Serif", serif;
     z-index: 3;
-    line-height: 1.2;
 }}
 
 .cover-title h1 {{
     color: {cream};
-    font-size: 32pt;
-    line-height: 1.2;
-    margin-bottom: 12px;
-    text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    /* OVERHAUL4 COVER: title weight. Instrument Serif ships Regular/Italic
+       only (a `font-weight: 600` there is a smeared synthetic. Source
+       Sans 3 has a vendored Bold face (assets/fonts/SourceSans3-Bold.ttf),
+       so the cover head gets real weight without synthesis. Sentence case
+       comes from the question itself (never force-lowercased). */
+    font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+    font-size: 34pt;
+    font-weight: 700;
+    line-height: 1.18;
+    letter-spacing: -0.015em;
+    margin: 0 0 14px 0;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.55);
+    hyphens: none;
 }}
 
 .cover--typographic {{
@@ -501,14 +521,70 @@ table, .kpi-value, .data-table, .chart-data-table {{
     height: 297mm;
 }}
 
-.cover-accent-rule {{
+/* OVERHAUL4 COVER: when no photo made it through (no Unsplash key, failed
+   search/download), the top of the cover is NOT empty black. A designed
+   composition (a warm radial glow over charcoal, dissolving into the
+   solid plate the type sits on, keeping the "hero + fade" anatomy of the
+   photo cover without inventing a fake photograph. */
+.cover-hero {{
     position: absolute;
-    top: 120mm;
-    left: 25mm;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background:
+        radial-gradient(ellipse 85% 60% at 68% 28%, rgba(200,112,77,0.30) 0%, rgba(200,112,77,0.12) 45%, rgba(200,112,77,0) 70%),
+        linear-gradient(to bottom, #2B2320 0%, {warm_charcoal} 62%);
+    z-index: 1;
+}}
+
+/* OVERHAUL4 COVER: the accent rule used to float at top: 120mm in empty
+   space with nothing above it to justify it as a divider. It now sits
+   directly above the title as the in-flow first child of .cover-title,
+   on the solid plate the type block occupies. */
+.cover-accent-rule {{
     width: 60mm;
     height: 3px;
     background-color: {terracotta};
-    z-index: 3;
+    margin-bottom: 14px;
+}}
+
+/* OVERHAUL4 COVER: metadata row (the recommendation label left, the
+   confidence badge right, on ONE baseline. The old cover put the raw
+   engagement UUID in a sub-line that read as debug text; the new line is
+   "August 2026 · MBB Engagement Report" and the confidence dot is a
+   terracotta glyph, not the word "Confidence:" as prose. */
+.cover-meta-row {{
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}}
+.cover-recommendation {{
+    font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+    font-size: 13pt;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: {cream};
+}}
+.cover-confidence {{
+    font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+    font-size: 11pt;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: {cream};
+}}
+.cover-confidence-dot {{
+    color: {terracotta};
+    margin-left: 6px;
+}}
+.cover-date {{
+    font-family: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+    font-size: 10pt;
+    color: {warm_gray};
+    margin: 0;
 }}
 
 .key-insight-box {{
@@ -1239,14 +1315,23 @@ HTML_TEMPLATE = """\
     <img src="{{ cover_image.image_path }}" class="cover-image" alt="{{ cover_image.caption }}">
     <div class="cover-overlay"></div>
     {% else %}
-    <div class="cover-accent-rule"></div>
+    <div class="cover-hero"></div>
     {% endif %}
     <div class="cover-title">
+        {# OVERHAUL4 COVER: the accent rule is the FIRST child of the title
+           block so it sits directly above the title (on the image fade in
+           the photo case, on the designed plate in the typographic case), never orphaned in empty space. #}
+        <div class="cover-accent-rule"></div>
         <h1>{{ report.question }}</h1>
-        <p style="color: {{ palette.cream }}; font-size: 14pt; margin-top: 8px;">{{ report.recommendation | upper }}</p>
-        <p style="color: {{ palette.warm_gray }}; font-size: 10pt; margin-top: 4px;">
-            {{ report.generated_at.strftime('%B %Y') }} · Engagement {{ report.engagement_id }}
-        </p>
+        <div class="cover-meta-row">
+            <span class="cover-recommendation">{{ report.recommendation | upper }}</span>
+            {% if report.confidence %}
+            <span class="cover-confidence">{{ report.confidence | upper }}<span class="cover-confidence-dot">●</span></span>
+            {% endif %}
+        </div>
+        {# OVERHAUL4 COVER: the raw engagement UUID read as debug text. The
+           professional sub-line is a clean date + series line. #}
+        <p class="cover-date">{{ report.generated_at.strftime('%B %Y') }} · MBB Engagement Report</p>
     </div>
 </div>
 

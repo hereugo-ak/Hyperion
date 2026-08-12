@@ -94,3 +94,13 @@ vault/.embeddings.db
 
 # Engine-health tracker state, created at runtime (F-04 sweep/cooldown bookkeeping)
 vault/engine_health.json
+
+# OVERHAUL4 P9: Linux obscura binaries — run-location artifacts (the Windows
+# .exe is tracked; the WSL native builds are per-machine downloads).
+obscura-bin/obscura
+obscura-bin/obscura-worker
+
+# Grounding-quota runtime state (regenerated per engagement; the .lock is
+# written by the same ledger path and must not be committed either).
+vault/grounding_quota.json
+vault/grounding_quota.json.lock

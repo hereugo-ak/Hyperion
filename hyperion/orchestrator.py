@@ -2007,7 +2007,16 @@ class WorkflowEngine:
             from types import SimpleNamespace
 
             def _as_hit(item: Any) -> SimpleNamespace:
-                """Normalize any direct-API item to title/url/snippet."""
+                """Normalize any direct-API item to title/url/snippet/date.
+
+                OVERHAUL4 P5.2 FIX: this used to drop ``published_date``, and
+                the persistence loop below reads ``result.published_date`` — so
+                every direct-API hit (OpenAlex/Scholar/Jina) crashed the whole
+                escalation with AttributeError and recovered 0. The direct-API
+                legs P5 built to bypass the dead fleet were therefore
+                dead-on-arrival at the persist step. ``published_date`` is
+                carried through (either spelling) so recovery survives.
+                """
                 return SimpleNamespace(
                     title=getattr(item, "title", "") or "",
                     url=getattr(item, "url", "") or "",
@@ -2015,6 +2024,11 @@ class WorkflowEngine:
                         getattr(item, "abstract", "")
                         or getattr(item, "tldr", "")
                         or ""
+                    ),
+                    published_date=(
+                        getattr(item, "published_date", None)
+                        or getattr(item, "publication_date", None)
+                        or None
                     ),
                 )
 

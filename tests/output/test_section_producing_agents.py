@@ -6,8 +6,10 @@ reports' TOCs, and its QA-log content ("17 hallucinated citations") was
 quoted into At a Glance and the Executive Summary.
 
 After the fix:
-1. ``SECTION_PRODUCING_AGENTS`` holds the 11 specialists only; the section
-   builder iterates the allowlist, not every bus sender.
+1. ``SECTION_PRODUCING_AGENTS`` holds the 12 specialists only; the section
+   builder iterates the allowlist, not every bus sender. OVERHAUL4 P3.1
+   added ``STRATEGY_ANALYST`` (11 -> 12) — a strategy-only engagement
+   produced zero chapters before that.
 2. The Layer 4 gate rejects client-visible meta-text: hallucinat*,
    unverified claim, fact checker, quality gate, iteration, parse error,
    data sparse.
@@ -43,8 +45,11 @@ def _finding(agent: str, i: int) -> KeyFinding:
 
 
 class TestSectionProducingAgents:
-    def test_allowlist_is_eleven_specialists_only(self):
-        assert len(SECTION_PRODUCING_AGENTS) == 11
+    def test_allowlist_is_twelve_specialists_only(self):
+        # OVERHAUL4 P3.1: strategy_analyst joined the allowlist (11 -> 12) so
+        # a strategy-only engagement produces chapters; the assertion tracks
+        # the live set rather than a stale count.
+        assert len(SECTION_PRODUCING_AGENTS) == 12
         assert AgentName.FACT_CHECKER not in SECTION_PRODUCING_AGENTS
         assert AgentName.QUALITY_GATE not in SECTION_PRODUCING_AGENTS
         assert AgentName.SYNTHESIS_LEAD not in SECTION_PRODUCING_AGENTS
