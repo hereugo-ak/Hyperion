@@ -1195,6 +1195,12 @@ _FONT_SUBSET_RANGES: tuple[tuple[int, int], ...] = (
     (0x20A0, 0x20CF),  # Currency symbols
     (0x2190, 0x21FF),  # Arrows
     (0x2200, 0x22FF),  # Mathematical operators
+    # OVERHAUL4 COVER: 0x25A0-0x25FF (Geometric Shapes) — the cover
+    # confidence badge uses U+25CF (●). The glyph EXISTS in Source Sans 3,
+    # but the subsetter stripped it (the range was missing), so WeasyPrint
+    # fell back to DejaVu-Sans-Bold in every rendered PDF — a forbidden
+    # fallback font per the golden baseline. The dot is now embedded.
+    (0x25A0, 0x25FF),
 )
 DEFAULT_FONT_GLYPHS = "".join(
     chr(codepoint)

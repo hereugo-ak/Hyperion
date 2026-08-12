@@ -203,9 +203,19 @@ class VectorStore:
 
     def _ensure_schema(self) -> None:
         if self._vec_available:
+            # OVERHAUL4 fix (2026-08-12): vec0's DEFAULT metric is L2, but
+            # ``search()`` interprets the returned value as cosine distance
+            # (score = 1 - distance). With L2, two unit vectors at cosine
+            # 0.55 report distance ~0.945 -> score 0.055 instead of 0.55 —
+            # semantic recall was silently near-random whenever sqlite_vec
+            # was installed (the ANN path). Declare cosine explicitly so the
+            # distance really is cosine distance. (sqlite-vec 0.1.x syntax:
+            # ``distance_metric=cosine`` — ``vector_distance_metric`` is a
+            # newer spelling this pinned version cannot parse.)
             self._db.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS vault_vec USING vec0("
-                f"key TEXT PRIMARY KEY, embedding FLOAT[{self._dim}])"
+                f"key TEXT PRIMARY KEY, embedding FLOAT[{self._dim}] "
+                f"distance_metric=cosine)"
             )
         else:
             self._db.execute(
