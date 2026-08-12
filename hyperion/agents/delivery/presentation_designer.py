@@ -345,6 +345,12 @@ body {{
        Kept modest so no line breaks more than twice in a row. */
     text-align: justify;
     hyphens: auto;
+    /* OVERHAUL4 fix (2026-08-12): WeasyPrint renders hyphenation breaks
+       with U+2010, which Instrument Serif does not carry — any hyphenated
+       serif span (the TOC is the live case) fell back to DejaVu-Serif, a
+       forbidden embedded font per the golden baseline. Force the ASCII
+       hyphen U+002D, which every vendored face has. */
+    hyphenate-character: "-";
     -webkit-hyphens: auto;
     orphans: 3;
     widows: 3;
@@ -949,6 +955,10 @@ table, .kpi-value, .data-table, .chart-data-table {{
 .toc-table td:first-child {{
     font-family: "Instrument Serif", serif;
     font-size: 12pt;
+    /* OVERHAUL4 fix: TOC labels are navigation, never prose — they must
+       not hyphenate (WeasyPrint was breaking "Economics" -> "Econom-",
+       pushing U+2010 into a font that lacks it). */
+    hyphens: none;
 }}
 
 .toc-table td:last-child {{

@@ -181,7 +181,9 @@ def test_fetch_cache_hit_skips_network(monkeypatch) -> None:
         ex._active_query = ""
         ex._selection_stats = {}
         ex._tier_available = lambda tier: False  # no tiers available
-        ex._eligible_tiers = lambda force=False: []  # type: ignore[method-assign]
+        # OVERHAUL4 P7: _eligible_tiers gained a profile param for the
+        # URL/page-type-aware ladder — the stub must match the new arity.
+        ex._eligible_tiers = lambda force=False, profile="default": []  # type: ignore[method-assign]
         ex._default_resolver = lambda *a, **k: None
         import asyncio
 
