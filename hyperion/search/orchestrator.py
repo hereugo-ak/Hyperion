@@ -33,7 +33,10 @@ logger = logging.getLogger(__name__)
 
 MIN_RESULTS = 5
 MAX_RESULTS = 15
-LOOP_RETRIES = 1          # SearXNG->You->Exa is tried a second time
+# OVERHAUL4 operator decision (2026-08-12): the free/cheap tier set
+# SearXNG->You->Exa gets TWO retries (3 total passes) before the reserve
+# tiers Tavily->Yep are ever touched.
+LOOP_RETRIES = 2          # SearXNG->You->Exa is tried three times total
 
 #: Adapter classes in canonical order.
 TIERS_LOOP = (SearxNGAdapter, YouAdapter, ExaAdapter)

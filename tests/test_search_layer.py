@@ -121,8 +121,10 @@ async def test_empty_searxng_falls_to_you() -> None:
 
 
 @pytest.mark.asyncio
-async def test_loop_tiers_called_twice_before_tail() -> None:
-    """All top-3 empty on both loop attempts -> Tavily and Yep still called."""
+async def test_loop_tiers_called_three_times_before_tail() -> None:
+    """All top-3 empty on all three loop attempts -> Tavily and Yep still
+    called. OVERHAUL4 operator decision (2026-08-12): SearXNG->You->Exa gets
+    TWO retries (3 total passes) before the reserve tiers are touched."""
     searxng = _fake(SearxNGAdapter, [])
     you = _fake(YouAdapter, [])
     exa = _fake(ExaAdapter, [])
@@ -131,7 +133,7 @@ async def test_loop_tiers_called_twice_before_tail() -> None:
     orch = _orchestrator(searxng=searxng, you=you, exa=exa, tavily=tavily, yep=yep)
     results = await orch.search("q")
     assert len(results) >= MIN_RESULTS
-    assert searxng.calls == 2 and you.calls == 2 and exa.calls == 2
+    assert searxng.calls == 3 and you.calls == 3 and exa.calls == 3
     assert tavily.calls == 1 and yep.calls == 0  # Tavily satisfied MIN_RESULTS
 
 

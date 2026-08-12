@@ -9,7 +9,7 @@ version: 1
 orchestrator:
   min_results: 5
   max_results: 15
-  loop_retries: 1            # SearXNG->You->Exa tried a second time
+  loop_retries: 2            # SearXNG->You->Exa tried three times total (2 retries) before Tavily->Yep
   dedupe_key: netloc_plus_path
 
 providers:
