@@ -12,32 +12,6 @@
 
 Hyperion is a Python-based research and consulting system that converts a business question into a research-backed, quality-gated deliverable. It combines a Textual terminal interface, a non-interactive command line, durable execution, multi-provider model routing, evidence collection, specialist analysis, synthesis, report production, and delivery validation in one runtime. The interface is not a separate demonstration surface: it drives the same workflow engine used by headless engagements.[1] [2]
 
-## Identity and Interface Fidelity
-
-The colored wordmark above is the README’s canonical Hyperion heading. It is generated from the **locked six-line ANSI Shadow character matrix** used in the TUI and renders each non-space glyph with the same left-to-right static color rule used at runtime: soft clay `#e0a08a` → clay `#d97757` → deep clay `#c15f3c` on the terminal canvas `#141413`.[1] [3]
-
-| Element | README implementation | TUI source of truth |
-| --- | --- | --- |
-| **Characters** | The generated PNG and SVG are both derived from the exact `WORDMARK` array; the raw canonical matrix is retained below. | `hyperion/tui/banner.py` |
-| **Color pattern** | Each of the 308 visible glyph cells is individually colored using the TUI’s OKLab `ramp(LOGO_STOPS, x / (width - 1))` rule. | `hyperion/tui/theme.py` and `hyperion/tui/motion/color.py` |
-| **Canvas** | The rendered PNG and SVG include the terminal’s dark canvas, not a generic transparent or rainbow treatment. | `BG_CANVAS = #141413` |
-| **Reproducibility** | `tools/generate_tui_wordmark_svg.py` deterministically regenerates the PNG and SVG from the application source. | Project-local generator |
-
-```text
-  ██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ ██╗ ██████╗ ███╗   ██╗
-  ██║  ██║╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗██║██╔═══██╗████╗  ██║
-  ███████║ ╚████╔╝ ██████╔╝█████╗  ██████╔╝██║██║   ██║██╔██╗ ██║
-  ██╔══██║  ╚██╔╝  ██╔═══╝ ██╔══╝  ██╔══██╗██║██║   ██║██║╚██╗██║
-  ██║  ██║   ██║   ██║     ███████╗██║  ██║██║╚██████╔╝██║ ╚████║
-  ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝
-```
-
-Regenerate the wordmark after any intentional TUI brand change. The generated PNG is committed for reliable Markdown rendering; the accompanying SVG remains an inspectable vector record of the same TUI-derived wordmark.
-
-```bash
-uv run python tools/generate_tui_wordmark_svg.py
-```
-
 ## What Hyperion Does
 
 A Hyperion engagement is a directed research workflow rather than a single model prompt. The system develops a plan before research, preserves evidence before synthesis, validates citations and coverage before delivery, and records enough state to resume work after interruption. The actual directed acyclic graph varies with the question, but the operating model remains consistent.[2]
