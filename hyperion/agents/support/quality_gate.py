@@ -1249,7 +1249,7 @@ class QualityGate(BaseAgent):
         OVERHAUL4 P4.1: the floor must count the EVIDENCE BASE, not only the
         report's citations. The Aug-11 run held 2,838 ledger records / 542
         domains and still hard-blocked on ``CORPUS FLOOR: 0`` because the
-        report was assembled empty — a synthesis defect misreported as a
+        report was assembled empty, a synthesis defect misreported as a
         retrieval outage. When report citations are below the floor but the
         run ledger clears it, return no hard blocker (the deficiency is
         synthesis citation, which the evidence_sufficiency dimension already

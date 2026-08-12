@@ -1106,7 +1106,9 @@ class RenderEngine(BaseAgent):
         from hyperion.output.page_audit import PageAuditError, audit_pdf
 
         try:
-            audit_pdf(pdf_path)
+            # OVERHAUL4 COVER: the designer always emits the cover as page 0;
+            # it is a full-bleed plate, exempt from word/fill/corner checks.
+            audit_pdf(pdf_path, cover_pages=frozenset({0}))
             details["page_audit_passed"] = True
         except PageAuditError as exc:
             details["page_audit_passed"] = False

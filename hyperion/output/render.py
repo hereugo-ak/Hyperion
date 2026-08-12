@@ -421,57 +421,130 @@ class PDFRenderer:
 
         return HTML, CSS
 
+    # OVERHAUL4 COVER: Chromium's page.pdf() does not implement CSS named
+    # pages, so the cover (which relies on `@page cover { margin: 0 }` in the
+    # WeasyPrint path) would be inset by the body margins and carry the
+    # running header/footer. The cover is therefore rendered as its OWN
+    # zero-margin, furniture-free page and merged ahead of the body with
+    # pikepdf. Any failure in the split/merge legs degrades to the previous
+    # single-pass behaviour (cover inset) — never a crash, never nothing.
+    _COVER_BODY_SPLIT_MARKER = '<div class="page-break at-a-glance"'
+
+    def _split_cover(self, html: str) -> tuple[str, str] | None:
+        """Split the leading cover block from the body.
+
+        The cover is the first full-bleed plate; the body starts at the
+        at-a-glance page. Returns ``(cover_html, body_html)``, or None when
+        the document has no cover block to split.
+        """
+        idx = html.find(self._COVER_BODY_SPLIT_MARKER)
+        if idx < 0:
+            return None
+        return html[:idx], html[idx:]
+
+    @staticmethod
+    def _merge_pdfs(first: str, second: str, output: str) -> bool:
+        """Merge ``first`` (cover) ahead of ``second`` (body) via pikepdf."""
+        import pikepdf
+
+        with pikepdf.open(first) as cover_doc, pikepdf.open(second) as body_doc:
+            merged = pikepdf.Pdf.new()
+            merged.pages.extend(cover_doc.pages)
+            merged.pages.extend(body_doc.pages)
+            merged.save(output)
+        return os.path.exists(output) and os.path.getsize(output) > 0
+
     def _render_pdf_playwright(self, html: str, output_path: str, css_content: str) -> bool:
         """Fallback: render HTML to PDF using Playwright Chromium.
 
         Used when WeasyPrint can't load native GTK libraries (Windows).
         Produces a print-quality PDF with A4 page size and proper margins.
+
+        OVERHAUL4 COVER: the cover page renders with margin 0 and no
+        header/footer so it bleeds to the trim edge; the body renders with
+        the body margins and the running furniture; pikepdf merges the two.
         """
-        temp_html: str | None = None
+        temp_paths: list[str] = []
         try:
             from playwright.sync_api import sync_playwright
 
-            # Write HTML to a temp file so Playwright can load it. This is a
-            # throwaway scratch file — it is ALWAYS deleted in `finally` so the
-            # intermediate `_playwright.html` can never be mistaken for (or
-            # shipped as) the deliverable. The deliverable is the .pdf only.
-            temp_html = output_path.replace(".pdf", "_playwright.tmp.html")
             full_html = html
             # Always inline the CSS (never an absolute machine path <link>) so
             # the render is self-contained and portable across machines.
             if css_content and "<style>" not in html[:500]:
                 full_html = f"<style>{css_content}</style>" + html
-            with open(temp_html, "w", encoding="utf-8") as f:
-                f.write(full_html)
 
-            # Build proper file:// URL for Windows (C:\path → file:///C:/path)
-            file_url = f"file:///{temp_html.replace(os.sep, '/').lstrip('/')}"
+            split = self._split_cover(full_html)
 
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
-                page = browser.new_page()
-                page.goto(file_url, wait_until="networkidle")
-                page.pdf(
-                    path=output_path,
-                    format="A4",
-                    print_background=True,
-                    display_header_footer=True,
-                    header_template=PLAYWRIGHT_HEADER_TEMPLATE,
-                    footer_template=PLAYWRIGHT_FOOTER_TEMPLATE,
-                    margin={
-                        "top": "25mm",
-                        "bottom": "25mm",
-                        "left": "40mm",
-                        "right": "25mm",
-                    },
-                    prefer_css_page_size=True,
+            def _render(pdf_doc_html: str, pdf_path: str, *, with_furniture: bool) -> bool:
+                """Render one HTML document to ``pdf_path`` in Chromium."""
+                temp = output_path.replace(".pdf", "_playwright.tmp.html")
+                with open(temp, "w", encoding="utf-8") as f:
+                    f.write(pdf_doc_html)
+                temp_paths.append(temp)
+
+                # Build proper file:// URL for Windows (C:\path → file:///C:/path)
+                file_url = f"file:///{temp.replace(os.sep, '/').lstrip('/')}"
+
+                with sync_playwright() as p:
+                    browser = p.chromium.launch()
+                    page = browser.new_page()
+                    page.goto(file_url, wait_until="networkidle")
+                    kwargs: dict[str, Any] = {
+                        "path": pdf_path,
+                        "format": "A4",
+                        "print_background": True,
+                        "prefer_css_page_size": True,
+                    }
+                    if with_furniture:
+                        kwargs.update(
+                            display_header_footer=True,
+                            header_template=PLAYWRIGHT_HEADER_TEMPLATE,
+                            footer_template=PLAYWRIGHT_FOOTER_TEMPLATE,
+                            margin={
+                                "top": "25mm",
+                                "bottom": "25mm",
+                                "left": "40mm",
+                                "right": "25mm",
+                            },
+                        )
+                    else:
+                        # OVERHAUL4 COVER: zero margin + no furniture so the
+                        # 210mm x 297mm cover plate reaches the trim edges.
+                        kwargs.update(display_header_footer=False, margin={})
+                    page.pdf(**kwargs)
+                    browser.close()
+                return os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0
+
+            if split is None:
+                if not _render(full_html, output_path, with_furniture=True):
+                    print("[RENDER] Playwright: PDF file missing or empty after render")
+                    return False
+                return True
+
+            # Two-pass: cover (no margins/furniture) + body (margins/furniture).
+            body_pdf = output_path.replace(".pdf", "_playwright_body.pdf")
+            if not _render(split[1], body_pdf, with_furniture=True):
+                print("[RENDER] Playwright: body render failed; falling back to single-pass")
+                return _render(full_html, output_path, with_furniture=True)
+
+            cover_pdf = output_path.replace(".pdf", "_playwright_cover.pdf")
+            if not _render(split[0], cover_pdf, with_furniture=False):
+                print("[RENDER] Playwright: cover render failed; falling back to single-pass")
+                return _render(full_html, output_path, with_furniture=True)
+
+            try:
+                merged = self._merge_pdfs(cover_pdf, body_pdf, output_path)
+            except Exception as exc:  # noqa: BLE001 - degrade, never crash
+                print(
+                    "[RENDER] Playwright: pikepdf merge failed "
+                    f"({type(exc).__name__}); falling back to single-pass"
                 )
-                browser.close()
-
-            success = os.path.exists(output_path) and os.path.getsize(output_path) > 0
-            if not success:
-                print("[RENDER] Playwright: PDF file missing or empty after render")
-            return success
+                return _render(full_html, output_path, with_furniture=True)
+            if not merged:
+                print("[RENDER] Playwright: merge produced empty output; falling back to single-pass")
+                return _render(full_html, output_path, with_furniture=True)
+            return True
 
         except ImportError:
             print("[RENDER] Playwright not installed — cannot use PDF fallback")
@@ -480,10 +553,13 @@ class PDFRenderer:
             print(f"[RENDER] Playwright PDF fallback failed: {type(exc).__name__}: {exc!s:.200}")
             return False
         finally:
-            # Never leave the scratch HTML on disk — it must not be delivered.
-            if temp_html and os.path.exists(temp_html):
+            # Never leave scratch HTML/PDFs on disk — they must not be delivered.
+            for temp in temp_paths:
                 with contextlib.suppress(OSError):
-                    os.remove(temp_html)
+                    os.remove(temp)
+            for suffix in ("_playwright_body.pdf", "_playwright_cover.pdf"):
+                with contextlib.suppress(OSError):
+                    os.remove(output_path.replace(".pdf", suffix))
 
     def _embed_images_as_data_uris(self, html: str) -> str:
         """Embed local images while enforcing per-asset and total byte budgets.
@@ -653,6 +729,7 @@ class PDFRenderer:
         result: PDFRenderResult,
         staging_path: str,
         output_path: str,
+        has_cover: bool = False,
     ) -> PDFRenderResult:
         """W-02 (RC-2): the single finalisation point for BOTH PDF engines.
 
@@ -674,8 +751,13 @@ class PDFRenderer:
         """
         from hyperion.output.page_audit import PageAuditError, audit_pdf
 
+        # OVERHAUL4 COVER: a full-bleed cover plate is page 0 and is exempt
+        # from the word/fill/corner assertions — it is a designed plate, not
+        # a body page. Only exempt when the document actually carries the
+        # cover block, so a coverless document is still fully audited.
+        cover_pages = frozenset({0}) if has_cover else frozenset()
         try:
-            audit_pdf(staging_path)
+            audit_pdf(staging_path, cover_pages=cover_pages)
         except PageAuditError as exc:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             slug = Path(output_path).stem
@@ -821,7 +903,10 @@ class PDFRenderer:
             # the shared finaliser — a pass atomically promotes the staging
             # file to the deliverable name; a failure quarantines it under
             # _rejected/ and guarantees the deliverable name does not exist.
-            return self._finalize_or_reject(result, staging_path, output_path)
+            return self._finalize_or_reject(
+                result, staging_path, output_path,
+                has_cover=('class="cover' in full_html),
+            )
 
         except (OSError, ImportError, ValueError, RuntimeError) as exc:
             weasy_error = exc
@@ -846,7 +931,10 @@ class PDFRenderer:
             # P2-08/P2-G1 + W-02: same shared finaliser as the WeasyPrint
             # path — the audit applies to whichever engine produced the
             # bytes, and a failure is quarantined identically.
-            return self._finalize_or_reject(result, staging_path, output_path)
+            return self._finalize_or_reject(
+                result, staging_path, output_path,
+                has_cover=('class="cover' in full_html),
+            )
 
         # ── Both PDF engines failed: emit a real HTML deliverable ──
         #
