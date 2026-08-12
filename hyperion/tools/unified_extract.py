@@ -107,6 +107,7 @@ from hyperion.tools.jina import JinaClient
 from hyperion.tools.nodriver_client import NodriverClient
 from hyperion.tools.obscura import ObscuraClient
 from hyperion.tools.scrapling import ScraplingClient
+from hyperion.tools.source_classifier import is_paywall_host
 from hyperion.tools.wayback import WaybackClient
 
 logger = logging.getLogger(__name__)
@@ -952,12 +953,15 @@ class UnifiedExtract:
     # ── Driver 1: single URL ────────────────────────────────────────────────
 
     def _classify_url(self, url: str) -> str:
-        """OVERHAUL4 P7: URL/page-type profile for tier selection.
+        """OVERHAUL4 P7 / OVERHAUL5 W4: URL/page-type profile for tier selection.
 
-        Returns one of ``pdf`` / ``media`` / ``js_heavy`` / ``default``:
+        Returns one of ``pdf`` / ``media`` / ``paywall`` / ``js_heavy`` / ``default``:
 
         - ``pdf``      -> dedicated PDF text+table extraction first
         - ``media``    -> an image/video file: nothing to extract, fail fast
+        - ``paywall``  -> known paywall/DOI/academic-publisher host (D-06):
+          headless extraction is rejected upstream (the 08-12 run burned
+          playwright+fetch on Elsevier DOIs); fail fast with a typed reason
         - ``js_heavy`` -> known JS/anti-bot host or interactive path: skip the
           non-JS tiers (their HTML is an empty shell) and start at the first
           rendering tier (firecrawl/obscura)
@@ -976,6 +980,9 @@ class UnifiedExtract:
             ".mp4", ".mp3", ".avi", ".mov", ".webm", ".zip", ".gz",
         )):
             return "media"
+        # OVERHAUL5 W4 (D-06): a paywall host is a paywall regardless of JS.
+        if is_paywall_host(url):
+            return "paywall"
         if any(h in host for h in self.JS_HEAVY_HOST_HINTS) or any(
             h in path for h in self.JS_HEAVY_PATH_HINTS
         ):
@@ -1075,6 +1082,14 @@ class UnifiedExtract:
         profile = self._classify_url(url)
         if profile == "media":
             return self._failure(url, [], ["media file — no text to extract"])
+        # OVERHAUL5 W4 (D-06): paywall/DOI hosts reject headless extraction;
+        # fail fast with a typed reason instead of an 11-tier death march.
+        if profile == "paywall":
+            return self._failure(
+                url,
+                [],
+                ["PAYWALL host — extraction rejected upstream; use wayback/abstract"],
+            )
         if profile == "pdf":
             try:
                 pdf_result = await self.extract_pdf(url)
@@ -1318,14 +1333,21 @@ class UnifiedExtract:
             ladder = [t for t in ladder if t in allowed]
 
         # OVERHAUL4 P7: URL-aware pre-pass — media files fail fast (no text
-        # to extract) and PDFs use the dedicated PDF path (text + tables);
-        # neither should waste a general tier on a binary blob. PDF failures
-        # stay in the ladder as a fallback.
+        # to extract), paywall/DOI hosts fail fast with a typed reason
+        # (D-06), and PDFs use the dedicated PDF path (text + tables); none
+        # should waste a general tier on a binary blob or a paywall. PDF
+        # failures stay in the ladder as a fallback.
         for url in list(pending_order):
             profile = self._classify_url(url)
             if profile == "media":
                 outcome.results.append(UnifiedExtractResult(
                     url=url, success=False, error="media file — no text to extract"
+                ))
+                extracted_urls.add(url)
+            elif profile == "paywall":
+                outcome.results.append(UnifiedExtractResult(
+                    url=url, success=False,
+                    error="PAYWALL host — extraction rejected upstream; use wayback/abstract",
                 ))
                 extracted_urls.add(url)
             elif profile == "pdf":
@@ -1367,9 +1389,26 @@ class UnifiedExtract:
                 continue
 
             outcome.tools_tried.append(tier)
-            results = await asyncio.gather(
-                *(extractor(u) for u in pending), return_exceptions=True
-            )
+            # OVERHAUL5 W4 (D-06): per-tier concurrency caps. The self-hosted
+            # firecrawl stack runs ONE worker — firing 5 parallel scrapes at it
+            # produced the run's 7,244x 'Can't accept connection due to
+            # RAM/CPU load' rejections. Cap its wave so the worker is never
+            # hammered; other tiers keep the batch semaphore.
+            _tier_caps = {"firecrawl": 2}
+            _cap = _tier_caps.get(tier)
+            if _cap and len(pending) > _cap:
+                _per_url: dict[str, Any] = {}
+                for _start in range(0, len(pending), _cap):
+                    _wave = pending[_start:_start + _cap]
+                    _wave_out = await asyncio.gather(
+                        *(extractor(u) for u in _wave), return_exceptions=True
+                    )
+                    _per_url.update(dict(zip(_wave, _wave_out, strict=False)))
+                results = [_per_url[u] for u in pending]
+            else:
+                results = await asyncio.gather(
+                    *(extractor(u) for u in pending), return_exceptions=True
+                )
             by_url: dict[str, Any] = dict(zip(pending, results, strict=False))
 
             # OVERHAUL4 P7: per-tier transient retry rounds — timeout/

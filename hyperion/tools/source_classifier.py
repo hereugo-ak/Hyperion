@@ -97,6 +97,24 @@ def classify_web_class(url: str = "", engine: str = "") -> bool:
         host = host[4:]
     return host not in _PAYWALL_HOSTS
 
+
+def is_paywall_host(url: str = "") -> bool:
+    """True when the URL's host is a known paywall / DOI / academic-publisher
+    host whose pages reject headless extraction (OVERHAUL5 W4 / D-06).
+
+    The 08-12 run burned playwright+fetch on Elsevier/DOI URLs 20+ times
+    (SCRAPE_ALL_ENGINES_FAILED); extraction must fail fast with a typed
+    PAYWALL reason instead of climbing the ladder.
+    """
+    host = urlparse(url or "").netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host in _PAYWALL_HOSTS:
+        return True
+    # Subdomain publishers (linkinghub.elsevier.com, onlinelibrary.wiley.com,
+    # academic.oup.com, pubs.acs.org, ieeexplore.ieee.org, link.springer.com…).
+    return any(host.endswith("." + base) for base in _PAYWALL_HOSTS if "." in base)
+
 _INDUSTRY_DOMAINS = {
     "mckinsey.com", "bcg.com", "bain.com", "deloitte.com", "pwc.com",
     "kpmg.com", "ey.com", "gartner.com", "forrester.com", "statista.com",

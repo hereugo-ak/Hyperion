@@ -30,12 +30,12 @@ Master plan: `overhaul5.md` (defects D-01..D-14, W0..W8)
 - [x] ✅ W3.3 tests (fail-first, 4): cooldown-then-retry-then-permanent; success resets; failure emits TUI line; success emits TUI line; search_layer 403 test updated to new contract
 - [x] ✅ W3.4 canaries green (16/16); commit + push (next commit)
 
-## W4 · Paywall pre-classifier + firecrawl load guard (D-06)
-- [ ] ⬜ W4.1 unified_extract: URL classify step before tier climb; typed PAYWALL result
-- [ ] ⬜ W4.2 paywall host list in source_classifier (doi.org, elsevier, springer, wiley, taylorfrancis, emerald…)
-- [ ] ⬜ W4.3 firecrawl: cap concurrency; "Can't accept connection" → typed retryable
-- [ ] ⬜ W4.4 test (fail-first): doi.org URL → typed PAYWALL, zero live tier attempts
-- [ ] ⬜ W4.5 live: ladder on doi.org → PAYWALL < 2s; commit + push
+## W4 · Paywall pre-classifier + firecrawl load guard (D-06) — ✅ done
+- [x] ✅ W4.1 unified_extract: `paywall` URL profile — fail fast with typed PAYWALL reason, zero tier attempts (single + ladder paths)
+- [x] ✅ W4.2 paywall host list: `_PAYWALL_HOSTS` + `is_paywall_host()` in source_classifier (doi.org, elsevier, springer, wiley, taylorfrancis, emerald, mdpi, ssrn…; subdomain match)
+- [x] ✅ W4.3 firecrawl wave cap ≤2 concurrent (single-worker stack) — transient "Can't accept connection" already retried
+- [x] ✅ W4.4 tests (fail-first, 4): single paywall fails fast w/ zero tiers; ladder batch fails fast; paywall beats js_heavy; firecrawl waves ≤2
+- [ ] ⬜ W4.5 live: ladder on doi.org → PAYWALL < 2s (WSL, after pull); commit + push (next commit)
 
 ## W5 · UNIFIED_EXTRACT tool for all specialists (D-07)
 - [ ] ⬜ W5.1 ToolName.UNIFIED_EXTRACT + _instantiate_tool binding
