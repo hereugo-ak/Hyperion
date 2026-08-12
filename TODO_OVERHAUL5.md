@@ -1,0 +1,75 @@
+# OVERHAUL5 — TODO / Fix Checklist
+
+Status legend: ⬜ pending · 🔧 in progress · ✅ done · ❌ blocked (state why)
+Master plan: `overhaul5.md` (defects D-01..D-14, W0..W8)
+
+## W0 · Fix the two stale paid adapters (D-01) — ✅ done
+- [x] ✅ W0.1 you.py → `ydc-index.io/v1/search`, body `count`, parse `results.web[]` (verified code in docs/YOU_YEP_API_FINDINGS.md)
+- [x] ✅ W0.2 yep.py → `platform.yep.com/api/search`, POST+JSON, parse `results[]` + api_cost/balance
+- [x] ✅ W0.3 bring docs/YOU_YEP_API_FINDINGS.md + scripts/check_you_yep_search.py into repo
+- [x] ✅ W0.4 live test: `python scripts/check_you_yep_search.py` → HTTP 200 × 2, ≥5 results each (WSL, verified 2026-08-12)
+- [x] ✅ W0.5 test file (fail-first) — 2 parsing tests FAIL on old adapters / PASS on new; 2 live tests skip without keys
+- [ ] ⬜ W0.6 commit + push fix0.3 (next commit)
+
+## W1 · Web-class quality trigger + corpus tagging (D-02, D-03)
+- [ ] ⬜ W1.1 `SearchResult.web_class` field (types.py) + domain→class tagging (source_classifier)
+- [ ] ⬜ W1.2 searxng.py trigger: web-class query returns early only if ≥ MIN_WEB_RESULTS web-class results
+- [ ] ⬜ W1.3 fan-out results tagged web_class=False; never satisfy web trigger
+- [ ] ⬜ W1.4 test (fail-first): 3 scholar DOIs → paid chain fires, response retrieval_degraded
+- [ ] ⬜ W1.5 commit + push
+
+## W2 · No re-entry + recursion guard (D-04)
+- [ ] ⬜ W2.1 orchestrator paid-only chain (skip SearxNGAdapter when caller exhausted it)
+- [ ] ⬜ W2.2 recursion guard in SearxNGClient.search (re-entrancy flag)
+- [ ] ⬜ W2.3 test (fail-first): real orchestrator + real adapter → SearxNGClient.search entered once, You called
+- [ ] ⬜ W2.4 commit + push
+
+## W3 · Paid suspension + visibility (D-05)
+- [ ] ⬜ W3.1 suspension.py: paid 403 → 120s cooldown, permanent only after 3×
+- [ ] ⬜ W3.2 orchestrator: TUI-visible system.log per paid attempt (provider, query, results, error, cooldown)
+- [ ] ⬜ W3.3 test (fail-first): 3× 403 → suspended on 3rd, retried before; TUI channel receives lines
+- [ ] ⬜ W3.4 canaries still green; commit + push
+
+## W4 · Paywall pre-classifier + firecrawl load guard (D-06)
+- [ ] ⬜ W4.1 unified_extract: URL classify step before tier climb; typed PAYWALL result
+- [ ] ⬜ W4.2 paywall host list in source_classifier (doi.org, elsevier, springer, wiley, taylorfrancis, emerald…)
+- [ ] ⬜ W4.3 firecrawl: cap concurrency; "Can't accept connection" → typed retryable
+- [ ] ⬜ W4.4 test (fail-first): doi.org URL → typed PAYWALL, zero live tier attempts
+- [ ] ⬜ W4.5 live: ladder on doi.org → PAYWALL < 2s; commit + push
+
+## W5 · UNIFIED_EXTRACT tool for all specialists (D-07)
+- [ ] ⬜ W5.1 ToolName.UNIFIED_EXTRACT + _instantiate_tool binding
+- [ ] ⬜ W5.2 grant to all 12 specialists (schema test: every spec has it)
+- [ ] ⬜ W5.3 specialist direct scrape sites → get_tool(UNIFIED_EXTRACT)
+- [ ] ⬜ W5.4 commit + push
+
+## W6 · Finding quality at birth (D-08, D-09, D-10)
+- [ ] ⬜ W6.1 relevance gate at finding construction (OFF_TOPIC typed reject)
+- [ ] ⬜ W6.2 gap placeholders → open_gaps only, never findings
+- [ ] ⬜ W6.3 content-hash dedupe in findings bus (recovery can't double-add)
+- [ ] ⬜ W6.4 metric parse failure → absent (omit row + stated gap), never 'Unknown'
+- [ ] ⬜ W6.5 verdict: narrative generated FROM structured field (one writer)
+- [ ] ⬜ W6.6 tests (fail-first) × 4; canaries green; commit + push
+
+## W7 · Checkpointed specialists + COMPETE crash (D-11, D-12)
+- [ ] ⬜ W7.1 specialists publish partial model checkpoints at step boundaries
+- [ ] ⬜ W7.2 timeout_at_final_completion typed; final completion retried once
+- [ ] ⬜ W7.3 competitive_intel.py:725/743 — bind content in both paths
+- [ ] ⬜ W7.4 tests (fail-first) × 2; commit + push
+
+## W8 · Visibility + typed recovery (D-13, D-14)
+- [ ] ⬜ W8.1 boot probe: provider key_ok/endpoint_ok table at engagement start
+- [ ] ⬜ W8.2 run-end cost report always printed (P9) + /status live panel
+- [ ] ⬜ W8.3 mid-run telemetry (provider calls, corpus per class, budget)
+- [ ] ⬜ W8.4 recovery typed-failure → remedy table (EVIDENCE_THIN → paid-first re-run)
+- [ ] ⬜ W8.5 recovery budget: 1 pass per blocker class
+- [ ] ⬜ W8.6 tests (fail-first) × 3; commit + push
+
+## Definition of Done (overhaul5.md §5)
+- [ ] ⬜ `python -m pytest -q` green (minus env-dependent)
+- [ ] ⬜ `python -m hyperion.eval.canaries` green (16 + new W0-W8)
+- [ ] ⬜ `python -m hyperion.eval.ci_gate` green
+- [ ] ⬜ LIVE GATE (WSL): paid chain fires (≥1 paid ledger record), web ≥ 8 domains, extraction > 0, no integrity blockers, score ≥ 3.0, PDF ships, no 180s storm
+
+## Open decisions (overhaul5.md §7 — change if you disagree)
+- [ ] ⬜ confirm MIN_WEB_RESULTS=5, chain order SearXNG→You→Exa→Tavily→Yep, Yep cap 30/run, fan-out rescue kept (tagged), paid 403→cooldown
