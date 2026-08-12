@@ -7,12 +7,9 @@
 </p>
 
 <p align="center">
-  <em>The exact ANSI Shadow wordmark from the terminal interface, in the TUI's soft-clay to deep-clay gradient. Generated from the same locked banner source, so it can never drift from the TUI.</em>
+  <strong>Multi-Agent Consulting Intelligence</strong><br>
+  <em>orchestration&nbsp;&nbsp;·&nbsp;&nbsp;reasoning&nbsp;&nbsp;·&nbsp;&nbsp;synthesis</em>
 </p>
-
-> **Multi-Agent Consulting Intelligence**
->
-> *orchestration · reasoning · synthesis*
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
