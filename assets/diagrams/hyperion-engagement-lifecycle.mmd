@@ -1,0 +1,28 @@
+flowchart TB
+    classDef intake fill:#262521,stroke:#B99463,color:#F3E8D4,stroke-width:1.7px;
+    classDef evidence fill:#202421,stroke:#7FAD87,color:#F3E8D4,stroke-width:1.7px;
+    classDef plan fill:#20242A,stroke:#7FA2C5,color:#F3E8D4,stroke-width:1.7px;
+    classDef gate fill:#2A2221,stroke:#C48773,color:#F3E8D4,stroke-width:1.7px;
+    classDef delivery fill:#282323,stroke:#B68A9B,color:#F3E8D4,stroke-width:1.7px;
+    classDef retained fill:#191918,stroke:#837E73,color:#D8D0C3,stroke-width:1.2px;
+
+    I[01 · Intake<br/>question + engagement ID]:::intake
+    P[02 · Corpus preflight<br/>bounded canary probes across source classes]:::evidence
+    C{Evidence contract<br/>GREEN · AMBER · RED}:::gate
+    RED[Stop fast with a typed<br/>INSUFFICIENT_EVIDENCE diagnostic]:::gate
+    PLAN[03 · Plan<br/>scope · eligible roster · task DAG · budget estimate]:::plan
+    RET[04 · Retrieve and extract<br/>grounded queries · usable content · source records]:::evidence
+    SPEC[05 · Analyze in parallel<br/>specialist tasks governed by dependency edges]:::plan
+    SYN[06 · Reconcile and verify<br/>synthesis · fact checks · contradiction handling]:::plan
+    QG{07 · Quality gate<br/>10 dimensions · evidence checks · iteration limit}:::gate
+    FIX[Targeted gap closure<br/>follow-up research or task reframing]:::plan
+    DEL[08 · Design and render<br/>charts → layout → PDF audit]:::delivery
+    RETAIN[09 · Retain and recover<br/>journal · manifest · artifacts · diagnostics]:::retained
+
+    I --> P --> C
+    C -- RED --> RED
+    C -- GREEN / AMBER --> PLAN --> RET --> SPEC --> SYN --> QG
+    QG -- needs revision --> FIX --> RET
+    QG -- approved --> DEL --> RETAIN
+
+    linkStyle default stroke:#837E73,stroke-width:1.4px;

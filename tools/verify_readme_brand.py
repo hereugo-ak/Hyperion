@@ -24,12 +24,6 @@ def main() -> None:
     if 'src="assets/brand/hyperion-logo.png"' not in readme:
         raise SystemExit("README does not embed the supplied Hyperion logo")
 
-    block_match = re.search(r"```text\n(.*?)\n```", readme, flags=re.DOTALL)
-    if block_match is None:
-        raise SystemExit("README does not contain the canonical raw wordmark block")
-    if block_match.group(1).splitlines() != WORDMARK:
-        raise SystemExit("README raw wordmark differs from hyperion.tui.banner.WORDMARK")
-
     svg = SVG.read_text(encoding="utf-8")
     if f'fill="{BG_CANVAS}"' not in svg:
         raise SystemExit("SVG background differs from the TUI canvas")
@@ -37,18 +31,14 @@ def main() -> None:
     width = max(len(line) for line in WORDMARK)
     actual = {
         (int(x), int(y)): fill
-        for x, y, fill in re.findall(
-            r'<text x="(\d+)" y="(\d+)" fill="(#[0-9A-Fa-f]{6})">', svg
-        )
+        for x, y, fill in re.findall(r'<text x="(\d+)" y="(\d+)" fill="(#[0-9A-Fa-f]{6})">', svg)
     }
     expected: dict[tuple[int, int], str] = {}
     for row, line in enumerate(WORDMARK):
         y = 60 + 38 + row * 47
         for column, character in enumerate(line):
             if character != " ":
-                expected[(60 + column * 23, y)] = ramp(
-                    LOGO_STOPS, column / max(1, width - 1)
-                )
+                expected[(60 + column * 23, y)] = ramp(LOGO_STOPS, column / max(1, width - 1))
     if actual != expected:
         missing = sorted(expected.items() - actual.items())[:3]
         unexpected = sorted(actual.items() - expected.items())[:3]
@@ -64,7 +54,7 @@ def main() -> None:
         raise SystemExit("PNG does not have sufficient raster resolution for the README heading")
 
     print("README embeds both required brand assets")
-    print("Raw wordmark exactly matches hyperion.tui.banner.WORDMARK")
+    print("SVG wordmark glyphs exactly match hyperion.tui.banner.WORDMARK")
     print("SVG colors and glyph coordinates exactly match the TUI OKLab ramp")
     print(f"PNG decoded successfully at {image.size[0]}×{image.size[1]} on TUI canvas {BG_CANVAS}")
 

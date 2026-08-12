@@ -10,60 +10,41 @@
 >
 > *orchestration · reasoning · synthesis*
 
-Hyperion is a Python-based research and consulting system that converts a business question into a research-backed, quality-gated deliverable. It combines a Textual terminal interface, a non-interactive command line, durable execution, multi-provider model routing, evidence collection, specialist analysis, synthesis, report production, and delivery validation in one runtime. The interface is not a separate demonstration surface: it drives the same workflow engine used by headless engagements.[1] [2]
+Hyperion is a **research-and-delivery operating system** for high-stakes business questions. It converts a question into a governed engagement: one that establishes whether the available evidence is fit for purpose, assigns only the expertise the question warrants, preserves the trail from source to claim, and refuses to treat a draft as delivery. The Textual terminal interface and the headless CLI are two entry points to the same workflow engine, not separate demonstration surfaces.[1] [2]
 
-## What Hyperion Does
+> **The design principle:** move from question to client-ready output through explicit gates—not a longer chain of prompts.
 
-A Hyperion engagement is a directed research workflow rather than a single model prompt. The system develops a plan before research, preserves evidence before synthesis, validates citations and coverage before delivery, and records enough state to resume work after interruption. The actual directed acyclic graph varies with the question, but the operating model remains consistent.[2]
+## The Hyperion Operating Model
 
-| Capability | Implementation summary | Why it matters |
+Hyperion is built for the work that sits between an executive question and a defensible recommendation. The system separates **control**, **evidence and intelligence**, and **assurance and delivery** so that a change in model availability, research depth, or presentation requirement does not collapse the entire engagement into an opaque response. Each plane emits durable artifacts that the next plane can inspect, challenge, or resume.[2] [3]
+
+![Architecture map of Hyperion’s control plane, evidence and intelligence plane, assurance and delivery plane, and shared platform foundation.](assets/diagrams/hyperion-system-architecture.png)
+
+| Operating plane | What the runtime actually does | Why it changes the deliverable |
 | --- | --- | --- |
-| **Adaptive orchestration** | The Engagement Director decomposes the objective, builds a task DAG, selects specialists, and supplies engagement context to downstream stages. | The research team is selected for the question instead of being a fixed prompt chain. |
-| **Specialist research** | A 20-agent roster spans orchestration, domain analysis, research support, quality controls, visualization, presentation, and rendering. | Market, financial, risk, regulatory, technology, and strategy questions can be covered in parallel. |
-| **Evidence-led analysis** | Search, extraction, evidence scoring, provenance binding, corpus checks, and fact checking are applied before recommendations are finalized. | Deliverables can distinguish sourced findings from unsupported assertions. |
-| **Resilient execution** | Provider routing tracks health, token capacity, and engagement budgets; completed workflow stages are persisted to the run journal. | A provider issue or interruption does not automatically discard completed work. |
-| **Professional delivery** | The delivery path builds charts and visual exhibits, creates a narrative structure, renders reports, and performs output-level quality checks. | The result is designed as a consulting deliverable rather than a raw transcript. |
+| **Control** | The Engagement Director classifies the question, establishes scope and geography, records eligible and excluded specialist decisions, constructs a dependency-aware task DAG, and estimates work before dispatch. | The team is assembled for the engagement rather than forcing every question through one fixed agent sequence. |
+| **Evidence & intelligence** | Corpus preflight probes the configured source classes; retrieval and extraction build an evidence ledger; independent specialist tasks execute in parallel when their dependencies permit. | Findings have a retained provenance path, and research begins with an explicit evidence condition instead of an assumption that sources will be sufficient. |
+| **Assurance & delivery** | Synthesis reconciles specialist work, fact checking challenges claims, and the Quality Gate evaluates the assembled work before visualization, presentation design, PDF rendering, and output audit. | The workflow can request targeted gap closure before release and produces a report with purposeful exhibits rather than a raw model transcript. |
+| **Platform foundation** | The router applies provider health, capacity, tier, and budget controls; the run journal records completed steps, failures, artifacts, and diagnostics. | Recoverable work remains recoverable: an interruption or provider issue does not automatically discard stages that have already completed. |
 
-## Engagement Lifecycle
+This is a deliberately selective system. Hyperion does not claim that every business question needs all twenty specialists, every provider, or every source. The director’s plan ties specialist selection to the question type and eligible methods, while the DAG exposes dependencies, concurrency, estimates, and later adaptation as first-class operational decisions.[3]
 
-The lifecycle below represents the responsibilities implemented by `WorkflowEngine`. It should be read as an operating sequence; individual engagement DAGs may omit or repeat specialist tasks according to the question and evidence condition.[2]
+## An Engagement Is a Governed Loop
 
-| Stage | Primary responsibility | Key artifact or control |
+The lifecycle is a decision system, not a linear content-generation pipeline. A `RED` evidence contract stops an engagement with a typed insufficient-evidence diagnostic. `GREEN` and `AMBER` contracts allow scoped work to proceed, but quality approval remains conditional: a weak coverage, contradiction, or claim can route the system back into targeted gap closure rather than quietly passing into design.[2] [9] [10]
+
+![Engagement lifecycle from intake through corpus contract, planning, retrieval, parallel analysis, synthesis, quality gate, targeted revision, rendering, and retained artifacts.](assets/diagrams/hyperion-engagement-lifecycle.png)
+
+| Moment that matters | Runtime control | Engagement consequence |
 | --- | --- | --- |
-| **1. Intake and preflight** | Normalizes the question, establishes an engagement identifier, checks runtime dependencies, and probes the research corpus. | Run manifest, preflight telemetry, and initial evidence condition. |
-| **2. Planning** | Determines the research scope, analytical lenses, task order, and the specialist roster required for the engagement. | Engagement plan and task DAG. |
-| **3. Research and extraction** | Queries the configured source network, retrieves documents, extracts usable content, and records source-level evidence. | Evidence ledger, retained sources, and specialist findings. |
-| **4. Analysis and synthesis** | Specialists develop findings; the Synthesis Lead reconciles material into a recommendation and a structured narrative. | Draft report, reasoning trail, and recommendation. |
-| **5. Quality and fact checks** | Checks claims, evidence coverage, contradictions, report quality, and whether further work is necessary. | Quality score, fact-check output, iteration or escalation decision. |
-| **6. Design and delivery** | Produces charts, image selections, presentation structure, Markdown, and PDF output before delivery checks. | Deliverable assets, rendered report, and output audit. |
-| **7. Observability and recovery** | Persists step completion and failures, records diagnostics, and exposes resume and health operations. | `artifacts/<run-id>/journal.sqlite`, manifests, and diagnostics. |
+| **Before research** | Corpus preflight performs bounded canary probes across web, scholarly, and reference paths, then returns a typed `GREEN`, `AMBER`, or `RED` contract. | The team learns whether the planned evidence standard is achievable before expensive work begins.[9] |
+| **Before specialist dispatch** | The director builds a DAG with explicit dependencies, model tiers, token and call estimates, subject-class gating, and recorded roster decisions. | Parallelism is earned by independence; sequencing is preserved where synthesis or verification requires prior work. |
+| **Before release** | Synthesis, independent fact checking, and the ten-dimension Quality Gate assess claims, evidence coverage, contradictions, methodology, and report quality. | The system can approve, iterate, or escalate with a visible reason rather than silently emitting a polished but fragile answer.[10] |
+| **After interruption** | The run journal and manifest retain task status, outputs, artifacts, and diagnostics under the engagement run directory. | Operators can inspect or resume deterministic runs instead of restarting completed stages by default.[11] |
 
-```text
-Business question
-      │
-      ▼
-Preflight and research plan
-      │
-      ▼
-Engagement Director ──► task DAG and specialist selection
-      │
-      ▼
-Parallel specialist research ──► evidence ledger and findings
-      │
-      ├────────────────────────► fact checks and contradiction handling
-      │
-      ▼
-Synthesis Lead ──► report narrative and recommendation
-      │
-      ▼
-Quality Gate ──► iterate, escalate, or approve
-      │
-      ▼
-Visualization + presentation design + render engine
-      │
-      ▼
-Audited report delivery
-```
+### What the reader receives
+
+The client-facing report is the final expression of a traceable operating sequence: scoped research, retained evidence, specialist analysis, synthesis, quality controls, visual exhibits, document design, and render-level checks. The operational trail remains available in the corresponding engagement artifacts, allowing Hyperion to support both executive reading and post-delivery scrutiny.[2] [11]
 
 ## Agent Operating Model
 
@@ -272,9 +253,12 @@ This project is proprietary. © HYPERION Consulting.
 
 [1]: ./hyperion/tui/banner.py "Locked terminal wordmark, static gradient rule, and interactive banner"
 [2]: ./hyperion/orchestrator.py "WorkflowEngine and full engagement pipeline"
-[3]: ./hyperion/tui/theme.py "Terminal canvas and logo palette"
+[3]: ./hyperion/agents/engagement_director.py "Question decomposition, roster selection, and engagement DAG construction"
 [4]: ./hyperion/tui/roster.py "Authoritative agent roster and responsibilities"
 [5]: ./pyproject.toml "Project metadata, Python requirement, dependencies, and command entry point"
 [6]: ./hyperion/cli.py "CLI commands, service bootstrap, output, and resume behavior"
 [7]: ./hyperion/config.py "Settings schema, providers, search adapters, paths, and quality controls"
 [8]: ./docker-compose.yml "Local retrieval services, profiles, ports, health checks, and hardening"
+[9]: ./hyperion/agents/support/corpus_preflight.py "Corpus evidence contract and preflight controls"
+[10]: ./hyperion/agents/support/quality_gate.py "Quality rubric, review loop, and approval controls"
+[11]: ./hyperion/obs/run_journal.py "Durable run state, replay, artifacts, and diagnostics"
