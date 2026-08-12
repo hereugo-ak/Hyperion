@@ -346,7 +346,7 @@ body {{
     text-align: justify;
     hyphens: auto;
     /* OVERHAUL4 fix (2026-08-12): WeasyPrint renders hyphenation breaks
-       with U+2010, which Instrument Serif does not carry — any hyphenated
+       with U+2010, which Instrument Serif does not carry; any hyphenated
        serif span (the TOC is the live case) fell back to DejaVu-Serif, a
        forbidden embedded font per the golden baseline. Force the ASCII
        hyphen U+002D, which every vendored face has. */
