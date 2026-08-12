@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from hyperion.obs import trace
+from hyperion.obs.trace import trace
 
 logger = logging.getLogger(__name__)
 

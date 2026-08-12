@@ -633,7 +633,7 @@ class SustainabilityAnalyst(BaseAgent):
         )
 
         esg_scores: list[ESGScore] = []
-        most_relevant = ""
+        most_relevant: str | None = ""
 
         if not response.success or not response.content:
             return (esg_scores, most_relevant)

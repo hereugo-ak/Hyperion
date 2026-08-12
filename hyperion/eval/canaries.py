@@ -34,13 +34,15 @@ production path uses, so a regression in the gate itself fails the run.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +110,7 @@ def _ledger_with_domains(run_id: str, n: int) -> None:
         )
 
 
-def _run_coroutine(coro) -> Any:
+def _run_coroutine(coro: Any) -> Any:
     """Run ``coro`` whether or not an event loop is already running.
 
     ``python -m hyperion.eval.canaries`` runs from a sync ``main()``; the CI
@@ -277,7 +279,8 @@ def canary_budget_exhaustion() -> CanaryResult:
 
     from hyperion.agents.base import BaseAgent
     from hyperion.agents.sub_agent import SubAgentRunner
-    from hyperion.schemas.agents import AgentName, ModelTier, SubAgentSpec
+    from hyperion.config import ModelTier
+    from hyperion.schemas.agents import AgentName, SubAgentSpec
 
     started = time.monotonic()
     parent = MagicMock()
@@ -412,15 +415,15 @@ def canary_missing_dep_output() -> CanaryResult:
     """OVERHAUL2 S14 / D1: a specialist dependency with no output must NOT
     crash synthesis/fact-check — they run on the findings channel plus
     available outputs (S4), never ``MissingDependencyOutput``."""
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import AsyncMock, MagicMock
 
     from hyperion.orchestrator import MissingDependencyOutput, WorkflowEngine
-    from hyperion.schemas.agents import AgentName, AgentRole, AgentSpec, ModelTier
+    from hyperion.schemas.agents import AgentName
 
     started = time.monotonic()
     orch = WorkflowEngine.__new__(WorkflowEngine)
-    orch._task_outputs = {}  # the failed dependency produced nothing
-    orch._log = MagicMock()
+    orch._task_outputs = {}
+    orch._log = MagicMock()  # type: ignore[method-assign]
     orch._findings_lock = AsyncMock()  # S4 reads under the findings lock
     orch._all_findings = []
     orch.bus = MagicMock()
@@ -439,10 +442,9 @@ def canary_missing_dep_output() -> CanaryResult:
     # S4's gate returns before dispatch, so we only exercise the context build.
     try:
         # S4 raises ONLY for non-synthesis/fact-check agents.
-        async def _run_guarded():
+        async def _run_guarded() -> None:
             return None
 
-        from hyperion.orchestrator import WorkflowEngine as WE
 
         context = {}
         missing_deps: list[str] = []
@@ -504,7 +506,7 @@ def canary_reference_condensation() -> CanaryResult:
         def raise_for_status(self) -> None:
             return None
 
-        def json(self) -> dict:
+        def json(self) -> dict[str, Any]:
             return {
                 "results": [
                     {
@@ -523,18 +525,22 @@ def canary_reference_condensation() -> CanaryResult:
             self.base_url = base_url
             self.last_q: str | None = None
 
-        async def get(self, path: str, params: dict | None = None) -> _Response:
+        async def get(self, path: str, params: dict[str, Any] | None = None) -> _Response:
             self.last_q = str((params or {}).get("q", ""))
             return _Response()
 
     class _Health:
-        def filter_available(self, engines):
+        def filter_available(self, engines: list[str]) -> list[str]:
             return list(engines)
 
-        def record_response(self, unresponsive_engines, responding_engines):
+        def record_response(
+            self,
+            unresponsive_engines: list[list[str]],
+            responding_engines: list[str],
+        ) -> None:
             return None
 
-        def record_degradation_if_needed(self, engines, *, floor=4):
+        def record_degradation_if_needed(self, engines: list[str], *, floor: int = 4) -> None:
             return None
 
     started = time.monotonic()
@@ -548,10 +554,10 @@ def canary_reference_condensation() -> CanaryResult:
         ])
         http = _Http("http://ref")
 
-        async def _get_client(base_url=None):
+        async def _get_client(base_url: str | None = None) -> _Http:
             return http
 
-        client._get_client = _get_client  # type: ignore[method-assign]
+        client._get_client = _get_client  # type: ignore[assignment]
         try:
             await client._search_searxng_json(
                 query=reference_query,
@@ -566,13 +572,12 @@ def canary_reference_condensation() -> CanaryResult:
         finally:
             await client.close()
 
-    with patch("hyperion.tools.searxng.get_engine_health", lambda: _Health()):
-        with patch.object(
-            EngineTokenBucket,
-            "acquire",
-            staticmethod(lambda engines: asyncio.sleep(0)),
-        ):
-            dispatched = _run_coroutine(_run())
+    with patch("hyperion.tools.searxng.get_engine_health", lambda: _Health()), patch.object(
+        EngineTokenBucket,
+        "acquire",
+        staticmethod(lambda engines: asyncio.sleep(0)),
+    ):
+        dispatched = _run_coroutine(_run())
     elapsed = int((time.monotonic() - started) * 1000)
 
     if dispatched is None:
@@ -618,7 +623,7 @@ def canary_scholar_sanitation() -> CanaryResult:
         def raise_for_status(self) -> None:
             return None
 
-        def json(self) -> dict:
+        def json(self) -> dict[str, Any]:
             return {
                 "results": [
                     {
@@ -637,18 +642,22 @@ def canary_scholar_sanitation() -> CanaryResult:
             self.base_url = base_url
             self.last_q: str | None = None
 
-        async def get(self, path: str, params: dict | None = None) -> _Response:
+        async def get(self, path: str, params: dict[str, Any] | None = None) -> _Response:
             self.last_q = str((params or {}).get("q", ""))
             return _Response()
 
     class _Health:
-        def filter_available(self, engines):
+        def filter_available(self, engines: list[str]) -> list[str]:
             return list(engines)
 
-        def record_response(self, unresponsive_engines, responding_engines):
+        def record_response(
+            self,
+            unresponsive_engines: list[list[str]],
+            responding_engines: list[str],
+        ) -> None:
             return None
 
-        def record_degradation_if_needed(self, engines, *, floor=4):
+        def record_degradation_if_needed(self, engines: list[str], *, floor: int = 4) -> None:
             return None
 
     started = time.monotonic()
@@ -663,10 +672,10 @@ def canary_scholar_sanitation() -> CanaryResult:
         ])
         http = _Http("http://scholar")
 
-        async def _get_client(base_url=None):
+        async def _get_client(base_url: str | None = None) -> _Http:
             return http
 
-        client._get_client = _get_client  # type: ignore[method-assign]
+        client._get_client = _get_client  # type: ignore[assignment]
         try:
             await client._search_searxng_json(
                 query=scholar_query,
@@ -681,13 +690,12 @@ def canary_scholar_sanitation() -> CanaryResult:
         finally:
             await client.close()
 
-    with patch("hyperion.tools.searxng.get_engine_health", lambda: _Health()):
-        with patch.object(
-            EngineTokenBucket,
-            "acquire",
-            staticmethod(lambda engines: asyncio.sleep(0)),
-        ):
-            dispatched = _run_coroutine(_run())
+    with patch("hyperion.tools.searxng.get_engine_health", lambda: _Health()), patch.object(
+        EngineTokenBucket,
+        "acquire",
+        staticmethod(lambda engines: asyncio.sleep(0)),
+    ):
+        dispatched = _run_coroutine(_run())
     elapsed = int((time.monotonic() - started) * 1000)
 
     if dispatched is None:
@@ -734,28 +742,32 @@ def canary_nonjson_cooldown() -> CanaryResult:
         def __init__(self) -> None:
             self.dead: set[str] = set()
 
-        def filter_available(self, engines):
+        def filter_available(self, engines: list[str]) -> list[str]:
             return [engine for engine in engines if engine not in self.dead]
 
-        def record_response(self, unresponsive_engines, responding_engines):
+        def record_response(
+            self,
+            unresponsive_engines: list[list[str]],
+            responding_engines: list[str],
+        ) -> None:
             self.dead.update(str(entry[0]) for entry in unresponsive_engines)
             self.dead.difference_update(str(e) for e in responding_engines)
 
-        def record_degradation_if_needed(self, engines, *, floor=4):
+        def record_degradation_if_needed(self, engines: list[str], *, floor: int = 4) -> None:
             return None
 
     class _WebResponse:
         def raise_for_status(self) -> None:
             return None
 
-        def json(self) -> dict:
+        def json(self) -> dict[str, Any]:
             raise json.JSONDecodeError("Expecting value", "line 1 column 1 (char 0)", 0)
 
     class _ScholarResponse:
         def raise_for_status(self) -> None:
             return None
 
-        def json(self) -> dict:
+        def json(self) -> dict[str, Any]:
             return {
                 "results": [
                     {
@@ -772,9 +784,9 @@ def canary_nonjson_cooldown() -> CanaryResult:
     class _Http:
         def __init__(self, base_url: str) -> None:
             self.base_url = base_url
-            self.calls: list[dict] = []
+            self.calls: list[dict[str, Any]] = []
 
-        async def get(self, path: str, params: dict | None = None) -> object:
+        async def get(self, path: str, params: dict[str, Any] | None = None) -> object:
             self.calls.append(dict(params or {}))
             if "scholar" in self.base_url:
                 return _ScholarResponse()
@@ -794,13 +806,13 @@ def canary_nonjson_cooldown() -> CanaryResult:
         ])
         clients: dict[str, _Http] = {}
 
-        async def _get_client(base_url=None):
+        async def _get_client(base_url: str | None = None) -> _Http:
             url = (base_url or "http://web").rstrip("/")
             if url not in clients:
                 clients[url] = _Http(url)
             return clients[url]
 
-        client._get_client = _get_client  # type: ignore[method-assign]
+        client._get_client = _get_client  # type: ignore[assignment]
         try:
             response = await client._search_searxng_json(
                 query="non-json probe query",
@@ -815,13 +827,12 @@ def canary_nonjson_cooldown() -> CanaryResult:
         finally:
             await client.close()
 
-    with patch("hyperion.tools.searxng.get_engine_health", lambda: health):
-        with patch.object(
-            EngineTokenBucket,
-            "acquire",
-            staticmethod(lambda engines: asyncio.sleep(0)),
-        ):
-            response, clients = _run_coroutine(_run())
+    with patch("hyperion.tools.searxng.get_engine_health", lambda: health), patch.object(
+        EngineTokenBucket,
+        "acquire",
+        staticmethod(lambda engines: asyncio.sleep(0)),
+    ):
+        response, clients = _run_coroutine(_run())
     elapsed = int((time.monotonic() - started) * 1000)
 
     if {"mwmbl", "brave"} > health.dead:
@@ -909,12 +920,12 @@ def canary_all_findings_bus_fed() -> CanaryResult:
         engine._engagement_id = "eng_canary_dd"
 
         class _AggregateOnlyAgent:
-            _findings: list = []
+            _findings: list[Any] = []
 
-            def __init__(self, bus: object) -> None:
+            def __init__(self, bus: Any) -> None:
                 self.bus = bus
 
-            async def run(self, **kwargs: object) -> dict:
+            async def run(self, **kwargs: object) -> dict[str, Any]:
                 await self.bus.publish(
                     channel=Channel.FINDINGS,
                     msg_type=MessageType.FINDING,
@@ -990,8 +1001,8 @@ def canary_recovery_loop() -> CanaryResult:
     orch._all_findings = []
     orch._task_outputs = {}
     orch._manifest = None
-    orch._log = MagicMock()
-    orch._publish_task_update = MagicMock()
+    orch._log = MagicMock()  # type: ignore[method-assign]
+    orch._publish_task_update = MagicMock()  # type: ignore[method-assign]
     orch.bus = MagicMock()
     orch._recovery_telemetry = {
         "attempted": False,
@@ -1030,15 +1041,14 @@ def canary_recovery_loop() -> CanaryResult:
 
     dispatch = AsyncMock(return_value=None)
 
-    async def _fake_loop(self, dag, final_report, fact_check_report):
+    async def _fake_loop(self: Any, dag: Any, final_report: Any, fact_check_report: Any) -> Any:
         return repaired_report, repaired_score, 1
 
-    with patch.object(WorkflowEngine, "_dispatch_recovery", new=dispatch):
-        with patch.object(
-            WorkflowEngine, "_quality_iteration_loop", new=_fake_loop
-        ):
-            dag = MagicMock()
-            _run_coroutine(orch._recover_from_blocked(dag, report, score, None))
+    with patch.object(WorkflowEngine, "_dispatch_recovery", new=dispatch), patch.object(
+        WorkflowEngine, "_quality_iteration_loop", new=_fake_loop
+    ):
+        dag = MagicMock()
+        _run_coroutine(orch._recover_from_blocked(dag, report, score, None))
     elapsed = int((time.monotonic() - started) * 1000)
 
     if dispatch.await_count != 1:
@@ -1046,6 +1056,7 @@ def canary_recovery_loop() -> CanaryResult:
             "recovery-loop", False,
             f"expected exactly 1 recovery pass, got {dispatch.await_count}",
         )
+    assert dispatch.await_args is not None
     action = dispatch.await_args.args[0]
     if action["recovery_class"] != "PLACEHOLDER_VALUE":
         return CanaryResult(
@@ -1165,7 +1176,7 @@ def canary_visual_quality_na() -> CanaryResult:
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
 
-CANARY_REGISTRY: list[dict[str, object]] = [
+CANARY_REGISTRY: list[dict[str, Any]] = [
     {"name": "all-engines-403", "fn": canary_all_engines_403},
     {"name": "healthy", "fn": canary_healthy},
     {"name": "malformed-JSON", "fn": canary_malformed_json},
@@ -1195,7 +1206,7 @@ def run_canaries() -> list[CanaryResult]:
     """
     results: list[CanaryResult] = []
     for entry in CANARY_REGISTRY:
-        results.append(entry["fn"]())
+        results.append(cast("Callable[[], CanaryResult]", entry["fn"])())
     return results
 
 
@@ -1207,10 +1218,8 @@ def main() -> int:
     import sys
 
     for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):  # pragma: no cover - non-file streams
-            pass
+        with contextlib.suppress(AttributeError, ValueError):  # pragma: no cover
+            cast("Any", _stream).reconfigure(encoding="utf-8", errors="replace")
     results = run_canaries()
     failed = [r for r in results if not r.passed]
     print(f"CANARY SUITE: {len(results) - len(failed)}/{len(results)} green")

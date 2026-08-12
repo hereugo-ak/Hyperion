@@ -184,7 +184,7 @@ class TestRenderedTwoColumnMeasure:
             f"{' (OOM-killed by the host)' if measured.returncode == -9 else ''}\n"
             f"stderr tail:\n{measured.stderr[-2000:]}"
         )
-        data = json.loads(measured.stdout)
+        data = json.loads(measured.stdout.strip().splitlines()[-1])
         # A child that renders nothing would otherwise sail through every
         # assertion below on empty data.
         assert data["line_count"] > 200, (

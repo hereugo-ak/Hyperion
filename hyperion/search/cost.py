@@ -65,7 +65,7 @@ def session_search_cost(
     }
     provider_names: set[str] = set()
     provider_names.update(metrics.keys())
-    for name in table.keys():
+    for name in table:
         provider_names.add(display_names.get(name.lower(), name.title()))
     lines: list[dict[str, Any]] = []
     for name in sorted(provider_names):
@@ -80,7 +80,7 @@ def session_search_cost(
             "cost_per_1000": per_1000,
             "cost_usd": round(cost, 4),
         })
-    lines.sort(key=lambda l: (-l["cost_usd"], l["provider"]))
+    lines.sort(key=lambda line: (-line["cost_usd"], line["provider"]))
     return lines
 
 
@@ -93,12 +93,12 @@ def format_search_cost_report(
     if not lines:
         return "search layer: no provider activity this session"
     rows = []
-    for l in lines:
+    for line in lines:
         rows.append(
-            f"  {l['provider']:<10s} calls={l['calls']:<5d} "
-            f"results={l['results']:<5d} cost=${l['cost_usd']:.4f}"
+            f"  {line['provider']:<10s} calls={line['calls']:<5d} "
+            f"results={line['results']:<5d} cost=${line['cost_usd']:.4f}"
         )
-    total = round(sum(l["cost_usd"] for l in lines), 4)
+    total = round(sum(line["cost_usd"] for line in lines), 4)
     return (
         "SEARCH SESSION COST:\n"
         + "\n".join(rows)

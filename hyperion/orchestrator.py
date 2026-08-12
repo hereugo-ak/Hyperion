@@ -2710,6 +2710,8 @@ class WorkflowEngine:
         agent = action["agent"]
         if agent is None:
             return None  # THIN_EVIDENCE is handled by the caller
+        from hyperion.config import ModelTier
+
         task_id = f"task_recover_{pass_no}_{agent.value}"
         if dag.get_task(task_id) is not None:
             return self._task_outputs.get(task_id)
@@ -2717,7 +2719,7 @@ class WorkflowEngine:
         task = TaskNode(
             id=task_id,
             agent=agent,
-            model_tier="standard",
+            model_tier=ModelTier.STANDARD,
             description=action["description"],
             dependencies=[],
             status=TaskStatus.PENDING,
@@ -3959,7 +3961,7 @@ class WorkflowEngine:
                         self._task_outputs.get("task_synthesis_lead")
                     ),
                     # OVERHAUL2 S15 (S11): off-topic funnel drops, visible in telemetry.
-                    kpi_8_off_topic_dropped=self._off_topic_dropped_total,
+                    kpi_8_off_topic_dropped=_off_topic_dropped_total,
                     # OVERHAUL3 D-F (§5.5): Recovery Supervisor telemetry.
                     kpi_9_recovery_attempted=self._recovery_telemetry["attempted"],
                     kpi_9_recovery_passes=self._recovery_telemetry["passes"],
@@ -4056,7 +4058,7 @@ class WorkflowEngine:
                 await self.bus.publish(
                     channel=Channel.TUI,
                     msg_type=MessageType.STATUS,
-                    sender="orchestrator",
+                    sender=AgentName.ENGAGEMENT_DIRECTOR,
                     payload={
                         "agent": "orchestrator",
                         "tool": "corpus_preflight",
@@ -4231,7 +4233,8 @@ class WorkflowEngine:
                 "reports", "diagnostics", self._engagement_id, "evidence_ledger.json"
             )
             saved = ledger.snapshot(path)
-            self._manifest.record_ledger_entry("evidence", ledger.summary())
+            if self._manifest is not None:
+                self._manifest.record_ledger_entry("evidence", ledger.summary())
             trace(
                 "evidence",
                 run_id=self._engagement_id,

@@ -4,6 +4,7 @@ canonical SearchResult shape. Always available, never costs a credit."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
@@ -56,8 +57,6 @@ class SearxNGAdapter(BaseAdapter):
 
     async def close(self) -> None:
         if self._client_holder is not None:
-            try:
+            with contextlib.suppress(Exception):  # close is best-effort
                 await self._client_holder.close()
-            except Exception:  # noqa: BLE001 - close is best-effort
-                pass
             self._client_holder = None

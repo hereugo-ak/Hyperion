@@ -90,8 +90,13 @@ logger = logging.getLogger(__name__)
 COVER_IMAGE_WIDTH = 2480       # Full A4 width at 300 DPI
 COVER_IMAGE_HEIGHT = 3508      # Full A4 height at 300 DPI
 
-SECTION_IMAGE_WIDTH = 756      # 40% of content area width (~1890 * 0.4)
-SECTION_IMAGE_HEIGHT = 1132    # 40% of content area height (max 50%)
+SECTION_IMAGE_WIDTH = 1890      # full content-area width at 300 DPI (~1890px)
+# OVERHAUL4 fix: the band is 62mm tall (CSS .section-plate img max-height);
+# 62mm at 300 DPI = 732px. The OLD 756x1132 portrait target matched the
+# pre-P2-02 40%-column placement; with the full-width band it produced a
+# portrait image that object-fit cover could not clip (WeasyPrint paints the
+# crop unclipped -> the audited text occlusion). Landscape band crop now.
+SECTION_IMAGE_HEIGHT = 732       # 62mm band at 300 DPI
 
 CHART_IMAGE_WIDTH = 1512       # 80% of content area width
 CHART_IMAGE_HEIGHT = 1132      # Max 40% of page height

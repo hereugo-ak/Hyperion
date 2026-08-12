@@ -490,7 +490,7 @@ class BaseAgent(ABC):
     async def _publish_framework_gap(
         self,
         *,
-        mandatory_keys: list[str],
+        mandatory_keys: list[Any],
         context_detail: str = "",
     ) -> bool:
         """F-0.1-11: framework-completeness gate (specialist tier).

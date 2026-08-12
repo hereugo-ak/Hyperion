@@ -25,7 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from hyperion.obs import trace
+from hyperion.obs.trace import trace
 
 logger = logging.getLogger(__name__)
 

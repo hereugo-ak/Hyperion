@@ -750,7 +750,7 @@ class UnifiedExtract:
             await client.close()
         if not r.success:
             return self._finish(url, "firecrawl", primary="", error=r.error or "no content")
-        links = [dict(l) for l in r.links] if extract_links else []
+        links = [dict(link) for link in r.links] if extract_links else []
         return self._finish(
             url,
             "firecrawl",
@@ -1126,6 +1126,12 @@ class UnifiedExtract:
                     ):
                         await asyncio.sleep(0.4 * attempt)
                         continue
+                    # OVERHAUL4 P7 FIX: a RAISING tier used to set
+                    # ``result = None`` and fall through — the reason was
+                    # silently dropped from the aggregated error because the
+                    # append below only fires for ``result.error``. A raising
+                    # tier must be reported, never shrugged off.
+                    errors.append(f"{tier}: {type(exc).__name__}: {exc}")
                     result = None
                     break
                 if result.success:
@@ -1364,7 +1370,7 @@ class UnifiedExtract:
             results = await asyncio.gather(
                 *(extractor(u) for u in pending), return_exceptions=True
             )
-            by_url: dict[str, Any] = dict(zip(pending, results))
+            by_url: dict[str, Any] = dict(zip(pending, results, strict=False))
 
             # OVERHAUL4 P7: per-tier transient retry rounds — timeout/
             # connection/5xx/429 failures on the SAME tier are retried
@@ -1387,13 +1393,13 @@ class UnifiedExtract:
                 retried = await asyncio.gather(
                     *(extractor(u) for u in retryable), return_exceptions=True
                 )
-                for u, res in zip(retryable, retried):
+                for u, res in zip(retryable, retried, strict=False):
                     if _batch_result_ok(res):
                         by_url[u] = res
 
             produced = 0
             failures: list[str] = []
-            for url, result in by_url.items():
+            for _url, result in by_url.items():
                 if isinstance(result, BaseException):
                     logger.debug("extraction tier %s raised: %s", tier, result)
                     failures.append(f"{type(result).__name__}: {result}")

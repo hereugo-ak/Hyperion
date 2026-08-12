@@ -8,8 +8,6 @@ All adapters are fakes — no network.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from hyperion.search.adapters.base import BaseAdapter, TransientProviderError
@@ -123,8 +121,10 @@ async def test_empty_searxng_falls_to_you() -> None:
 
 
 @pytest.mark.asyncio
-async def test_loop_tiers_called_twice_before_tail() -> None:
-    """All top-3 empty on both loop attempts -> Tavily and Yep still called."""
+async def test_loop_tiers_called_three_times_before_tail() -> None:
+    """All top-3 empty on all three loop attempts -> Tavily and Yep still
+    called. OVERHAUL4 operator decision (2026-08-12): SearXNG->You->Exa gets
+    TWO retries (3 total passes) before the reserve tiers are touched."""
     searxng = _fake(SearxNGAdapter, [])
     you = _fake(YouAdapter, [])
     exa = _fake(ExaAdapter, [])
@@ -133,7 +133,7 @@ async def test_loop_tiers_called_twice_before_tail() -> None:
     orch = _orchestrator(searxng=searxng, you=you, exa=exa, tavily=tavily, yep=yep)
     results = await orch.search("q")
     assert len(results) >= MIN_RESULTS
-    assert searxng.calls == 2 and you.calls == 2 and exa.calls == 2
+    assert searxng.calls == 3 and you.calls == 3 and exa.calls == 3
     assert tavily.calls == 1 and yep.calls == 0  # Tavily satisfied MIN_RESULTS
 
 
@@ -227,7 +227,7 @@ def test_session_search_cost_uses_cost_table() -> None:
     }
     table = {"you": 4.0, "searxng": 0.0, "exa": 5.0}
     lines = session_search_cost(metrics, table)
-    by = {l["provider"]: l for l in lines}
+    by = {line["provider"]: line for line in lines}
     assert by["You"]["cost_usd"] == 0.4        # 100 * 4.0 / 1000
     assert by["SearXNG"]["cost_usd"] == 0.0
     assert "Exa" in by and by["Exa"]["calls"] == 0  # zero-call row included

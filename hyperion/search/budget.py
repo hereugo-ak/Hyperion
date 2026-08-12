@@ -61,7 +61,9 @@ class BudgetRegistry:
 
     def can_spend(self, name: str) -> bool:
         bucket = self.buckets.get(name)
-        return bool(bucket) and bucket.remaining > 0
+        if bucket is None:
+            return False
+        return bucket.remaining > 0
 
     async def spend(self, name: str, n: int = 1) -> bool:
         bucket = self.buckets.get(name)

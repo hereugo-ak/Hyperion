@@ -35,15 +35,13 @@ from hyperion.tools.searxng import SearxNGClient
 
 class TestEnginePool:
     def test_reliable_engines_carry_web_and_api_rescue_paths(self):
-        """P1.2 supersedes the >=6 tripwire: the web corpus is mwmbl + brave
-        (the banned scrapers mojeek/yep are gone) while the API-backed
-        scholar/reference engines remain as the fan-out rescue path."""
+        """P6.2 supersedes P1.2's ban: the probe (2026-08-11) confirmed
+        home-IP egress answers mojeek/yep, so the web corpus is
+        mojeek + mwmbl + brave + yep while the API-backed scholar/reference
+        engines remain as the fan-out rescue path."""
         engines = [e.strip() for e in SearxNGClient.RELIABLE_ENGINES.split(",") if e.strip()]
-        assert {"mwmbl", "brave"} <= set(engines), (
-            f"P1.2: web corpus = mwmbl + brave required, got {engines}"
-        )
-        assert not {"mojeek", "yep"} & set(engines), (
-            f"P1.2: banned scrapers must be gone from the active pool, got {engines}"
+        assert {"mwmbl", "brave", "mojeek", "yep"} <= set(engines), (
+            f"P6.2: web corpus = mojeek/mwmbl/brave/yep required, got {engines}"
         )
         # The fan-out rescue path (F-03) still has API-backed engines to
         # carry a dead web pool.

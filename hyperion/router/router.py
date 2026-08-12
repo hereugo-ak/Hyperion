@@ -42,7 +42,7 @@ from hyperion.config import (
     Settings,
     get_settings,
 )
-from hyperion.obs import trace
+from hyperion.obs.trace import trace
 from hyperion.router.budget import DailyBudgetPlanner, TaskUrgency
 from hyperion.router.estimator import TokenEstimator
 from hyperion.router.providers.base import (
@@ -342,13 +342,15 @@ class LLMRouter:
         # router burning the full exponential backoff.
         models_by_provider: dict[ProviderType, list[ModelSpec]] = {}
         for provider_type, provider in self._providers.items():
-            if not provider.health.is_available():
-                # allow_micro_probe() is consumed here — a False circuit
-                # that just returned True consumes its ONE grant, so the
-                # subsequent selection call for this provider gets one
-                # dispatch attempt with no additional gates.
-                if not provider.health.allow_micro_probe():
-                    continue
+            # allow_micro_probe() is consumed here — a False circuit
+            # that just returned True consumes its ONE grant, so the
+            # subsequent selection call for this provider gets one
+            # dispatch attempt with no additional gates.
+            if (
+                not provider.health.is_available()
+                and not provider.health.allow_micro_probe()
+            ):
+                continue
             tier_models = provider.get_models_for_tier(tier)
             if tier_models:
                 models_by_provider[provider_type] = tier_models

@@ -117,7 +117,7 @@ def test_profile_routing_least_outstanding_and_cross_profile_fallback() -> None:
         category="general",
         requested_engines={"mojeek", "brave"},
         explicit=False,
-    ) == {"wikipedia"}
+    ) == {"wikipedia", "wikidata"}  # OVERHAUL4 P6.2: reference fallback += wikidata
 
 
 def test_explicit_engines_are_bound_to_exactly_one_profile() -> None:

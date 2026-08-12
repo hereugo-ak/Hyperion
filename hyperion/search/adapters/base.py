@@ -60,7 +60,7 @@ class BaseAdapter:
 
     # ── error classification (§10) ─────────────────────────────────────────
 
-    def _classify(self, exc: Exception, response: httpx.Response | None = None) -> str:
+    def _classify(self, exc: Exception | None, response: httpx.Response | None = None) -> str:
         """Map a failure to a §10 signal: 429 / 403 / 5xx / timeout / None."""
         if response is not None:
             if response.status_code == 429:
@@ -96,7 +96,7 @@ class BaseAdapter:
             await self._client.aclose()
         self._client = None
 
-    async def __aenter__(self) -> "BaseAdapter":
+    async def __aenter__(self) -> BaseAdapter:
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:

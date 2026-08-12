@@ -79,9 +79,11 @@ class TestFullPoolFanOut:
             )
 
         client._search_all_replicas = fake_fanout  # type: ignore[method-assign]
-        with patch.object(client, "_search_with_rotation", new=AsyncMock(return_value=None)):
-            with patch.object(client, "_search_jina_fallback", new=AsyncMock(return_value=None)):
-                response = await client.search("india ai market", num_results=5)
+        with (
+            patch.object(client, "_search_with_rotation", new=AsyncMock(return_value=None)),
+            patch.object(client, "_search_jina_fallback", new=AsyncMock(return_value=None)),
+        ):
+            response = await client.search("india ai market", num_results=5)
         assert response.results
         assert {"crossref", "wikipedia"} <= set(response.engines_used)
         reset_engine_health()
@@ -94,10 +96,12 @@ class TestFullPoolFanOut:
         client = SearxNGClient()
         fanout = AsyncMock()
         client._search_all_replicas = fanout  # type: ignore[method-assign]
-        with patch.object(client, "_search_with_rotation", new=AsyncMock(return_value=None)):
-            with patch.object(client, "_search_jina_fallback", new=AsyncMock(return_value=None)):
-                await client.search(
-                    "india ai market", engines="crossref,openalex", num_results=5
+        with (
+            patch.object(client, "_search_with_rotation", new=AsyncMock(return_value=None)),
+            patch.object(client, "_search_jina_fallback", new=AsyncMock(return_value=None)),
+        ):
+            await client.search(
+                "india ai market", engines="crossref,openalex", num_results=5
                 )
         assert fanout.await_count == 0, (
             "an explicit engine contract must never be silently replaced by "
@@ -127,16 +131,28 @@ class TestSearchBudget:
         client_a = SearxNGClient(owner="heavy")
         client_b = SearxNGClient(owner="light")
 
-        with patch.object(client_a, "_get_cached", new=AsyncMock(return_value=None)), \
-             patch.object(client_b, "_get_cached", new=AsyncMock(return_value=None)), \
-             patch.object(client_a, "_search_with_rotation", new=AsyncMock(return_value=None)), \
-             patch.object(client_b, "_search_with_rotation", new=AsyncMock(return_value=None)), \
-             patch.object(client_a, "_search_all_replicas", new=AsyncMock(return_value=None)), \
-             patch.object(client_b, "_search_all_replicas", new=AsyncMock(return_value=None)), \
-             patch.object(client_a, "_search_jina_fallback", new=AsyncMock(return_value=None)), \
-             patch.object(client_b, "_search_jina_fallback", new=AsyncMock(return_value=None)), \
-             patch.object(client_a, "_search_grounded_fallback", new=AsyncMock(return_value=None)), \
-             patch.object(client_b, "_search_grounded_fallback", new=AsyncMock(return_value=None)):
+        # OVERHAUL4 P8: the multi-provider paid chain is a separate fallback
+        # (searxng.py search, after the free stack produced nothing). With a
+        # live SearxNG stack the real orchestrator would return results for
+        # the un-exhausted owner, breaking the budget isolation assertion —
+        # it must be neutralised like every other search backend here.
+
+        _no_paid = SimpleNamespace(
+            search=AsyncMock(return_value=[]), metrics_snapshot=lambda: {}
+        )
+        with (
+            patch.object(client_a, "_get_cached", new=AsyncMock(return_value=None)),
+            patch.object(client_b, "_get_cached", new=AsyncMock(return_value=None)),
+            patch.object(client_a, "_search_with_rotation", new=AsyncMock(return_value=None)),
+            patch.object(client_b, "_search_with_rotation", new=AsyncMock(return_value=None)),
+            patch.object(client_a, "_search_all_replicas", new=AsyncMock(return_value=None)),
+            patch.object(client_b, "_search_all_replicas", new=AsyncMock(return_value=None)),
+            patch.object(client_a, "_search_jina_fallback", new=AsyncMock(return_value=None)),
+            patch.object(client_b, "_search_jina_fallback", new=AsyncMock(return_value=None)),
+            patch.object(client_a, "_search_grounded_fallback", new=AsyncMock(return_value=None)),
+            patch.object(client_b, "_search_grounded_fallback", new=AsyncMock(return_value=None)),
+            patch("hyperion.search.orchestrator.get_search_orchestrator", return_value=_no_paid),
+        ):
             a_resp = await client_a.search("heavy query", num_results=3)
             b_resp = await client_b.search("light query", num_results=3)
 
@@ -258,7 +274,6 @@ class TestBroadenedRespawn:
         parent._sub_agent_respawned.add(_spec().question)
         assert guard(parent, _spec(), [], timed_out=True, generic_failure=False) is False
         # Sub-300s budgets (unit-test / stress configs) stay deterministic.
-        short = _spec(timeout=30)
         assert guard(parent, _spec(timeout=30, question="fresh q"), [],
                      timed_out=True, generic_failure=False) is False
         assert guard(parent, _spec(timeout=600, question="prod q"), [],
@@ -364,7 +379,10 @@ class TestAdaptiveConcurrentBudget:
         """Cap 3, three active sub-agents, fourth spec arrives → budget
         becomes 4, spec lands in _deferred_specs, nothing is dropped."""
         from hyperion.agents.base import BaseAgent
-        from hyperion.agents.specialists.competitive_intel import COMPETITIVE_INTEL_SPEC, CompetitiveIntel
+        from hyperion.agents.specialists.competitive_intel import (
+            COMPETITIVE_INTEL_SPEC,
+            CompetitiveIntel,
+        )
 
         parent = object.__new__(CompetitiveIntel)
         parent.spec = COMPETITIVE_INTEL_SPEC
@@ -397,7 +415,10 @@ class TestAdaptiveConcurrentBudget:
     async def test_released_slot_drains_deferred_queue(self) -> None:
         """After a completion frees a slot, the deferred spec is dispatched."""
         from hyperion.agents.base import BaseAgent
-        from hyperion.agents.specialists.competitive_intel import COMPETITIVE_INTEL_SPEC, CompetitiveIntel
+        from hyperion.agents.specialists.competitive_intel import (
+            COMPETITIVE_INTEL_SPEC,
+            CompetitiveIntel,
+        )
         from hyperion.agents.sub_agent import SubAgentRunner
 
         parent = object.__new__(CompetitiveIntel)
@@ -432,7 +453,10 @@ class TestAdaptiveConcurrentBudget:
     async def test_broadened_respawn_jumps_to_ceiling(self) -> None:
         """A broadened (retry) spawn jumps straight to the concurrent ceiling."""
         from hyperion.agents.base import BaseAgent
-        from hyperion.agents.specialists.competitive_intel import COMPETITIVE_INTEL_SPEC, CompetitiveIntel
+        from hyperion.agents.specialists.competitive_intel import (
+            COMPETITIVE_INTEL_SPEC,
+            CompetitiveIntel,
+        )
 
         parent = object.__new__(CompetitiveIntel)
         parent.spec = COMPETITIVE_INTEL_SPEC

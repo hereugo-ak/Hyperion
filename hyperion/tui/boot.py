@@ -444,8 +444,8 @@ async def run_boot_sequence(
         from hyperion.router.router import get_router
 
         router = get_router()
-        health = router.get_provider_health()
-        for ptype, info in health.items():
+        provider_health = router.get_provider_health()
+        for ptype, info in provider_health.items():
             name = str(ptype).split(".")[-1].lower()
             available = info.get("available", False)
             if available:
@@ -601,7 +601,7 @@ async def start_services(
 
         ok, detail = await start_firecrawl_stack()
         if on_progress:
-            with suppress(Exception):
+            with contextlib.suppress(Exception):
                 on_progress(f"firecrawl stack: {'started' if ok else 'skipped'} · {detail}")
     except Exception as exc:  # noqa: BLE001 - firecrawl is best-effort at boot
         logger.debug("firecrawl stack start failed: %s", exc)

@@ -310,7 +310,11 @@ class TestSingleUrlClimb:
         result = await ex.extract("https://a.example/1", force_js_render=True)
         tried = [t for t, _ in log]
         assert not (set(tried) & set(UnifiedExtract.NON_JS_TIERS))
-        assert result.tool_used == "obscura"
+        # OVERHAUL4 P7: firecrawl joined the ladder as the cheaper JS-capable
+        # tier, so force_js_render lands on firecrawl (not obscura) when the
+        # whole ladder is stubbed healthy — the assertion tracks the JS
+        # tier(s), not one specific engine.
+        assert result.tool_used in ("firecrawl", "obscura")
 
     async def test_never_raises_when_every_tier_explodes(self):
         """The audit's P0 was a silent total outage in the query layer.
@@ -807,24 +811,27 @@ class TestSubAgentDelegates:
         src = inspect.getsource(SubAgentRunner._extract_urls)
         assert "MAX_EXTRACT_URLS" in src
 
-    @pytest.mark.parametrize(
-        "granted,expected_present,expected_absent",
-        [
-            ([ToolName.JINA], {"jina"}, {"obscura", "scrapling", "crawl4ai", "flaresolverr"}),
-            ([ToolName.OBSCURA], {"obscura"}, {"jina", "scrapling"}),
-            ([ToolName.SCRAPLING, ToolName.CRAWL4AI], {"scrapling", "crawl4ai"}, {"jina", "obscura"}),
-            ([ToolName.SEARXNG], set(), {"jina", "obscura", "scrapling", "crawl4ai"}),
-        ],
-    )
-    def test_only_granted_tools_back_an_offered_tier(self, granted, expected_present, expected_absent):
-        """§4.7: a sub-agent may only use the tool subset it was handed.
+    def test_sub_agents_get_the_full_ladder_regardless_of_grants(self):
+        """OVERHAUL4 P7 + product decision (2026-08-12): every sub-agent may
+        reach the FULL extraction ladder, exactly like the main agents.
 
-        The inline ladder honoured this via ``_has_tool`` guards; the delegation
-        must not quietly widen a junior agent's reach to the full ladder.
-        """
-        tiers = set(_sub_agent(granted)._extraction_tiers())
-        assert expected_present <= tiers
-        assert not (expected_absent & tiers)
+        Tiers are availability-gated at runtime (``UnifiedExtract._tier_available``:
+        curl_cffi installed, jina keyless-capable, obscura binary present, ...),
+        NOT gated on the LLM-visible tool grants the parent handed down. The
+        old §4.7 grant discipline (``EXTRACT_TIER_TOOLS`` + ``_has_tool``) was
+        dropped deliberately — it is the root cause of 0 ``stage=extraction``
+        ledger records (findings built from snippets only)."""
+        full_ladder = set(UnifiedExtract.TIER_ORDER)
+        for granted in (
+            [ToolName.JINA],
+            [ToolName.OBSCURA],
+            [ToolName.SEARXNG],
+            [],
+        ):
+            tiers = set(_sub_agent(granted)._extraction_tiers())
+            assert tiers == full_ladder, (
+                f"grants {granted} must not narrow the ladder"
+            )
 
     def test_keyless_tiers_are_always_offered(self):
         """curl_cffi and http are plain HTTP with no ToolName to grant.
@@ -836,14 +843,15 @@ class TestSubAgentDelegates:
         tiers = _sub_agent([ToolName.SEARXNG])._extraction_tiers()
         assert "curl_cffi" in tiers and "http" in tiers
 
-    def test_browser_tiers_are_never_auto_granted(self):
-        """nodriver/camoufox launch real browsers and have no ToolName.
-
-        Unlike the keyless tiers they are expensive, so §4.7's quota discipline
-        says a junior agent must not reach for them unilaterally.
+    def test_browser_tiers_are_reachable_like_main_agents(self):
+        """OVERHAUL4 P7 + product decision (2026-08-12): nodriver/camoufox
+        are on the ladder for sub-agents exactly as for main agents, gated
+        only by runtime availability (``_tier_available``) and the W-12
+        circuit breaker for flaresolverr. The old "never auto-granted" rule
+        was dropped with the §4.7 grant discipline.
         """
-        tiers = _sub_agent(list(ToolName))._extraction_tiers()
-        assert "nodriver" not in tiers and "camoufox" not in tiers
+        tiers = set(_sub_agent([ToolName.SEARXNG])._extraction_tiers())
+        assert "nodriver" in tiers and "camoufox" in tiers
 
     def test_offered_tiers_are_all_real(self):
         tiers = _sub_agent(list(ToolName))._extraction_tiers()
@@ -875,6 +883,8 @@ class TestSubAgentDelegates:
             def __init__(self, *a, **kw):
                 pass
 
+            TIER_ORDER = UnifiedExtract.TIER_ORDER
+
             extract_ladder = staticmethod(_fake_ladder)
 
             async def close(self):
@@ -905,6 +915,8 @@ class TestSubAgentDelegates:
             def __init__(self, *a, **kw):
                 pass
 
+            TIER_ORDER = UnifiedExtract.TIER_ORDER
+
             async def extract_ladder(self, urls, **kw):
                 raise RuntimeError("ladder exploded")
 
@@ -928,6 +940,8 @@ class TestSubAgentDelegates:
         class _Empty:
             def __init__(self, *a, **kw):
                 pass
+
+            TIER_ORDER = UnifiedExtract.TIER_ORDER
 
             async def extract_ladder(self, urls, **kw):
                 return LadderOutcome(

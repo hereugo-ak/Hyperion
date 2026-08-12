@@ -13,9 +13,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
-from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,7 +33,10 @@ logger = logging.getLogger(__name__)
 
 MIN_RESULTS = 5
 MAX_RESULTS = 15
-LOOP_RETRIES = 1          # SearXNG->You->Exa is tried a second time
+# OVERHAUL4 operator decision (2026-08-12): the free/cheap tier set
+# SearXNG->You->Exa gets TWO retries (3 total passes) before the reserve
+# tiers Tavily->Yep are ever touched.
+LOOP_RETRIES = 2          # SearXNG->You->Exa is tried three times total
 
 #: Adapter classes in canonical order.
 TIERS_LOOP = (SearxNGAdapter, YouAdapter, ExaAdapter)
@@ -83,11 +86,11 @@ class SearchOrchestrator:
 
     def __init__(
         self,
-        adapters: dict[type, BaseAdapter] | None = None,
+        adapters: dict[type[BaseAdapter], BaseAdapter] | None = None,
         budget: BudgetRegistry | None = None,
         suspension: SuspensionRegistry | None = None,
     ) -> None:
-        self.adapters: dict[type, BaseAdapter] = adapters or {}
+        self.adapters: dict[type[BaseAdapter], BaseAdapter] = adapters or {}
         self.budget = budget or BudgetRegistry()
         self.suspension = suspension or SuspensionRegistry()
         self.metrics: dict[str, ProviderMetrics] = {}
@@ -102,7 +105,7 @@ class SearchOrchestrator:
         *,
         budget: BudgetRegistry | None = None,
         suspension: SuspensionRegistry | None = None,
-    ) -> "SearchOrchestrator":
+    ) -> SearchOrchestrator:
         adapters = {
             SearxNGAdapter: SearxNGAdapter(settings),
             YouAdapter: YouAdapter(settings),
@@ -143,8 +146,8 @@ class SearchOrchestrator:
                 pool.extend(got)
                 if len(dedupe_results(pool)) >= MIN_RESULTS:
                     return self._finish(pool, num_results)
-        for adapter_cls in TIERS_TAIL:
-            got = await self._call(adapter_cls, query, num_results)
+        for tail_cls in TIERS_TAIL:
+            got = await self._call(tail_cls, query, num_results)
             pool.extend(got)
             if len(dedupe_results(pool)) >= MIN_RESULTS:
                 return self._finish(pool, num_results)
@@ -157,7 +160,7 @@ class SearchOrchestrator:
     # ── one provider call ──────────────────────────────────────────────────
 
     async def _call(
-        self, adapter_cls: type, query: str, num_results: int
+        self, adapter_cls: type[BaseAdapter], query: str, num_results: int
     ) -> list[SearchResult]:
         name = adapter_cls.name
         adapter = self.adapters.get(adapter_cls)
@@ -228,10 +231,8 @@ class SearchOrchestrator:
 
     async def close(self) -> None:
         for adapter in self.adapters.values():
-            try:
+            with contextlib.suppress(Exception):  # close is best-effort
                 await adapter.close()
-            except Exception:  # noqa: BLE001 - close is best-effort
-                pass
 
 
 # ── module singleton: one per run, reset at engagement start ────────────────

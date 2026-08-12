@@ -1449,20 +1449,6 @@ class SynthesisLead(BaseAgent):
                 )
 
             if section_body is None:
-                # OVERHAUL4 P3.2: both attempts produced an unusable body.
-                # Never omit the section (that is what emptied the report) —
-                # fall back to the deterministic digest with a loud log.
-                logger.warning(
-                    "narrative synthesis produced no usable body for "
-                    "agent=%s section=%s; building deterministic "
-                    "finding-digest section",
-                    agent, _section_title(agent),
-                )
-                section_body = self._deterministic_section_body(
-                    agent, findings, _section_title(agent)
-                )
-
-            if section_body is None:
                 # OVERHAUL4 P3.2: both attempts produced an unusable body
                 # (too short or empty). P2-11's "omit the section" policy is
                 # exactly how 47 findings became a 0-domain shell — never

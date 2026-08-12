@@ -345,6 +345,12 @@ body {{
        Kept modest so no line breaks more than twice in a row. */
     text-align: justify;
     hyphens: auto;
+    /* OVERHAUL4 fix (2026-08-12): WeasyPrint renders hyphenation breaks
+       with U+2010, which Instrument Serif does not carry; any hyphenated
+       serif span (the TOC is the live case) fell back to DejaVu-Serif, a
+       forbidden embedded font per the golden baseline. Force the ASCII
+       hyphen U+002D, which every vendored face has. */
+    hyphenate-character: "-";
     -webkit-hyphens: auto;
     orphans: 3;
     widows: 3;
@@ -780,10 +786,20 @@ table, .kpi-value, .data-table, .chart-data-table {{
 }}
 
 .section-plate img {{
-    width: 100%;
+    /* OVERHAUL4 fix: object-fit: cover is a HARD overlap bug here. WeasyPrint
+       paints the cover-cropped content at its natural size, centered in the
+       box, WITHOUT clipping; a portrait source (the render pipeline used to
+       crop section images 40%-portrait) bled ~91pt above and below the box
+       and smothered the text under it (the audited occlusion). Scale-to-fit
+       instead: the image is pre-cropped to the band's landscape ratio by the
+       render engine, and ANY source is scaled down proportionally within the
+       band; the gutter stays a hard wall. */
+    max-width: 100%;
     max-height: 62mm;
-    object-fit: cover;
+    width: auto;
+    height: auto;
     display: block;
+    margin: 0 auto;
 }}
 
 .section-plate figcaption {{
@@ -949,6 +965,10 @@ table, .kpi-value, .data-table, .chart-data-table {{
 .toc-table td:first-child {{
     font-family: "Instrument Serif", serif;
     font-size: 12pt;
+    /* OVERHAUL4 fix: TOC labels are navigation, never prose; they must
+       not hyphenate (WeasyPrint was breaking "Economics" -> "Econom-",
+       pushing U+2010 into a font that lacks it). */
+    hyphens: none;
 }}
 
 .toc-table td:last-child {{
@@ -1195,6 +1215,12 @@ _FONT_SUBSET_RANGES: tuple[tuple[int, int], ...] = (
     (0x20A0, 0x20CF),  # Currency symbols
     (0x2190, 0x21FF),  # Arrows
     (0x2200, 0x22FF),  # Mathematical operators
+    # OVERHAUL4 COVER: 0x25A0-0x25FF (Geometric Shapes) — the cover
+    # confidence badge uses U+25CF (●). The glyph EXISTS in Source Sans 3,
+    # but the subsetter stripped it (the range was missing), so WeasyPrint
+    # fell back to DejaVu-Sans-Bold in every rendered PDF — a forbidden
+    # fallback font per the golden baseline. The dot is now embedded.
+    (0x25A0, 0x25FF),
 )
 DEFAULT_FONT_GLYPHS = "".join(
     chr(codepoint)

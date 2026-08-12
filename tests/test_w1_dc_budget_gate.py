@@ -109,7 +109,7 @@ async def test_retry_of_counted_question_executes_when_ceiling_full() -> None:
 
     run_mock = AsyncMock(return_value=[])
     with patch.object(SubAgentRunner, "run", new=run_mock):
-        findings = await parent._spawn_sub_agent(spec)
+        await parent._spawn_sub_agent(spec)
 
     log_lines = [c.args[0] for c in parent._log.call_args_list]
     assert not any("distinct work items" in line for line in log_lines), (

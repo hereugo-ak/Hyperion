@@ -30,7 +30,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from hyperion.config import ModelTier, ProviderType
-from hyperion.obs import trace
+from hyperion.obs.trace import trace
 from hyperion.router.budget import TaskUrgency
 from hyperion.router.providers.base import RouterResponse
 

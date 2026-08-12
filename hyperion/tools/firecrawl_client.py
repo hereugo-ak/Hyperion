@@ -165,9 +165,12 @@ class FirecrawlClient:
                 markdown=markdown,
                 html=html,
                 links=[
-                    {"url": str(l.get("url", "")), "title": str(l.get("title", "") or "")}
-                    for l in (content.get("links") or [])
-                    if l.get("url")
+                    {
+                        "url": str(link.get("url", "")),
+                        "title": str(link.get("title", "") or ""),
+                    }
+                    for link in (content.get("links") or [])
+                    if link.get("url")
                 ],
                 took_ms=int((time.monotonic() - start) * 1000),
             )
@@ -278,7 +281,7 @@ class FirecrawlClient:
             await self._client.aclose()
         self._client = None
 
-    async def __aenter__(self) -> "FirecrawlClient":
+    async def __aenter__(self) -> FirecrawlClient:
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:

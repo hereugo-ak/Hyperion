@@ -57,14 +57,15 @@ logger = logging.getLogger(__name__)
 # `engines_for` intersects it out of web-replica requests, so W-11 isolation
 # and W-12 disjoint profiles are preserved.
 #
-# P1.2 (overhaul §6 P1, 2026-08-10): **mojeek and yep are removed from every
-# active engine set.** Both categorically 403 from a datacenter/VPS egress
-# after a week of daily runs (the Aug-10 autopsy: mojeek 403 x5+, yep 403
-# x4+ for the entire 40-minute run). They are also disabled in
-# `searxng_settings.yml` so no replica ever receives traffic for them again.
-# The web corpus is now served by `mwmbl` + `brave` behind the engine-health
-# circuit, with the scholar/reference API engines as the fan-out rescue path.
-RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex,wikidata"
+# P1.2 (overhaul §6 P1, 2026-08-10): mojeek/yep were removed from every
+# active engine set (categorical 403 from datacenter/VPS egress) and disabled
+# in searxng_settings.yml.
+#
+# OVERHAUL4 P6.2 (probe 2026-08-11): egress is now a home IP — the probe saw
+# marginalia/wiby ABSENT from the image but mojeek/yep answering, so they are
+# re-enabled on the web replica and listed here again (the settings YAML
+# already re-enabled them; this registry is what keeps W-11/W-12 exact).
+RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex,wikidata,mojeek,yep"
 STANDBY_ENGINES = ""
 CATEGORY_ENGINES = {
     "science": "arxiv,crossref,openalex,semantic scholar",
@@ -701,7 +702,7 @@ class SearxNGClient:
         return cls._owner_counts.get(owner, 0)
 
     @classmethod
-    def budget_snapshot(cls) -> dict[str, object]:
+    def budget_snapshot(cls) -> dict[str, Any]:
         """Machine-readable budget status for the completion health table."""
         return {
             "used": cls._search_count,
@@ -1130,7 +1131,7 @@ class SearxNGClient:
         engines_used: set[str] = set()
         degradation_events: list[dict[str, object]] = []
         for response in responses:
-            if isinstance(response, Exception) or response is None:
+            if isinstance(response, BaseException) or response is None:
                 continue
             merged.extend(response.results)
             engines_used.update(response.engines_used)
@@ -1229,7 +1230,7 @@ class SearxNGClient:
             logger.warning("Gemini grounded fallback failed open: %s", exc)
             # F-09: same visibility rule as the constraint path above.
             try:
-                from hyperion.obs import trace
+                from hyperion.obs.trace import trace
 
                 trace(
                     "search",
@@ -1256,7 +1257,7 @@ class SearxNGClient:
                 # GOOGLE_API_KEY -> fallback is a no-op -> search returns
                 # empty with no trace).
                 try:
-                    from hyperion.obs import trace
+                    from hyperion.obs.trace import trace
 
                     trace(
                         "search",
@@ -1451,7 +1452,7 @@ class SearxNGClient:
                     owner, owner_used, SearxNGClient.PER_OWNER_BUDGET_CAP,
                 )
                 try:
-                    from hyperion.obs import trace
+                    from hyperion.obs.trace import trace
 
                     trace(
                         "search",
@@ -1473,7 +1474,7 @@ class SearxNGClient:
                     SearxNGClient.SEARCH_BUDGET_CAP,
                 )
                 try:
-                    from hyperion.obs import trace
+                    from hyperion.obs.trace import trace
 
                     trace(
                         "search",
@@ -1503,7 +1504,7 @@ class SearxNGClient:
         # anywhere, which is the true total-outage case.
         health = get_engine_health()
         preferred_profile = self._pool.preferred_profile(categories or "general")
-        preferred_engines = set()
+        preferred_engines: set[str] = set()
         for endpoint in self._pool.endpoints:
             if endpoint.profile == preferred_profile:
                 preferred_engines.update(endpoint.engines)

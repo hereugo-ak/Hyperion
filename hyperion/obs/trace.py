@@ -15,7 +15,7 @@ regression gates, and cost/latency ledgers. (§II.9, D10)
 
 Usage::
 
-    from hyperion.obs import trace, add_sink, file_sink
+    from hyperion.obs.trace import trace, add_sink, file_sink
 
     # At engagement start:
     add_sink(file_sink(engagement_id))
