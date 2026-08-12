@@ -2320,6 +2320,35 @@ class PresentationDesigner(BaseAgent):
         # All candidates already used, return the first as a last resort.
         return images[0]
 
+    def _pick_best_image(
+        self,
+        candidates: list[Any],
+        *,
+        gate: ImageRelevanceGate,
+        subject: str,
+        topic: str,
+    ) -> Any | None:
+        """OVERHAUL4: score EVERY candidate against the engagement subject +
+        topic and return the BEST match, never the first search result.
+
+        "First in the Unsplash ranking" is not "best match": the engine ranks
+        by its own signals, not by our topic. The cover previously took the
+        first candidate outright; sections took the first gate-passing one.
+        Score all candidates, order by score descending, and prefer the
+        highest that is not already used (L5.17 dedup)."""
+        scored = [
+            (c, gate.score(c, subject=subject, topic=topic))
+            for c in candidates
+            if gate.is_relevant(c, subject=subject, topic=topic)
+        ]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        for candidate, _score in scored:
+            img_id = getattr(candidate, "id", None)
+            if not img_id or img_id not in self._used_image_ids:
+                return candidate
+        # Every relevant candidate already used: better a repeat than no image.
+        return scored[0][0] if scored else None
+
     async def _select_cover_image(self, report: FinalReport) -> ImageSelection | None:
         """Select a cover image from Unsplash.
 
@@ -2335,16 +2364,23 @@ class PresentationDesigner(BaseAgent):
 
             search_result = await unsplash_tool.search(
                 query=search_term,
-                per_page=5,
+                per_page=8,
                 orientation="landscape",
             )
 
             if not search_result.images:
                 return None
 
-            # Pick the first suitable image and reserve its ID so no section
-            # reuses it later (L5.17).
-            img = self._pick_unused_image(search_result.images)
+            # OVERHAUL4: score every candidate against the report question and
+            # take the best match, not the first search hit. Reject below the
+            # relevance floor (no cover image > a wrong cover image).
+            gate = ImageRelevanceGate()
+            img = self._pick_best_image(
+                search_result.images,
+                gate=gate,
+                subject=str(report.question or ""),
+                topic=search_term,
+            )
             if img is None:
                 return None
             photographer = img.photographer or "Unknown"
@@ -2381,19 +2417,14 @@ class PresentationDesigner(BaseAgent):
 
         Analyzes the section title, agent type, and key insight to generate
         a specific, visually relevant search term, not a generic stock photo.
+
+        OVERHAUL4: the content-aware LLM term runs FIRST. The hardcoded agent
+        map returns generic stock ("corporate merger acquisition handshake")
+        that cannot match the content around it; the map stays as the
+        resilient fallback when the LLM is unavailable. The relevance gate is
+        the final arbiter either way (no image > a wrong image).
         """
-        # First try hardcoded terms based on agent name (fast path)
         agent_name = section.agent if isinstance(section.agent, str) else str(section.agent)
-        agent_key = agent_name.lower().replace(" ", "_")
-
-        # Try direct agent name match
-        if agent_key in SECTION_IMAGE_SEARCH_TERMS:
-            return SECTION_IMAGE_SEARCH_TERMS[agent_key]
-
-        # Try partial agent name match (e.g., "market_analyst" → "market")
-        for key in SECTION_IMAGE_SEARCH_TERMS:
-            if key in agent_key or agent_key.startswith(key):
-                return SECTION_IMAGE_SEARCH_TERMS[key]
 
         # Use LLM for context-aware search term
         body_preview = section.body[:500] if section.body else ""
@@ -2408,7 +2439,7 @@ class PresentationDesigner(BaseAgent):
             "- Would return professional, landscape photos\n"
             "- Is NOT generic (avoid 'business', 'office', 'abstract')\n"
             "- Reflects the actual content, not just the section name\n\n"
-            "Return JSON: {\"search_term\": \"your search term here\"}"
+            'Return JSON: {"search_term": "your search term here"}'
         )
 
         try:
@@ -2420,6 +2451,7 @@ class PresentationDesigner(BaseAgent):
             )
             if response.success and response.content:
                 import json
+
                 data = json.loads(response.content)
                 if isinstance(data, dict):
                     raw_term = data.get("search_term")
@@ -2430,6 +2462,18 @@ class PresentationDesigner(BaseAgent):
         except (ValueError, KeyError, TypeError):
             pass
 
+        # Fallback: hardcoded terms based on agent name (fast path)
+        agent_key = agent_name.lower().replace(" ", "_")
+
+        # Try direct agent name match
+        if agent_key in SECTION_IMAGE_SEARCH_TERMS:
+            return SECTION_IMAGE_SEARCH_TERMS[agent_key]
+
+        # Try partial agent name match (e.g., "market_analyst" -> "market")
+        for key in SECTION_IMAGE_SEARCH_TERMS:
+            if key in agent_key or agent_key.startswith(key):
+                return SECTION_IMAGE_SEARCH_TERMS[key]
+
         # Fallback: try title-based matching with normalization
         title_normalized = section.title.lower().replace(" ", "_")
         for key, term in SECTION_IMAGE_SEARCH_TERMS.items():
@@ -2437,12 +2481,6 @@ class PresentationDesigner(BaseAgent):
                 return term
 
         return SECTION_IMAGE_SEARCH_TERMS.get("general", "modern business abstract")
-
-    # ─────────────────────────────────────────────────────────────────
-    # P2-33: topic-relevant section imagery (query construction, caption,
-    # credit). Query/caption/credit construction are pure functions so the
-    # relevance contract is unit-testable without an Unsplash round trip.
-    # ─────────────────────────────────────────────────────────────────
 
     @staticmethod
     def build_section_image_query(
@@ -2565,13 +2603,15 @@ class PresentationDesigner(BaseAgent):
                     continue
 
                 # P2-33: keep only candidates that clear the relevance floor
-                # and are not chart-like decoration, THEN prefer one not
-                # already used by the cover or an earlier section.
-                relevant = [
-                    c for c in search_result.images
-                    if gate.is_relevant(c, subject=subject, topic=section.title or "")
-                ]
-                img = self._pick_unused_image(relevant)
+                # and are not chart-like decoration. OVERHAUL4: among those,
+                # pick the HIGHEST-SCORED candidate, not merely the first
+                # gate-passing one (the engine's ranking is not our topic).
+                img = self._pick_best_image(
+                    search_result.images,
+                    gate=gate,
+                    subject=subject,
+                    topic=section.title or "",
+                )
                 if img is None:
                     # No on-topic candidate: no image is better than a wrong one.
                     continue
