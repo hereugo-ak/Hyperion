@@ -269,7 +269,6 @@ class TestClientTemplateIsolation:
 
         for forbidden in (
             "report.agents_used",
-            "report.confidence",
             "report.quality_score",
             "report.fact_check_report",
             "report.confidence_breakdown",
@@ -281,6 +280,20 @@ class TestClientTemplateIsolation:
             assert forbidden not in HTML_TEMPLATE, (
                 f"template still reads {forbidden} — telemetry is resolvable"
             )
+
+        # OVERHAUL4 COVER (2026-08-12 design audit): the cover is a designed
+        # plate, and the audit's cover spec carries the confidence badge
+        # ("HIGH ●") on the recommendation row. W-09 still holds for every
+        # BODY page — confidence must never be resolved outside the cover
+        # block (the at-a-glance Confidence cell stays removed). Carve the
+        # cover block out and assert the rest of the template is clean.
+        cover_start = HTML_TEMPLATE.find('<div class="cover')
+        cover_end = HTML_TEMPLATE.find('<div class="page-break at-a-glance"')
+        assert cover_start >= 0 and cover_end > cover_start, "cover block not found"
+        body_template = HTML_TEMPLATE[:cover_start] + HTML_TEMPLATE[cover_end:]
+        assert "report.confidence" not in body_template, (
+            "confidence is telemetry outside the cover plate"
+        )
 
 
 # ── EngagementTelemetry: the operator destination ────────────────────────────

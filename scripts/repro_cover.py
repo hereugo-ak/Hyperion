@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from datetime import datetime, timezone  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
 
 from hyperion.agents.delivery.presentation_designer import (  # noqa: E402
     CSS_TEMPLATE,
@@ -42,7 +42,7 @@ def build_report() -> FinalReport:
         sections=[],
         total_sources=0,
         total_data_points=0,
-        generated_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 8, 1, tzinfo=UTC),
     )
 
 
@@ -52,8 +52,9 @@ def main() -> None:
     report = build_report()
 
     # Render the Jinja template exactly like the Presentation Designer does.
+    from jinja2 import BaseLoader, Environment
+
     from hyperion.output.render import TemplateRenderer
-    from jinja2 import Environment, BaseLoader
 
     env = Environment(loader=BaseLoader())
     # NOTE: CSS_TEMPLATE is already str.format(**PDF_PALETTE)-expanded at
@@ -96,15 +97,12 @@ def main() -> None:
     page = doc[0]
     rect = page.rect
     print("page rect:", rect)
-    # Content bbox: union of text + image blocks that touch the page.
-    blocks = page.get_text("blocks") + page.get_images(full=True)
     if page.get_images(full=True):
         for img in page.get_images(full=True):
             try:
-                r = page.get_image_rects(img[0])
-                for rr in r:
+                for rr in page.get_image_rects(img[0]):
                     print("image rect:", rr)
-            except Exception:
+            except (ValueError, RuntimeError, KeyError):
                 pass
     words = page.get_text("words")
     if words:
@@ -113,7 +111,11 @@ def main() -> None:
         x1 = max(w[2] for w in words)
         y1 = max(w[3] for w in words)
         print(f"text bbox: ({x0:.1f},{y0:.1f})-({x1:.1f},{y1:.1f})")
-        print(f"  left gap: {x0:.1f}pt  right gap: {rect.width - x1:.1f}pt  top gap: {y0:.1f}pt  bottom gap: {rect.height - y1:.1f}pt")
+        gaps = (
+            f"left {x0:.1f}pt  right {rect.width - x1:.1f}pt  "
+            f"top {y0:.1f}pt  bottom {rect.height - y1:.1f}pt"
+        )
+        print("  gaps:", gaps)
     doc.close()
 
 

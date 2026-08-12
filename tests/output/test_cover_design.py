@@ -22,7 +22,7 @@ could ever pass the audit and reports were withheld (reports/ had only
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import fitz
 import pytest
@@ -45,14 +45,16 @@ CREAM_RGB = (0xF5, 0xF4, 0xEE)
 # PyMuPDF draw_rect wants 0..1 floats; 26/255 = #1A1A1A warm_charcoal.
 CHARCOAL_FILL = (26 / 255, 26 / 255, 26 / 255)
 
-_WORDS = (
-    "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod "
-    "tempor incididunt ut labore et dolore magna aliqua ut enim ad minim "
-    "veniam quis nostrud exercitation ullamco laboris nisi aliquip ex ea "
-    "commodo consequat duis aute irure dolor in reprehenderit in voluptate "
-    "velit esse cillum dolore eu fugiat nulla pariatur excepteur sint "
-    "occaecat cupidatat non proident"
-).split()
+_WORDS = [
+    "lorem", "ipsum", "dolor", "sit", "amet", "consectetur", "adipiscing",
+    "elit", "sed", "do", "eiusmod", "tempor", "incididunt", "ut", "labore",
+    "et", "dolore", "magna", "aliqua", "ut", "enim", "ad", "minim", "veniam",
+    "quis", "nostrud", "exercitation", "ullamco", "laboris", "nisi", "aliquip",
+    "ex", "ea", "commodo", "consequat", "duis", "aute", "irure", "dolor", "in",
+    "reprehenderit", "in", "voluptate", "velit", "esse", "cillum", "dolore",
+    "eu", "fugiat", "nulla", "pariatur", "excepteur", "sint", "occaecat",
+    "cupidatat", "non", "proident",
+]
 
 
 def _make_report() -> FinalReport:
@@ -69,7 +71,7 @@ def _make_report() -> FinalReport:
         sections=[],
         total_sources=0,
         total_data_points=0,
-        generated_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 8, 1, tzinfo=UTC),
     )
 
 

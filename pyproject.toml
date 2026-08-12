@@ -47,7 +47,7 @@ dependencies = [
     "jinja2>=3.1.0",
     "markupsafe>=2.1.0",
     "plotly>=5.22.0",
-    "kaleido>=0.2.1,<1.0",  # D26: pin to static engine (v1.x needs Chrome)
+    "kaleido>=0.2.1,<1.0,!=0.2.1.post1",  # D26: pin to static engine (v1.x needs Chrome). !=0.2.1.post1: that post-release only ships an armv7l wheel — unresolvable on x86_64 Linux (uv sync fails); 0.2.1 is the canonical x86_64 static-engine build
     "matplotlib>=3.8.0",  # D26: chart fallback when kaleido fails
     "pillow>=10.4.0",
     "fonttools>=4.53.0",  # D-15: subset embedded fonts to the report glyph budget
