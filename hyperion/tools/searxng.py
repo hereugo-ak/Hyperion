@@ -57,14 +57,15 @@ logger = logging.getLogger(__name__)
 # `engines_for` intersects it out of web-replica requests, so W-11 isolation
 # and W-12 disjoint profiles are preserved.
 #
-# P1.2 (overhaul §6 P1, 2026-08-10): **mojeek and yep are removed from every
-# active engine set.** Both categorically 403 from a datacenter/VPS egress
-# after a week of daily runs (the Aug-10 autopsy: mojeek 403 x5+, yep 403
-# x4+ for the entire 40-minute run). They are also disabled in
-# `searxng_settings.yml` so no replica ever receives traffic for them again.
-# The web corpus is now served by `mwmbl` + `brave` behind the engine-health
-# circuit, with the scholar/reference API engines as the fan-out rescue path.
-RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex,wikidata"
+# P1.2 (overhaul §6 P1, 2026-08-10): mojeek/yep were removed from every
+# active engine set (categorical 403 from datacenter/VPS egress) and disabled
+# in searxng_settings.yml.
+#
+# OVERHAUL4 P6.2 (probe 2026-08-11): egress is now a home IP — the probe saw
+# marginalia/wiby ABSENT from the image but mojeek/yep answering, so they are
+# re-enabled on the web replica and listed here again (the settings YAML
+# already re-enabled them; this registry is what keeps W-11/W-12 exact).
+RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex,wikidata,mojeek,yep"
 STANDBY_ENGINES = ""
 CATEGORY_ENGINES = {
     "science": "arxiv,crossref,openalex,semantic scholar",

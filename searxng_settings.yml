@@ -25,7 +25,9 @@ use_default_settings:
       - yep
       # OVERHAUL4 P6.2 (probe 2026-08-11): marginalia/wiby are NOT in the
       # image (wiby FileNotFoundError in container log) — do not declare them.
-      # wikidata IS in the image (reference class).
+      # wikidata IS in the image (reference class) and must stay listed here
+      # so keep_only == declared (W-11 exact-match contract).
+      - wikidata
 
 general:
   instance_name: "HYPERION Search"

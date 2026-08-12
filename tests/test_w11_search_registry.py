@@ -209,20 +209,19 @@ async def test_token_bucket_is_process_wide_per_engine(
 # ── P1.2-fix: boot reconcile expects ENABLED engines, not the declared tuple ─
 
 
-def test_web_profile_enabled_engines_excludes_disabled_scrapers() -> None:
-    """P1.2-fix: the web replica's reconcile must expect only mwmbl+brave.
+def test_web_profile_enabled_engines_is_the_p62_set() -> None:
+    """OVERHAUL4 P6.2 (probe 2026-08-11): the web replica serves
+    mojeek/mwmbl/brave/yep.
 
-    mojeek/yep are DISABLED in the settings (they 403 categorically from this
-    egress) but stay DECLARED in SEARXNG_REPLICAS so W-12 disjointness holds.
-    profile_enabled_engines() must return only the enabled set — otherwise the
-    boot reconcile reports `web:fail@8890` at every boot despite a healthy
-    container (the running config only serves enabled engines)."""
+    P1.2 disabled mojeek/yep (datacenter egress 403s); P6.2 re-enabled them
+    after the probe confirmed home-IP egress answers. The settings YAML and
+    the code registry now agree, so ``profile_enabled_engines()`` returns the
+    P6.2 set and the boot reconcile expects exactly that."""
     web = next(r for r in SEARXNG_REPLICAS if r.profile == "web")
     enabled = profile_enabled_engines("web")
-    assert enabled == {"mwmbl", "brave"}
-    assert "mojeek" not in enabled
-    assert "yep" not in enabled
-    # The declared tuple still holds the disabled engines (P1.2 record).
+    assert enabled == {"mwmbl", "brave", "mojeek", "yep"}
+    # The declared tuple still holds the full P6.2 set (W-12 disjointness).
+    assert set(web.engines) == {"mwmbl", "brave", "mojeek", "yep"}
     assert {"mojeek", "yep"} <= set(web.engines)
 
 
