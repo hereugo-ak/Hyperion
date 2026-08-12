@@ -46,21 +46,32 @@ def _lead_with_failing_narrative() -> SynthesisLead:
 
 
 class TestNoConcatenationFallback:
-    def test_failed_narrative_omits_section_and_declares_gap(self):
+    def test_failed_narrative_builds_digest_section_never_a_gap(self):
+        """OVERHAUL4 P3.2: P2-11's "omit the section" policy is exactly how
+        47 findings became a 0-domain shell (Aug-11 run). A failed narrative
+        LLM now falls back to a deterministic finding-digest section — the
+        section is never omitted, never empty."""
         lead = _lead_with_failing_narrative()
         sections = asyncio.run(lead._build_analysis_sections())
 
-        # The section must be omitted, not shipped with concatenated content.
-        assert sections == []
-        # The gap must be recorded with the specific unanswered question.
-        assert lead.section_gaps, "expected the gap to be declared"
-        assert any("market" in g.lower() for g in lead.section_gaps)
+        assert sections, "a failed narrative must not empty the report"
+        market = next(s for s in sections if s.agent == "market_analyst")
+        assert market.body.startswith(
+            "Analysis of Market Landscape is synthesized from 3 specialist finding(s)"
+        )
 
-    def test_no_concatenated_content_leaks(self):
+    def test_digest_is_structured_not_a_raw_concatenation(self):
+        """The P2-11 concern was the raw ``"\\n\\n".join(f.content)``
+        concatenation that put raw finding text into chapters. The P3.2
+        digest is a structured, self-identifying section (header + numbered
+        titled findings + so-what/sources), never a bare join of finding
+        strings."""
         lead = _lead_with_failing_narrative()
         sections = asyncio.run(lead._build_analysis_sections())
-        for s in sections:
-            assert "Content of finding" not in s.body
+        market = next(s for s in sections if s.agent == "market_analyst")
+        assert "narrative engine was unavailable" in market.body
+        assert "### 1." in market.body
+        assert "### 2." in market.body
 
     def test_gap_error_type_exists(self):
         # The mechanism is a typed error, never a silent pass.

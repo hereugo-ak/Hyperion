@@ -131,6 +131,15 @@ class TestSearchBudget:
         client_a = SearxNGClient(owner="heavy")
         client_b = SearxNGClient(owner="light")
 
+        # OVERHAUL4 P8: the multi-provider paid chain is a separate fallback
+        # (searxng.py search, after the free stack produced nothing). With a
+        # live SearxNG stack the real orchestrator would return results for
+        # the un-exhausted owner, breaking the budget isolation assertion —
+        # it must be neutralised like every other search backend here.
+
+        _no_paid = SimpleNamespace(
+            search=AsyncMock(return_value=[]), metrics_snapshot=lambda: {}
+        )
         with (
             patch.object(client_a, "_get_cached", new=AsyncMock(return_value=None)),
             patch.object(client_b, "_get_cached", new=AsyncMock(return_value=None)),
@@ -142,6 +151,7 @@ class TestSearchBudget:
             patch.object(client_b, "_search_jina_fallback", new=AsyncMock(return_value=None)),
             patch.object(client_a, "_search_grounded_fallback", new=AsyncMock(return_value=None)),
             patch.object(client_b, "_search_grounded_fallback", new=AsyncMock(return_value=None)),
+            patch("hyperion.search.orchestrator.get_search_orchestrator", return_value=_no_paid),
         ):
             a_resp = await client_a.search("heavy query", num_results=3)
             b_resp = await client_b.search("light query", num_results=3)

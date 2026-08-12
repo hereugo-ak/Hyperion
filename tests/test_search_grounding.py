@@ -25,6 +25,7 @@ access is required.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -243,6 +244,20 @@ class TestSearxNGGrounding:
             SearxNGClient, "_search_searxng_json", fake_search_json, raising=True
         )
         monkeypatch.setattr(client, "_search_jina_fallback", fake_jina_fallback)
+        # Hermetic: the fallback chain past the mocked JSON boundary must not
+        # touch the (live) network — the grounded-search leg and the P8 paid
+        # chain would otherwise hit real backends once the free stack returns
+        # nothing, making this query-text test hang or flake on container
+        # state instead of asserting the dispatched query.
+        monkeypatch.setattr(
+            client, "_search_grounded_fallback", fake_jina_fallback
+        )
+        monkeypatch.setattr(
+            "hyperion.search.orchestrator.get_search_orchestrator",
+            lambda settings=None: SimpleNamespace(
+                search=lambda query, num_results: [], metrics_snapshot=lambda: {}
+            ),
+        )
 
         # One search() can issue MORE THAN ONE network query: P2-26 added
         # standby-pool rotation on a zero-result response, so a positional
