@@ -786,10 +786,20 @@ table, .kpi-value, .data-table, .chart-data-table {{
 }}
 
 .section-plate img {{
-    width: 100%;
+    /* OVERHAUL4 fix: object-fit: cover is a HARD overlap bug here. WeasyPrint
+       paints the cover-cropped content at its natural size, centered in the
+       box, WITHOUT clipping; a portrait source (the render pipeline used to
+       crop section images 40%-portrait) bled ~91pt above and below the box
+       and smothered the text under it (the audited occlusion). Scale-to-fit
+       instead: the image is pre-cropped to the band's landscape ratio by the
+       render engine, and ANY source is scaled down proportionally within the
+       band; the gutter stays a hard wall. */
+    max-width: 100%;
     max-height: 62mm;
-    object-fit: cover;
+    width: auto;
+    height: auto;
     display: block;
+    margin: 0 auto;
 }}
 
 .section-plate figcaption {{
