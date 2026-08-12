@@ -14,7 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from datetime import datetime, timezone  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
+
+from jinja2 import BaseLoader, Environment  # noqa: E402
 
 from hyperion.agents.delivery.presentation_designer import (  # noqa: E402
     CSS_TEMPLATE,
@@ -27,7 +29,6 @@ from hyperion.schemas.models import (  # noqa: E402
     FinalReport,
     Recommendation,
 )
-from jinja2 import BaseLoader, Environment  # noqa: E402
 
 
 def main() -> None:
@@ -47,7 +48,7 @@ def main() -> None:
         sections=[],
         total_sources=0,
         total_data_points=0,
-        generated_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 8, 1, tzinfo=UTC),
     )
     env = Environment(loader=BaseLoader())
     from hyperion.output.render import TemplateRenderer

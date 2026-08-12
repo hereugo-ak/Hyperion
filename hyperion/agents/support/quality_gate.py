@@ -63,6 +63,7 @@ summary. Fix: replace 'might possibly' with 'is likely to'."
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from typing import Any
 
@@ -88,6 +89,8 @@ from hyperion.schemas.models import (
     QualityScore,
     VisualizationOutput,
 )
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dimension metadata, names, descriptions, and scoring criteria
