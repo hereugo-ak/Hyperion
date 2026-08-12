@@ -47,6 +47,56 @@ _ACADEMIC_DOMAINS = {
     "sciencedirect.com", "springer.com", "nature.com", "ssrn.com",
 }
 
+# OVERHAUL5 W1 (D-03): general-web engines — the only engines that can
+# actually serve a general-web query. Everything else (scholar/reference
+# API engines, crawlers we no longer trust) is NOT web-class, so the web
+# quality trigger cannot be satisfied by a scholar rescue.
+_WEB_ENGINES = {
+    "mwmbl", "brave", "mojeek", "yep", "jina",
+    "you.com", "exa", "tavily", "duckduckgo", "google", "bing",
+}
+
+# Engines that answer with academic metadata / reference corpus, never a
+# general-web page. The fan-out rescues web queries with these; tagging them
+# non-web-class is what makes the paid chain reachable (overhaul5 D-03).
+_NON_WEB_ENGINES = {
+    "crossref", "openalex", "arxiv", "pubmed", "semantic scholar",
+    "semanticscholar", "wikipedia", "wikidata", "github",
+    "hackernews", "stackexchange", "unpaywall", "core", "datacite",
+}
+
+# Paywall / DOI hosts: even when a general-web query surfaces one of these,
+# the URL cannot be extracted and must not count as a web-class hit.
+_PAYWALL_HOSTS = {
+    "doi.org", "dx.doi.org", "sciencedirect.com", "linkinghub.elsevier.com",
+    "springer.com", "link.springer.com", "wiley.com", "onlinelibrary.wiley.com",
+    "taylorfrancis.com", "tandfonline.com", "emerald.com", "mdpi.com",
+    "ssrn.com", "jstor.org", "nature.com", "acs.org", "pubs.acs.org",
+    "ieee.org", "ieeexplore.ieee.org", "pubmed.ncbi.nlm.nih.gov",
+    "ncbi.nlm.nih.gov", "academic.oup.com", "oup.com", "sagepub.com",
+    "degruyter.com", "hindawi.com", "karger.com", "cambridge.org",
+    "core.ac.uk", "researchgate.net", "academia.edu", "sci-hub.se",
+}
+
+
+def classify_web_class(url: str = "", engine: str = "") -> bool:
+    """True when a search result can serve a general-web query.
+
+    OVERHAUL5 W1 (D-03): the scholar fan-out rescues web queries with
+    academic metadata (crossref DOIs); those results must never satisfy the
+    web-class quality trigger. Web engines and non-academic hosts are
+    web-class; academic/reference engines and paywall hosts are not.
+    """
+    eng = (engine or "").strip().lower()
+    if eng in _WEB_ENGINES:
+        return True
+    if eng in _NON_WEB_ENGINES:
+        return False
+    host = urlparse(url or "").netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host not in _PAYWALL_HOSTS
+
 _INDUSTRY_DOMAINS = {
     "mckinsey.com", "bcg.com", "bain.com", "deloitte.com", "pwc.com",
     "kpmg.com", "ey.com", "gartner.com", "forrester.com", "statista.com",

@@ -45,6 +45,7 @@ from hyperion.tools.engine_health import get_engine_health
 from hyperion.tools.evidence_ledger import record_evidence
 from hyperion.tools.jina import JinaClient
 from hyperion.tools.query_utils import grounded_search_or_empty
+from hyperion.tools.source_classifier import classify_web_class
 from hyperion.tools.valkey import get_valkey_store
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,12 @@ logger = logging.getLogger(__name__)
 # re-enabled on the web replica and listed here again (the settings YAML
 # already re-enabled them; this registry is what keeps W-11/W-12 exact).
 RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex,wikidata,mojeek,yep"
+
+# OVERHAUL5 W1 (D-02): a general-web query is "properly answered" only when
+# it returns at least this many WEB-CLASS results (classify_web_class). The
+# scholar fan-out rescue (crossref DOIs) must never satisfy this gate, which
+# is what makes the paid chain reachable on web-class quality failure.
+MIN_WEB_RESULTS = 5
 STANDBY_ENGINES = ""
 CATEGORY_ENGINES = {
     "science": "arxiv,crossref,openalex,semantic scholar",
@@ -272,6 +279,8 @@ class SearchResult:
     category: str = "general"
     published_date: str = ""
     backend: str = "searxng"
+    # OVERHAUL5 W1 (D-03): web-class tagging — see classify_web_class.
+    web_class: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -283,6 +292,7 @@ class SearchResult:
             "category": self.category,
             "published_date": self.published_date,
             "backend": self.backend,
+            "web_class": self.web_class,
         }
 
     def get(self, key: str, default: Any = "") -> Any:
@@ -297,6 +307,7 @@ class SearchResult:
             "category": self.category,
             "published_date": self.published_date,
             "backend": self.backend,
+            "web_class": self.web_class,
         }
         return mapping.get(key, default)
 
@@ -604,6 +615,22 @@ class SearxNGClient:
             self._clients[url] = client
         return client
 
+    @staticmethod
+    def _web_hits(response: SearchResponse) -> int:
+        """OVERHAUL5 W1: count web-class results in a search response."""
+        return sum(1 for r in response.results if r.web_class)
+
+    def _web_class_satisfied(self, response: SearchResponse, categories: str) -> bool:
+        """OVERHAUL5 W1 (D-02): is this response "proper" for the query class?
+
+        Non-web queries (scholar/reference/news-specific) are never gated on
+        web-class results; general/news queries need >= MIN_WEB_RESULTS
+        web-class hits before the response counts as a success.
+        """
+        if (categories or "general").lower() not in ("general", "news", ""):
+            return True
+        return self._web_hits(response) >= MIN_WEB_RESULTS
+
     def _cache_key(self, query: str, **kwargs: Any) -> str:
         """Generate a stable key from a normalized query and engine set."""
         normalized = " ".join(query.casefold().split())
@@ -637,6 +664,7 @@ class SearxNGClient:
                     category=str(item.get("category", "general")),
                     published_date=str(item.get("published_date", "")),
                     backend=str(item.get("backend", "searxng")),
+                    web_class=bool(item.get("web_class", True)),
                 )
                 for item in payload.get("results", [])
                 if isinstance(item, dict)
@@ -919,6 +947,9 @@ class SearxNGClient:
                         score=float(item.get("score", 1.0)),
                         category=item.get("category", category),
                         published_date=item.get("publishedDate", ""),
+                        # OVERHAUL5 W1 (D-03): tag web-class so the quality
+                        # trigger cannot be satisfied by scholar rescues.
+                        web_class=classify_web_class(url=url, engine=engine_name),
                     ))
                     # P0 (overhaul §6 P0.2): every retrieved URL becomes an
                     # Evidence record in the run-scoped ledger BEFORE any LLM
@@ -1571,9 +1602,23 @@ class SearxNGClient:
                 explicit_engines=bool(engines),
             )
 
+            # OVERHAUL5 W1 (D-02): a general-web query is "proper" only when
+            # it returns >= MIN_WEB_RESULTS WEB-CLASS results. Scholar rescues
+            # (crossref DOIs) do not count — if the web class is thin, fall
+            # through to the fan-out and the paid chain instead of returning
+            # a wrong-corpus "success".
             if searxng_response and searxng_response.results:
-                await self._set_cached(cache_key, searxng_response)
-                return searxng_response
+                if self._web_class_satisfied(searxng_response, categories):
+                    await self._set_cached(cache_key, searxng_response)
+                    return searxng_response
+                logger.info(
+                    "SearXNG rotation returned %d result(s) but only %d "
+                    "web-class (min %d) for '%s' — escalating to fan-out/paid",
+                    len(searxng_response.results),
+                    self._web_hits(searxng_response),
+                    MIN_WEB_RESULTS,
+                    query,
+                )
 
             # ── F-03 FULL-POOL FAN-OUT ──
             # The preferred profile AND its standby rotation produced nothing.
@@ -1597,9 +1642,20 @@ class SearxNGClient:
                     time_range=time_range,
                     safesearch=safesearch,
                 )
+                # OVERHAUL5 W1 (D-03): same gate — the fan-out may rescue with
+                # scholar metadata; only web-class results count as "proper".
                 if fanout_response and fanout_response.results:
-                    await self._set_cached(cache_key, fanout_response)
-                    return fanout_response
+                    if self._web_class_satisfied(fanout_response, categories):
+                        await self._set_cached(cache_key, fanout_response)
+                        return fanout_response
+                    logger.info(
+                        "SearXNG fan-out returned %d result(s) but only %d "
+                        "web-class (min %d) for '%s' — escalating to paid chain",
+                        len(fanout_response.results),
+                        self._web_hits(fanout_response),
+                        MIN_WEB_RESULTS,
+                        query,
+                    )
 
             # ── MULTI-PROVIDER PAID CHAIN (OVERHAUL4 P8) ──
             # Canonical fallback: SearXNG -> You -> Exa (loop once) -> Tavily

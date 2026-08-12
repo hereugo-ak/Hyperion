@@ -11,12 +11,12 @@ Master plan: `overhaul5.md` (defects D-01..D-14, W0..W8)
 - [x] ✅ W0.5 test file (fail-first) — 2 parsing tests FAIL on old adapters / PASS on new; 2 live tests skip without keys
 - [ ] ⬜ W0.6 commit + push fix0.3 (next commit)
 
-## W1 · Web-class quality trigger + corpus tagging (D-02, D-03)
-- [ ] ⬜ W1.1 `SearchResult.web_class` field (types.py) + domain→class tagging (source_classifier)
-- [ ] ⬜ W1.2 searxng.py trigger: web-class query returns early only if ≥ MIN_WEB_RESULTS web-class results
-- [ ] ⬜ W1.3 fan-out results tagged web_class=False; never satisfy web trigger
-- [ ] ⬜ W1.4 test (fail-first): 3 scholar DOIs → paid chain fires, response retrieval_degraded
-- [ ] ⬜ W1.5 commit + push
+## W1 · Web-class quality trigger + corpus tagging (D-02, D-03) — ✅ done
+- [x] ✅ W1.1 `SearchResult.web_class` field (types.py + searxng.py local class) + classify_web_class (source_classifier: web engines / non-web engines / paywall hosts)
+- [x] ✅ W1.2 searxng.py trigger: general-web query returns early only if ≥ MIN_WEB_RESULTS=5 web-class results (rotation + fan-out both gated)
+- [x] ✅ W1.3 fan-out results tagged web_class=False (crossref/wikipedia/arxiv…) — never satisfy web trigger; rescue preserved
+- [x] ✅ W1.4 tests (fail-first): 5 new — thin-web→paid, scholar-DOI→paid, full-web→no-paid, non-web never gated, paid flow retrieval_degraded; F-03 test updated to new contract
+- [ ] ⬜ W1.5 commit + push (next commit)
 
 ## W2 · No re-entry + recursion guard (D-04)
 - [ ] ⬜ W2.1 orchestrator paid-only chain (skip SearxNGAdapter when caller exhausted it)

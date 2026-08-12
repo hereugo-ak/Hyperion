@@ -28,6 +28,10 @@ class SearchResult:
     score: float = 0.0    # 0.0-1.0, provider-normalized
     category: str = "web"  # web | news | science | industry
     published_date: str | None = None
+    # OVERHAUL5 W1 (D-03): True when this result can serve a general-web
+    # query (web engine / non-academic host). Scholar fan-out rescues are
+    # tagged False so the web-class quality trigger never counts them.
+    web_class: bool = True
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -40,6 +44,7 @@ class SearchResult:
             "score": self.score,
             "category": self.category,
             "published_date": self.published_date,
+            "web_class": self.web_class,
         }
 
 

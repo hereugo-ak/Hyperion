@@ -31,6 +31,19 @@ from hyperion.schemas.agents import AgentName, ModelTier, SubAgentSpec
 from hyperion.tools.parse_or_none import parse_or_none
 from hyperion.tools.searxng import SearchResult, SearxNGClient, SearxngPool
 
+
+class _NoValkey:
+    """Isolate from the shared persistent valkey cache (OVERHAUL5 W1)."""
+
+    async def get_json(self, key: str):
+        return None
+
+    async def set_json(self, key: str, payload: dict, ttl: int) -> None:
+        return None
+
+    async def delete(self, key: str) -> None:
+        return None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # F-03a · FULL-POOL FAN-OUT
 # ─────────────────────────────────────────────────────────────────────────────
@@ -82,10 +95,18 @@ class TestFullPoolFanOut:
         with (
             patch.object(client, "_search_with_rotation", new=AsyncMock(return_value=None)),
             patch.object(client, "_search_jina_fallback", new=AsyncMock(return_value=None)),
+            patch.object(client, "_search_grounded_fallback", new=AsyncMock(return_value=None)),
+            patch("hyperion.tools.searxng.get_valkey_store", return_value=_NoValkey()),
         ):
+            # OVERHAUL5 W1 (D-03): the scholar fan-out still MERGES results
+            # (crossref/wikipedia above), but for a general query those are
+            # non-web-class, so the response must NOT short-circuit on the
+            # rescue — it escalates to the paid chain instead of returning a
+            # wrong-corpus "success".
             response = await client.search("india ai market", num_results=5)
-        assert response.results
-        assert {"crossref", "wikipedia"} <= set(response.engines_used)
+        assert not response.results, (
+            "W1: a scholar-only fan-out rescue must not satisfy a general query"
+        )
         reset_engine_health()
 
     @pytest.mark.asyncio
