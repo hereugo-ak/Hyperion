@@ -59,7 +59,7 @@ class _FakeOrchestrator:
         self.results = results
         self.calls: list[str] = []
 
-    async def search(self, query: str, num_results: int) -> list:
+    async def search(self, query: str, num_results: int, exclude=None) -> list:
         self.calls.append(query)
         return list(self.results)
 

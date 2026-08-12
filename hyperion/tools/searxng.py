@@ -28,6 +28,7 @@ Tool selection logic (§5.2):
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -67,6 +68,16 @@ logger = logging.getLogger(__name__)
 # re-enabled on the web replica and listed here again (the settings YAML
 # already re-enabled them; this registry is what keeps W-11/W-12 exact).
 RELIABLE_ENGINES = "wikipedia,mwmbl,brave,crossref,openalex,wikidata,mojeek,yep"
+
+# OVERHAUL5 W2 (D-04): re-entrancy guard. ``SearxNGClient.search`` is the
+# same method the paid chain's ``SearxNGAdapter`` wraps — without a guard, a
+# query that reaches the paid chain re-enters ``search`` (rotation -> fan-out
+# -> paid chain -> ...) bounded only by the 600-search budget. The contextvar
+# is set around the paid-chain call so any re-entry returns empty immediately.
+# Contextvar (not a plain flag): concurrent queries must not collide.
+_IN_PAID_CHAIN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "hyperion_in_paid_chain", default=False
+)
 
 # OVERHAUL5 W1 (D-02): a general-web query is "properly answered" only when
 # it returns at least this many WEB-CLASS results (classify_web_class). The
@@ -1464,6 +1475,16 @@ class SearxNGClient:
 
         cache_key = self._cache_key(query, num_results=num_results, categories=categories,
                                      language=language, time_range=time_range, engines=effective_engines)
+        # OVERHAUL5 W2 (D-04): recursion guard — we are inside the paid chain
+        # (this method is wrapped by the in-orchestrator SearxNGAdapter); a
+        # re-entrant search can only re-prove the pool is dead. Return empty
+        # immediately, before the cache/budget/rotation machinery.
+        if _IN_PAID_CHAIN.get():
+            logger.debug(
+                "recursion guard: SearXNG re-entry from paid chain skipped for '%s'",
+                query,
+            )
+            return SearchResponse(query=query, results=[], total=0, engines_used=[])
         cached = await self._get_cached(cache_key)
         if cached:
             return cached
@@ -1657,18 +1678,31 @@ class SearxNGClient:
                         query,
                     )
 
-            # ── MULTI-PROVIDER PAID CHAIN (OVERHAUL4 P8) ──
+            # ── MULTI-PROVIDER PAID CHAIN (OVERHAUL4 P8 / OVERHAUL5 W1, W2) ──
             # Canonical fallback: SearXNG -> You -> Exa (loop once) -> Tavily
             # -> Yep. Search-only (title+url+snippet; no contents/answer
             # flags). Runs for web-class queries only, after the free SearXNG
-            # stack (rotation + full-pool fan-out) produced nothing. This is
-            # the spec's exact order — the paid chain never precedes SearXNG.
+            # stack (rotation + full-pool fan-out) failed to reach
+            # MIN_WEB_RESULTS web-class results. This is the spec's exact
+            # order — the paid chain never precedes SearXNG.
+            #
+            # OVERHAUL5 W2 (D-04): the caller has ALREADY exhausted SearXNG
+            # (rotation + fan-out), so the in-orchestrator SearxNGAdapter is
+            # excluded and the re-entrancy guard is set — no second trip
+            # through this method, no budget-burning recursion.
             if (categories or "general").lower() in ("general", "news", ""):
                 try:
+                    from hyperion.search.adapters.searxng import SearxNGAdapter
                     from hyperion.search.orchestrator import get_search_orchestrator
 
                     orchestrator = get_search_orchestrator(self.settings)
-                    paid_results = await orchestrator.search(query, num_results)
+                    token = _IN_PAID_CHAIN.set(True)
+                    try:
+                        paid_results = await orchestrator.search(
+                            query, num_results, exclude={SearxNGAdapter}
+                        )
+                    finally:
+                        _IN_PAID_CHAIN.reset(token)
                     if paid_results:
                         converted = [
                             SearchResult(

@@ -18,11 +18,11 @@ Master plan: `overhaul5.md` (defects D-01..D-14, W0..W8)
 - [x] ✅ W1.4 tests (fail-first): 5 new — thin-web→paid, scholar-DOI→paid, full-web→no-paid, non-web never gated, paid flow retrieval_degraded; F-03 test updated to new contract
 - [ ] ⬜ W1.5 commit + push (next commit)
 
-## W2 · No re-entry + recursion guard (D-04)
-- [ ] ⬜ W2.1 orchestrator paid-only chain (skip SearxNGAdapter when caller exhausted it)
-- [ ] ⬜ W2.2 recursion guard in SearxNGClient.search (re-entrancy flag)
-- [ ] ⬜ W2.3 test (fail-first): real orchestrator + real adapter → SearxNGClient.search entered once, You called
-- [ ] ⬜ W2.4 commit + push
+## W2 · No re-entry + recursion guard (D-04) — ✅ done
+- [x] ✅ W2.1 orchestrator paid-only chain: `search(..., exclude={SearxNGAdapter})` — caller already exhausted SearXNG
+- [x] ✅ W2.2 recursion guard: `_IN_PAID_CHAIN` ContextVar — re-entrant `SearxNGClient.search` returns empty before cache/budget/rotation
+- [x] ✅ W2.3 tests (fail-first, 3): exclude skips real SearxNG adapter (SearxNGClient.search 0 calls, paid tiers reached); guard returns empty w/o rotation; searxng.py passes exclude + clears guard
+- [ ] ⬜ W2.4 commit + push (next commit)
 
 ## W3 · Paid suspension + visibility (D-05)
 - [ ] ⬜ W3.1 suspension.py: paid 403 → 120s cooldown, permanent only after 3×

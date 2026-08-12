@@ -129,6 +129,7 @@ class SearchOrchestrator:
         self,
         query: str,
         num_results: int = MAX_RESULTS,
+        exclude: frozenset[type] | set[type] | None = None,
     ) -> list[SearchResult]:
         """Run the deterministic chain and return deduped results (≤ MAX_RESULTS).
 
@@ -138,15 +139,26 @@ class SearchOrchestrator:
         fan-out upstream) failed to reach MIN_RESULTS for THIS query.
         Parallelism lives ACROSS queries (sub-agent fan-out concurrency and
         the SearXNG replica fan-out), never inside a single query's fallback.
+
+        OVERHAUL5 W2 (D-04): ``exclude`` skips adapter classes entirely. The
+        SearxNG caller passes ``exclude={SearxNGAdapter}`` because it has
+        ALREADY exhausted SearXNG (rotation + fan-out) before reaching this
+        chain — re-entering ``SearxNGClient.search`` here is a recursion that
+        burns the search budget re-proving the pool is dead.
         """
+        skip = set(exclude or ())
         pool: list[SearchResult] = []
         for _attempt in range(LOOP_RETRIES + 1):
             for adapter_cls in TIERS_LOOP:
+                if adapter_cls in skip:
+                    continue
                 got = await self._call(adapter_cls, query, num_results)
                 pool.extend(got)
                 if len(dedupe_results(pool)) >= MIN_RESULTS:
                     return self._finish(pool, num_results)
         for tail_cls in TIERS_TAIL:
+            if tail_cls in skip:
+                continue
             got = await self._call(tail_cls, query, num_results)
             pool.extend(got)
             if len(dedupe_results(pool)) >= MIN_RESULTS:
