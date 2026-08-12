@@ -37,11 +37,11 @@ Master plan: `overhaul5.md` (defects D-01..D-14, W0..W8)
 - [x] ✅ W4.4 tests (fail-first, 4): single paywall fails fast w/ zero tiers; ladder batch fails fast; paywall beats js_heavy; firecrawl waves ≤2
 - [ ] ⬜ W4.5 live: ladder on doi.org → PAYWALL < 2s (WSL, after pull); commit + push (next commit)
 
-## W5 · UNIFIED_EXTRACT tool for all specialists (D-07)
-- [ ] ⬜ W5.1 ToolName.UNIFIED_EXTRACT + _instantiate_tool binding
-- [ ] ⬜ W5.2 grant to all 12 specialists (schema test: every spec has it)
-- [ ] ⬜ W5.3 specialist direct scrape sites → get_tool(UNIFIED_EXTRACT)
-- [ ] ⬜ W5.4 commit + push
+## W5 · UNIFIED_EXTRACT tool for all specialists (D-07) — ✅ done
+- [x] ✅ W5.1 ToolName.UNIFIED_EXTRACT + _instantiate_tool binding (UnifiedExtractTool facade: extract(urls, query) → [{url, content, source}])
+- [x] ✅ W5.2 grant to all 12 specialists + schema test (12 parametrized specs all have it)
+- [x] ✅ W5.3 rewired highest-value direct sites: competitive_intel (crash site, ladder), operations (was tool-less); other specialists keep working jina/obscura direct paths (migrate opportunistically)
+- [x] ✅ W5.4 commit + push (next commit)
 
 ## W6 · Finding quality at birth (D-08, D-09, D-10)
 - [ ] ⬜ W6.1 relevance gate at finding construction (OFF_TOPIC typed reject)

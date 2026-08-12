@@ -96,6 +96,7 @@ MA_ANALYST_SPEC = AgentSpec(
     display_name="M&A Analyst",
     model_tier=ModelTier.STRONG,
     tools=[
+        ToolName.UNIFIED_EXTRACT,
         ToolName.SEARXNG,
         ToolName.JINA,
         ToolName.OBSCURA,

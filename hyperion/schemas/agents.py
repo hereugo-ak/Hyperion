@@ -111,6 +111,10 @@ class ToolName(str, Enum):
     CRAWL4AI = "crawl4ai"
     FLARESOLVERR = "flaresolverr"
     WAYBACK = "wayback"
+    # OVERHAUL5 W5 (D-07): the single extraction ladder as one tool — every
+    # specialist gets it, so direct extraction reaches every backend
+    # (paywall/PDF/media/js_heavy aware, availability-probed).
+    UNIFIED_EXTRACT = "unified_extract"
     ALPHA_VANTAGE = "alpha_vantage"
     FRED = "fred"
     UNSPLASH = "unsplash"

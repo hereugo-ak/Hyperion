@@ -105,6 +105,7 @@ STRATEGY_ANALYST_SPEC = AgentSpec(
     display_name="Strategy Analyst",
     model_tier=ModelTier.STRONG,
     tools=[
+        ToolName.UNIFIED_EXTRACT,
         ToolName.SEARXNG,
         ToolName.JINA,
         ToolName.OBSCURA,

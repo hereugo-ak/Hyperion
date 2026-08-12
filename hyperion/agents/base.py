@@ -1032,6 +1032,11 @@ class BaseAgent(ABC):
         elif tool == ToolName.JINA:
             from hyperion.tools.jina import JinaClient
             return JinaClient(settings=self.settings)
+        elif tool == ToolName.UNIFIED_EXTRACT:
+            # OVERHAUL5 W5 (D-07): the single extraction ladder as one facade.
+            from hyperion.tools.unified_extract import UnifiedExtractTool
+
+            return UnifiedExtractTool(settings=self.settings)
         elif tool == ToolName.OBSCURA:
             from hyperion.tools.obscura import ObscuraClient
             return ObscuraClient(settings=self.settings)

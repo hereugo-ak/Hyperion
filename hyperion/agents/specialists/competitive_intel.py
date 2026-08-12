@@ -76,6 +76,7 @@ COMPETITIVE_INTEL_SPEC = AgentSpec(
     display_name="Competitive Intelligence",
     model_tier=ModelTier.STANDARD,
     tools=[
+        ToolName.UNIFIED_EXTRACT,
         ToolName.SEARXNG,
         ToolName.JINA,
         ToolName.OBSCURA,
@@ -675,73 +676,53 @@ class CompetitiveIntel(BaseAgent):
     async def _scrape_competitor_sites(self, competitors: list[str]) -> None:
         """Scrape each competitor's website for product/pricing/team info.
 
-        Uses Obscura with stealth mode because competitor sites actively
-        block bots. Uses Jina for content extraction from non-JS pages.
-        Falls back to Jina if Obscura is blocked.
+        OVERHAUL5 W5 (D-07) + W7 (D-12): routed through the single
+        UnifiedExtract ladder (page-aware: paywall/PDF/media/js_heavy
+        profiles, availability-probed tiers) instead of the bespoke
+        obscura->jina loop whose ``content`` binding crashed exactly when
+        Obscura succeeded (UnboundLocalError, 08-12 run 14:56:52) and whose
+        tool grants were partial.
         """
         try:
-            obscura = self.get_tool(ToolName.OBSCURA)
+            extractor = self.get_tool(ToolName.UNIFIED_EXTRACT)
         except (ValueError, AttributeError, RuntimeError):
-            obscura = None
-
-        try:
-            jina = self.get_tool(ToolName.JINA)
-        except (ValueError, AttributeError, RuntimeError):
-            jina = None
+            return
 
         for competitor in competitors[:10]:  # Limit to 10 competitors
             # First, find the competitor's website URL
             website_url = await self._find_competitor_website(competitor)
-            if website_url:
-                self._competitor_urls[competitor] = website_url
+            if not website_url:
+                continue
+            self._competitor_urls[competitor] = website_url
 
-                # Scrape key pages: homepage, pricing, product, about/team
-                pages_to_scrape = [
-                    ("homepage", website_url),
-                    ("pricing", f"{website_url}/pricing"),
-                    ("product", f"{website_url}/product"),
-                    ("about", f"{website_url}/about"),
-                ]
+            # Scrape key pages: homepage, pricing, product, about/team
+            pages_to_scrape = [
+                ("homepage", website_url),
+                ("pricing", f"{website_url}/pricing"),
+                ("product", f"{website_url}/product"),
+                ("about", f"{website_url}/about"),
+            ]
 
-                for page_type, url in pages_to_scrape:
-                    page_data = None
+            for page_type, url in pages_to_scrape:
+                try:
+                    hits = await extractor.extract([url], query=competitor)
+                except (ValueError, AttributeError, RuntimeError):
+                    hits = []
+                if not hits:
+                    continue
+                content = hits[0]["content"]
+                page_data = {"content": content[:15000]}
+                if competitor not in self._scraped_pages:
+                    self._scraped_pages[competitor] = {}
+                self._scraped_pages[competitor][page_type] = page_data
 
-                    # Try Obscura first (handles JS-rendered content)
-                    if obscura:
-                        try:
-                            fetch_result = await obscura.fetch(url, stealth=True)
-                            if fetch_result and (fetch_result.markdown or fetch_result.content):
-                                page_data = {"content": (fetch_result.markdown or fetch_result.content)[:15000]}
-                            else:
-                                page_data = None
-                        except (ValueError, AttributeError, RuntimeError):
-                            page_data = None
-
-                    # Fall back to Jina if Obscura fails
-                    if not page_data and jina:
-                        try:
-                            read_result = await jina.read(url)
-                            if read_result and (read_result.markdown or read_result.content):
-                                content = read_result.markdown or read_result.content
-                            else:
-                                continue
-                            if content:
-                                page_data = {"content": content[:15000]}
-                        except (ValueError, AttributeError, RuntimeError):
-                            page_data = None
-
-                    if page_data:
-                        if competitor not in self._scraped_pages:
-                            self._scraped_pages[competitor] = {}
-                        self._scraped_pages[competitor][page_type] = page_data
-
-                        self._sources.append(Source(
-                            id=f"src_{len(self._sources):03d}",
-                            title=f"{competitor}, {page_type} page",
-                            url=url,
-                            credibility=SourceCredibility.BLOG,
-                            key_data=content[:500],
-                        ))
+                self._sources.append(Source(
+                    id=f"src_{len(self._sources):03d}",
+                    title=f"{competitor}, {page_type} page",
+                    url=url,
+                    credibility=SourceCredibility.BLOG,
+                    key_data=content[:500],
+                ))
 
     async def _find_competitor_website(self, competitor_name: str) -> str:
         """Find a competitor's website URL using SearxNG."""

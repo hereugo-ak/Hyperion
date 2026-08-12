@@ -89,6 +89,7 @@ OPERATIONS_ANALYST_SPEC = AgentSpec(
     display_name="Operations Analyst",
     model_tier=ModelTier.STANDARD,
     tools=[
+        ToolName.UNIFIED_EXTRACT,
         ToolName.SEARXNG,
         ToolName.JINA,
         ToolName.OBSCURA,
@@ -387,20 +388,18 @@ class OperationsAnalyst(BaseAgent):
                         credibility=SourceCredibility.INDUSTRY_REPORT,
                     ))
 
-            # Extract content from top URLs using Jina
+            # Extract content from top URLs via the unified ladder (OVERHAUL5
+            # W5 / D-07): operations had NO extraction grant; the ladder makes
+            # every backend available, page-aware.
             try:
-                jina = self.get_tool(ToolName.JINA)
+                extractor = self.get_tool(ToolName.UNIFIED_EXTRACT)
                 top_urls = [r["url"] for r in results[:5] if r.get("url")]
-                for url in top_urls:
-                    read_result = await jina.read(url)
-                    if read_result and (read_result.markdown or read_result.content):
-                        content = read_result.markdown or read_result.content
-                    else:
-                        continue
-                    if content:
+                if top_urls:
+                    hits = await extractor.extract(top_urls)
+                    for hit in hits:
                         self._extracted_content.append({
-                            "url": url,
-                            "content": content[:15000],
+                            "url": hit["url"],
+                            "content": hit["content"][:15000],
                         })
             except (ValueError, AttributeError, RuntimeError):
                 pass
@@ -424,7 +423,7 @@ class OperationsAnalyst(BaseAgent):
         results: list[dict[str, Any]] = []
 
         try:
-            obscura = self.get_tool(ToolName.OBSCURA)
+            extractor = self.get_tool(ToolName.UNIFIED_EXTRACT)
 
             # Supply chain and logistics data sources
             data_urls = [
@@ -434,12 +433,9 @@ class OperationsAnalyst(BaseAgent):
 
             for url in data_urls:
                 try:
-                    fetch_result = await obscura.fetch(url, stealth=True)
-                    if fetch_result and (fetch_result.markdown or fetch_result.content):
-                        page_data = {"content": (fetch_result.markdown or fetch_result.content)[:15000]}
-                    else:
-                        page_data = None
-                    if page_data:
+                    hits = await extractor.extract([url], query=sector)
+                    if hits:
+                        page_data = {"content": hits[0]["content"][:15000]}
                         results.append({
                             "url": url,
                             "data": page_data,

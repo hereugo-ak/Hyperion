@@ -104,6 +104,7 @@ INNOVATION_ANALYST_SPEC = AgentSpec(
     display_name="Innovation Analyst",
     model_tier=ModelTier.STANDARD,
     tools=[
+        ToolName.UNIFIED_EXTRACT,
         ToolName.SEARXNG,
         ToolName.JINA,
         ToolName.OBSCURA,

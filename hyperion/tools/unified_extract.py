@@ -1609,3 +1609,47 @@ class UnifiedExtract:
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.close()
+
+
+class UnifiedExtractTool:
+    """OVERHAUL5 W5 (D-07): agent-facing facade over the single extraction
+    ladder.
+
+    Specialists call ``get_tool(ToolName.UNIFIED_EXTRACT).extract(urls)`` and
+    receive the ladder's best result per URL as ``[{url, content, source}]`` —
+    one shape, one ladder, page-aware ordering (paywall/PDF/media/js_heavy
+    profiles), availability-probed tiers. Replaces bespoke per-tool
+    ``jina.read`` / ``obscura.fetch`` loops so every specialist reaches every
+    extraction backend (the 08-12 run's specialist grants were partial —
+    operations had none).
+    """
+
+    def __init__(self, settings: Any | None = None) -> None:
+        self.settings = settings
+
+    async def extract(
+        self,
+        urls: list[str],
+        query: str = "",
+        *,
+        max_content_chars: int = 15000,
+    ) -> list[dict[str, str]]:
+        """Climb the ladder for ``urls``; return usable content per URL."""
+        extractor = UnifiedExtract(settings=self.settings)
+        try:
+            outcome = await extractor.extract_ladder(
+                list(urls), query=query, concurrency=4
+            )
+        finally:
+            await extractor.close()
+        extracted: list[dict[str, str]] = []
+        for r in outcome.results:
+            text = r.markdown or r.content
+            if not text:
+                continue
+            extracted.append({
+                "url": r.url,
+                "content": text[:max_content_chars],
+                "source": r.tool_used or "unified_extract",
+            })
+        return extracted

@@ -86,6 +86,7 @@ RISK_ANALYST_SPEC = AgentSpec(
     display_name="Risk Analyst",
     model_tier=ModelTier.STANDARD,
     tools=[
+        ToolName.UNIFIED_EXTRACT,
         ToolName.SEARXNG,
         ToolName.JINA,
         ToolName.OBSCURA,

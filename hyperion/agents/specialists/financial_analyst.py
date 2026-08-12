@@ -84,6 +84,7 @@ FINANCIAL_ANALYST_SPEC = AgentSpec(
     display_name="Financial Analyst",
     model_tier=ModelTier.STRONG,
     tools=[
+        ToolName.UNIFIED_EXTRACT,
         ToolName.ALPHA_VANTAGE,
         ToolName.FRED,
         ToolName.SEC_EDGAR,
