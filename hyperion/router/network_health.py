@@ -113,7 +113,7 @@ async def _tcp_connect(host: str, port: int, timeout: float) -> bool:
             None, lambda: socket.create_connection((host, port), timeout=timeout)
         )
         sock = await asyncio.wait_for(conn, timeout=timeout + 0.5)
-    except (OSError, asyncio.TimeoutError):
+    except (TimeoutError, OSError):
         return False
     except Exception as exc:  # noqa: BLE001 - defensive: never raise from a probe
         logger.debug("Network probe: unexpected error connecting to %s:%d: %s",

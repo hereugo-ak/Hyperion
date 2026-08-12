@@ -34,6 +34,7 @@ production path uses, so a regression in the gate itself fails the run.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -412,10 +413,10 @@ def canary_missing_dep_output() -> CanaryResult:
     """OVERHAUL2 S14 / D1: a specialist dependency with no output must NOT
     crash synthesis/fact-check — they run on the findings channel plus
     available outputs (S4), never ``MissingDependencyOutput``."""
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import AsyncMock, MagicMock
 
     from hyperion.orchestrator import MissingDependencyOutput, WorkflowEngine
-    from hyperion.schemas.agents import AgentName, AgentRole, AgentSpec, ModelTier
+    from hyperion.schemas.agents import AgentName
 
     started = time.monotonic()
     orch = WorkflowEngine.__new__(WorkflowEngine)
@@ -442,7 +443,6 @@ def canary_missing_dep_output() -> CanaryResult:
         async def _run_guarded():
             return None
 
-        from hyperion.orchestrator import WorkflowEngine as WE
 
         context = {}
         missing_deps: list[str] = []
@@ -566,13 +566,12 @@ def canary_reference_condensation() -> CanaryResult:
         finally:
             await client.close()
 
-    with patch("hyperion.tools.searxng.get_engine_health", lambda: _Health()):
-        with patch.object(
-            EngineTokenBucket,
-            "acquire",
-            staticmethod(lambda engines: asyncio.sleep(0)),
-        ):
-            dispatched = _run_coroutine(_run())
+    with patch("hyperion.tools.searxng.get_engine_health", lambda: _Health()), patch.object(
+        EngineTokenBucket,
+        "acquire",
+        staticmethod(lambda engines: asyncio.sleep(0)),
+    ):
+        dispatched = _run_coroutine(_run())
     elapsed = int((time.monotonic() - started) * 1000)
 
     if dispatched is None:
@@ -681,13 +680,12 @@ def canary_scholar_sanitation() -> CanaryResult:
         finally:
             await client.close()
 
-    with patch("hyperion.tools.searxng.get_engine_health", lambda: _Health()):
-        with patch.object(
-            EngineTokenBucket,
-            "acquire",
-            staticmethod(lambda engines: asyncio.sleep(0)),
-        ):
-            dispatched = _run_coroutine(_run())
+    with patch("hyperion.tools.searxng.get_engine_health", lambda: _Health()), patch.object(
+        EngineTokenBucket,
+        "acquire",
+        staticmethod(lambda engines: asyncio.sleep(0)),
+    ):
+        dispatched = _run_coroutine(_run())
     elapsed = int((time.monotonic() - started) * 1000)
 
     if dispatched is None:
@@ -815,13 +813,12 @@ def canary_nonjson_cooldown() -> CanaryResult:
         finally:
             await client.close()
 
-    with patch("hyperion.tools.searxng.get_engine_health", lambda: health):
-        with patch.object(
-            EngineTokenBucket,
-            "acquire",
-            staticmethod(lambda engines: asyncio.sleep(0)),
-        ):
-            response, clients = _run_coroutine(_run())
+    with patch("hyperion.tools.searxng.get_engine_health", lambda: health), patch.object(
+        EngineTokenBucket,
+        "acquire",
+        staticmethod(lambda engines: asyncio.sleep(0)),
+    ):
+        response, clients = _run_coroutine(_run())
     elapsed = int((time.monotonic() - started) * 1000)
 
     if {"mwmbl", "brave"} > health.dead:
@@ -1033,12 +1030,11 @@ def canary_recovery_loop() -> CanaryResult:
     async def _fake_loop(self, dag, final_report, fact_check_report):
         return repaired_report, repaired_score, 1
 
-    with patch.object(WorkflowEngine, "_dispatch_recovery", new=dispatch):
-        with patch.object(
-            WorkflowEngine, "_quality_iteration_loop", new=_fake_loop
-        ):
-            dag = MagicMock()
-            _run_coroutine(orch._recover_from_blocked(dag, report, score, None))
+    with patch.object(WorkflowEngine, "_dispatch_recovery", new=dispatch), patch.object(
+        WorkflowEngine, "_quality_iteration_loop", new=_fake_loop
+    ):
+        dag = MagicMock()
+        _run_coroutine(orch._recover_from_blocked(dag, report, score, None))
     elapsed = int((time.monotonic() - started) * 1000)
 
     if dispatch.await_count != 1:
@@ -1207,10 +1203,8 @@ def main() -> int:
     import sys
 
     for _stream in (sys.stdout, sys.stderr):
-        try:
+        with contextlib.suppress(AttributeError, ValueError):  # pragma: no cover
             _stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):  # pragma: no cover - non-file streams
-            pass
     results = run_canaries()
     failed = [r for r in results if not r.passed]
     print(f"CANARY SUITE: {len(results) - len(failed)}/{len(results)} green")

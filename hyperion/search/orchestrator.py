@@ -13,9 +13,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
-from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -102,7 +102,7 @@ class SearchOrchestrator:
         *,
         budget: BudgetRegistry | None = None,
         suspension: SuspensionRegistry | None = None,
-    ) -> "SearchOrchestrator":
+    ) -> SearchOrchestrator:
         adapters = {
             SearxNGAdapter: SearxNGAdapter(settings),
             YouAdapter: YouAdapter(settings),
@@ -228,10 +228,8 @@ class SearchOrchestrator:
 
     async def close(self) -> None:
         for adapter in self.adapters.values():
-            try:
+            with contextlib.suppress(Exception):  # close is best-effort
                 await adapter.close()
-            except Exception:  # noqa: BLE001 - close is best-effort
-                pass
 
 
 # ── module singleton: one per run, reset at engagement start ────────────────

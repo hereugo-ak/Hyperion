@@ -151,7 +151,9 @@ def test_kpi_record_and_diff(tmp_path) -> None:
 
     diff = diff_kpis("eng_bad", base=str(tmp_path))
     assert diff["prev_id"] == "eng_good"
-    assert set(diff["regressions"]) == {"kpi_1", "kpi_2", "kpi_3", "kpi_4", "kpi_5", "kpi_6", "kpi_7"}
+    assert set(diff["regressions"]) == {
+        "kpi_1", "kpi_2", "kpi_3", "kpi_4", "kpi_5", "kpi_6", "kpi_7",
+    }
     # A regression auto-opens the owning phase node.
     assert regressed_phase(diff) == ["P1", "P2", "P3", "P5"]
 

@@ -34,6 +34,7 @@ from jinja2 import BaseLoader, Environment
 from hyperion.agents.delivery.presentation_designer import HTML_TEMPLATE
 from hyperion.output.page_audit import _check_empty_list_items
 
+
 def _dejavu_or_platform_font() -> str:
     """DejaVu on Linux; fall back to a Windows font (Arial carries U+2022)."""
     from pathlib import Path

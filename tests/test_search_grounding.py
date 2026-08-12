@@ -198,7 +198,9 @@ class TestSearxNGGrounding:
         assert result.results == []
         assert called == []
 
-    def test_drop_geography_kwarg_reaches_network_query_without_geography(self, monkeypatch, tmp_path):
+    def test_drop_geography_kwarg_reaches_network_query_without_geography(
+        self, monkeypatch, tmp_path
+    ):
         """fix 1.5: ``SearxNGClient.search(..., drop_geography=True)`` must
         actually suppress the geography anchor on the query that reaches
         the network boundary, not just accept the kwarg and ignore it."""

@@ -32,6 +32,11 @@ from __future__ import annotations
 import pytest
 
 from hyperion.agents.bus import Channel, MessageType, reset_bus
+from hyperion.config import ModelTier
+from hyperion.orchestrator import WorkflowEngine
+from hyperion.schemas.agents import AgentName
+from hyperion.schemas.models import ConfidenceLevel, KeyFinding
+from hyperion.schemas.workflow import QuestionType, TaskNode, WorkflowDAG
 
 
 @pytest.fixture(autouse=True)
@@ -41,11 +46,6 @@ def _clean_bus() -> None:
     reset_bus()
     yield
     reset_bus()
-from hyperion.config import ModelTier
-from hyperion.orchestrator import WorkflowEngine
-from hyperion.schemas.agents import AgentName
-from hyperion.schemas.models import ConfidenceLevel, KeyFinding
-from hyperion.schemas.workflow import QuestionType, TaskNode, TaskStatus, WorkflowDAG
 
 
 def _make_dag(question: str, tasks: list[TaskNode]) -> WorkflowDAG:

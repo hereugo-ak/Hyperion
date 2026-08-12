@@ -8,8 +8,6 @@ All adapters are fakes — no network.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from hyperion.search.adapters.base import BaseAdapter, TransientProviderError
@@ -227,7 +225,7 @@ def test_session_search_cost_uses_cost_table() -> None:
     }
     table = {"you": 4.0, "searxng": 0.0, "exa": 5.0}
     lines = session_search_cost(metrics, table)
-    by = {l["provider"]: l for l in lines}
+    by = {line["provider"]: line for line in lines}
     assert by["You"]["cost_usd"] == 0.4        # 100 * 4.0 / 1000
     assert by["SearXNG"]["cost_usd"] == 0.0
     assert "Exa" in by and by["Exa"]["calls"] == 0  # zero-call row included

@@ -331,7 +331,7 @@ class KeyFinding(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _enforce_provenance(self) -> "KeyFinding":
+    def _enforce_provenance(self) -> KeyFinding:
         """OVERHAUL2 S8: provenance is schema-enforced, not advisory.
 
         The 17:52 block: 87 findings → 0 report domains, because substantive

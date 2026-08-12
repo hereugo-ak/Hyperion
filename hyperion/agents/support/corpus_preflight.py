@@ -195,11 +195,11 @@ def _evaluate_contract(
     # fanned out a full 16-task DAG over two dead classes. GREEN requires
     # the total floor AND a per-class pulse; any dead class degrades to
     # AMBER (reduced DAG + that class's queries rerouted to living classes).
-    _PER_CLASS_MIN_DOMAINS = {"web": 1, "scholar": 2, "reference": 1}
+    per_class_min_domains = {"web": 1, "scholar": 2, "reference": 1}
     dead_classes = [
         p.source_class
         for p in per_class
-        if p.distinct_domains < _PER_CLASS_MIN_DOMAINS.get(p.source_class, 1)
+        if p.distinct_domains < per_class_min_domains.get(p.source_class, 1)
     ]
     if distinct_domains == 0:
         status = CorpusStatus.RED

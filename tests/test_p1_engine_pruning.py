@@ -19,15 +19,12 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import pytest
 import yaml
 
 from hyperion.tools.engine_health import EngineHealthTracker
 from hyperion.tools.openalex import OpenAlexClient
 from hyperion.tools.searxng import (
     PROFILE_FALLBACK_ENGINES,
-    RELIABLE_ENGINES,
-    STANDBY_ENGINES,
     referenced_engines,
 )
 
