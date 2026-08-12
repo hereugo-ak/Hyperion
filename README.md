@@ -66,34 +66,110 @@ The engine behind that workflow is substantial: **20 agents** (2 orchestrators, 
 
 Hyperion is built for the work that sits between an executive question and a defensible recommendation. The system separates **control**, **evidence and intelligence**, and **assurance and delivery** so that a change in model availability, research depth, or presentation requirement does not collapse the entire engagement into an opaque response. Each plane emits durable artifacts that the next plane can inspect, challenge, or resume.[2] [3]
 
-![Architecture map of Hyperion's control plane, evidence and intelligence plane, assurance and delivery plane, and shared platform foundation.](assets/diagrams/hyperion-system-architecture.png)
+The planes are responsibilities with distinct failure modes, not stages of a pipeline. The control plane decides what to do and in what order. The evidence and intelligence plane decides what is true and what supports it. The assurance and delivery plane decides what the client sees and whether it is defensible. The platform foundation keeps all three honest: it routes model traffic around capacity limits, records what happened, and makes finished work resumable.[2] [7] [12]
+
+```mermaid
+flowchart TB
+    classDef control fill:#141413,stroke:#d97757,color:#F4F3EE,stroke-width:2px
+    classDef evidence fill:#141413,stroke:#7d9367,color:#F4F3EE,stroke-width:2px
+    classDef analysis fill:#141413,stroke:#6a9bcc,color:#F4F3EE,stroke-width:2px
+    classDef assurance fill:#141413,stroke:#c96a6a,color:#F4F3EE,stroke-width:2px
+    classDef delivery fill:#141413,stroke:#e0a08a,color:#F4F3EE,stroke-width:2px
+    classDef foundation fill:#1F1E1D,stroke:#B1ADA1,color:#C9C6BC,stroke-width:1px
+
+    subgraph CP["CONTROL PLANE"]
+        direction TB
+        UI["TUI shell or headless CLI"]:::control
+        DIR["Engagement Director<br/>classify · scope · roster · DAG · tiers"]:::control
+        UI --> DIR
+    end
+
+    subgraph EP["EVIDENCE & INTELLIGENCE PLANE"]
+        direction TB
+        PRE["Corpus preflight<br/>canary probes → GREEN · AMBER · RED"]:::evidence
+        RET["Retrieval + extraction<br/>fallback chain · evidence ledger"]:::evidence
+        SPEC["Specialists in parallel<br/>dependency-aware · sub-agents"]:::analysis
+        PRE --> RET --> SPEC
+    end
+
+    subgraph AP["ASSURANCE & DELIVERY PLANE"]
+        direction TB
+        SYN["Synthesis + Fact Check<br/>reconcile · verify · contradictions"]:::analysis
+        QG["Quality Gate<br/>10-dimension rubric"]:::assurance
+        DEL["Design + Render<br/>charts · layout · audited PDF"]:::delivery
+        SYN --> QG --> DEL
+    end
+
+    DIR --> PRE
+    SPEC --> SYN
+    QG -. "targeted gap closure" .-> SPEC
+
+    subgraph FP["PLATFORM FOUNDATION"]
+        direction LR
+        ROUTE["LLM router · wait gate<br/>five providers · tiers · budgets"]:::foundation
+        JOURNAL["Run journal + manifest<br/>resume · artifacts · diagnostics"]:::foundation
+    end
+
+    DIR -. "operational context" .-> ROUTE
+    DIR -. "durable state" .-> JOURNAL
+    JOURNAL -. "replay completed work" .-> SPEC
+
+    linkStyle default stroke:#2A2926,stroke-width:1.5px
+```
 
 | Operating plane | What the runtime actually does | Why it changes the deliverable |
 | --- | --- | --- |
-| **Control** | The Engagement Director classifies the question, establishes scope and geography, records eligible and excluded specialist decisions, constructs a dependency-aware task DAG, and estimates work before dispatch. | The team is assembled for the engagement rather than forcing every question through one fixed agent sequence. |
-| **Evidence & intelligence** | Corpus preflight probes the configured source classes; retrieval and extraction build an evidence ledger; independent specialist tasks execute in parallel when their dependencies permit. Specialists may spawn junior sub-agents for context-isolated deep dives into individual sources. | Findings have a retained provenance path, and research begins with an explicit evidence condition instead of an assumption that sources will be sufficient. |
-| **Assurance & delivery** | Synthesis reconciles specialist work, fact checking challenges claims, and the Quality Gate evaluates the assembled work on a ten-dimension rubric before visualization, presentation design, PDF rendering, and output audit. | The workflow can request targeted gap closure before release and produces a report with purposeful exhibits rather than a raw model transcript. |
-| **Platform foundation** | The router applies provider health, capacity, tier, and budget controls across five OpenAI-compatible provider families; the run journal records completed steps, failures, artifacts, and diagnostics. | Recoverable work remains recoverable: an interruption or provider issue does not automatically discard stages that have already completed. |
+| **Control** | The Engagement Director classifies the question into six types, establishes scope and geography, records eligible and excluded specialist decisions, constructs a dependency-aware task DAG, assigns model tiers, and estimates token and call budgets before dispatch. Work is dispatched over the AgentBus, an in-process async pub/sub that carries status, findings, requests, escalations, and handoffs between agents.[3] | The team is assembled for the engagement rather than forcing every question through one fixed agent sequence, and the bus lets the Director adapt the roster mid-flight when an agent escalates. |
+| **Evidence & intelligence** | Corpus preflight probes web, scholarly, and reference paths before work begins and returns a typed `GREEN`, `AMBER`, or `RED` contract. Retrieval runs a deterministic fallback chain (SearXNG, You.com, Exa, Tavily, Yep), and every fetched URL becomes a first-class evidence record in the run-scoped ledger before any model sees it. Extraction climbs a capability-gated ladder (HTTP, Jina reader, stealth browsers, Crawl4AI, Firecrawl, FlareSolverr). Specialist tasks execute in parallel when their dependencies permit, and a specialist can spawn junior sub-agents for context-isolated deep dives.[9] [13] [14] | Findings have a retained provenance path from URL to claim, and research begins with an explicit evidence condition instead of an assumption that sources will be sufficient. |
+| **Assurance & delivery** | Synthesis reconciles specialist findings, classifies contradictions as data, interpretation, or scope conflicts, and drafts one recommendation. Fact checking verifies claims against the ledger and flags weak citations. The Quality Gate scores the work on a ten-dimension rubric and either approves it, sends it back for targeted gap closure, or escalates. Presentation design, visualization, and the render engine then produce the 300 DPI PDF with embedded fonts and audited output.[2] [10] | The workflow can request targeted gap closure before release and produces a report with purposeful exhibits rather than a raw model transcript. |
+| **Platform foundation** | The router tracks RPM, TPM, and RPD in sliding windows across five OpenAI-compatible provider families, predicts capacity pressure before a 429 occurs, applies tier, budget, and circuit-breaker controls, and rotates providers by remaining capacity. The run journal records every completed step, failure, artifact, and diagnostic in an append-only SQLite history under the engagement run directory.[12] [11] | Recoverable work remains recoverable: an interruption or provider issue does not automatically discard stages that have already completed, and re-running a question resumes finished steps. |
 
-This is a deliberately selective system. Hyperion does not claim that every business question needs all twenty specialists, every provider, or every source. The director's plan ties specialist selection to the question type and eligible methods, while the DAG exposes dependencies, concurrency, estimates, and later adaptation as first-class operational decisions.[3]
-
+This is a deliberately selective system. Hyperion does not claim that every business question needs all twenty specialists, every provider, or every source. The director's plan ties specialist selection to the question type and eligible methods, while the DAG exposes dependencies, concurrency, estimates, and later adaptation as first-class operational decisions. The platform foundation exists for the cases where the plan is wrong or the environment changes: the system can explain what it did, what it used, and what it already finished.[3] [11]
 ## An Engagement Is a Governed Loop
 
-The lifecycle is a decision system, not a linear content-generation pipeline. A `RED` evidence contract stops an engagement with a typed insufficient-evidence diagnostic. `GREEN` and `AMBER` contracts allow scoped work to proceed, but quality approval remains conditional: a weak coverage, contradiction, or claim can route the system back into targeted gap closure rather than quietly passing into design.[2] [9] [10]
+An engagement is a decision system, not a linear content-generation pipeline. Every step is a gate that can stop the run, narrow its scope, or route it back for targeted work. The corpus contract is settled before research begins: a `RED` contract terminates the engagement in seconds with a typed `INSUFFICIENT_EVIDENCE` diagnostic, instead of letting a dead retrieval stack burn tokens and minutes. `GREEN` and `AMBER` contracts allow scoped work to proceed, but quality approval remains conditional: a weak coverage, contradiction, or claim can route the system back into targeted gap closure rather than quietly passing into design.[2] [9] [10]
 
-![Engagement lifecycle from intake through corpus contract, planning, retrieval, parallel analysis, synthesis, quality gate, targeted revision, rendering, and retained artifacts.](assets/diagrams/hyperion-engagement-lifecycle.png)
+```mermaid
+flowchart TB
+    classDef intake fill:#141413,stroke:#e0a08a,color:#F4F3EE,stroke-width:2px
+    classDef evidence fill:#141413,stroke:#7d9367,color:#F4F3EE,stroke-width:2px
+    classDef plan fill:#141413,stroke:#6a9bcc,color:#F4F3EE,stroke-width:2px
+    classDef gate fill:#141413,stroke:#c96a6a,color:#F4F3EE,stroke-width:2px
+    classDef delivery fill:#141413,stroke:#e0a08a,color:#F4F3EE,stroke-width:2px
+    classDef retained fill:#1F1E1D,stroke:#B1ADA1,color:#C9C6BC,stroke-width:1px
+
+    I["01 · Intake<br/>question → run ID"]:::intake
+    P["02 · Corpus preflight<br/>bounded canary probes per source class"]:::evidence
+    C{"Evidence contract<br/>GREEN · AMBER · RED"}:::gate
+    RED["Stop fast<br/>INSUFFICIENT_EVIDENCE diagnostic"]:::gate
+    PLAN["03 · Plan<br/>scope · roster · task DAG · budget"]:::plan
+    RET["04 · Retrieve + extract<br/>grounded queries · usable content · sources"]:::evidence
+    SPEC["05 · Analyze in parallel<br/>specialists · sub-agents · ledger"]:::plan
+    SYN["06 · Reconcile + verify<br/>synthesis · fact check · contradictions"]:::plan
+    QG{"07 · Quality Gate<br/>10 dimensions · iteration cap"}:::gate
+    FIX["Targeted gap closure<br/>follow-up research · reframing"]:::plan
+    DEL["08 · Design + render<br/>charts → layout → audited PDF"]:::delivery
+    RETAIN["09 · Retain + recover<br/>journal · manifest · artifacts"]:::retained
+
+    I --> P --> C
+    C -- "RED" --> RED
+    C -- "GREEN / AMBER" --> PLAN --> RET --> SPEC --> SYN --> QG
+    QG -- "needs revision" --> FIX --> RET
+    QG -- "approved" --> DEL --> RETAIN
+
+    linkStyle default stroke:#2A2926,stroke-width:1.5px
+```
 
 | Moment that matters | Runtime control | Engagement consequence |
 | --- | --- | --- |
-| **Before research** | Corpus preflight performs bounded canary probes across web, scholarly, and reference paths, then returns a typed `GREEN`, `AMBER`, or `RED` contract. An ungrounded start is refused outright: an engagement that cannot produce evidence does not begin.[9] | The team learns whether the planned evidence standard is achievable before expensive work begins. |
-| **Before specialist dispatch** | The director builds a DAG with explicit dependencies, model tiers, token and call estimates, subject-class gating, and recorded roster decisions. | Parallelism is earned by independence; sequencing is preserved where synthesis or verification requires prior work. |
-| **Before release** | Synthesis, independent fact checking, and the ten-dimension Quality Gate assess claims, evidence coverage, contradictions, methodology, and report quality. | The system can approve, iterate, or escalate with a visible reason rather than silently emitting a polished but fragile answer.[10] |
-| **After interruption** | The run journal and manifest retain task status, outputs, artifacts, and diagnostics under the engagement run directory. | Operators can inspect or resume deterministic runs instead of restarting completed stages by default.[11] |
+| **Before research** | Corpus preflight fires bounded canary probes across web, scholarly, and reference paths, then returns a typed `GREEN`, `AMBER`, or `RED` contract. A `RED` contract raises immediately and refuses to start an ungrounded engagement.[9] | The team learns whether the planned evidence standard is achievable before expensive work begins; an engagement that cannot produce evidence does not begin. |
+| **Before specialist dispatch** | The director builds a DAG with explicit dependencies, model tiers, token and call estimates, subject-class gating, and recorded roster decisions. Independent tasks queue for parallel execution through the AgentBus.[3] | Parallelism is earned by independence; sequencing is preserved where synthesis or verification requires prior work. |
+| **Before release** | Synthesis reconciles findings, fact checking verifies claims against the evidence ledger, and the ten-dimension Quality Gate scores coverage, contradictions, methodology, and report quality. Failing work loops back into targeted gap closure, not into design.[10] | The system can approve, iterate, or escalate with a visible reason rather than silently emitting a polished but fragile answer. |
+| **After interruption** | The run journal and manifest retain task status, outputs, artifacts, and diagnostics under the engagement run directory. The same question maps to the same deterministic run identifier.[11] | Operators can inspect or resume deterministic runs instead of restarting completed stages by default. |
 
 ### What the reader receives
 
 The client-facing report is the final expression of a traceable operating sequence: scoped research, retained evidence, specialist analysis, synthesis, quality controls, visual exhibits, document design, and render-level checks. The operational trail remains available in the corresponding engagement artifacts, allowing Hyperion to support both executive reading and post-delivery scrutiny.[2] [11]
-
 ## Agent Operating Model
 
 The terminal roster groups the same 20 agents used by the runtime into four responsibility areas. Their individual abilities are visible in the TUI through `/agents`.[4] Every agent produces typed, structured output (Pydantic models) rather than free text, so the Synthesis Lead, Fact Checker, and Quality Gate can reconcile, challenge, and score work programmatically instead of re-reading prose.
