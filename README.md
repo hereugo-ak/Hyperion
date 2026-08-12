@@ -114,6 +114,14 @@ flowchart TB
     DIR -. "durable state" .-> JOURNAL
     JOURNAL -. "replay completed work" .-> SPEC
 
+    style CP fill:#1B1816,stroke:#d97757,color:#F4F3EE
+    style EP fill:#171A17,stroke:#7d9367,color:#F4F3EE
+    style AP fill:#1A1617,stroke:#c96a6a,color:#F4F3EE
+    style FP fill:#171717,stroke:#B1ADA1,color:#C9C6BC
+
+    linkStyle 2 stroke:#c96a6a,stroke-width:2px
+    linkStyle 8 stroke:#ca9a5a,stroke-width:2px
+    linkStyle 10 stroke:#7d9367,stroke-width:2px
     linkStyle default stroke:#2A2926,stroke-width:1.5px
 ```
 
@@ -172,7 +180,7 @@ flowchart TB
 The client-facing report is the final expression of a traceable operating sequence: scoped research, retained evidence, specialist analysis, synthesis, quality controls, visual exhibits, document design, and render-level checks. The operational trail remains available in the corresponding engagement artifacts, allowing Hyperion to support both executive reading and post-delivery scrutiny.[2] [11]
 ## Agent Operating Model
 
-The terminal roster groups the same 20 agents used by the runtime into four responsibility areas. Their individual abilities are visible in the TUI through `/agents`.[4] Every agent produces typed, structured output (Pydantic models) rather than free text, so the Synthesis Lead, Fact Checker, and Quality Gate can reconcile, challenge, and score work programmatically instead of re-reading prose.
+The terminal roster groups the same 20 agents used by the runtime into four responsibility areas: **2 orchestrators, 12 specialists, 4 support agents, and 2 delivery agents**. Their individual abilities are visible in the TUI through `/agents`.[4] No agent is decorative. Every agent carries a named role, a model tier, an explicit tool list, proprietary analytical skills, and a structured output contract, so the Synthesis Lead, Fact Checker, and Quality Gate can reconcile, challenge, and score work programmatically instead of re-reading prose.
 
 | Group | Agent | Core responsibility |
 | --- | --- | --- |
@@ -197,26 +205,28 @@ The terminal roster groups the same 20 agents used by the runtime into four resp
 | **Delivery** | Presentation Designer | Structures the deck, storyline, and executive summary. |
 | **Delivery** | Render Engine | Typesets the final PDF with charts. |
 
+> **Delegation, not truncation.** A specialist that needs deeper research spawns a junior sub-agent with a focused sub-question. The sub-agent researches inside its own context window and returns structured findings with sources and confidence; the parent synthesizes. Context limits are handled by delegation, never by compressing evidence, and the Director adapts the roster mid-engagement when an agent escalates something unexpected.
+
 ## Quick Start
 
-Hyperion requires **Python 3.12 or later** and declares `uv` as its primary dependency-management workflow.[5] Docker is recommended for the self-hosted retrieval stack. The headless workflow reports a degraded-search warning and continues through configured fallbacks if a container engine is unavailable.[6]
+**Requirements:** Python 3.12 or later, `uv` as the package manager, and Docker (recommended) for the self-hosted retrieval stack. The headless workflow degrades gracefully: without a container engine it reports a degraded-search warning and continues through configured fallbacks.[5] [6]
 
 ```bash
-# Clone and enter the repository
+# 1 · Get the code
 git clone https://github.com/hereugo-ak/Hyperion.git
 cd Hyperion
 
-# Install application and development dependencies
+# 2 · Install application and development dependencies
 uv sync --extra dev
 
-# Create local configuration, then add the provider keys you intend to use
+# 3 · Create local configuration, then add the provider keys you intend to use
 cp .env.example .env
 
-# Preview the terminal interface without live API keys
+# 4 · Preview the terminal interface without live API keys
 uv run hyperion shell --demo
 ```
 
-After configuration, start an interactive session or run an engagement headlessly. For full retrieval depth, start the managed search stack first (see Managed Retrieval Services) and verify it with `hyperion health`.
+For full retrieval depth, start the managed search stack (see Managed Retrieval Services) and verify it with `hyperion health`. Then launch an interactive session, or run a complete engagement headlessly in one command.
 
 ```bash
 # Launch the Textual terminal interface
@@ -236,7 +246,7 @@ uv run hyperion consult "Assess the European EV charging market" \
 
 ### Interactive terminal interface
 
-`hyperion shell` is the interactive command bridge. It displays the brand wordmark, roster, boot telemetry, transcript, and live engagement events in one selectable scroll surface. Type a business question directly to begin an engagement; `/consult` is not required.[1]
+`hyperion shell` is the interactive command bridge: the brand wordmark, the full agent roster, boot telemetry, the live transcript, and engagement events all live in one selectable scroll surface. Type a business question directly to begin an engagement; `/consult` is not required.[1]
 
 | Input or shortcut | Result |
 | --- | --- |
@@ -251,7 +261,7 @@ uv run hyperion consult "Assess the European EV charging market" \
 | `Ctrl+Shift+C` / `Ctrl+Shift+A` | Copies selected text / selects the full transcript. |
 | `Ctrl+Q` | Tears down managed services and exits the application. |
 
-The interface supports mouse selection and auto-scroll selection. Use `--no-mouse` to preserve a terminal's native selection behavior, and `--reduced-motion` to disable motion effects.
+The interface supports mouse selection and auto-scroll selection. Use `--no-mouse` to preserve a terminal's native selection behavior, and `--reduced-motion` to disable motion effects for accessibility.
 
 ```bash
 uv run hyperion shell --reduced-motion
@@ -276,7 +286,7 @@ The CLI routes `shell` and `consult` through the same workflow engine while expo
 
 ## Results, State, and Recovery
 
-Hyperion treats operational state as part of the engagement rather than incidental logs. Report exports and intermediate records are separated so an incomplete process can be inspected or resumed.[11]
+Hyperion treats operational state as part of the engagement, not as incidental logs. Finished reports and intermediate records are kept apart, so an incomplete process can be inspected, diagnosed, and resumed without replaying completed work.[11]
 
 | Location | Contents | How to use it |
 | --- | --- | --- |
@@ -290,7 +300,7 @@ By default, `consult` derives a deterministic run identifier from the question. 
 
 ## Configuration
 
-All configuration is read from environment variables prefixed with `HYPERION_`. Start with `.env.example`; it is the current configuration contract for provider credentials, optional search adapters, workspace paths, and quality controls.[7]
+All configuration is read from environment variables prefixed with `HYPERION_`. Start from `.env.example`: it is the current configuration contract for provider credentials, search adapters, workspace paths, and quality controls. An empty key simply disables the adapter it feeds.[7]
 
 | Area | Common variables | Practical guidance |
 | --- | --- | --- |
@@ -317,7 +327,9 @@ The repository includes a hardened local retrieval composition: Valkey plus thre
 | **SearXNG web** | General-web metasearch profile. | `http://127.0.0.1:8890` |
 | **FlareSolverr** | Optional investigation-mode browser challenge helper. | `http://127.0.0.1:8191` |
 
-The application boot path owns normal service startup and shutdown. Operators who start the compose stack manually should satisfy the required `SEARXNG_*_SECRET` environment variables and verify the service health checks before beginning a time-sensitive engagement.[8]
+The application boot path owns normal service startup and shutdown, so `hyperion shell` and `hyperion consult` bring the stack up and tear it down themselves. Operators who start the compose stack manually should satisfy the required `SEARXNG_*_SECRET` environment variables and verify the service health checks before a time-sensitive engagement.[8]
+
+> **Hardened by default.** Every container runs with a read-only root filesystem, dropped Linux capabilities, no-new-privileges, and loopback-only port binding; the three SearXNG replicas keep disjoint engine sets so they add capacity and fault isolation, not shared ban risk.
 
 ## Repository Map
 
@@ -352,7 +364,9 @@ Hyperion/
 
 ## Development and Validation
 
-Use the development extra when executing test and lint tooling. The test suite covers workflow and agent contracts, provider routing, evidence controls, TUI interaction, report rendering, output validation, and regression scenarios. Linting runs under ruff with a strict rule set (blind `except` and silent swallows are banned), and typing runs under mypy in strict mode. The CI gate (`hyperion.eval.ci_gate`) enforces the same checks, and a fault-injection canary suite exercises the failure paths that historically broke the pipeline.
+Use the development extra when executing test and lint tooling. The suite covers workflow and agent contracts, provider routing, evidence controls, TUI interaction, report rendering, output validation, and regression scenarios. Linting runs under ruff with a strict rule set (blind `except` and silent swallows fail the gate), typing runs under mypy in strict mode, and a fault-injection canary suite exercises the exact failure paths that historically broke the pipeline.
+
+> **The gate is the process, not an afterthought.** The same checks that protect CI run locally through pre-commit, so a finding that hides a live outage cannot land on the branch.
 
 ```bash
 # Run the complete suite
@@ -381,7 +395,7 @@ uv run --extra dev pytest -q \
 
 ## License
 
-This project is proprietary. © HYPERION Consulting.
+This project is proprietary and closed source. © HYPERION Consulting.
 
 ## Implementation References
 
