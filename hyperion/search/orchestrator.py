@@ -83,11 +83,11 @@ class SearchOrchestrator:
 
     def __init__(
         self,
-        adapters: dict[type, BaseAdapter] | None = None,
+        adapters: dict[type[BaseAdapter], BaseAdapter] | None = None,
         budget: BudgetRegistry | None = None,
         suspension: SuspensionRegistry | None = None,
     ) -> None:
-        self.adapters: dict[type, BaseAdapter] = adapters or {}
+        self.adapters: dict[type[BaseAdapter], BaseAdapter] = adapters or {}
         self.budget = budget or BudgetRegistry()
         self.suspension = suspension or SuspensionRegistry()
         self.metrics: dict[str, ProviderMetrics] = {}
@@ -143,8 +143,8 @@ class SearchOrchestrator:
                 pool.extend(got)
                 if len(dedupe_results(pool)) >= MIN_RESULTS:
                     return self._finish(pool, num_results)
-        for adapter_cls in TIERS_TAIL:
-            got = await self._call(adapter_cls, query, num_results)
+        for tail_cls in TIERS_TAIL:
+            got = await self._call(tail_cls, query, num_results)
             pool.extend(got)
             if len(dedupe_results(pool)) >= MIN_RESULTS:
                 return self._finish(pool, num_results)
@@ -157,7 +157,7 @@ class SearchOrchestrator:
     # ── one provider call ──────────────────────────────────────────────────
 
     async def _call(
-        self, adapter_cls: type, query: str, num_results: int
+        self, adapter_cls: type[BaseAdapter], query: str, num_results: int
     ) -> list[SearchResult]:
         name = adapter_cls.name
         adapter = self.adapters.get(adapter_cls)

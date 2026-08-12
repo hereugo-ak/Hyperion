@@ -285,7 +285,7 @@ async def run_corpus_preflight(
     )
 
     try:
-        from hyperion.obs import trace
+        from hyperion.obs.trace import trace
 
         trace(
             "corpus_preflight",

@@ -106,9 +106,10 @@ def _load_all(base: str | Path = "") -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def record_run_kpis(run: RunKPIs, base: str | Path = "") -> Path:

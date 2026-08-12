@@ -574,7 +574,7 @@ class SubAgentRunner:
         # F-07: raw discovery yield is a counter, not a log line. Zero URLs
         # after a search leg is exactly the ``RETRIEVAL_DEGRADED`` signal the
         # audit's F-01 wants typed instead of silently absorbed.
-        self.counters.raw_results = len(all_urls)
+        self._ensure_counters().raw_results = len(all_urls)
 
         # ── EXTRACTION (fix 2.1: the single UnifiedExtract ladder) ──────
         # Fix 2.2: the sub-question is passed down so the ladder fills its
@@ -588,7 +588,7 @@ class SubAgentRunner:
             # F-07: how many documents actually survived extraction, versus
             # how many URLs were discovered. A 20-URL discovery with 0
             # extracted documents is a typed extraction failure class.
-            self.counters.extracted_documents = len(extracted)
+            self._ensure_counters().extracted_documents = len(extracted)
 
         # ── DATA SOURCES (unchanged) ────────────────────────────────────
 
@@ -1228,7 +1228,7 @@ class SubAgentRunner:
             )
             sufficient = bool(artifacts)
             if not sufficient:
-                self.counters.sufficiency_failed = 1
+                self._ensure_counters().sufficiency_failed = 1
                 logger.info(
                     "F-0.1-5 sufficiency gate FAILED for %r — extracted content "
                     "but no pricing artifacts; feeding fallback routes",
@@ -1912,7 +1912,7 @@ class SubAgentRunner:
             # F-07: a provider failure is a distinct outcome, never "the
             # world has no evidence". The gap produced by run() now carries
             # the reason, and ANALYSIS_FAILED is typed on the runner.
-            self.counters.provider_failures += 1
+            self._ensure_counters().provider_failures += 1
             return []
 
         payload = response.content
@@ -1929,12 +1929,12 @@ class SubAgentRunner:
 
             repaired = extract_json(payload)
             if repaired is None:
-                self.counters.invalid_findings += 1
+                self._ensure_counters().invalid_findings += 1
                 return []
             try:
                 data = json.loads(repaired)
             except (json.JSONDecodeError, ValueError):
-                self.counters.invalid_findings += 1
+                self._ensure_counters().invalid_findings += 1
                 return []
 
         # The LLM should return a JSON array of findings or an object
@@ -1946,13 +1946,13 @@ class SubAgentRunner:
         elif isinstance(data, dict):
             findings_data = [data]
         else:
-            self.counters.invalid_findings += 1
+            self._ensure_counters().invalid_findings += 1
             return []
 
         findings: list[KeyFinding] = []
         for item in findings_data:
             if not isinstance(item, dict):
-                self.counters.invalid_findings += 1
+                self._ensure_counters().invalid_findings += 1
                 continue
             # P3 (I-3): the LLM's own ``sources`` are DISCARDED before
             # validation — a malformed or hallucinated source block must not
@@ -1973,10 +1973,10 @@ class SubAgentRunner:
                     # dropped. They are still excluded from substantive
                     # findings, but the count tells the operator the contract
                     # is broken.
-                    self.counters.invalid_findings += 1
+                    self._ensure_counters().invalid_findings += 1
                     continue
                 findings.append(finding)
-                self.counters.gaps += 1
+                self._ensure_counters().gaps += 1
                 continue
 
             # OVERHAUL2 S8: a substantive payload must NOT be validated as a
@@ -2001,7 +2001,7 @@ class SubAgentRunner:
                     # P3: a code-built EvidenceFinding cannot fail its own
                     # contract; count it as a validation anomaly if it ever
                     # does rather than silently dropping the claim.
-                    self.counters.invalid_findings += 1
+                    self._ensure_counters().invalid_findings += 1
                     continue
 
             # P3: zero ledger-bound citations → typed unverified_assertion.
@@ -2011,7 +2011,7 @@ class SubAgentRunner:
             try:
                 finding = KeyFinding.model_validate(clean_item)
             except (ValueError, TypeError):  # pragma: no cover - contract anomaly
-                self.counters.invalid_findings += 1
+                self._ensure_counters().invalid_findings += 1
                 continue
             findings.append(
                 finding.model_copy(
@@ -2021,9 +2021,9 @@ class SubAgentRunner:
                     }
                 )
             )
-            self.counters.unverified_assertions += 1
+            self._ensure_counters().unverified_assertions += 1
 
-        self.counters.valid_findings = sum(
+        self._ensure_counters().valid_findings = sum(
             1
             for f in findings
             if f.finding_type not in NON_SUBSTANTIVE_FINDING_TYPES
@@ -2166,10 +2166,10 @@ class SubAgentRunner:
         elif search_timed_out or analysis_timed_out:
             self.outcome = ResearchOutcome.TIMEOUT
             self.recovery_hint = "TIMEOUT"
-        elif self.counters.provider_failures > 0 or self.counters.invalid_findings > 0:
+        elif self._ensure_counters().provider_failures > 0 or self._ensure_counters().invalid_findings > 0:
             self.outcome = ResearchOutcome.ANALYSIS_FAILED
             self.recovery_hint = "PROVIDER_FAILURE"
-        elif self.counters.sufficiency_failed:
+        elif self._ensure_counters().sufficiency_failed:
             # F-0.1-5: content was extracted but a pricing/fetch sufficiency
             # gate failed — the extraction is thin for what the question asked.
             # Typed distinctly from NO_EVIDENCE so the parent's failure-class
@@ -2177,7 +2177,7 @@ class SubAgentRunner:
             # re-broadening a search.
             self.outcome = ResearchOutcome.ANALYSIS_FAILED
             self.recovery_hint = "FETCH_INSUFFICIENT"
-        elif self.counters.raw_results == 0 or self.counters.extracted_documents == 0:
+        elif self._ensure_counters().raw_results == 0 or self._ensure_counters().extracted_documents == 0:
             # Nothing came back from retrieval at all — either the pool is
             # degraded (dead/cooled engines, budget exhaustion) or the world
             # has no evidence. Check the engine-health telemetry to pick the
@@ -2215,7 +2215,7 @@ class SubAgentRunner:
             # an analog benchmark with confidence=LOW, not a gap-only blank.
             if self._is_quantitative_question() and not search_timed_out:
                 findings.append(self.labeled_estimate_finding(elapsed))
-            self.counters.gaps = 1
+            self._ensure_counters().gaps = 1
 
         return findings
 

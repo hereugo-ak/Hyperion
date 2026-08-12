@@ -444,8 +444,8 @@ async def run_boot_sequence(
         from hyperion.router.router import get_router
 
         router = get_router()
-        health = router.get_provider_health()
-        for ptype, info in health.items():
+        provider_health = router.get_provider_health()
+        for ptype, info in provider_health.items():
             name = str(ptype).split(".")[-1].lower()
             available = info.get("available", False)
             if available:

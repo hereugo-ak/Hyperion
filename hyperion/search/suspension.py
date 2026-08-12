@@ -50,14 +50,14 @@ class SuspensionRegistry:
             st.suspended_until = now  # never retry within the run
             return
         if signal == "429":
-            st.suspended_until = max(st.suspended_until, now + COOLDOWNS["429"])
+            st.suspended_until = max(st.suspended_until or 0.0, now + (COOLDOWNS["429"] or 0.0))
             return
         if signal in ("5xx", "timeout"):
             st.error_counts[signal] = st.error_counts.get(signal, 0) + 1
             threshold = 3 if signal == "5xx" else 2
             if st.error_counts[signal] >= threshold:
                 st.suspended_until = max(
-                    st.suspended_until, now + COOLDOWNS[signal]
+                    st.suspended_until or 0.0, now + (COOLDOWNS[signal] or 0.0)
                 )
                 st.error_counts[signal] = 0
 

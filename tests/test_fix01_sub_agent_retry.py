@@ -80,7 +80,10 @@ def test_gather_seeds_context_url_before_search(monkeypatch) -> None:
     runner = _runner()
     runner.spec = _spec(context={"url": "https://competitor.example/pricing"})
     runner.counters = SimpleNamespace(raw_results=0, extracted_documents=0)
-    runner._ensure_counters = lambda: None
+    # OVERHAUL4: the research loop routes counter writes through
+    # _ensure_counters() (lazy init); the stub must hand the test's
+    # counter block back, not None.
+    runner._ensure_counters = lambda: runner.counters  # type: ignore[method-assign]
 
     async def _zero_search(self):  # noqa: ANN001
         return ("searxng", [], None)

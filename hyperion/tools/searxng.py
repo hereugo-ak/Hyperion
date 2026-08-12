@@ -702,7 +702,7 @@ class SearxNGClient:
         return cls._owner_counts.get(owner, 0)
 
     @classmethod
-    def budget_snapshot(cls) -> dict[str, object]:
+    def budget_snapshot(cls) -> dict[str, Any]:
         """Machine-readable budget status for the completion health table."""
         return {
             "used": cls._search_count,
@@ -1131,7 +1131,7 @@ class SearxNGClient:
         engines_used: set[str] = set()
         degradation_events: list[dict[str, object]] = []
         for response in responses:
-            if isinstance(response, Exception) or response is None:
+            if isinstance(response, BaseException) or response is None:
                 continue
             merged.extend(response.results)
             engines_used.update(response.engines_used)
@@ -1230,7 +1230,7 @@ class SearxNGClient:
             logger.warning("Gemini grounded fallback failed open: %s", exc)
             # F-09: same visibility rule as the constraint path above.
             try:
-                from hyperion.obs import trace
+                from hyperion.obs.trace import trace
 
                 trace(
                     "search",
@@ -1257,7 +1257,7 @@ class SearxNGClient:
                 # GOOGLE_API_KEY -> fallback is a no-op -> search returns
                 # empty with no trace).
                 try:
-                    from hyperion.obs import trace
+                    from hyperion.obs.trace import trace
 
                     trace(
                         "search",
@@ -1452,7 +1452,7 @@ class SearxNGClient:
                     owner, owner_used, SearxNGClient.PER_OWNER_BUDGET_CAP,
                 )
                 try:
-                    from hyperion.obs import trace
+                    from hyperion.obs.trace import trace
 
                     trace(
                         "search",
@@ -1474,7 +1474,7 @@ class SearxNGClient:
                     SearxNGClient.SEARCH_BUDGET_CAP,
                 )
                 try:
-                    from hyperion.obs import trace
+                    from hyperion.obs.trace import trace
 
                     trace(
                         "search",
@@ -1504,7 +1504,7 @@ class SearxNGClient:
         # anywhere, which is the true total-outage case.
         health = get_engine_health()
         preferred_profile = self._pool.preferred_profile(categories or "general")
-        preferred_engines = set()
+        preferred_engines: set[str] = set()
         for endpoint in self._pool.endpoints:
             if endpoint.profile == preferred_profile:
                 preferred_engines.update(endpoint.engines)

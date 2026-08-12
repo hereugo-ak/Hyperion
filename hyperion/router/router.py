@@ -42,7 +42,7 @@ from hyperion.config import (
     Settings,
     get_settings,
 )
-from hyperion.obs import trace
+from hyperion.obs.trace import trace
 from hyperion.router.budget import DailyBudgetPlanner, TaskUrgency
 from hyperion.router.estimator import TokenEstimator
 from hyperion.router.providers.base import (

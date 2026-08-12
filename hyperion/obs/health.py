@@ -201,7 +201,7 @@ async def credential_preflight(router: Any) -> dict[Any, str]:
 
 def _log_preflight(provider_type: Any, status: str, detail: str) -> None:
     """Loud startup log for a credential failure — never silent."""
-    from hyperion.obs import trace
+    from hyperion.obs.trace import trace
 
     trace(
         "preflight",
