@@ -1,0 +1,51 @@
+flowchart LR
+    classDef control fill:#262521,stroke:#B99463,color:#F3E8D4,stroke-width:1.7px;
+    classDef evidence fill:#202421,stroke:#7FAD87,color:#F3E8D4,stroke-width:1.7px;
+    classDef analysis fill:#20242A,stroke:#7FA2C5,color:#F3E8D4,stroke-width:1.7px;
+    classDef assurance fill:#2A2221,stroke:#C48773,color:#F3E8D4,stroke-width:1.7px;
+    classDef delivery fill:#282323,stroke:#B68A9B,color:#F3E8D4,stroke-width:1.7px;
+    classDef foundation fill:#191918,stroke:#837E73,color:#D8D0C3,stroke-width:1.2px;
+
+    subgraph CP[01 · Control plane]
+        direction TB
+        UI[Textual TUI<br/>or headless CLI]:::control
+        DIR[Engagement Director<br/>classify · scope · roster · DAG]:::control
+        UI --> DIR
+    end
+
+    subgraph EP[02 · Evidence and intelligence plane]
+        direction TB
+        PRE[Corpus contract<br/>web · scholar · reference]:::evidence
+        RET[Search + extraction<br/>multi-provider retrieval]:::evidence
+        LED[(Evidence ledger<br/>sources · domains · provenance)]:::foundation
+        SPEC[Eligible specialists<br/>parallel, dependency-aware research]:::analysis
+        PRE --> RET --> LED --> SPEC
+    end
+
+    subgraph DP[03 · Assurance and delivery plane]
+        direction TB
+        SYN[Synthesis Lead + Fact Checker<br/>reconcile findings · check claims]:::analysis
+        QG[Quality Gate<br/>10-dimension rubric]:::assurance
+        OUT[Visualize → design → render<br/>audited PDF + artifacts]:::delivery
+        SYN --> QG --> OUT
+    end
+
+    DIR --> PRE
+    SPEC --> SYN
+    QG -- targeted revision --> SPEC
+
+    subgraph FP[Platform foundation]
+        direction LR
+        ROUTE[Model router<br/>tiers · budgets · failover]:::foundation
+        JOURNAL[Run journal + manifest<br/>resume · diagnostics · artifacts]:::foundation
+    end
+
+    DIR -. operational context .-> ROUTE
+    DIR -. durable state .-> JOURNAL
+    JOURNAL -. replay completed work .-> SPEC
+
+    linkStyle default stroke:#837E73,stroke-width:1.3px;
+    style CP fill:#1B1916,stroke:#795A38,stroke-width:1px,color:#D8D0C3
+    style EP fill:#181A18,stroke:#3F5944,stroke-width:1px,color:#D8D0C3
+    style DP fill:#1B1819,stroke:#624854,stroke-width:1px,color:#D8D0C3
+    style FP fill:#171717,stroke:#48443D,stroke-width:1px,color:#D8D0C3
