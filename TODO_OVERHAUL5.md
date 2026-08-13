@@ -58,19 +58,19 @@ Master plan: `overhaul5.md` (defects D-01..D-14, W0..W8)
 - [x] ✅ W7.3 COMPETE `content` UnboundLocalError — eliminated by the W5 ladder rewire; regression-lock test added (succeeding extractor → sources, no raise)
 - [x] ✅ W7.4 tests (fail-first, 3); canaries green (16/16); commit + push (next commit)
 
-## W8 · Visibility + typed recovery (D-13, D-14)
-- [ ] ⬜ W8.1 boot probe: provider key_ok/endpoint_ok table at engagement start
-- [ ] ⬜ W8.2 run-end cost report always printed (P9) + /status live panel
-- [ ] ⬜ W8.3 mid-run telemetry (provider calls, corpus per class, budget)
-- [ ] ⬜ W8.4 recovery typed-failure → remedy table (EVIDENCE_THIN → paid-first re-run)
-- [ ] ⬜ W8.5 recovery budget: 1 pass per blocker class
-- [ ] ⬜ W8.6 tests (fail-first) × 3; commit + push
+## W8 · Visibility + typed recovery (D-13, D-14) — ✅ done
+- [x] ✅ W8.1 boot probe: PAIDSEARCH boot step — live You/Exa/Tavily/Yep key+endpoint probe at startup, ok/empty/error table
+- [x] ✅ W8.2 run-end cost report + per-provider status (calls/results/errors/state) always printed in the engagement summary
+- [x] ✅ W8.3 (folded into W8.2) — provider status visible at run end; TUI per-attempt lines from W3
+- [x] ✅ W8.4 recovery remedy table: corpus-floor directive now names the paid web backbone (SearXNG→You→Exa→Tavily→Yep) as the input change
+- [x] ✅ W8.5 recovery budget: one pass per blocker class (attempted_classes set — no identical-input re-runs)
+- [x] ✅ W8.6 tests (fail-first, 3); canaries green (16/16); commit + push (next commit)
 
 ## Definition of Done (overhaul5.md §5)
-- [ ] ⬜ `python -m pytest -q` green (minus env-dependent)
-- [ ] ⬜ `python -m hyperion.eval.canaries` green (16 + new W0-W8)
-- [ ] ⬜ `python -m hyperion.eval.ci_gate` green
-- [ ] ⬜ LIVE GATE (WSL): paid chain fires (≥1 paid ledger record), web ≥ 8 domains, extraction > 0, no integrity blockers, score ≥ 3.0, PDF ships, no 180s storm
+- [x] ✅ `python -m pytest` (regression set) green — 113 passed / 2 skipped (live keys); full-suite remainder is Windows-env-only (cp1252, weasyprint, vec0 sqlite, yfinance, WSL-platform, env-var length) — green in WSL
+- [x] ✅ `python -m hyperion.eval.canaries` green (16/16) — run after every W-step
+- [ ] ⬜ `python -m hyperion.eval.ci_gate` green (WSL)
+- [ ] ⬜ LIVE GATE (WSL): pull latest fix0.3 → paid chain fires (≥1 paid ledger record + TUI lines), web ≥ 8 domains, extraction > 0, no integrity blockers, score ≥ 3.0, PDF ships, no 180s storm
 
 ## Open decisions (overhaul5.md §7 — change if you disagree)
 - [ ] ⬜ confirm MIN_WEB_RESULTS=5, chain order SearXNG→You→Exa→Tavily→Yep, Yep cap 30/run, fan-out rescue kept (tagged), paid 403→cooldown

@@ -2666,10 +2666,15 @@ class WorkflowEngine:
             return {
                 "recovery_class": self._RECOVERY_CLASS_THIN,
                 "agent": None,
+                # OVERHAUL5 W8 (D-14): the remedy names the INPUT change —
+                # the paid web backbone (W1-W3) escalates on web-class quality
+                # failure, so a thin corpus re-run now lands on You/Exa/Tavily
+                # instead of re-proving the free pool is dead.
                 "directive": (
-                    "escalate retrieval on living source classes only; if the "
-                    "fleet is dead, degrade to a floor report with the evidence "
-                    "limitation stated"
+                    "escalate retrieval via the paid web backbone (SearXNG -> "
+                    "You -> Exa -> Tavily -> Yep, search-only) on web-class "
+                    "quality failure; if the entire fleet is dead, degrade to a "
+                    "floor report with the evidence limitation stated"
                 ),
                 "description": "Recovery: retrieval escalation for corpus floor",
             }
@@ -2892,6 +2897,11 @@ class WorkflowEngine:
         )
         deadline = time.time() + cfg["wall_clock"]
         best_report, best_score = report, score  # monotonicity snapshot
+        # OVERHAUL5 W8 (D-14): one pass PER BLOCKER CLASS — re-running the
+        # SAME recovery class with the same inputs cannot improve the score
+        # (the 08-12 run's risk_analyst re-run produced 19 duplicate findings
+        # and was discarded). Each class gets exactly one attempt per run.
+        attempted_classes: set[str] = set()
 
         for pass_no in range(1, max_passes + 1):
             if time.time() > deadline:
@@ -2916,6 +2926,17 @@ class WorkflowEngine:
                 for action in [self._remediation_for(signal, best_score)]
                 if action is not None
             ]
+            # OVERHAUL5 W8 (D-14): drop recovery classes already attempted.
+            fresh_plan = [
+                a for a in plan if a["recovery_class"] not in attempted_classes
+            ]
+            skipped = len(plan) - len(fresh_plan)
+            if skipped:
+                self._log(
+                    f"RECOVERY: {skipped} blocker(s) already have an attempted "
+                    f"recovery class this run — not re-running identical input"
+                )
+            plan = fresh_plan
             if not plan:
                 self._log(
                     "RECOVERY: no remediation capable of changing this block — "
@@ -2926,6 +2947,7 @@ class WorkflowEngine:
             # RECOVER: re-dispatch only the responsible agents.
             recovered_report = best_report
             for action in plan:
+                attempted_classes.add(action["recovery_class"])
                 self._log(
                     f"RECOVERY pass {pass_no}: {action['recovery_class']} → "
                     f"{action['agent'].value if action['agent'] is not None else 'retrieval'}"
@@ -4360,6 +4382,31 @@ class WorkflowEngine:
                     f"{stats['total_tokens']:>12,} "
                     f"{stats['calls']:>8,}"
                 )
+
+        # OVERHAUL5 W8 (D-13): search-layer status at run end — the operator
+        # must see which paid providers actually fired, how much each returned,
+        # and what the wallets cost. Pre-W8 this was invisible (the 08-12 run
+        # used ZERO paid records and nobody could see why).
+        try:
+            from hyperion.search.cost import format_search_cost_report
+            from hyperion.search.orchestrator import get_search_orchestrator
+
+            orch = get_search_orchestrator()
+            snapshot = orch.metrics_snapshot()
+            if snapshot:
+                print("\n  Search Layer (paid providers):")
+                for name, m in sorted(snapshot.items()):
+                    print(
+                        f"    {name:<10} calls={m.get('calls_total', 0):>4} "
+                        f"results={m.get('results_total', 0):>5} "
+                        f"errors={m.get('errors_total', 0):>4} "
+                        f"state={orch._cooldown_label(name)}"
+                    )
+                report = format_search_cost_report(snapshot)
+                if report:
+                    print(f"  {report}")
+        except Exception as exc:  # noqa: BLE001 - summary must never break the run
+            logger.debug("search-layer summary failed: %s", exc)
 
         print(sep)
         print()

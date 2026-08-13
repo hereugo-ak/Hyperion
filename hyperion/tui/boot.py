@@ -472,6 +472,49 @@ async def run_boot_sequence(
         with contextlib.suppress(Exception):
             metrics.touch_provider(p)
 
+    # ── Step 4b: PAID SEARCH — live key + endpoint probe (OVERHAUL5 W8) ──
+    # The 08-12 run used ZERO paid-provider records; the stale adapters 403'd
+    # invisibly. Probe all four keys once at boot and print a table, so a dead
+    # key/endpoint is visible before the first query.
+    step = _start_step("PAIDSEARCH", "probing You/Exa/Tavily/Yep keys")
+    paid_status: list[str] = []
+    paid_warns: list[str] = []
+    try:
+        from hyperion.config import get_settings
+        from hyperion.search.adapters.exa import ExaAdapter
+        from hyperion.search.adapters.tavily import TavilyAdapter
+        from hyperion.search.adapters.yep import YepAdapter
+        from hyperion.search.adapters.you import YouAdapter
+
+        settings = get_settings()
+        for cls in (YouAdapter, ExaAdapter, TavilyAdapter, YepAdapter):
+            adapter = cls(settings)
+            try:
+                hits = await asyncio.wait_for(
+                    adapter.search("india manufacturing competitiveness", num_results=2),
+                    timeout=12.0,
+                )
+                if hits:
+                    paid_status.append(f"{cls.name}=ok({len(hits)})")
+                else:
+                    paid_warns.append(f"{cls.name}=empty")
+            except Exception as exc:  # noqa: BLE001 - boot probe is best-effort
+                paid_warns.append(f"{cls.name}={type(exc).__name__}")
+            finally:
+                with contextlib.suppress(Exception):
+                    await adapter.close()
+    except Exception as exc:  # noqa: BLE001 - probe must never fail boot
+        paid_warns.append(f"probe error: {exc!s:.60}")
+    if paid_status:
+        detail = " ".join(paid_status)
+        if paid_warns:
+            detail += f"  ⚠ {', '.join(paid_warns)}"
+        _finish_step(step, OK if not paid_warns else WARN, detail)
+        results["paid_search"] = (OK if not paid_warns else WARN, detail)
+    else:
+        _finish_step(step, WARN, "no paid provider answered — keys/endpoints down")
+        results["paid_search"] = (WARN, "none answering")
+
     # ── Step 5: Agent roster ──────────────────────────────────────────────
     step = _start_step("ROSTER", "instantiating specialist agents")
     await _pause(0.3)
