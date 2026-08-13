@@ -595,7 +595,7 @@ class MAAnalyst(BaseAgent):
 
             for t in data.get("long_list", []):
                 long_list.append(AcquisitionTarget(
-                    company_name=t.get("company_name", "Unknown"),
+                    company_name=t.get("company_name", ""),
                     ticker=t.get("ticker", ""),
                     description=t.get("description", ""),
                     headquarters=t.get("headquarters", ""),
@@ -609,7 +609,7 @@ class MAAnalyst(BaseAgent):
 
             for t in data.get("short_list", []):
                 short_list.append(AcquisitionTarget(
-                    company_name=t.get("company_name", "Unknown"),
+                    company_name=t.get("company_name", ""),
                     ticker=t.get("ticker", ""),
                     description=t.get("description", ""),
                     headquarters=t.get("headquarters", ""),
@@ -1044,7 +1044,7 @@ class MAAnalyst(BaseAgent):
             workstreams: list[IntegrationWorkstream] = []
             for ws in data.get("workstreams", []):
                 workstreams.append(IntegrationWorkstream(
-                    workstream=ws.get("workstream", "Unknown"),
+                    workstream=ws.get("workstream", ""),
                     owner=ws.get("owner", ""),
                     key_milestones=ws.get("key_milestones", []),
                     day_1_actions=ws.get("day_1_actions", []),

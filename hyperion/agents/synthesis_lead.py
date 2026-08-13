@@ -99,6 +99,34 @@ from hyperion.schemas.workflow import WorkflowDAG
 
 logger = logging.getLogger(__name__)
 
+# OVERHAUL5 W6 (D-08): relevance floor for section evidence. Below this the
+# finding is off-topic for the engagement question and is dropped before
+# section assembly (token-boundary EvidenceScorer matcher; same 0.10 band the
+# image gate uses).
+_FINDING_MIN_RELEVANCE = 0.10
+
+# OVERHAUL5 W6 (D-10): verdict/narrative consistency — mirrors the quality
+# gate's contradiction table (quality_gate.py). The verdict field is the ONE
+# writer; the executive summary must never contradict it. ``rec`` is the
+# normalized verdict (underscores -> spaces, e.g. "no_go" -> "no go").
+_VERDICT_CONFLICT_TERMS: dict[str, tuple[str, ...]] = {
+    "enter": ("no-go", "no go", "do not", "reject"),
+    "no go": ("conditional", "proceed", "go ahead", "enter"),
+    "conditional": ("no-go", "no go", "unconditional"),
+    "acquire": ("do not acquire", "do-not-acquire", "reject the deal"),
+    "do not acquire": ("proceed with acquisition", "acquire the"),
+}
+
+
+def _verdict_conflict(rec: str, text: str) -> str | None:
+    """Return the first term that contradicts the verdict, or None."""
+    norm = rec.replace("_", " ").lower().strip()
+    blob = (text or "").lower()
+    for term in _VERDICT_CONFLICT_TERMS.get(norm, ()):
+        if term in blob:
+            return term
+    return None
+
 
 class SectionGapError(RuntimeError):
     """Raised when a section's narrative cannot be synthesized (P2-11).
@@ -1092,7 +1120,12 @@ class SynthesisLead(BaseAgent):
         try:
             parsed = json.loads(response.content)
             if isinstance(parsed, dict):
-                return {str(key): value for key, value in parsed.items()}
+                draft = {str(key): value for key, value in parsed.items()}
+                # OVERHAUL5 W6 (D-10): one writer — the verdict field decides;
+                # the executive summary must conform or it is regenerated
+                # (bounded) with the verdict as a hard constraint. Kills the
+                # CONDITIONAL-vs-'no-go' contradiction at construction.
+                return await self._reconcile_verdict(draft)
         except (json.JSONDecodeError, ValueError):
             pass
 
@@ -1325,15 +1358,28 @@ class SynthesisLead(BaseAgent):
             agent: str,
             findings: list[KeyFinding],
         ) -> AnalysisSection:
-            if not findings:
+            # OVERHAUL5 W6 (D-08): gap placeholders and off-topic findings are
+            # NOT section evidence. The 08-12 report cited 'Risk analysis gap,
+            # insufficient source data' and Apple/iPhone + Italian-fashion
+            # papers for an India-vs-China manufacturing question — the gate
+            # must reject them at the section boundary (the point where
+            # findings become report content), never at the gate 40 min later.
+            evidence, gap_count = self._filter_section_findings(findings)
+            if not evidence:
                 # P2-16: a specialist with no findings is a GAP, never a
                 # filler section. Raise; the gather below records the specific
                 # unanswered question in section_gaps (surfaced to
                 # FinalReport.limitations) and the section is omitted.
                 raise SectionGapError(
-                    f"'{_section_title(agent)}' ({agent}) produced no findings; "
-                    f"the question this chapter was to answer is unresolved: "
-                    f"'{self._question}'."
+                    f"'{_section_title(agent)}' ({agent}) produced no usable "
+                    f"findings; the question this chapter was to answer is "
+                    f"unresolved: '{self._question}'."
+                )
+            findings = evidence
+            if gap_count:
+                self.section_gaps.append(
+                    f"{_section_title(agent)}: {gap_count} finding(s) dropped "
+                    f"as gap-placeholder/off-topic before section assembly."
                 )
 
             # Select the best finding for the key insight box.
@@ -2016,6 +2062,95 @@ class SynthesisLead(BaseAgent):
             degraded = self._minimal_report(reason=str(e)[:200])
             self._current_report = degraded
             return degraded
+
+    def _filter_section_findings(
+        self, findings: list[KeyFinding]
+    ) -> tuple[list[KeyFinding], int]:
+        """OVERHAUL5 W6 (D-08): keep only findings that may become section
+        evidence; return (kept, dropped_count).
+
+        Drops:
+        - ``research_gap`` placeholders (a gap is a stated limitation, not
+          evidence — the 08-12 report cited "Risk analysis gap, insufficient
+          source data" as a section source).
+        - off-topic findings whose title+content score below the relevance
+          floor against the engagement question (the Apple/iPhone + Italian-
+          fashion papers cited for an India-vs-China manufacturing question).
+
+        No question available -> relevance filter is a no-op (never drops on
+        empty context). Uses the token-boundary EvidenceScorer matcher
+        (same corrected matcher the image gate reuses).
+        """
+        evidence = [f for f in findings if f.finding_type != "research_gap"]
+        dropped = len(findings) - len(evidence)
+        question = (self._question or "").strip()
+        if question and evidence:
+            try:
+                from hyperion.tools.evidence_scorer import EvidenceScorer
+
+                scorer = EvidenceScorer()
+                kept: list[KeyFinding] = []
+                for f in evidence:
+                    text = f"{f.title} {f.content}".strip()
+                    # Token-boundary overlap, NOT the retrieval min-evidence
+                    # rule: a finding sharing ANY substantive keyword with the
+                    # question is candidate evidence; zero overlap is the
+                    # off-topic class the gate must drop.
+                    if scorer.keyword_overlap(question, text):
+                        kept.append(f)
+                    else:
+                        dropped += 1
+                        logger.debug(
+                            "finding off-topic for '%s': %s",
+                            question[:60], f.title[:80],
+                        )
+                evidence = kept
+            except Exception as exc:  # noqa: BLE001 - gating must never break sections
+                logger.warning("relevance filter unavailable: %s", exc)
+        return evidence, dropped
+
+    async def _reconcile_verdict(self, draft: dict[str, Any]) -> dict[str, Any]:
+        """OVERHAUL5 W6 (D-10): enforce verdict/narrative consistency.
+
+        The structured ``recommendation`` field is the single writer; the
+        executive summary is derived from it. If the draft summary contains a
+        term that contradicts the verdict (the 08-12 run shipped CONDITIONAL
+        with 'no-go' in the body), regenerate the summary with the verdict as
+        a hard constraint. Bounded (2 attempts) — never loops.
+        """
+        rec = str(draft.get("recommendation", "") or "")
+        summary = str(draft.get("executive_summary", "") or "")
+        for _attempt in range(2):
+            term = _verdict_conflict(rec, summary)
+            if term is None:
+                return draft
+            logger.warning(
+                "verdict reconciliation: summary contradicts %r with %r — "
+                "regenerating (attempt %d/2)",
+                rec, term, _attempt + 1,
+            )
+            norm = rec.replace("_", " ").lower().strip()
+            banned = ", ".join(_VERDICT_CONFLICT_TERMS.get(norm, ()))
+            resp = await self._llm_complete(
+                user_prompt=(
+                    f"The final verdict for this engagement is: {rec.upper()}."
+                    f"\n\nYour previous executive summary contradicted it by "
+                    f"using '{term}'. Rewrite ONLY the summary so it is fully "
+                    f"consistent with a {rec.upper()} verdict."
+                    f"\nNever use these words: {banned}."
+                    f"\n\nCurrent summary:\n{summary[:900]}"
+                    f"\n\nReturn ONLY the rewritten summary text — no JSON, no "
+                    "preamble."
+                ),
+                urgency=TaskUrgency.HIGH,
+                temperature=0.3,
+            )
+            if resp.success and resp.content:
+                summary = resp.content.strip()
+                draft["executive_summary"] = summary
+            else:
+                break
+        return draft
 
     async def _run_synthesis(
         self,

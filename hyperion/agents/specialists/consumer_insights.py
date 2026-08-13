@@ -675,7 +675,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
             data = json.loads(response.content)
             for stage in data.get("journey", []):
                 journey.append(JourneyStage(
-                    stage=stage.get("stage", "Unknown"),
+                    stage=stage.get("stage", ""),
                     description=stage.get("description", ""),
                     touchpoints=stage.get("touchpoints", []),
                     friction_points=stage.get("friction_points", []),
@@ -789,7 +789,7 @@ class ConsumerInsightsAnalyst(BaseAgent):
 
                 segments.append(CustomerSegment(
                     approach=approach,
-                    segment_name=seg.get("segment_name", "Unknown"),
+                    segment_name=seg.get("segment_name", ""),
                     size_percentage=seg.get("size_percentage", ""),
                     characteristics=seg.get("characteristics", []),
                     purchase_probability=seg.get("purchase_probability", ""),

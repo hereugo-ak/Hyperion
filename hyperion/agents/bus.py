@@ -200,6 +200,11 @@ class AgentBus:
         # after specialists have already published. Without retention,
         # those findings are lost forever (pub/sub is fire-and-forget).
         self._retained_findings: list[BusMessage] = []
+        # OVERHAUL5 W6 (D-08): content-hash dedupe — the recovery loop re-runs
+        # specialists over the same pool and re-publishes identical findings
+        # (the 08-12 report repeated the same 5 sources twice). Cleared with
+        # the bus (reset_bus), so the scope is one engagement.
+        self._published_finding_hashes: set[str] = set()
 
     async def start(self) -> None:
         """Start the dispatch tasks, one per channel."""
@@ -379,6 +384,25 @@ class AgentBus:
         finding: KeyFinding,
     ) -> None:
         """Publish a completed finding, consumed by Synthesis Lead, Fact Checker, TUI."""
+        # OVERHAUL5 W6 (D-08): dedupe by content hash — an identical finding
+        # from a recovery re-run is a duplicate, not new evidence. Logged, not
+        # dropped silently; the original stays in the retained feed.
+        try:
+            from hyperion.tools.evidence_ledger import content_hash_of
+
+            fingerprint = content_hash_of(
+                f"{agent.value}|{finding.title}|{finding.content}"
+            )
+        except Exception:  # noqa: BLE001 - dedupe must never break publishing
+            fingerprint = ""
+        if fingerprint and fingerprint in self._published_finding_hashes:
+            logger.debug(
+                "duplicate finding suppressed (content hash %s): %s",
+                fingerprint, finding.title[:80],
+            )
+            return
+        if fingerprint:
+            self._published_finding_hashes.add(fingerprint)
         await self.publish(
             Channel.FINDINGS,
             MessageType.FINDING,

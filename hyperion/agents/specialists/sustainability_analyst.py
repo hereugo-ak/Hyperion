@@ -657,7 +657,7 @@ class SustainabilityAnalyst(BaseAgent):
 
                 esg_scores.append(ESGScore(
                     framework=fw,
-                    score=score.get("score", "Unknown"),
+                    score=score.get("score", ""),
                     key_strengths=score.get("key_strengths", []),
                     key_weaknesses=score.get("key_weaknesses", []),
                     stakeholder_audience=score.get("stakeholder_audience", ""),
@@ -751,9 +751,9 @@ class SustainabilityAnalyst(BaseAgent):
             emission_sources: list[EmissionSource] = []
             for src in data.get("emission_sources", []):
                 emission_sources.append(EmissionSource(
-                    source_name=src.get("source_name", "Unknown"),
+                    source_name=src.get("source_name", ""),
                     scope=src.get("scope", "Scope 2"),
-                    emissions_tco2e=src.get("emissions_tco2e", "Unknown"),
+                    emissions_tco2e=src.get("emissions_tco2e", ""),
                     percentage_of_total=src.get("percentage_of_total", ""),
                     abatement_action=src.get("abatement_action", ""),
                     abatement_cost_per_tco2e=src.get("abatement_cost_per_tco2e", ""),
@@ -841,7 +841,7 @@ class SustainabilityAnalyst(BaseAgent):
             data = json.loads(response.content)
             for req in data.get("requirements", []):
                 requirements.append(ReportingRequirement(
-                    report_name=req.get("report_name", "Unknown"),
+                    report_name=req.get("report_name", ""),
                     jurisdiction=req.get("jurisdiction", ""),
                     is_mandatory=bool(req.get("is_mandatory", False)),
                     deadline=req.get("deadline", ""),

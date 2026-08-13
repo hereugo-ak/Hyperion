@@ -43,13 +43,14 @@ Master plan: `overhaul5.md` (defects D-01..D-14, W0..W8)
 - [x] ✅ W5.3 rewired highest-value direct sites: competitive_intel (crash site, ladder), operations (was tool-less); other specialists keep working jina/obscura direct paths (migrate opportunistically)
 - [x] ✅ W5.4 commit + push (next commit)
 
-## W6 · Finding quality at birth (D-08, D-09, D-10)
-- [ ] ⬜ W6.1 relevance gate at finding construction (OFF_TOPIC typed reject)
-- [ ] ⬜ W6.2 gap placeholders → open_gaps only, never findings
-- [ ] ⬜ W6.3 content-hash dedupe in findings bus (recovery can't double-add)
-- [ ] ⬜ W6.4 metric parse failure → absent (omit row + stated gap), never 'Unknown'
-- [ ] ⬜ W6.5 verdict: narrative generated FROM structured field (one writer)
-- [ ] ⬜ W6.6 tests (fail-first) × 4; canaries green; commit + push
+## W6 · Finding quality at birth (D-08, D-09, D-10) — ✅ done
+- [x] ✅ W6.1 relevance gate: `EvidenceScorer.keyword_overlap` (token-boundary) + `_filter_section_findings` in synthesis — zero-overlap findings dropped before section assembly (Italian-fashion case from the run)
+- [x] ✅ W6.2 gap placeholders → section_gaps only, never section evidence (research_gap excluded at the section boundary)
+- [x] ✅ W6.3 bus content-hash dedupe — recovery re-runs can't double-add (report repeated 5 sources twice in the run)
+- [x] ✅ W6.4 ALL 50 'Unknown' placeholder defaults removed across 10 specialists (rendered as data → DATA VOID); technology_analyst BuildVsBuy was the run's culprit
+- [x] ✅ W6.5 verdict one-writer: `_reconcile_verdict` regenerates conflicting executive summary with the verdict as hard constraint (bounded 2×)
+- [x] ✅ W6.6 tests (fail-first, 8) + canaries green (16/16) + full-suite triage (only Windows-env failures remain: cp1252/weasyprint/vec0/yfinance/WSL-platform)
+- [ ] ⬜ commit + push (next commit)
 
 ## W7 · Checkpointed specialists + COMPETE crash (D-11, D-12)
 - [ ] ⬜ W7.1 specialists publish partial model checkpoints at step boundaries

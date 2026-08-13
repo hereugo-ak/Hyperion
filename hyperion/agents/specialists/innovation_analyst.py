@@ -621,7 +621,7 @@ class InnovationAnalyst(BaseAgent):
             for t in data.get("trl_assessments", []):
                 trl_level = int(t.get("trl_level", 1))
                 trl_assessments.append(TechnologyTRL(
-                    technology=t.get("technology", "Unknown"),
+                    technology=t.get("technology", ""),
                     trl_level=trl_level,
                     trl_description=t.get("trl_description", ""),
                     is_production_ready=trl_level >= 7,
@@ -723,7 +723,7 @@ class InnovationAnalyst(BaseAgent):
                 phase = phase_map.get(phase_str, HypeCyclePhase.INNOVATION_TRIGGER)
 
                 positions.append(HypeCyclePosition(
-                    technology=pos.get("technology", "Unknown"),
+                    technology=pos.get("technology", ""),
                     phase=phase,
                     phase_description=pos.get("phase_description", ""),
                     years_to_plateau=pos.get("years_to_plateau", ""),
@@ -802,7 +802,7 @@ class InnovationAnalyst(BaseAgent):
             for item in data.get("horizon_scan", []):
                 scan_items.append(HorizonScanItem(
                     horizon=item.get("horizon", "H1"),
-                    signal=item.get("signal", "Unknown"),
+                    signal=item.get("signal", ""),
                     description=item.get("description", ""),
                     impact=item.get("impact", "medium"),
                     probability=item.get("probability", ""),
@@ -948,7 +948,7 @@ class InnovationAnalyst(BaseAgent):
                 items: list[InnovationPortfolioItem] = []
                 for item in pf_data.get("items", []):
                     items.append(InnovationPortfolioItem(
-                        initiative=item.get("initiative", "Unknown"),
+                        initiative=item.get("initiative", ""),
                         horizon=item.get("horizon", "H1"),
                         investment_level=item.get("investment_level", ""),
                         expected_roi=item.get("expected_roi", ""),

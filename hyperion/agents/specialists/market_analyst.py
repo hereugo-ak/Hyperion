@@ -658,7 +658,7 @@ class MarketAnalyst(BaseAgent):
                 raise ValueError("LLM output unparseable after lenient retry")
             return FinancialMetric(
                 name="TAM (Top-Down)",
-                value=data.get("tam_value", "Unknown"),
+                value=data.get("tam_value", ""),
                 unit=data.get("unit", "$"),
                 low_estimate=data.get("tam_low"),
                 high_estimate=data.get("tam_high"),
@@ -755,7 +755,7 @@ class MarketAnalyst(BaseAgent):
             sensitivity = data.get("sensitivity")
             return FinancialMetric(
                 name="TAM (Bottom-Up)",
-                value=data.get("tam_value", "Unknown"),
+                value=data.get("tam_value", ""),
                 unit=data.get("unit", "$"),
                 low_estimate=data.get("tam_low"),
                 high_estimate=data.get("tam_high"),
@@ -875,7 +875,7 @@ class MarketAnalyst(BaseAgent):
             return (
                 FinancialMetric(
                     name="TAM (Triangulated)",
-                    value=data.get("triangulated_value", "Unknown"),
+                    value=data.get("triangulated_value", ""),
                     unit=data.get("unit", "$"),
                     low_estimate=data.get("triangulated_low"),
                     high_estimate=data.get("triangulated_high"),
@@ -885,7 +885,7 @@ class MarketAnalyst(BaseAgent):
                 ),
                 FinancialMetric(
                     name="CAGR",
-                    value=data.get("cagr_value", "Unknown"),
+                    value=data.get("cagr_value", ""),
                     unit=data.get("cagr_unit", "%"),
                     low_estimate=data.get("cagr_low"),
                     high_estimate=data.get("cagr_high"),
@@ -1309,7 +1309,7 @@ class MarketAnalyst(BaseAgent):
             data = json.loads(response.content)
             sam = FinancialMetric(
                 name="SAM (Serviceable Addressable Market)",
-                value=data.get("sam_value", "Unknown"),
+                value=data.get("sam_value", ""),
                 unit="$",
                 low_estimate=data.get("sam_low"),
                 high_estimate=data.get("sam_high"),
@@ -1319,7 +1319,7 @@ class MarketAnalyst(BaseAgent):
             )
             som = FinancialMetric(
                 name="SOM (Serviceable Obtainable Market)",
-                value=data.get("som_value", "Unknown"),
+                value=data.get("som_value", ""),
                 unit="$",
                 low_estimate=data.get("som_low"),
                 high_estimate=data.get("som_high"),

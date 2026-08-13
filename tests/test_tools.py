@@ -31,8 +31,10 @@ class TestToolRegistry:
             assert any(t.value == tool_name for t in ToolName), f"Tool {tool_name} not in ToolName enum"
 
     def test_tool_count(self):
-        """Should have exactly 23 tools."""
-        assert len(list(ToolName)) == 23
+        """Should have exactly 24 tools."""
+        # OVERHAUL5 W5: +1 for ToolName.UNIFIED_EXTRACT (the single extraction
+        # ladder granted to every specialist).
+        assert len(list(ToolName)) == 24
 
 
 class TestToolInstantiation:

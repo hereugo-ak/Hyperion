@@ -702,7 +702,7 @@ class FinancialAnalyst(BaseAgent):
 
             dcf = FinancialMetric(
                 name="DCF Valuation",
-                value=data.get("dcf_value", "Unknown"),
+                value=data.get("dcf_value", ""),
                 unit=data.get("unit", "$"),
                 low_estimate=data.get("dcf_low"),
                 high_estimate=data.get("dcf_high"),
@@ -816,7 +816,7 @@ class FinancialAnalyst(BaseAgent):
                 raise ValueError("LLM output unparseable after lenient retry")
             return FinancialMetric(
                 name="Comparable Company Analysis",
-                value=data.get("comp_value", "Unknown"),
+                value=data.get("comp_value", ""),
                 unit=data.get("unit", "$"),
                 low_estimate=data.get("comp_low"),
                 high_estimate=data.get("comp_high"),
@@ -916,7 +916,7 @@ class FinancialAnalyst(BaseAgent):
                 if isinstance(item, dict):
                     metrics.append(FinancialMetric(
                         name=label,
-                        value=item.get("value", "Unknown"),
+                        value=item.get("value", ""),
                         unit=item.get("unit", ""),
                         assumptions=[item.get("source", ""), item.get("formula", ""), item.get("health", "")],
                         sources=self._sources[:2],
@@ -991,7 +991,7 @@ class FinancialAnalyst(BaseAgent):
                 if isinstance(scenario, dict):
                     scenarios[label] = FinancialMetric(
                         name=label,
-                        value=scenario.get("value", "Unknown"),
+                        value=scenario.get("value", ""),
                         unit=unit,
                         low_estimate=scenario.get("low"),
                         high_estimate=scenario.get("high"),

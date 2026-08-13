@@ -534,13 +534,13 @@ class OperationsAnalyst(BaseAgent):
                 steps.append(ProcessStep(
                     step_number=int(s.get("step_number", len(steps) + 1)),
                     step_name=s.get("step_name", "Unknown step"),
-                    supplier=s.get("supplier", "Unknown"),
-                    input=s.get("input", "Unknown"),
-                    process=s.get("process", "Unknown"),
-                    output=s.get("output", "Unknown"),
-                    customer=s.get("customer", "Unknown"),
-                    cycle_time=s.get("cycle_time", "Unknown"),
-                    throughput=s.get("throughput", "Unknown"),
+                    supplier=s.get("supplier", ""),
+                    input=s.get("input", ""),
+                    process=s.get("process", ""),
+                    output=s.get("output", ""),
+                    customer=s.get("customer", ""),
+                    cycle_time=s.get("cycle_time", ""),
+                    throughput=s.get("throughput", ""),
                     is_value_adding=bool(s.get("is_value_adding", False)),
                     is_bottleneck=bool(s.get("is_bottleneck", False)),
                 ))
@@ -625,9 +625,9 @@ class OperationsAnalyst(BaseAgent):
 
             for bn in bn_list:
                 bottlenecks.append(Bottleneck(
-                    step_name=bn.get("step_name", "Unknown"),
-                    current_throughput=bn.get("current_throughput", "Unknown"),
-                    max_downstream_throughput=bn.get("max_downstream_throughput", "Unknown"),
+                    step_name=bn.get("step_name", ""),
+                    current_throughput=bn.get("current_throughput", ""),
+                    max_downstream_throughput=bn.get("max_downstream_throughput", ""),
                     constraint_type=bn.get("constraint_type", "capacity"),
                     improvement_action=bn.get("improvement_action", ""),
                     improvement_cost=bn.get("improvement_cost", ""),
@@ -764,12 +764,12 @@ class OperationsAnalyst(BaseAgent):
 
             for bm in bm_list:
                 benchmarks.append(BenchmarkComparison(
-                    metric=bm.get("metric", "Unknown"),
-                    current_value=bm.get("current_value", "Unknown"),
-                    industry_average=bm.get("industry_average", "Unknown"),
-                    industry_leader=bm.get("industry_leader", "Unknown"),
-                    gap_to_leader=bm.get("gap_to_leader", "Unknown"),
-                    improvement_potential=bm.get("improvement_potential", "Unknown"),
+                    metric=bm.get("metric", ""),
+                    current_value=bm.get("current_value", ""),
+                    industry_average=bm.get("industry_average", ""),
+                    industry_leader=bm.get("industry_leader", ""),
+                    gap_to_leader=bm.get("gap_to_leader", ""),
+                    improvement_potential=bm.get("improvement_potential", ""),
                     annual_value=bm.get("annual_value", ""),
                 ))
 

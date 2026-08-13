@@ -933,7 +933,7 @@ class CompetitiveIntel(BaseAgent):
                 moat_list = []
 
             for moat in moat_list:
-                competitor = moat.get("competitor", "Unknown")
+                competitor = moat.get("competitor", "")
                 forces = []
                 for force_name in ["network_effects", "switching_costs", "scale_advantages",
                                    "brand", "regulatory", "ip_proprietary_tech", "distribution"]:
@@ -1225,7 +1225,7 @@ class CompetitiveIntel(BaseAgent):
                 trend_list = []
 
             for trend in trend_list:
-                competitor = trend.get("competitor", "Unknown")
+                competitor = trend.get("competitor", "")
                 pricing_findings.append(KeyFinding(
                     id=f"finding_{uuid.uuid4().hex[:8]}",
                     agent=self.name.value,

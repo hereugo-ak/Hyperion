@@ -432,6 +432,29 @@ class EvidenceScorer:
     def _stemmed_tokens(cls, text: str) -> set[str]:
         return {cls._stem(tok) for tok in cls._tokenize(text)}
 
+    def keyword_overlap(self, query: str, content: str) -> bool:
+        """OVERHAUL5 W6 (D-08): token-boundary overlap for finding gating.
+
+        True when at least ONE query keyword appears in the content as a whole
+        token or morphological stem. Deliberately does NOT apply the
+        min-evidence rule (\u22652 matches for long queries): that rule rejects
+        polysemy in *retrieval*; for *section assembly* a finding sharing any
+        substantive keyword with the engagement question is candidate
+        evidence, and clearly off-topic findings (zero overlap) are the class
+        the gate must drop.
+        """
+        if not query or not content:
+            return False
+        query_words = self._extract_keywords(query)
+        if not query_words:
+            return False
+        content_lower = content.lower()
+        content_tokens = self._tokenize(content_lower)
+        content_stems = {self._stem(tok) for tok in content_tokens}
+        return any(
+            word in content_tokens or self._stem(word) in content_stems
+            for word in query_words
+        )
     def _score_relevance(self, query: str, content: str) -> float:
         """TF-IDF-like keyword overlap scoring — token-boundary, not substring.
 

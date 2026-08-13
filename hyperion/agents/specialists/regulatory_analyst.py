@@ -674,8 +674,8 @@ class RegulatoryAnalyst(BaseAgent):
                 reg_type = reg_type_map.get(reg_type_str, RegulationType.INDUSTRY_SPECIFIC)
 
                 regulations.append(Regulation(
-                    name=reg.get("name", "Unknown"),
-                    jurisdiction=reg.get("jurisdiction", "Unknown"),
+                    name=reg.get("name", ""),
+                    jurisdiction=reg.get("jurisdiction", ""),
                     regulation_type=reg_type,
                     description=reg.get("description", ""),
                     key_requirements=reg.get("key_requirements", []),
@@ -688,7 +688,7 @@ class RegulatoryAnalyst(BaseAgent):
 
             for jc in data.get("jurisdiction_comparison", []):
                 jurisdiction_comparison.append(JurisdictionComparison(
-                    jurisdiction=jc.get("jurisdiction", "Unknown"),
+                    jurisdiction=jc.get("jurisdiction", ""),
                     regulation_count=int(jc.get("regulation_count", 0)),
                     compliance_burden=jc.get("compliance_burden", "medium"),
                     estimated_annual_cost=jc.get("estimated_annual_cost", ""),
@@ -1012,7 +1012,7 @@ class RegulatoryAnalyst(BaseAgent):
             data = json.loads(response.content)
             for p in data.get("precedents", []):
                 precedents.append(EnforcementPrecedent(
-                    company=p.get("company", "Unknown"),
+                    company=p.get("company", ""),
                     regulation=p.get("regulation", ""),
                     violation=p.get("violation", ""),
                     penalty=p.get("penalty", ""),

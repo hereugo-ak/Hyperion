@@ -732,7 +732,7 @@ class StrategyAnalyst(BaseAgent):
 
             for r in data.get("resources", []):
                 vrio_result = VRIOResult(
-                    resource=r.get("resource", "Unknown"),
+                    resource=r.get("resource", ""),
                     is_valuable=bool(r.get("is_valuable", False)),
                     is_rare=bool(r.get("is_rare", False)),
                     is_inimitable=bool(r.get("is_inimitable", False)),
@@ -924,7 +924,7 @@ class StrategyAnalyst(BaseAgent):
             options: list[StrategicOption] = []
             for opt in data.get("options", []):
                 options.append(StrategicOption(
-                    option_name=opt.get("option_name", "Unknown"),
+                    option_name=opt.get("option_name", ""),
                     description=opt.get("description", ""),
                     feasibility=opt.get("feasibility", ""),
                     impact=opt.get("impact", ""),

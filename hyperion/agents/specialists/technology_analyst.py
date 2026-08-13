@@ -729,7 +729,7 @@ class TechnologyAnalyst(BaseAgent):
                         return default
 
                 vendors.append(VendorComparison(
-                    vendor_name=v.get("vendor_name", "Unknown"),
+                    vendor_name=v.get("vendor_name", ""),
                     feature_fit=clamp(v.get("feature_fit")),
                     pricing=clamp(v.get("pricing")),
                     scalability=clamp(v.get("scalability")),
@@ -812,16 +812,16 @@ class TechnologyAnalyst(BaseAgent):
         if not response.success or not response.content:
             return BuildVsBuyAnalysis(
                 recommendation="BUY",
-                time_to_market_build="Unknown",
-                time_to_market_buy="Unknown",
+                time_to_market_build="",
+                time_to_market_buy="",
                 tco_5yr_build=0,
                 tco_5yr_buy=0,
-                strategic_differentiation_build="Unknown",
-                strategic_differentiation_buy="Unknown",
-                maintenance_burden_build="Unknown",
-                maintenance_burden_buy="Unknown",
-                team_capability_assessment="Unknown",
-                opportunity_cost="Unknown",
+                strategic_differentiation_build="",
+                strategic_differentiation_buy="",
+                maintenance_burden_build="",
+                maintenance_burden_buy="",
+                team_capability_assessment="",
+                opportunity_cost="",
                 rationale="Build-vs-buy analysis failed, insufficient data",
             )
 
@@ -831,8 +831,8 @@ class TechnologyAnalyst(BaseAgent):
                 raise ValueError("LLM output unparseable after lenient retry")
             return BuildVsBuyAnalysis(
                 recommendation=data.get("recommendation", "BUY"),
-                time_to_market_build=data.get("time_to_market_build", "Unknown"),
-                time_to_market_buy=data.get("time_to_market_buy", "Unknown"),
+                time_to_market_build=data.get("time_to_market_build", ""),
+                time_to_market_buy=data.get("time_to_market_buy", ""),
                 tco_5yr_build=float(data.get("tco_5yr_build", 0)),
                 tco_5yr_buy=float(data.get("tco_5yr_buy", 0)),
                 strategic_differentiation_build=data.get("strategic_differentiation_build", ""),
@@ -935,7 +935,7 @@ class TechnologyAnalyst(BaseAgent):
 
             for opt in options:
                 tco_results.append(TCOAnalysis(
-                    option_name=opt.get("option_name", "Unknown"),
+                    option_name=opt.get("option_name", ""),
                     year_1=float(opt.get("year_1", 0)),
                     year_2=float(opt.get("year_2", 0)),
                     year_3=float(opt.get("year_3", 0)),
