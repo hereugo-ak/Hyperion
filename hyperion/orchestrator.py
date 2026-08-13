@@ -660,6 +660,30 @@ class WorkflowEngine:
         keep = [w for w in words if w.lower() not in stop and len(w) > 2]
         return " ".join(keep[:6])
 
+    def _timeout_partial_output(
+        self, task: TaskNode, agent: Any
+    ) -> dict[str, Any] | None:
+        """OVERHAUL5 W7 (D-11): classify a specialist timeout.
+
+        Returns a partial-output dict ``{agent, status, findings}`` when the
+        specialist had ALREADY published findings before the wall (the
+        pipeline completed; only the final model call died) — or None when the
+        timeout hit a genuinely empty pipeline (findings-less death). The
+        partial output preserves the evidence in the task's output slot so the
+        run's ledger and recovery can see the work that was done.
+        """
+        try:
+            findings = list(getattr(agent, "_findings", None) or [])
+        except Exception:  # noqa: BLE001 - classification must not crash the timeout path
+            findings = []
+        if not findings:
+            return None
+        return {
+            "agent": task.agent.value,
+            "status": f"timeout_at_final_completion:{len(findings)} findings",
+            "findings": [f.model_dump(mode="json") for f in findings],
+        }
+
     async def _execute_task(self, task: TaskNode, dag: WorkflowDAG) -> Any:
         """Execute a single task — instantiate the agent and call its run() method.
 
@@ -1141,10 +1165,32 @@ class WorkflowEngine:
                 else self.TASK_TIMEOUT_SECONDS
             )
             task.status = TaskStatus.FAILED
-            task.error = f"Task timed out after {timeout_used}s"
+            # OVERHAUL5 W7 (D-11): classify the timeout. A specialist publishes
+            # findings incrementally, so a timeout WITH published findings means
+            # the pipeline COMPLETED and only the final model call exceeded the
+            # wall (OPS/ESG/REGULATORY in the 08-12 run lost 20 minutes of
+            # completed work this way). Record the typed reason, attach a
+            # partial output (the published findings), and log loudly — the
+            # evidence is NOT lost and recovery knows the remedy is
+            # completion-only, never a full re-run.
+            partial = self._timeout_partial_output(task, agent)
+            if partial is not None:
+                task.error = partial["status"]
+                self._task_outputs[task.id] = partial
+                task.output = partial
+                if self._journal:
+                    self._journal.record_failure(task.id, inputs_hash, partial["status"])
+                self._log(
+                    f"{task.agent.value}: timed out at the FINAL completion call "
+                    f"with {len(partial['findings'])} finding(s) already "
+                    f"published — pipeline work is NOT lost; recovery hint = "
+                    f"completion-only"
+                )
+            else:
+                task.error = f"Task timed out after {timeout_used}s"
+                if self._journal:
+                    self._journal.record_failure(task.id, inputs_hash, f"timeout:{timeout_used}s")
             self._publish_task_update(task)
-            if self._journal:
-                self._journal.record_failure(task.id, inputs_hash, f"timeout:{timeout_used}s")
             await self.bus.publish_status(
                 task.agent, AgentState.BLOCKED,
                 detail=f"timed out after {timeout_used}s",

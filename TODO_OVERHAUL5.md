@@ -52,11 +52,11 @@ Master plan: `overhaul5.md` (defects D-01..D-14, W0..W8)
 - [x] ✅ W6.6 tests (fail-first, 8) + canaries green (16/16) + full-suite triage (only Windows-env failures remain: cp1252/weasyprint/vec0/yfinance/WSL-platform)
 - [ ] ⬜ commit + push (next commit)
 
-## W7 · Checkpointed specialists + COMPETE crash (D-11, D-12)
-- [ ] ⬜ W7.1 specialists publish partial model checkpoints at step boundaries
-- [ ] ⬜ W7.2 timeout_at_final_completion typed; final completion retried once
-- [ ] ⬜ W7.3 competitive_intel.py:725/743 — bind content in both paths
-- [ ] ⬜ W7.4 tests (fail-first) × 2; commit + push
+## W7 · Checkpointed specialists + COMPETE crash (D-11, D-12) — ✅ done
+- [x] ✅ W7.1 partial output checkpoint: `_timeout_partial_output` preserves published findings in the task output slot on specialist timeout
+- [x] ✅ W7.2 typed `timeout_at_final_completion:<n> findings` journal reason + loud log; bare `timeout:` only for genuinely empty pipelines (OPS/ESG/REGULATORY lost 20min of completed work to the wall in the run)
+- [x] ✅ W7.3 COMPETE `content` UnboundLocalError — eliminated by the W5 ladder rewire; regression-lock test added (succeeding extractor → sources, no raise)
+- [x] ✅ W7.4 tests (fail-first, 3); canaries green (16/16); commit + push (next commit)
 
 ## W8 · Visibility + typed recovery (D-13, D-14)
 - [ ] ⬜ W8.1 boot probe: provider key_ok/endpoint_ok table at engagement start
